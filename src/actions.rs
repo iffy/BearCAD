@@ -2421,6 +2421,8 @@ pub struct AppState {
     /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
     /// inside) the viewport re-frames the camera with a short animation. UI-only state.
     pub auto_zoom: bool,
+    /// Name typed for the next 3D-derived parameter (Dimension tool, #618); cleared on commit.
+    pub dimension_param_name: String,
     /// The active component (#429): set when a component is created or selected; newly
     /// created top-level elements are filed into it. `None` = the document root. UI-only
     /// state (never persisted); cleared when the component is deleted.
@@ -2586,6 +2588,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             auto_zoom: false,
+            dimension_param_name: String::new(),
             active_component: None,
             doc: Document::default(),
             path: None,
@@ -5731,8 +5734,7 @@ impl AppState {
                             .to_string()
                     }
                     Tool::Dimension => {
-                        "Dimension tool — click a line to capture its length as a parameter"
-                            .to_string()
+                        "Dimension tool — pick lines/vertices, then Derive parameter".to_string()
                     }
                     Tool::Constraint if self.sketch_session.is_some() => {
                         "Constraint tool — select geometry, then pick a constraint".to_string()
@@ -5845,23 +5847,10 @@ impl AppState {
                 }
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
-                    // 3D mode (#453): switching to the tool with a measuring selection
-                    // already made captures it as a derived parameter right away.
-                    if self.sketch_session.is_none() {
-                        if let Some(source) = crate::parameters::derived_source_from_selection(
-                            &self.doc,
-                            &self.scene_selection,
-                        ) {
-                            if let Ok(index) =
-                                crate::parameters::add_derived_parameter(&mut self.doc, source, None)
-                            {
-                                let name = self.doc.parameters[index].name.clone();
-                                self.refresh_document_health();
-                                self.status = format!("Added derived parameter {name}");
-                                self.scene_selection.clear();
-                            }
-                        }
-                    }
+                    // 3D mode (#618): a measuring selection carries into the tool's
+                    // derived-parameter block — the context pane shows its value, and the
+                    // "Derive parameter" button records it (nothing fires automatically,
+                    // so the parameter can be named first).
                 }
                 ActionResult::Ok
             }

@@ -31,7 +31,10 @@ one piece, dimensions intact.
 
 ## In 3D mode
 
-Outside a sketch, the Dimension tool **measures**: click a line to capture its length as a
-[derived parameter](/docs/parameters#derived-parameters); Shift+click two points or two
-lines to capture the distance (or angle) between them. The parameter lands in the
-Parameters pane, re-measures as the geometry changes, and works in any expression.
+Outside a sketch, the Dimension tool **measures**. Pick what to measure — one line for its
+length, two parallel lines for the distance between them, two non-parallel lines for the
+angle, or two vertices for their distance — and the Context pane shows the live **Value**.
+Type a **Parameter name** (or leave it blank for an automatic one) and press the blue
+**Derive parameter** button (or **Enter**): the measurement is recorded as a
+[derived parameter](/docs/parameters#derived-parameters). It lands in the Parameters pane,
+re-measures as the geometry changes, and works in any expression.

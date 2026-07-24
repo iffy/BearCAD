@@ -1728,12 +1728,16 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   the source geometry — the measured line, line pair, or two points — in **green** in the 3D
   view (#536, `focused_derived_parameter_source` → `draw_derived_source_highlight`), so it's
   clear which geometry drives the value being renamed.
-- The **Dimension tool measures in 3D mode** (#453): outside a sketch it selects like the
-  Select tool (measurable lines/points hover-glow), and as soon as the selection measures
-  something the derived parameter is created and the selection clears
-  (`parameters::dimension_click_derived_source`). A **plain click on a line** captures its
-  length immediately; an **additive (shift) click** on a lone line defers — it's building
-  a pair — while completed pairs (two points, two lines) fire regardless of the modifier.
+- The **Dimension tool measures in 3D mode** (#453/#618): outside a sketch it selects like
+  the Select tool (measurable lines/points hover-glow, accumulated in the pane's element
+  picker), and the context pane shows a **derived-parameter block**: a **Parameter name**
+  text box (`AppState::dimension_param_name`; blank auto-names), a **Value** row with the
+  selection's live measurement — one line → its length, two parallel lines → the distance
+  between them, two non-parallel lines → the angle, two vertices → the distance
+  (`derived_source_from_selection`/`derived_source_value`) — and a **Derive parameter**
+  primary button that records it as a read-only derived parameter and clears the name and
+  selection for the next one. Nothing fires on click alone (the pre-#618 auto-capture is
+  gone), so the parameter can be named before it's recorded.
 - Scriptable: `bearcad.derive_parameter{ kind = "line_length"|"point_distance"|
   "line_distance"|"line_angle", a =, b =, name = }`.
 

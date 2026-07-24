@@ -131,6 +131,8 @@ pub struct ContextInput<'a> {
     /// Guided calibration in progress with fewer than two points placed: how many are
     /// placed so far (renders the click-two-points hint).
     pub calibrate_pending: Option<usize>,
+    /// Dimension tool in 3D mode (#618): the derived-parameter name/value/commit block.
+    pub dimension_derive: Option<DimensionDeriveControl>,
 }
 
 /// What the Revolve tool's context section shows (#revolve): the picked axis (if any),
@@ -729,6 +731,9 @@ pub struct ContextPaneContent {
     /// [`ElementPicker`] — currently the Select tool's "select everything" picker, which is
     /// always shown (placeholder when empty) and never loses focus.
     pub selection_picker: Option<ElementPicker>,
+    /// Dimension tool in 3D mode (#618): the derived-parameter name/value/commit block,
+    /// rendered right under the selection picker.
+    pub dimension_derive: Option<DimensionDeriveView>,
     /// Tool-owned element pickers (#213): the sets a construction tool is gathering (e.g. the
     /// Revolve tool's cut bodies), each rendered by the same combo-box widget. Extensible: a
     /// tool may show several (Combine's A/B sides). Empty for tools not yet migrated.
@@ -984,6 +989,31 @@ pub enum SelectionEdit {
     Clear,
 }
 
+/// Derived-parameter controls for the Dimension tool in 3D mode (#618): the name box for
+/// the parameter about to be recorded (owned by `AppState::dimension_param_name`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DimensionDeriveControl {
+    pub name_text: String,
+}
+
+/// A user edit from the Dimension tool's derived-parameter controls (#618).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DimensionDeriveEdit {
+    SetName(String),
+    Commit,
+}
+
+/// Rendered state of the Dimension tool's derived-parameter block (#618): the measured
+/// value of the current selection (one line → its length; two parallel lines → the
+/// distance between them; two non-parallel lines → the angle; two vertices → the
+/// distance), formatted for display, and whether "Derive parameter" can fire.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DimensionDeriveView {
+    pub name_text: String,
+    pub value: Option<String>,
+    pub can_commit: bool,
+}
+
 /// The selection element picker to show for `tool`, if any — the unified control every
 /// selection-driven tool uses. Both variants mirror the live `selection`; they differ only in
 /// which kinds they accept and their placeholder, demonstrating the per-instance configuration.
@@ -1229,6 +1259,30 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let selection_picker = (!drawing && !input.in_drawing_workbench)
         .then(|| selection_picker_for(input.tool, input.in_sketch, input.selection))
         .flatten();
+    // Dimension tool in 3D (#618): measure the current selection for the derive block —
+    // one line → its length; two parallel lines → the distance between them; two
+    // non-parallel lines → the angle; two vertices → the distance.
+    let dimension_derive = input.dimension_derive.as_ref().map(|c| {
+        let source =
+            crate::parameters::derived_source_from_selection(input.doc, input.selection);
+        let value = source.as_ref().and_then(|s| {
+            crate::parameters::derived_source_value(input.doc, s).map(|(v, is_angle)| {
+                if is_angle {
+                    crate::value::format_angle_display_in(
+                        v.to_radians(),
+                        input.doc.default_angle_unit,
+                    )
+                } else {
+                    crate::value::format_length_display_in(v, input.doc.default_length_unit)
+                }
+            })
+        });
+        DimensionDeriveView {
+            name_text: c.name_text.clone(),
+            can_commit: value.is_some(),
+            value,
+        }
+    });
     // The drawing workbench's Select tool gets its own always-visible element picker (#346),
     // mirroring the multi-selection of projections/text/dimensions.
     let drawing_selection = (input.in_drawing_workbench && input.tool == Tool::Select)
@@ -1410,6 +1464,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
+            dimension_derive: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1464,6 +1519,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
+            dimension_derive: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1518,6 +1574,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
+            dimension_derive: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1575,6 +1632,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         units,
         edge_picker,
         selection_picker,
+        dimension_derive,
         tool_pickers,
         calibrate_image,
         revolve,
@@ -2071,6 +2129,7 @@ pub fn show_pane(
     on_sweep_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
+    on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -2133,6 +2192,39 @@ pub fn show_pane(
             }
         });
         });
+    }
+
+    // Dimension tool in 3D mode (#618): name the measurement, see its current value, and
+    // record it as a read-only derived parameter.
+    if let Some(control) = &content.dimension_derive {
+        any_control = true;
+        labeled_row(ui, "Parameter name", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                let mut text = control.name_text.clone();
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .hint_text("auto")
+                        .desired_width(120.0),
+                );
+                if resp.changed() {
+                    on_dimension_derive_edit(DimensionDeriveEdit::SetName(text));
+                }
+            });
+        });
+        labeled_row(ui, "Value", |ui| {
+            match &control.value {
+                Some(value) => ui.label(value.clone()),
+                None => ui.label(
+                    egui::RichText::new("Pick 1–2 lines or 2 vertices")
+                        .color(egui::Color32::from_gray(140))
+                        .size(11.5),
+                ),
+            };
+        });
+        if primary_button(ui, controls_enabled && control.can_commit, "Derive parameter") {
+            on_dimension_derive_edit(DimensionDeriveEdit::Commit);
+        }
+        ui.add_space(4.0);
     }
 
     // The drawing workbench's Select tool has its own always-visible element picker (#346): a
@@ -4559,6 +4651,7 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         }
     }
 
@@ -4779,6 +4872,7 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         };
         let content = context_pane_content(&base);
         let edges_picker = |rows: Vec<String>| EdgePickerControl {
@@ -4862,6 +4956,7 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         };
         let picker = context_pane_content(&input)
             .selection_picker
@@ -5105,6 +5200,7 @@ mod tests {
             context_pane_content(&input(&doc, &SceneSelection::default())),
             ContextPaneContent {
                 tool_title: None,
+                dimension_derive: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -5220,11 +5316,13 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         });
         assert_eq!(
             content,
             ContextPaneContent {
                 tool_title: None,
+                dimension_derive: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -5343,6 +5441,7 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         });
         assert_eq!(content.curve_mode, Some(true));
         assert_eq!(content.tangent_constraint, Some(false));
@@ -5359,6 +5458,7 @@ mod tests {
             context_pane_content(&input(&doc, &sel)),
             ContextPaneContent {
                 tool_title: None,
+                dimension_derive: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -5532,6 +5632,7 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -5599,11 +5700,13 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         });
         assert_eq!(
             content,
             ContextPaneContent {
                 tool_title: None,
+                dimension_derive: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -5715,6 +5818,7 @@ mod tests {
             sweep_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
+            dimension_derive: None,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),

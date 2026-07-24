@@ -8789,6 +8789,13 @@ impl eframe::App for App {
                     .as_ref()
                     .filter(|cal| cal.points.len() < 2)
                     .map(|cal| cal.points.len()),
+                // Dimension tool in 3D (#618): the derived-parameter name/value/commit block.
+                dimension_derive: (self.state.tool == Tool::Dimension
+                    && self.state.sketch_session.is_none()
+                    && self.state.editing_drawing.is_none())
+                .then(|| context::DimensionDeriveControl {
+                    name_text: self.state.dimension_param_name.clone(),
+                }),
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -8813,6 +8820,7 @@ impl eframe::App for App {
                 None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
+            let mut dimension_derive_edit: Option<context::DimensionDeriveEdit> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
@@ -8898,6 +8906,7 @@ impl eframe::App for App {
                         &mut |op| sweep_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
+                        &mut |edit| dimension_derive_edit = Some(edit),
                     );
                 });
             if !pane_kept_open {
@@ -9576,6 +9585,30 @@ impl eframe::App for App {
             }
             if let Some(image) = calibrate_begin {
                 self.state.apply(Action::BeginImageCalibration { image });
+            }
+            // Dimension tool's derived-parameter block (#618): typing updates the pending
+            // name; "Derive parameter" records the selection's measurement as a read-only
+            // parameter and clears the pane for the next one.
+            match dimension_derive_edit {
+                Some(context::DimensionDeriveEdit::SetName(name)) => {
+                    self.state.dimension_param_name = name;
+                }
+                Some(context::DimensionDeriveEdit::Commit) => {
+                    if let Some(source) = parameters::derived_source_from_selection(
+                        &self.state.doc,
+                        &self.state.scene_selection,
+                    ) {
+                        let name = Some(self.state.dimension_param_name.trim().to_string())
+                            .filter(|n| !n.is_empty());
+                        let before = self.state.doc.parameters.len();
+                        self.state.apply(Action::CreateDerivedParameter { source, name });
+                        if self.state.doc.parameters.len() > before {
+                            self.state.dimension_param_name.clear();
+                            self.state.scene_selection.clear();
+                        }
+                    }
+                }
+                None => {}
             }
             if let Some((control, mut text)) = calibrate_apply {
                 // #201: a typed length can define a parameter (`name = expr`).
@@ -16514,27 +16547,10 @@ impl App {
                     } else if !additive {
                         self.state.apply(Action::ClearSceneSelection);
                     }
-                    // Dimension tool in 3D mode only (#453): capture a derived parameter
-                    // and clear for the next measurement. In a sketch the same tool
-                    // accumulates edges for length/angle constraints (#486/#487/#488) —
-                    // auto-creating a line-length parameter would clear the first edge
-                    // and break two-edge angle picks (CI interaction tests).
-                    if self.state.tool == Tool::Dimension && self.state.sketch_session.is_none() {
-                        if let Some(source) = parameters::dimension_click_derived_source(
-                            &self.state.doc,
-                            &self.state.scene_selection,
-                            additive,
-                        ) {
-                            let before = self.state.doc.parameters.len();
-                            self.state.apply(Action::CreateDerivedParameter {
-                                source,
-                                name: None,
-                            });
-                            if self.state.doc.parameters.len() > before {
-                                self.state.scene_selection.clear();
-                            }
-                        }
-                    }
+                    // Dimension tool in 3D mode (#618): clicks only accumulate the picked
+                    // elements — the context pane's name/value block and its "Derive
+                    // parameter" button record the measurement (clicks used to auto-create
+                    // the parameter immediately, #453, leaving no room to name it first).
                 } else if !self.gpu_viewport && !suppress_hover_highlight {
                     if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion) {
                         if scene_element_from_pick(&target.kind).is_some() {
@@ -19408,7 +19424,7 @@ impl App {
                 } else if self.state.placing_angle_dimension.is_some() {
                     "d: dimension  •  Move mouse to choose the angle side • click to set value"
                 } else if self.state.sketch_session.is_none() {
-                    "d: dimension  •  Click a line to capture its length as a parameter • Shift+click two points or lines for a distance/angle"
+                    "d: dimension  •  Pick a line (or two lines/vertices), then Derive parameter in the pane"
                 } else {
                     "d: dimension  •  Click an edge (re-click or D for length) • second edge for angle"
                 }
