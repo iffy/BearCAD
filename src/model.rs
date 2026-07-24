@@ -1614,6 +1614,28 @@ pub enum MoveRotateMode {
     Free,
 }
 
+/// One side of a Snap Rotate alignment (#653): a **face** and one of its **adjacent edges**,
+/// captured as world geometry — a point on the face plus its normal, and the edge's endpoints,
+/// all quantized to the 0.01 mm selection grid. Only the two *directions* matter to the
+/// rotation, so this works the same whether it was picked on a body face, a sketch, or a
+/// construction plane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveAlignRef {
+    /// `(point on the face, face normal)`; `None` until a face is picked.
+    #[serde(default)]
+    pub face: Option<([i32; 3], [i32; 3])>,
+    /// The adjacent edge's two endpoints; `None` until an edge is picked.
+    #[serde(default)]
+    pub edge: Option<([i32; 3], [i32; 3])>,
+}
+
+impl MoveAlignRef {
+    /// Whether both halves are picked — only then can the alignment produce a rotation.
+    pub fn is_complete(&self) -> bool {
+        self.face.is_some() && self.edge.is_some()
+    }
+}
+
 /// One of Free Rotate's extra turn slots (#652): an axis — an origin axis or any picked
 /// edge/line — and how far to turn about it. Slot 0 of the three is the op's own `axis`/
 /// `angle`; these are the other two.
@@ -1662,6 +1684,14 @@ impl MoveOperation {
             (self.extra_rotations[0].axis, self.extra_rotations[0].angle.as_str()),
             (self.extra_rotations[1].axis, self.extra_rotations[1].angle.as_str()),
         ]
+    }
+
+    /// Whether this move's rotation comes from a Snap Rotate alignment (#653) rather than the
+    /// Free Rotate slots — both sides need a face *and* an edge before it can.
+    pub fn has_snap_rotation(&self) -> bool {
+        self.rotate_mode == MoveRotateMode::Snap
+            && self.rotate_source.is_complete()
+            && self.rotate_target.is_complete()
     }
 
     /// Whether either **extra** rotation slot carries an angle (#652) — the case move
@@ -1739,6 +1769,15 @@ pub struct MoveOperation {
     /// All three turn about the same [`rotation_pivot`](MoveOperation::rotation_pivot).
     #[serde(default)]
     pub extra_rotations: [MoveRotationSlot; 2],
+    /// Snap Rotate's face+edge on the **moving** bodies and the face+edge on the stationary
+    /// geometry it lines up with (#653).
+    #[serde(default)]
+    pub rotate_source: MoveAlignRef,
+    #[serde(default)]
+    pub rotate_target: MoveAlignRef,
+    /// Which of the four orientations that alignment leaves open (#653), 0..=3.
+    #[serde(default)]
+    pub rotate_orientation: u8,
     /// Output body indices, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<usize>,

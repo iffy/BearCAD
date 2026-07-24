@@ -111,11 +111,17 @@ pub enum IconId {
     SketchComponents,
     /// A drawing's child components (#389): the drawing sheet with a tree of child elements.
     DrawingComponents,
+    /// The four Snap-Rotate orientations (#653): a stationary square always in the lower-right
+    /// quadrant, and the moving square in the named one.
+    AlignUpperLeft,
+    AlignUpperRight,
+    AlignLowerLeft,
+    AlignOverlap,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 77] = [
+    pub const ALL: [Self; 81] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -193,6 +199,10 @@ impl IconId {
         Self::SketchComponents,
         Self::DrawingComponents,
         Self::GraphForce,
+        Self::AlignUpperLeft,
+        Self::AlignUpperRight,
+        Self::AlignLowerLeft,
+        Self::AlignOverlap,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -276,6 +286,10 @@ impl IconId {
             Self::Image => include_str!("assets/icons/image.svg"),
             Self::SketchComponents => include_str!("assets/icons/sketch-components.svg"),
             Self::DrawingComponents => include_str!("assets/icons/drawing-components.svg"),
+            Self::AlignUpperLeft => include_str!("assets/icons/align_upper_left.svg"),
+            Self::AlignUpperRight => include_str!("assets/icons/align_upper_right.svg"),
+            Self::AlignLowerLeft => include_str!("assets/icons/align_lower_left.svg"),
+            Self::AlignOverlap => include_str!("assets/icons/align_overlap.svg"),
         }
     }
 
@@ -360,6 +374,10 @@ impl IconId {
             Self::Image => "Image",
             Self::SketchComponents => "Sketch components",
             Self::DrawingComponents => "Drawing components",
+            Self::AlignUpperLeft => "Align — upper left",
+            Self::AlignUpperRight => "Align — upper right",
+            Self::AlignLowerLeft => "Align — lower left",
+            Self::AlignOverlap => "Align — overlapping",
         }
     }
 }

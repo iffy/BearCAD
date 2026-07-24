@@ -683,6 +683,9 @@ fn parse_move_op_args(
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
     [crate::model::MoveRotationSlot; 2],
+    crate::model::MoveAlignRef,
+    crate::model::MoveAlignRef,
+    u8,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -715,6 +718,11 @@ fn parse_move_op_args(
         };
         slot.angle = expr(&format!("angle{n}"))?;
     }
+    // Snap Rotate's alignment (#653): each side names a face (a point on it plus its normal)
+    // and one adjacent edge, all in millimetres.
+    let rotate_source = parse_align_ref(opts.get::<Value>("align_from")?, "align_from")?;
+    let rotate_target = parse_align_ref(opts.get::<Value>("align_to")?, "align_to")?;
+    let rotate_orientation: u8 = opts.get::<Option<u8>>("orientation")?.unwrap_or(0).min(3);
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => None,
         value => Some(parse_revolve_axis(value, "move")?),
@@ -730,7 +738,49 @@ fn parse_move_op_args(
         target_point,
         rotation_point,
         extra_rotations,
+        rotate_source,
+        rotate_target,
+        rotate_orientation,
     ))
+}
+
+/// A [`crate::model::MoveAlignRef`] from `{ face = { at = {x,y,z}, normal = {x,y,z} },
+/// edge = { {x,y,z}, {x,y,z} } }` (#653) — millimetres, re-quantized to the selection grid.
+fn parse_align_ref(value: Value, what: &str) -> mlua::Result<crate::model::MoveAlignRef> {
+    let Value::Table(t) = value else {
+        return match value {
+            Value::Nil => Ok(Default::default()),
+            _ => Err(mlua::Error::external(format!("move `{what}` must be a table"))),
+        };
+    };
+    let mm = |v: &[f32]| -> mlua::Result<[i32; 3]> {
+        if v.len() != 3 {
+            return Err(mlua::Error::external(format!(
+                "move `{what}` points must be {{x, y, z}} in mm"
+            )));
+        }
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+            v[0], v[1], v[2],
+        )))
+    };
+    let face = match t.get::<Option<Table>>("face")? {
+        Some(f) => {
+            let at: Vec<f32> = f.get("at")?;
+            let normal: Vec<f32> = f.get("normal")?;
+            Some((mm(&at)?, mm(&normal)?))
+        }
+        None => None,
+    };
+    let edge = match t.get::<Option<Vec<Vec<f32>>>>("edge")? {
+        Some(ends) if ends.len() == 2 => Some((mm(&ends[0])?, mm(&ends[1])?)),
+        Some(_) => {
+            return Err(mlua::Error::external(format!(
+                "move `{what}.edge` must be two {{x, y, z}} points"
+            )))
+        }
+        None => None,
+    };
+    Ok(crate::model::MoveAlignRef { face, edge })
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3519,11 +3569,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 target_point,
                 rotation_point,
                 extra_rotations,
+                rotate_source,
+                rotate_target,
+                rotate_orientation,
             ) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
                     targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
-                    extra_rotations,
+                    extra_rotations, rotate_source, rotate_target, rotate_orientation,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3550,11 +3603,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 target_point,
                 rotation_point,
                 extra_rotations,
+                rotate_source,
+                rotate_target,
+                rotate_orientation,
             ) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
                     op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
-                    extra_rotations,
+                    extra_rotations, rotate_source, rotate_target, rotate_orientation,
                 })?;
             }
             Ok(())
@@ -6275,6 +6331,39 @@ mod tests {
             free.doc.move_ops[0].translate_mode,
             crate::model::MoveTranslateMode::Free
         );
+    }
+
+    /// #653: naming both sides of a face+edge alignment makes the rotation a **snap** — the
+    /// moving face+edge turns onto the target's, with no translation of its own.
+    #[test]
+    fn lua_move_snap_rotate_aligns_a_face_and_edge() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            -- Turn the box's top face (+Z, edge along +X) to face +X with its edge along +Y.
+            bearcad.move_bodies{
+                bodies = {0},
+                align_from = { face = { at = {0, 0, 5}, normal = {0, 0, 1} },
+                               edge = { {0, 0, 5}, {10, 0, 5} } },
+                align_to   = { face = { at = {0, 0, 0}, normal = {1, 0, 0} },
+                               edge = { {0, 0, 0}, {0, 10, 0} } },
+                pivot = { body = 0, vertex = {0, 0, 0} },
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops[0];
+        assert_eq!(op.rotate_mode, crate::model::MoveRotateMode::Snap);
+        assert!(op.has_snap_rotation());
+        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
+        // The source normal (+Z) lands on the target normal (+X); the edge (+X) on +Y.
+        let normal = m.transform_vector3(glam::Vec3::Z);
+        let edge = m.transform_vector3(glam::Vec3::X);
+        assert!((normal - glam::Vec3::X).length() < 1e-4, "normal → +X, got {normal:?}");
+        assert!((edge - glam::Vec3::Y).length() < 1e-4, "edge → +Y, got {edge:?}");
+        // Rotation only: the pivot corner doesn't move.
+        let held = m.transform_point3(glam::Vec3::ZERO);
+        assert!(held.length() < 1e-4, "no translation, got {held:?}");
     }
 
     /// #652: Free Rotate turns about three axes in one move — each with its own angle, all

@@ -381,12 +381,12 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         }
         "move_bodies" => {
             let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)? })
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)?, rotate_source: json_align_ref(o.get("align_from"), "align_from")?, rotate_target: json_align_ref(o.get("align_to"), "align_to")?, rotate_orientation: o.get("orientation").and_then(Value::as_u64).unwrap_or(0).min(3) as u8 })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)? })
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)?, rotate_source: json_align_ref(o.get("align_from"), "align_from")?, rotate_target: json_align_ref(o.get("align_to"), "align_to")?, rotate_orientation: o.get("orientation").and_then(Value::as_u64).unwrap_or(0).min(3) as u8 })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -1084,6 +1084,62 @@ fn move_op_args(
         move_point_from_json(o.get("from"), "from")?,
         move_point_from_json(o.get("to"), "to")?,
     ))
+}
+
+/// A [`crate::model::MoveAlignRef`] from `{ "face": { "at": [x,y,z], "normal": [x,y,z] },
+/// "edge": [[x,y,z], [x,y,z]] }` (#653) — millimetres, re-quantized.
+fn json_align_ref(
+    v: Option<&Value>,
+    what: &str,
+) -> Result<crate::model::MoveAlignRef, String> {
+    let Some(t) = v.filter(|v| !v.is_null()) else {
+        return Ok(Default::default());
+    };
+    let t = t
+        .as_object()
+        .ok_or_else(|| format!("move `{what}` must be an object"))?;
+    let point = |v: &Value| -> Result<[i32; 3], String> {
+        let a = v
+            .as_array()
+            .filter(|a| a.len() == 3)
+            .ok_or_else(|| format!("move `{what}` points must be [x, y, z] in mm"))?;
+        let n = |i: usize| -> Result<f32, String> {
+            a[i].as_f64()
+                .map(|f| f as f32)
+                .ok_or_else(|| format!("move `{what}` points must be numbers"))
+        };
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+            n(0)?,
+            n(1)?,
+            n(2)?,
+        )))
+    };
+    let face = match t.get("face").filter(|v| !v.is_null()) {
+        Some(f) => {
+            let f = f
+                .as_object()
+                .ok_or_else(|| format!("move `{what}.face` must be an object"))?;
+            let at = f
+                .get("at")
+                .ok_or_else(|| format!("move `{what}.face` needs an `at`"))?;
+            let normal = f
+                .get("normal")
+                .ok_or_else(|| format!("move `{what}.face` needs a `normal`"))?;
+            Some((point(at)?, point(normal)?))
+        }
+        None => None,
+    };
+    let edge = match t.get("edge").filter(|v| !v.is_null()) {
+        Some(e) => {
+            let ends = e
+                .as_array()
+                .filter(|a| a.len() == 2)
+                .ok_or_else(|| format!("move `{what}.edge` must be two [x, y, z] points"))?;
+            Some((point(&ends[0])?, point(&ends[1])?))
+        }
+        None => None,
+    };
+    Ok(crate::model::MoveAlignRef { face, edge })
 }
 
 /// Free Rotate's two extra axis+angle slots from `axis2`/`angle2` and `axis3`/`angle3` (#652).
@@ -2064,6 +2120,9 @@ mod tests {
                 target_point: None,
                 rotation_point: None,
                 extra_rotations: Default::default(),
+                rotate_source: Default::default(),
+                rotate_target: Default::default(),
+                rotate_orientation: 0,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -2080,6 +2139,9 @@ mod tests {
                 target_point: None,
                 rotation_point: None,
                 extra_rotations: Default::default(),
+                rotate_source: Default::default(),
+                rotate_target: Default::default(),
+                rotate_orientation: 0,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),

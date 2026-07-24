@@ -670,8 +670,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   axis, a sketch line, or a body edge (the same set the Repeat axis picker takes) with its own
   angle expression beneath it. Selecting Free seeds the three with the X, Y and Z origin axes.
   All three turn about the same pivot and compose **in slot order** — axis 1 acts on the body
-  first. A move carrying an extra rotation is excluded from coalescing (two of them don't fold
-  into one axis+angle).
+  first. **Snap Rotate (#653)** replaces those slots with an alignment: a **Rotation source**
+  picker takes one face and one of its adjacent edges on a moving body, a **Rotation target**
+  picker takes the same on stationary geometry (a body face, a sketch, or a construction
+  plane), and the bodies turn so source face ∥ target face and source edge ∥ target edge
+  (`model::MoveAlignRef`, `extrude::move_align_rotation`). "Parallel" leaves **four**
+  orientations open — the target frame's edge and/or normal flipped — chosen with four icon
+  buttons (`IconId::AlignUpperLeft`/`AlignUpperRight`/`AlignLowerLeft`/`AlignOverlap`: a
+  stationary blue square always in the lower-right quadrant and the moving amber one in the
+  named quadrant). It is a **pure rotation about the rotation point** — translation stays the
+  separate Snap/Free *translate* concern. Only the two directions are kept, so the same
+  reference works whatever the face was picked on. A move carrying an extra rotation or an
+  alignment is excluded from coalescing (neither folds into one axis+angle).
 
   A Snap move with either point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
@@ -697,7 +707,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
   on the body's mesh); `pivot` takes the same table and sets the rotation point, and
-  `axis2`/`angle2`, `axis3`/`angle3` are Free Rotate's other two turns. **Moving construction planes (#217):** a Move op can also
+  `axis2`/`angle2`, `axis3`/`angle3` are Free Rotate's other two turns, and `align_from` /
+  `align_to` / `orientation` spell a Snap Rotate alignment
+  (`{ face = { at = {x,y,z}, normal = {x,y,z} }, edge = {{x,y,z}, {x,y,z}} }`). **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane

@@ -927,6 +927,10 @@ pub struct CreatingMove {
     pub rotation_point: Option<crate::model::MovePointRef>,
     /// Free Rotate's two extra axis+angle slots (#652); `axis`/`angle` are the first.
     pub extra_rotations: [crate::model::MoveRotationSlot; 2],
+    /// Snap Rotate's source/target face+edge and the chosen orientation (#653).
+    pub rotate_source: crate::model::MoveAlignRef,
+    pub rotate_target: crate::model::MoveAlignRef,
+    pub rotate_orientation: u8,
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
@@ -1843,6 +1847,10 @@ pub enum Action {
         rotation_point: Option<crate::model::MovePointRef>,
         /// Free Rotate's two extra axis+angle slots (#652).
         extra_rotations: [crate::model::MoveRotationSlot; 2],
+        /// Snap Rotate's source/target face+edge and the chosen orientation (#653).
+        rotate_source: crate::model::MoveAlignRef,
+        rotate_target: crate::model::MoveAlignRef,
+        rotate_orientation: u8,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -1865,6 +1873,10 @@ pub enum Action {
         rotation_point: Option<crate::model::MovePointRef>,
         /// Free Rotate's two extra axis+angle slots (#652).
         extra_rotations: [crate::model::MoveRotationSlot; 2],
+        /// Snap Rotate's source/target face+edge and the chosen orientation (#653).
+        rotate_source: crate::model::MoveAlignRef,
+        rotate_target: crate::model::MoveAlignRef,
+        rotate_orientation: u8,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -9679,6 +9691,9 @@ label_hidden: false,
                         rotate_mode: cm.rotate_mode,
                         rotation_point: cm.rotation_point,
                         extra_rotations: cm.extra_rotations.clone(),
+                        rotate_source: cm.rotate_source,
+                        rotate_target: cm.rotate_target,
+                        rotate_orientation: cm.rotate_orientation,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
@@ -9697,6 +9712,9 @@ label_hidden: false,
                         {
                             Some((op, (tx, ty, tz, axis, angle))) => {
                                 self.apply(Action::EditMoveOperation {
+                                    rotate_source: Default::default(),
+                                    rotate_target: Default::default(),
+                                    rotate_orientation: 0,
                                     op,
                                     // Coalescing only ever folds free translations (see
                                     // `coalescible_move_op`), so the folded op is free too.
@@ -9723,6 +9741,9 @@ label_hidden: false,
                                 rotate_mode: cm.rotate_mode,
                                 rotation_point: cm.rotation_point,
                                 extra_rotations: cm.extra_rotations.clone(),
+                                rotate_source: cm.rotate_source,
+                                rotate_target: cm.rotate_target,
+                                rotate_orientation: cm.rotate_orientation,
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
                                 image_targets: cm.image_targets.clone(),
@@ -9742,7 +9763,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, source_point, target_point, rotate_mode, rotation_point, extra_rotations, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
+            Action::CreateMoveOperation { translate_mode, source_point, target_point, rotate_mode, rotation_point, extra_rotations, rotate_source, rotate_target, rotate_orientation, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
                 if targets.is_empty() && plane_targets.is_empty() && image_targets.is_empty() {
                     let e = "Pick at least one body, plane, or image to move".to_string();
                     self.status = e.clone();
@@ -9763,6 +9784,9 @@ label_hidden: false,
                     rotate_mode,
                     rotation_point,
                     extra_rotations,
+                    rotate_source,
+                    rotate_target,
+                    rotate_orientation,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
                     tx,
@@ -9810,7 +9834,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, source_point, target_point, rotate_mode, rotation_point, extra_rotations, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
+            Action::EditMoveOperation { op, translate_mode, source_point, target_point, rotate_mode, rotation_point, extra_rotations, rotate_source, rotate_target, rotate_orientation, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -9837,6 +9861,9 @@ label_hidden: false,
                     entry.rotate_mode = rotate_mode;
                     entry.rotation_point = rotation_point;
                     entry.extra_rotations = extra_rotations;
+                    entry.rotate_source = rotate_source;
+                    entry.rotate_target = rotate_target;
+                    entry.rotate_orientation = rotate_orientation;
                     entry.plane_targets = plane_targets.clone();
                     entry.image_targets = image_targets.clone();
                     entry.tx = tx;
@@ -11685,9 +11712,17 @@ fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
     if cm.extra_rotations.iter().any(|r| !r.angle.trim().is_empty()) {
         return None;
     }
+    // A face/edge alignment (#653) isn't an angle either.
+    if cm.rotate_source.is_complete() && cm.rotate_target.is_complete() {
+        return None;
+    }
     doc.move_ops.iter().position(|op| {
         // Extra Free-Rotate slots (#652) can't be folded into one axis+angle either.
-        if op.deleted || op.has_snap_translation() || op.has_extra_rotation() {
+        if op.deleted
+            || op.has_snap_translation()
+            || op.has_extra_rotation()
+            || op.has_snap_rotation()
+        {
             return false;
         }
         // Coalesce only a pure re-move of the exact same single kind of element set, so the
@@ -14073,6 +14108,9 @@ mod tests {
         let mut state = AppState::default();
         let base = state.doc.construction_planes[0].origin;
         let result = state.apply(Action::CreateMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -14099,6 +14137,9 @@ mod tests {
         // Editing the op back to zero returns the plane home.
         let op = state.doc.move_ops.len() - 1;
         state.apply(Action::EditMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -14126,6 +14167,9 @@ mod tests {
         let base = state.doc.construction_planes[0].origin.z;
         let move_plane = |state: &mut AppState, tz: &str| {
             state.creating_move = Some(CreatingMove {
+            rotate_source: Default::default(),
+            rotate_target: Default::default(),
+            rotate_orientation: 0,
                                                                 extra_rotations: Default::default(),
                                 rotate_mode: Default::default(),
                 rotation_point: None,
@@ -14177,6 +14221,9 @@ mod tests {
         // Plane 0 is the XY ground (u = X, v = Y), so a +25 world-X move lands +25 in the
         // image's plane-local x, and a world-Z move (out of plane) doesn't touch the origin.
         let result = state.apply(Action::CreateMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -14204,6 +14251,9 @@ mod tests {
         let op = state.doc.move_ops.len() - 1;
         // Editing the op back to zero returns the image home (still targeted, base kept).
         state.apply(Action::EditMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -14224,6 +14274,9 @@ mod tests {
 
         // Dropping the image from the op restores its authored base and forgets it.
         state.apply(Action::EditMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -14263,6 +14316,9 @@ mod tests {
         });
         let move_image = |state: &mut AppState, tx: &str| {
             state.creating_move = Some(CreatingMove {
+            rotate_source: Default::default(),
+            rotate_target: Default::default(),
+            rotate_orientation: 0,
                                                                 extra_rotations: Default::default(),
                                 rotate_mode: Default::default(),
                 rotation_point: None,
@@ -14429,6 +14485,9 @@ mod tests {
         use std::f32::consts::PI;
         let mut state = AppState::default();
         state.creating_move = Some(CreatingMove {
+            rotate_source: Default::default(),
+            rotate_target: Default::default(),
+            rotate_orientation: 0,
                                                 extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
@@ -16756,6 +16815,9 @@ mod tests {
     fn move_commit_creates_outputs_and_shadows_inputs() {
         let mut state = two_box_state(false);
         let result = state.apply(Action::CreateMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -16800,6 +16862,9 @@ mod tests {
     fn move_edit_repoints_and_resizes_outputs() {
         let mut state = two_box_state(false);
         state.apply(Action::CreateMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -16817,6 +16882,9 @@ mod tests {
         });
         assert_eq!(state.doc.move_ops[0].outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -16847,6 +16915,9 @@ mod tests {
             expression: "30".to_string(),
         });
         let result = state.apply(Action::CreateMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
@@ -17813,6 +17884,9 @@ mod tests {
         assert!((state.doc.construction_planes[inst_idx].origin.x - 10.0).abs() < 1e-3);
         // Move the source plane +5 along X; the instance should sit at 5 + 10 = 15.
         let result = state.apply(Action::CreateMoveOperation {
+                        rotate_source: Default::default(),
+                        rotate_target: Default::default(),
+                        rotate_orientation: 0,
                         extra_rotations: Default::default(),
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,

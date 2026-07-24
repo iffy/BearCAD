@@ -20,11 +20,18 @@ Move translates and/or rotates whole bodies, producing moved copies.
      second. Either point can be a corner or the midpoint of an edge.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
-3. To rotate, choose **Rotate → Free** and fill in up to three **Axis** pickers, each with its
-   own **Angle** below it (degrees by default; `rad` and parameters work). They start on the
-   X, Y and Z origin axes, and any of them can be re-pointed at a sketch line or a body edge.
-   The turns apply in order, axis 1 first. The **Rotation point** picker sets what they turn
-   about — a corner or edge midpoint on any body; left alone it follows the source point.
+3. Choose how to **Rotate**:
+   - **Snap** (the default) — pick a **face and one of its edges** on a moving body, then the
+     same on something that isn't moving, and the bodies turn until the two faces are parallel
+     and the two edges are parallel. That still leaves four ways round, so pick one of the four
+     **Orientation** buttons. It only ever rotates; the position comes from the translation.
+   - **Free** — fill in up to three **Axis** pickers, each with its own **Angle** below it
+     (degrees by default; `rad` and parameters work). They start on the X, Y and Z origin
+     axes, and any can be re-pointed at a sketch line or a body edge. The turns apply in
+     order, axis 1 first.
+
+   Either way the **Rotation point** picker sets what it turns about — a corner or edge
+   midpoint on any body; left alone it follows the source point.
 4. Press **Enter**.
 
 Once a source point is picked the moving bodies go translucent, so you can see the gizmos and
@@ -55,6 +62,13 @@ bearcad.move_bodies{ bodies = {0}, axis = "z", angle = 90,
 
 -- Up to three turns in one move, applied in order.
 bearcad.move_bodies{ bodies = {0}, axis = "x", angle = 90, axis2 = "y", angle2 = 90 }
+
+-- Snap rotate: line a face + edge up with another face + edge. `orientation` is 0-3.
+bearcad.move_bodies{ bodies = {0},
+  align_from = { face = { at = {0, 0, 5}, normal = {0, 0, 1} },
+                 edge = { {0, 0, 5}, {10, 0, 5} } },
+  align_to   = { face = { at = {0, 0, 0}, normal = {1, 0, 0} },
+                 edge = { {0, 0, 0}, {0, 10, 0} } } }
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or

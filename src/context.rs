@@ -260,6 +260,13 @@ pub struct MoveControl {
     pub rotation_slots: [(Vec<String>, String); 3],
     /// Which rotation-axis picker is armed, if any (#652).
     pub rotation_axis_focused: Option<usize>,
+    /// Snap Rotate's source and target face+edge rows (#653), and which of the two pickers is
+    /// armed. Each shows up to two rows: the picked face, then the picked adjacent edge.
+    pub rotate_source_rows: Vec<String>,
+    pub rotate_target_rows: Vec<String>,
+    pub rotate_align_focused: Option<bool>,
+    /// Which of the four orientations the alignment is set to (#653), 0..=3.
+    pub rotate_orientation: u8,
     /// The snap translation the two points work out to, formatted (#650) — shown instead of
     /// the X/Y/Z fields while snapping.
     pub snap_offset: Option<String>,
@@ -267,7 +274,6 @@ pub struct MoveControl {
     pub ty: String,
     pub tz: String,
     pub axis_label: Option<String>,
-    pub angle: String,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -278,7 +284,6 @@ pub enum MoveEdit {
     Tx(String),
     Ty(String),
     Tz(String),
-    Angle(String),
     Axis(Option<crate::model::RevolveAxis>),
     /// Translate dropdown (#648).
     TranslateMode(crate::model::MoveTranslateMode),
@@ -294,6 +299,11 @@ pub enum MoveEdit {
     RotationAxisFocus(usize),
     ClearRotationAxis(usize),
     RotationAngle(usize, String),
+    /// Snap Rotate edits (#653): arm/clear the source (`true`) or target (`false`) face+edge
+    /// picker, or choose one of the four orientations.
+    RotateAlignFocus(bool),
+    ClearRotateAlign(bool),
+    RotateOrientation(u8),
     /// Arm / clear the rotation-point picker (#651).
     RotationPointFocus,
     ClearRotationPoint,
@@ -3236,18 +3246,60 @@ pub fn show_pane(
                     });
                 }
             } else {
-                labeled_row(ui, "Angle", |ui| {
-                    let mut text = control.angle.clone();
-                    let resp = crate::expression_input::ValueInput::new(
-                        ("move_field", "Angle"),
-                        ValueKind::Angle,
-                    )
-                    .width(90.0)
-                    .show(ui, &mut text, doc);
-                    if resp.changed() {
-                        pending = Some(MoveEdit::Angle(text));
+                // Snap Rotate (#653): a face + adjacent edge on the moving bodies, the same on
+                // stationary geometry, and which of the four orientations that leaves open.
+                for (is_source, label, rows) in [
+                    (true, "Rotation source", &control.rotate_source_rows),
+                    (false, "Rotation target", &control.rotate_target_rows),
+                ] {
+                    labeled_row_top(ui, label, |ui| {
+                        if let Some(event) = crate::element_picker::show_labeled(
+                            ui,
+                            ("move_rotate_align", is_source),
+                            control.rotate_align_focused == Some(is_source),
+                            false,
+                            crate::icons::IconId::Face,
+                            rows,
+                        ) {
+                            pending = Some(match event {
+                                crate::element_picker::PickerEvent::Focus => {
+                                    MoveEdit::RotateAlignFocus(is_source)
+                                }
+                                crate::element_picker::PickerEvent::Remove(_)
+                                | crate::element_picker::PickerEvent::Clear => {
+                                    MoveEdit::ClearRotateAlign(is_source)
+                                }
+                            });
+                        }
+                    });
+                }
+                labeled_row(ui, "Orientation", |ui| {
+                    for (value, icon, tooltip) in [
+                        (0u8, crate::icons::IconId::AlignUpperLeft, "Orientation 1"),
+                        (1, crate::icons::IconId::AlignUpperRight, "Orientation 2"),
+                        (2, crate::icons::IconId::AlignLowerLeft, "Orientation 3"),
+                        (3, crate::icons::IconId::AlignOverlap, "Orientation 4"),
+                    ] {
+                        if crate::icons::selectable_icon_button(
+                            ui,
+                            icon,
+                            control.rotate_orientation == value,
+                            tooltip,
+                        )
+                        .clicked()
+                            && control.rotate_orientation != value
+                        {
+                            pending = Some(MoveEdit::RotateOrientation(value));
+                        }
                     }
                 });
+                ui.label(
+                    egui::RichText::new(
+                        "Pick a face and one of its edges on a moving body, then the same on                          something that isn't moving — it rotates only, never translates",
+                    )
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+                );
             }
         }
         ui.horizontal(|ui| {
@@ -5512,6 +5564,10 @@ mod tests {
                 rotation_point_focused: false,
                 rotation_slots: Default::default(),
                 rotation_axis_focused: None,
+                rotate_source_rows: Vec::new(),
+                rotate_target_rows: Vec::new(),
+                rotate_align_focused: None,
+                rotate_orientation: 0,
                 source_point_rows: Vec::new(),
                 source_point_focused: false,
                 target_point_rows: Vec::new(),
@@ -5522,7 +5578,6 @@ mod tests {
                 ty: String::new(),
                 tz: String::new(),
                 axis_label: None,
-                angle: String::new(),
                 editing: false,
                 can_commit: true,
             }),

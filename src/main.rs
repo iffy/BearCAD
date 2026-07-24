@@ -423,6 +423,19 @@ struct AngleGizmoDrag {
     constraint_id: DimLabelTarget,
 }
 
+/// The rows a Snap Rotate face+edge picker shows (#653): the picked face, then the picked
+/// adjacent edge, each only once it's been taken.
+fn align_ref_rows(align: &model::MoveAlignRef) -> Vec<String> {
+    let mut rows = Vec::new();
+    if align.face.is_some() {
+        rows.push("Face".to_string());
+    }
+    if align.edge.is_some() {
+        rows.push("Adjacent edge".to_string());
+    }
+    rows
+}
+
 /// Which of the Move tool's two point pickers a viewport click is arming (#649/#650).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MovePointSlot {
@@ -1651,6 +1664,10 @@ struct App {
     /// Armed by focusing one of Free Rotate's three axis pickers (#652): the next viewport
     /// click on a line, body edge, or origin axis sets that slot's axis.
     move_rotation_axis_pick: Option<usize>,
+    /// Armed by focusing one of Snap Rotate's face+edge pickers (#653): `Some(true)` for the
+    /// source (on a moving body), `Some(false)` for the target. Each click takes a face or an
+    /// edge, filling whichever half is still empty.
+    move_align_pick: Option<bool>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -2459,6 +2476,7 @@ impl App {
             repeat_target_pick: false,
             move_point_pick: None,
             move_rotation_axis_pick: None,
+            move_align_pick: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -5876,6 +5894,74 @@ impl App {
         else {
             return;
         };
+        // Snap Rotate face/edge pick (#653), armed by focusing one of its two pickers: a body
+        // edge fills the picker's edge half, anything else resolves to a face and fills the
+        // face half. The source must sit on a moving body, the target on stationary geometry.
+        if let Some(is_source) = self.move_align_pick {
+            let moving_bodies: Vec<usize> = self
+                .state
+                .creating_move
+                .as_ref()
+                .map(|cm| cm.targets.clone())
+                .unwrap_or_default();
+            let on_right_side =
+                |body: usize| moving_bodies.contains(&body) == is_source;
+            let mut took = None;
+            if let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind {
+                if on_right_side(body) {
+                    took = Some(("edge", (hierarchy::quantize_body_point(a), hierarchy::quantize_body_point(b)), true));
+                }
+            }
+            if took.is_none() {
+                if let Some((point, normal, ok)) = self
+                    .align_face_under_cursor(pp, project, cam)
+                    .map(|(p, n, body)| (p, n, body.is_none_or(on_right_side)))
+                {
+                    if ok {
+                        took = Some((
+                            "face",
+                            (
+                                hierarchy::quantize_body_point(point),
+                                hierarchy::quantize_body_point(normal),
+                            ),
+                            false,
+                        ));
+                    }
+                }
+            }
+            match took {
+                Some((what, pair, is_edge)) => {
+                    if let Some(cm) = self.state.creating_move.as_mut() {
+                        let slot = if is_source {
+                            &mut cm.rotate_source
+                        } else {
+                            &mut cm.rotate_target
+                        };
+                        if is_edge {
+                            slot.edge = Some(pair);
+                        } else {
+                            slot.face = Some(pair);
+                        }
+                        // Both halves picked: the picker's work is done.
+                        if slot.is_complete() {
+                            self.move_align_pick = None;
+                        }
+                    }
+                    self.state.status = format!(
+                        "Move: rotation {} {what}",
+                        if is_source { "source" } else { "target" }
+                    );
+                }
+                None => {
+                    self.state.status = if is_source {
+                        "Pick a face or edge on a body being moved".to_string()
+                    } else {
+                        "Pick a face or edge on something that isn't moving".to_string()
+                    };
+                }
+            }
+            return;
+        }
         // Free Rotate axis-pick mode (#652), armed by focusing one of the three axis pickers:
         // this click sets that slot from any straight reference — a sketch line, a body edge,
         // or an origin axis (the same set the Repeat tool's axis picker takes).
@@ -5959,6 +6045,9 @@ impl App {
                         rotate_mode: existing.rotate_mode,
                         rotation_point: existing.rotation_point,
                         extra_rotations: existing.extra_rotations.clone(),
+                        rotate_source: existing.rotate_source,
+                        rotate_target: existing.rotate_target,
+                        rotate_orientation: existing.rotate_orientation,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         tx: existing.tx,
@@ -6564,6 +6653,27 @@ impl App {
             cr.targets.push(bi);
         }
         self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+    }
+
+    /// The planar face under the cursor for a Snap Rotate alignment (#653), as
+    /// `(a point on it, its normal, the body it belongs to)`. A body face reports its body so
+    /// the caller can check which side of the move it's on; a construction plane or sketch face
+    /// reports `None` (it's stationary either way).
+    fn align_face_under_cursor(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        cam: &camera::Camera,
+    ) -> Option<(Vec3, Vec3, Option<usize>)> {
+        if let Some(construction::PickTargetKind::BodyFace { body, triangles, normal }) =
+            crate::face::pick_body_face(pp, project, &self.state.doc, cam.eye())
+        {
+            let point = triangles.first().map(|t| t[0])?;
+            return Some((point, normal, Some(body)));
+        }
+        let face = crate::face::pick_sketch_face(pp, project, &self.state.doc, cam.eye())?;
+        let (point, normal) = extrude::body_face_plane(&self.state.doc, &face)?;
+        Some((point, normal, None))
     }
 
     /// How a picked Move point reads in its element picker (#649/#650): the body's name plus
@@ -8758,6 +8868,14 @@ impl eframe::App for App {
                             [(label(a0), g0), (label(a1), g1), (label(a2), g2)]
                         },
                         rotation_axis_focused: self.move_rotation_axis_pick,
+                        rotate_source_rows: cm
+                            .map(|c| align_ref_rows(&c.rotate_source))
+                            .unwrap_or_default(),
+                        rotate_target_rows: cm
+                            .map(|c| align_ref_rows(&c.rotate_target))
+                            .unwrap_or_default(),
+                        rotate_align_focused: self.move_align_pick,
+                        rotate_orientation: cm.map(|c| c.rotate_orientation).unwrap_or(0),
                         snap_offset: cm.and_then(|c| {
                             let (from, to) = (c.source_point?, c.target_point?);
                             let a = extrude::move_point_world(&self.state.doc, &from)?;
@@ -8773,7 +8891,6 @@ impl eframe::App for App {
                         axis_label: cm
                             .and_then(|c| c.axis)
                             .map(|a| names::revolve_axis_label(&self.state.doc, a)),
-                        angle: cm.map(|c| c.angle.clone()).unwrap_or_default(),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cm
                             .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
@@ -9617,7 +9734,14 @@ impl eframe::App for App {
                     context::MoveEdit::RotationAxisFocus(slot) => {
                         self.move_rotation_axis_pick = Some(slot);
                         self.move_point_pick = None;
+                        self.move_align_pick = None;
                     }
+                    context::MoveEdit::RotateAlignFocus(is_source) => {
+                        self.move_align_pick = Some(is_source);
+                        self.move_point_pick = None;
+                        self.move_rotation_axis_pick = None;
+                    }
+                    context::MoveEdit::ClearRotateAlign(_) => self.move_align_pick = None,
                     context::MoveEdit::ClearRotationAxis(_) => {
                         self.move_rotation_axis_pick = None
                     }
@@ -9627,6 +9751,7 @@ impl eframe::App for App {
                     context::MoveEdit::Commit => {
                         self.move_point_pick = None;
                         self.move_rotation_axis_pick = None;
+                        self.move_align_pick = None;
                     }
                     _ => {}
                 }
@@ -9643,7 +9768,6 @@ impl eframe::App for App {
                             context::MoveEdit::Tx(v) => cm.tx = v,
                             context::MoveEdit::Ty(v) => cm.ty = v,
                             context::MoveEdit::Tz(v) => cm.tz = v,
-                            context::MoveEdit::Angle(v) => cm.angle = v,
                             context::MoveEdit::Axis(a) => cm.axis = a,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearSourcePoint => cm.source_point = None,
@@ -9670,7 +9794,18 @@ impl eframe::App for App {
                                 0 => cm.axis = None,
                                 s => cm.extra_rotations[s - 1].axis = None,
                             },
-                            context::MoveEdit::RotationAxisFocus(_) => {}
+                            context::MoveEdit::RotationAxisFocus(_)
+                            | context::MoveEdit::RotateAlignFocus(_) => {}
+                            context::MoveEdit::ClearRotateAlign(is_source) => {
+                                if is_source {
+                                    cm.rotate_source = Default::default();
+                                } else {
+                                    cm.rotate_target = Default::default();
+                                }
+                            }
+                            context::MoveEdit::RotateOrientation(o) => {
+                                cm.rotate_orientation = o
+                            }
                             context::MoveEdit::ClearRotationPoint => cm.rotation_point = None,
                             context::MoveEdit::SourcePointFocus
                             | context::MoveEdit::TargetPointFocus
