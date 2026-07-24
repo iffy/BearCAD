@@ -1602,51 +1602,6 @@ pub enum MoveTranslateMode {
     Free,
 }
 
-/// How a [`MoveOperation`]'s rotation is specified (#651), the Move pane's Rotate dropdown.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MoveRotateMode {
-    /// Line a face+edge on the moving bodies up with a face+edge on stationary geometry
-    /// (#653). The default.
-    #[default]
-    Snap,
-    /// Turn about explicit axes by explicit angles (#652).
-    Free,
-}
-
-/// One side of a Snap Rotate alignment (#653): a **face** and one of its **adjacent edges**,
-/// captured as world geometry — a point on the face plus its normal, and the edge's endpoints,
-/// all quantized to the 0.01 mm selection grid. Only the two *directions* matter to the
-/// rotation, so this works the same whether it was picked on a body face, a sketch, or a
-/// construction plane.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MoveAlignRef {
-    /// `(point on the face, face normal)`; `None` until a face is picked.
-    #[serde(default)]
-    pub face: Option<([i32; 3], [i32; 3])>,
-    /// The adjacent edge's two endpoints; `None` until an edge is picked.
-    #[serde(default)]
-    pub edge: Option<([i32; 3], [i32; 3])>,
-}
-
-impl MoveAlignRef {
-    /// Whether both halves are picked — only then can the alignment produce a rotation.
-    pub fn is_complete(&self) -> bool {
-        self.face.is_some() && self.edge.is_some()
-    }
-}
-
-/// One of Free Rotate's extra turn slots (#652): an axis — an origin axis or any picked
-/// edge/line — and how far to turn about it. Slot 0 of the three is the op's own `axis`/
-/// `angle`; these are the other two.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct MoveRotationSlot {
-    #[serde(default)]
-    pub axis: Option<RevolveAxis>,
-    #[serde(default)]
-    pub angle: String,
-}
-
 /// A point on a body's mesh that a Move snaps from or onto (#649/#650): either a corner or
 /// the midpoint of a feature edge. Keyed exactly like [`crate::hierarchy::SceneElement::
 /// BodyVertex`]/`BodyEdge` — the body plus quantized world points — and resolved against the
@@ -1671,35 +1626,6 @@ impl MoveOperation {
     /// move that hasn't got both points yet — or one with no bodies at all, like a plane or
     /// image move — still reads its `tx`/`ty`/`tz` expressions, so the tool stays usable while
     /// the points are being picked and gizmo drags keep working.
-    /// The world point this move rotates about (#651): the explicit rotation point, else the
-    /// snap source point, else `None` (meaning "the axis's own origin").
-    pub fn rotation_pivot(&self) -> Option<&MovePointRef> {
-        self.rotation_point.as_ref().or(self.source_point.as_ref())
-    }
-
-    /// All three Free-Rotate slots in order (#652): the op's own axis/angle, then the extras.
-    pub fn rotations(&self) -> [(Option<RevolveAxis>, &str); 3] {
-        [
-            (self.axis, self.angle.as_str()),
-            (self.extra_rotations[0].axis, self.extra_rotations[0].angle.as_str()),
-            (self.extra_rotations[1].axis, self.extra_rotations[1].angle.as_str()),
-        ]
-    }
-
-    /// Whether this move's rotation comes from a Snap Rotate alignment (#653) rather than the
-    /// Free Rotate slots — both sides need a face *and* an edge before it can.
-    pub fn has_snap_rotation(&self) -> bool {
-        self.rotate_mode == MoveRotateMode::Snap
-            && self.rotate_source.is_complete()
-            && self.rotate_target.is_complete()
-    }
-
-    /// Whether either **extra** rotation slot carries an angle (#652) — the case move
-    /// coalescing can't fold into a single axis+angle.
-    pub fn has_extra_rotation(&self) -> bool {
-        self.extra_rotations.iter().any(|r| !r.angle.trim().is_empty())
-    }
-
     pub fn has_snap_translation(&self) -> bool {
         self.translate_mode == MoveTranslateMode::Snap
             && self.source_point.is_some()
@@ -1716,11 +1642,11 @@ impl MovePointRef {
     }
 }
 
-/// A move operation (Move tool, #176/#183): rigid translation and/or rotation applied to
-/// whole bodies. Inputs become **shadow** bodies; each input gets a moved output body
-/// (`BodySource::Moved`), and the operation itself is an editable pane element. The
-/// translation components and angle are expressions, so moves are parameter-driven like
-/// dimensions.
+/// A move operation (Move tool, #176/#183): a rigid **translation** applied to whole bodies.
+/// Inputs become **shadow** bodies; each input gets a moved output body (`BodySource::Moved`),
+/// and the operation itself is an editable pane element. The translation components are
+/// expressions, so moves are parameter-driven like dimensions. Rotation was pulled out for
+/// now (#663) — the tool translates only.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoveOperation {
     /// Input body indices, one output per entry (same order).
@@ -1751,33 +1677,6 @@ pub struct MoveOperation {
     pub ty: String,
     #[serde(default)]
     pub tz: String,
-    /// How the rotation is specified (#651).
-    #[serde(default)]
-    pub rotate_mode: MoveRotateMode,
-    /// The point rotated **about** (#651). `None` follows the [`source_point`], which is the
-    /// pane's default; either way, falling back to the axis's own origin when neither resolves.
-    /// It may sit on a moving body or a stationary one.
-    #[serde(default)]
-    pub rotation_point: Option<MovePointRef>,
-    /// Rotation axis; `None` = no rotation.
-    #[serde(default)]
-    pub axis: Option<RevolveAxis>,
-    /// Rotation angle (angle expression; empty = 0).
-    #[serde(default)]
-    pub angle: String,
-    /// Free Rotate's other two axis+angle slots (#652); `axis`/`angle` above are the first.
-    /// All three turn about the same [`rotation_pivot`](MoveOperation::rotation_pivot).
-    #[serde(default)]
-    pub extra_rotations: [MoveRotationSlot; 2],
-    /// Snap Rotate's face+edge on the **moving** bodies and the face+edge on the stationary
-    /// geometry it lines up with (#653).
-    #[serde(default)]
-    pub rotate_source: MoveAlignRef,
-    #[serde(default)]
-    pub rotate_target: MoveAlignRef,
-    /// Which of the four orientations that alignment leaves open (#653), 0..=3.
-    #[serde(default)]
-    pub rotate_orientation: u8,
     /// Output body indices, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<usize>,

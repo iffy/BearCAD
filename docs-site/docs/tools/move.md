@@ -7,9 +7,9 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/move.svg")} width="30" /> Move
 
-Move translates and/or rotates whole bodies, producing moved copies.
+Move slides whole bodies to a new place, producing moved copies.
 
-![A box moved and rotated into a second position](/img/screenshots/move.png)
+![A box moved into a second position](/img/screenshots/move.png)
 
 ## How to use it
 
@@ -20,19 +20,7 @@ Move translates and/or rotates whole bodies, producing moved copies.
      second. Either point can be a corner or the midpoint of an edge.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
-3. Choose how to **Rotate**:
-   - **Snap** (the default) — pick a **face and one of its edges** on a moving body, then the
-     same on something that isn't moving, and the bodies turn until the two faces are parallel
-     and the two edges are parallel. That still leaves four ways round, so pick one of the four
-     **Orientation** buttons. It only ever rotates; the position comes from the translation.
-   - **Free** — fill in up to three **Axis** pickers, each with its own **Angle** below it
-     (degrees by default; `rad` and parameters work). They start on the X, Y and Z origin
-     axes, and any can be re-pointed at a sketch line or a body edge. The turns apply in
-     order, axis 1 first.
-
-   Either way the **Rotation point** picker sets what it turns about — a corner or edge
-   midpoint on any body; left alone it follows the source point.
-4. Press **Enter**.
+3. Press **Enter**.
 
 The tool moves you along as you go: pick a body and it's ready for the source point, pick that
 and it's ready for the target, and so on. Click any picker to jump back to it.
@@ -59,20 +47,6 @@ bearcad.move_bodies{ bodies = {0},
 bearcad.move_bodies{ bodies = {0},
   from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
   to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } } }
-
--- Turn about a picked corner instead of the axis itself.
-bearcad.move_bodies{ bodies = {0}, axis = "z", angle = 90,
-                     pivot = { body = 0, vertex = {20, 0, 0} } }
-
--- Up to three turns in one move, applied in order.
-bearcad.move_bodies{ bodies = {0}, axis = "x", angle = 90, axis2 = "y", angle2 = 90 }
-
--- Snap rotate: line a face + edge up with another face + edge. `orientation` is 0-3.
-bearcad.move_bodies{ bodies = {0},
-  align_from = { face = { at = {0, 0, 5}, normal = {0, 0, 1} },
-                 edge = { {0, 0, 5}, {10, 0, 5} } },
-  align_to   = { face = { at = {0, 0, 0}, normal = {1, 0, 0} },
-                 edge = { {0, 0, 0}, {0, 10, 0} } } }
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or
@@ -90,7 +64,7 @@ refused (lengths never change).
 ## Moving construction planes and tracing images
 
 Pick a construction plane or tracing image from the Elements pane with the Move tool
-active, then set translation/rotation like a body.
+active, then set the translation like a body.
 
 - A **construction plane** moves in place, carrying everything anchored to it — sketches,
   images, extrusions grown from them.
@@ -107,6 +81,6 @@ about its start point.
 
 ```lua
 bearcad.move_bodies{ bodies = {0}, x = "25", name = "Shifted" }
-bearcad.move_bodies{ bodies = {0, 1}, x = "gap * 2", axis = "z", angle = "45" }
+bearcad.move_bodies{ bodies = {0, 1}, x = "gap * 2", z = "10mm" }
 bearcad.edit_move{ index = 0, bodies = {0}, x = "30" }
 ```

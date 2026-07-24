@@ -253,23 +253,6 @@ pub struct MoveControl {
     /// The picked target point's label, if any (#650), and whether its picker is armed.
     pub target_point_rows: Vec<String>,
     pub target_point_focused: bool,
-    /// Snap (default) or free rotation, and the picked rotation point (#651). Empty rows read
-    /// as "Source point", which is what a rotation with no explicit pivot turns about.
-    pub rotate_mode: crate::model::MoveRotateMode,
-    pub rotation_point_rows: Vec<String>,
-    pub rotation_point_focused: bool,
-    /// Free Rotate's three axis+angle slots (#652): the picked axis's label (empty until one
-    /// is set) and its angle expression, in slot order.
-    pub rotation_slots: [(Vec<String>, String); 3],
-    /// Which rotation-axis picker is armed, if any (#652).
-    pub rotation_axis_focused: Option<usize>,
-    /// Snap Rotate's source and target face+edge rows (#653), and which of the two pickers is
-    /// armed. Each shows up to two rows: the picked face, then the picked adjacent edge.
-    pub rotate_source_rows: Vec<String>,
-    pub rotate_target_rows: Vec<String>,
-    pub rotate_align_focused: Option<bool>,
-    /// Which of the four orientations the alignment is set to (#653), 0..=3.
-    pub rotate_orientation: u8,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -291,20 +274,6 @@ pub enum MoveEdit {
     /// Arm / clear the target-point picker (#650).
     TargetPointFocus,
     ClearTargetPoint,
-    /// Rotate dropdown (#651).
-    RotateMode(crate::model::MoveRotateMode),
-    /// Free Rotate slot edits (#652): arm/clear a slot's axis picker, or set its angle.
-    RotationAxisFocus(usize),
-    ClearRotationAxis(usize),
-    RotationAngle(usize, String),
-    /// Snap Rotate edits (#653): arm/clear the source (`true`) or target (`false`) face+edge
-    /// picker, or choose one of the four orientations.
-    RotateAlignFocus(bool),
-    ClearRotateAlign(bool),
-    RotateOrientation(u8),
-    /// Arm / clear the rotation-point picker (#651).
-    RotationPointFocus,
-    ClearRotationPoint,
     Commit,
 }
 
@@ -3130,8 +3099,6 @@ pub fn show_pane(
             );
         }
         drop(picker_row);
-        if control.translate_mode == crate::model::MoveTranslateMode::Snap {
-        }
         {
             let mut field = |ui: &mut egui::Ui,
                              label: &str,
@@ -3153,134 +3120,6 @@ pub fn show_pane(
                 field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
                 field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
                 field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
-            }
-        }
-        // Rotate mode (#651): lining a face+edge up with another (the default) or turning by
-        // explicit angles.
-        {
-            use crate::model::MoveRotateMode as R;
-            let mut mode = control.rotate_mode;
-            labeled_row(ui, "Rotate", |ui| {
-                egui::ComboBox::from_id_salt("move_rotate_mode")
-                    .selected_text(match mode {
-                        R::Snap => "Snap",
-                        R::Free => "Free",
-                    })
-                    .width(110.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut mode, R::Snap, "Snap");
-                        ui.selectable_value(&mut mode, R::Free, "Free");
-                    });
-            });
-            if mode != control.rotate_mode {
-                pending = Some(MoveEdit::RotateMode(mode));
-            }
-        }
-        // The point the rotation turns about (#651). Left empty it follows the source point,
-        // which the picker's empty state says outright.
-        labeled_row_top(ui, "Rotation point", |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                "move_rotation_point",
-                control.rotation_point_focused,
-                true,
-                crate::icons::IconId::Coincident,
-                &control.rotation_point_rows,
-            ) {
-                pending = Some(match event {
-                    crate::element_picker::PickerEvent::Focus => MoveEdit::RotationPointFocus,
-                    crate::element_picker::PickerEvent::Remove(_)
-                    | crate::element_picker::PickerEvent::Clear => MoveEdit::ClearRotationPoint,
-                });
-            }
-        });
-        {
-            use crate::expression_input::ValueKind;
-            // Free Rotate's three slots (#652) each get an axis picker with its own angle
-            // beneath; Snap Rotate keeps the single Angle field.
-            if control.rotate_mode == crate::model::MoveRotateMode::Free {
-                for (slot, (rows, angle)) in control.rotation_slots.iter().enumerate() {
-                    labeled_row_top(ui, format!("Axis {}", slot + 1), |ui| {
-                        if let Some(event) = crate::element_picker::show_labeled(
-                            ui,
-                            ("move_rotation_axis", slot),
-                            control.rotation_axis_focused == Some(slot),
-                            true,
-                            crate::icons::IconId::Line,
-                            rows,
-                        ) {
-                            pending = Some(match event {
-                                crate::element_picker::PickerEvent::Focus => {
-                                    MoveEdit::RotationAxisFocus(slot)
-                                }
-                                crate::element_picker::PickerEvent::Remove(_)
-                                | crate::element_picker::PickerEvent::Clear => {
-                                    MoveEdit::ClearRotationAxis(slot)
-                                }
-                            });
-                        }
-                    });
-                    labeled_row(ui, "Angle", |ui| {
-                        let mut text = angle.clone();
-                        let resp = crate::expression_input::ValueInput::new(
-                            ("move_rotation_angle", slot),
-                            ValueKind::Angle,
-                        )
-                        .width(90.0)
-                        .show(ui, &mut text, doc);
-                        if resp.changed() {
-                            pending = Some(MoveEdit::RotationAngle(slot, text));
-                        }
-                    });
-                }
-            } else {
-                // Snap Rotate (#653): a face + adjacent edge on the moving bodies, the same on
-                // stationary geometry, and which of the four orientations that leaves open.
-                for (is_source, label, rows) in [
-                    (true, "Rotation source", &control.rotate_source_rows),
-                    (false, "Rotation target", &control.rotate_target_rows),
-                ] {
-                    labeled_row_top(ui, label, |ui| {
-                        if let Some(event) = crate::element_picker::show_labeled(
-                            ui,
-                            ("move_rotate_align", is_source),
-                            control.rotate_align_focused == Some(is_source),
-                            false,
-                            crate::icons::IconId::Face,
-                            rows,
-                        ) {
-                            pending = Some(match event {
-                                crate::element_picker::PickerEvent::Focus => {
-                                    MoveEdit::RotateAlignFocus(is_source)
-                                }
-                                crate::element_picker::PickerEvent::Remove(_)
-                                | crate::element_picker::PickerEvent::Clear => {
-                                    MoveEdit::ClearRotateAlign(is_source)
-                                }
-                            });
-                        }
-                    });
-                }
-                labeled_row(ui, "Orientation", |ui| {
-                    for (value, icon, tooltip) in [
-                        (0u8, crate::icons::IconId::AlignUpperLeft, "Orientation 1"),
-                        (1, crate::icons::IconId::AlignUpperRight, "Orientation 2"),
-                        (2, crate::icons::IconId::AlignLowerLeft, "Orientation 3"),
-                        (3, crate::icons::IconId::AlignOverlap, "Orientation 4"),
-                    ] {
-                        if crate::icons::selectable_icon_button(
-                            ui,
-                            icon,
-                            control.rotate_orientation == value,
-                            tooltip,
-                        )
-                        .clicked()
-                            && control.rotate_orientation != value
-                        {
-                            pending = Some(MoveEdit::RotateOrientation(value));
-                        }
-                    }
-                });
             }
         }
         if let Some(edit) = pending {
@@ -5483,15 +5322,6 @@ mod tests {
             move_op: Some(MoveControl {
                 translate_mode: crate::model::MoveTranslateMode::Free,
                 bodies_focused: true,
-                rotate_mode: crate::model::MoveRotateMode::Free,
-                rotation_point_rows: Vec::new(),
-                rotation_point_focused: false,
-                rotation_slots: Default::default(),
-                rotation_axis_focused: None,
-                rotate_source_rows: Vec::new(),
-                rotate_target_rows: Vec::new(),
-                rotate_align_focused: None,
-                rotate_orientation: 0,
                 source_point_rows: Vec::new(),
                 source_point_focused: false,
                 target_point_rows: Vec::new(),

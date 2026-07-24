@@ -643,10 +643,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (A∪B) − (A∩B); multi-solid results split via `Shape::solids`), on desktop and web
     alike via the kernel module.
 
-- **Move tool (#176/#183):** rigid translation and/or rotation of whole bodies. One
-  multi-select body picker (viewport clicks toggle); translation X/Y/Z and the rotation
-  angle are **expressions** (parameters work — moves rebuild parametrically); the rotation
-  axis is a global axis or any clicked line.
+- **Move tool (#176/#183):** a rigid **translation** of whole bodies — rotation was pulled
+  back out for now (#663), so the tool translates only. One multi-select body picker (viewport
+  clicks toggle); translation X/Y/Z are **expressions** (parameters work — moves rebuild
+  parametrically).
   **Translate mode (#648, `model::MoveTranslateMode`):** a pane dropdown picks **Snap** (the
   default) or **Free**. Free is the classic behaviour — typed/dragged X/Y/Z. Snap instead
   derives the offset from two picked points:
@@ -654,8 +654,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     of the **moving** bodies (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/
     `BodyEdge` and resolved against the live mesh). While one is set the moving bodies render
     **translucent** (they join `faded_bodies`) so the gizmos and points stay visible through
-    the solid. The source point is picked in both modes — Snap Rotate and the rotation point
-    build on it.
+    the solid.
   - A **Target point** picker (#650) takes the same kinds of point on a body that **isn't**
     moving; the translation is then `target - source`, and the X/Y/Z fields and drag arrows are
     hidden.
@@ -666,40 +665,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   move that resolves to the identity draws nothing. The picked points are marked in the
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): the
   **source point green** and the **target point red** — go and stop, so the direction of the
-  snap reads at a glance — and the rotation point in the interactive gold.
+  snap reads at a glance.
 
   **One focused picker, stepping through (#656/#658/#659):** exactly one Move picker is armed
   at a time — it's the one the pane rings and the one the viewport hover-highlights, so what
   lights up is always what a click takes (`MoveFocus`, `move_focus_for`). The tool **advances
-  on its own**: Bodies until one is picked, then Source point, then whatever the chosen Snap
-  modes still need (Target point, then the rotation source and target alignments). The rotation
-  point is skipped — it already reads "Source point" and only needs visiting to override that.
-  Clicking any picker overrides the chain until that picker is satisfied
-  (`move_focus_satisfied`), then it resumes. The hover follows the armed picker: body corners
-  and edges for a point, straight references for an axis, faces and edges for an alignment.
-
-  **Rotate mode (#651, `model::MoveRotateMode`):** a second dropdown picks **Snap** (the
-  default) or **Free**, and a **Rotation point** picker takes the point the rotation turns
-  about — a corner or edge midpoint on *any* body, moving or not. Left empty it reads "Source
-  point" and follows the source-point pick (`MoveOperation::rotation_pivot`); with neither set
-  the rotation falls back to the axis's own origin, as before. The axis then only supplies a
-  direction. **Free Rotate (#652)** turns about **three** axes in one move: the op's own
-  `axis`/`angle` plus `MoveOperation::extra_rotations`, each an element picker taking an origin
-  axis, a sketch line, or a body edge (the same set the Repeat axis picker takes) with its own
-  angle expression beneath it. Selecting Free seeds the three with the X, Y and Z origin axes.
-  All three turn about the same pivot and compose **in slot order** — axis 1 acts on the body
-  first. **Snap Rotate (#653)** replaces those slots with an alignment: a **Rotation source**
-  picker takes one face and one of its adjacent edges on a moving body, a **Rotation target**
-  picker takes the same on stationary geometry (a body face, a sketch, or a construction
-  plane), and the bodies turn so source face ∥ target face and source edge ∥ target edge
-  (`model::MoveAlignRef`, `extrude::move_align_rotation`). "Parallel" leaves **four**
-  orientations open — the target frame's edge and/or normal flipped — chosen with four icon
-  buttons (`IconId::AlignUpperLeft`/`AlignUpperRight`/`AlignLowerLeft`/`AlignOverlap`: a
-  stationary blue square always in the lower-right quadrant and the moving amber one in the
-  named quadrant). It is a **pure rotation about the rotation point** — translation stays the
-  separate Snap/Free *translate* concern. Only the two directions are kept, so the same
-  reference works whatever the face was picked on. A move carrying an extra rotation or an
-  alignment is excluded from coalescing (neither folds into one axis+angle).
+  on its own**: Bodies until one is picked, then Source point, then the Target point when
+  snapping. Clicking a picker overrides the chain until that picker is satisfied
+  (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover shows body
+  corners and edges instead of whole bodies.
 
   A Snap move with either point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
@@ -715,19 +689,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   picked, three axis arrows (X red, Y green, Z blue) at the targets' bounding-box centre drag
   to set the translation — the same offset-arrow handle as the extrude gizmo, driving the
   `move_x`/`move_y`/`move_z` values (so scriptable/testable via the gizmo API, §8).
-  **Rotation ring (#216):** once a rotation axis is picked, a circle in the plane perpendicular
-  to that axis (at the centroid, sized to the bodies) drags round to set the angle, driving
-  `move_angle`. A **line selected while the Move tool is active** (Elements pane or viewport)
-  sets the rotation axis, alongside the context pane's X/Y/Z buttons. Each free-translate arrow
-  also carries a **value input floating beside its handle** (#648), so a component can be typed
-  where it's being dragged. Scripting:
-  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, from?, to?, pivot?, name? }` and
+  Each free-translate arrow also carries a **value input floating beside its handle** (#648),
+  so a component can be typed where it's being dragged. Scripting:
+  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, from?, to?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh); `pivot` takes the same table and sets the rotation point, and
-  `axis2`/`angle2`, `axis3`/`angle3` are Free Rotate's other two turns, and `align_from` /
-  `align_to` / `orientation` spell a Snap Rotate alignment
-  (`{ face = { at = {x,y,z}, normal = {x,y,z} }, edge = {{x,y,z}, {x,y,z}} }`). **Moving construction planes (#217):** a Move op can also
+  on the body's mesh). **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane
@@ -2335,9 +2302,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   push/pull depth (`"extrude"`), the chamfer/fillet amount (2D sketch-vertex and 3D body-edge,
   named `"chamfer"`/`"fillet"` by kind), the revolve sweep angle (`"revolve"`, radians), the
   construction-plane offset (`"offset"`), and the Move tool's translation
-  (`"move_x"`/`"move_y"`/`"move_z"`, mm) and rotation (`"move_angle"`, radians, present only once
-  a rotation axis is picked). The Move values are exposed ahead of the viewport drag handles
-  (#185/#215/#216).
+  (`"move_x"`/`"move_y"`/`"move_z"`, mm). The Move values are exposed ahead of the viewport
+  drag handles (#185/#215); the Move rotation gizmo went with the tool's rotation half (#663).
 - `bearcad.ui.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
   view bear (the view-cube HUD) is suppressed for that frame); passing `whole_window = true` captures the
   entire window. With no `path`, the image is written to `screenshot-bearcad.png`.

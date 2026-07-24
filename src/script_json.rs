@@ -380,13 +380,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
         "move_bodies" => {
-            let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)?, rotate_source: json_align_ref(o.get("align_from"), "align_from")?, rotate_target: json_align_ref(o.get("align_to"), "align_to")?, rotate_orientation: o.get("orientation").and_then(Value::as_u64).unwrap_or(0).min(3) as u8 })
+            let (targets, tx, ty, tz, source_point, target_point) = move_op_args(o)?;
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, source_point, target_point })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
-            let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)?, rotate_source: json_align_ref(o.get("align_from"), "align_from")?, rotate_target: json_align_ref(o.get("align_to"), "align_to")?, rotate_orientation: o.get("orientation").and_then(Value::as_u64).unwrap_or(0).min(3) as u8 })
+            let (targets, tx, ty, tz, source_point, target_point) = move_op_args(o)?;
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, source_point, target_point })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -1061,101 +1061,21 @@ fn move_op_args(
         String,
         String,
         String,
-        Option<RevolveAxis>,
-        String,
         Option<crate::model::MovePointRef>,
         Option<crate::model::MovePointRef>,
     ),
     String,
 > {
     let targets = usize_list(o, "bodies")?;
-    let axis = match o.get("axis") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(revolve_axis_from_value(v)?),
-    };
     Ok((
         targets,
         expr_arg(o, "x")?,
         expr_arg(o, "y")?,
         expr_arg(o, "z")?,
-        axis,
-        expr_arg(o, "angle")?,
         // Naming both points makes the translation a snap (#648/#649/#650).
         move_point_from_json(o.get("from"), "from")?,
         move_point_from_json(o.get("to"), "to")?,
     ))
-}
-
-/// A [`crate::model::MoveAlignRef`] from `{ "face": { "at": [x,y,z], "normal": [x,y,z] },
-/// "edge": [[x,y,z], [x,y,z]] }` (#653) — millimetres, re-quantized.
-fn json_align_ref(
-    v: Option<&Value>,
-    what: &str,
-) -> Result<crate::model::MoveAlignRef, String> {
-    let Some(t) = v.filter(|v| !v.is_null()) else {
-        return Ok(Default::default());
-    };
-    let t = t
-        .as_object()
-        .ok_or_else(|| format!("move `{what}` must be an object"))?;
-    let point = |v: &Value| -> Result<[i32; 3], String> {
-        let a = v
-            .as_array()
-            .filter(|a| a.len() == 3)
-            .ok_or_else(|| format!("move `{what}` points must be [x, y, z] in mm"))?;
-        let n = |i: usize| -> Result<f32, String> {
-            a[i].as_f64()
-                .map(|f| f as f32)
-                .ok_or_else(|| format!("move `{what}` points must be numbers"))
-        };
-        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
-            n(0)?,
-            n(1)?,
-            n(2)?,
-        )))
-    };
-    let face = match t.get("face").filter(|v| !v.is_null()) {
-        Some(f) => {
-            let f = f
-                .as_object()
-                .ok_or_else(|| format!("move `{what}.face` must be an object"))?;
-            let at = f
-                .get("at")
-                .ok_or_else(|| format!("move `{what}.face` needs an `at`"))?;
-            let normal = f
-                .get("normal")
-                .ok_or_else(|| format!("move `{what}.face` needs a `normal`"))?;
-            Some((point(at)?, point(normal)?))
-        }
-        None => None,
-    };
-    let edge = match t.get("edge").filter(|v| !v.is_null()) {
-        Some(e) => {
-            let ends = e
-                .as_array()
-                .filter(|a| a.len() == 2)
-                .ok_or_else(|| format!("move `{what}.edge` must be two [x, y, z] points"))?;
-            Some((point(&ends[0])?, point(&ends[1])?))
-        }
-        None => None,
-    };
-    Ok(crate::model::MoveAlignRef { face, edge })
-}
-
-/// Free Rotate's two extra axis+angle slots from `axis2`/`angle2` and `axis3`/`angle3` (#652).
-fn json_extra_rotations(
-    o: &Map<String, Value>,
-) -> Result<[crate::model::MoveRotationSlot; 2], String> {
-    let mut slots: [crate::model::MoveRotationSlot; 2] = Default::default();
-    for (i, slot) in slots.iter_mut().enumerate() {
-        let n = i + 2;
-        slot.axis = match o.get(&format!("axis{n}")) {
-            None | Some(Value::Null) => None,
-            Some(v) => Some(revolve_axis_from_value(v)?),
-        };
-        slot.angle = expr_arg(o, &format!("angle{n}"))?;
-    }
-    Ok(slots)
 }
 
 /// A [`crate::model::MovePointRef`] from `{ "body": i, "vertex": [x,y,z] }` or
@@ -2113,42 +2033,28 @@ mod tests {
         assert_eq!(
             instruction_from_json(
                 "move_bodies",
-                &json!({ "bodies": [0], "x": 10, "y": "w/2", "angle": 45, "axis": "z" })
+                &json!({ "bodies": [0], "x": 10, "y": "w/2" })
             ),
             Ok(Instruction::CreateMoveOp {
                 source_point: None,
                 target_point: None,
-                rotation_point: None,
-                extra_rotations: Default::default(),
-                rotate_source: Default::default(),
-                rotate_target: Default::default(),
-                rotate_orientation: 0,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
                 tz: String::new(),
-                axis: Some(RevolveAxis::Z),
-                angle: "45".into(),
             })
         );
-        // No axis → no rotation; omitted expression fields become empty strings.
+        // Omitted expression fields become empty strings.
         assert_eq!(
             instruction_from_json("edit_move", &json!({ "index": 1, "bodies": [0], "z": 5 })),
             Ok(Instruction::EditMoveOp {
                 source_point: None,
                 target_point: None,
-                rotation_point: None,
-                extra_rotations: Default::default(),
-                rotate_source: Default::default(),
-                rotate_target: Default::default(),
-                rotate_orientation: 0,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),
                 ty: String::new(),
                 tz: "5".into(),
-                axis: None,
-                angle: String::new(),
             })
         );
     }

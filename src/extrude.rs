@@ -702,88 +702,8 @@ pub fn move_op_translation(doc: &Document, op: &crate::model::MoveOperation) -> 
     ))
 }
 
-/// An orthonormal right-handed frame from a Snap Rotate reference (#653): `u` along the edge,
-/// `w` along the face normal with the edge component taken out, `v = w × u`. Returns the
-/// columns `(u, v, w)`. `None` when the edge is degenerate or lies along the normal, so no
-/// frame can be built.
-fn align_frame(
-    align: &crate::model::MoveAlignRef,
-    flip_edge: bool,
-    flip_normal: bool,
-) -> Option<glam::Mat3> {
-    use crate::hierarchy::dequantize_body_point as unq;
-    let (_, normal) = align.face?;
-    let (a, b) = align.edge?;
-    let mut u = (unq(b) - unq(a)).normalize_or_zero();
-    let mut n = unq(normal).normalize_or_zero();
-    if u.length_squared() < 0.5 || n.length_squared() < 0.5 {
-        return None;
-    }
-    if flip_edge {
-        u = -u;
-    }
-    if flip_normal {
-        n = -n;
-    }
-    let w = (n - u * n.dot(u)).normalize_or_zero();
-    if w.length_squared() < 0.5 {
-        return None; // the edge runs along the normal: not an adjacent edge.
-    }
-    Some(glam::Mat3::from_cols(u, w.cross(u), w))
-}
-
-/// The rotation a Snap Rotate alignment produces (#653): the turn that takes the moving
-/// bodies' face+edge frame onto the stationary one's, in the chosen `orientation` of the four
-/// the "parallel to" constraint leaves open (the target frame's edge and/or normal flipped).
-/// Pure rotation — the translation is the separate Snap/Free *translate* concern.
-pub fn move_align_rotation(op: &crate::model::MoveOperation) -> Option<glam::Mat3> {
-    let source = align_frame(&op.rotate_source, false, false)?;
-    let (flip_edge, flip_normal) = match op.rotate_orientation.min(3) {
-        0 => (false, false),
-        1 => (true, false),
-        2 => (false, true),
-        _ => (true, true),
-    };
-    let target = align_frame(&op.rotate_target, flip_edge, flip_normal)?;
-    Some(target * source.transpose())
-}
-
 pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
-    let t = move_op_translation(doc, op)?;
-    // All three Free-Rotate slots turn about the same pivot (#652). They compose **in slot
-    // order** — axis 1 acts on the body first — which means pre-multiplying, since the
-    // rightmost factor is the one a point meets first.
-    let pivot = op.rotation_pivot().and_then(|p| move_point_world(doc, p));
-    // Snap Rotate (#653) replaces the free slots outright: one turn, about the same pivot.
-    if op.has_snap_rotation() {
-        let r = move_align_rotation(op).unwrap_or(glam::Mat3::IDENTITY);
-        let origin = pivot.unwrap_or(Vec3::ZERO);
-        let rot = glam::Mat4::from_translation(origin)
-            * glam::Mat4::from_mat3(r)
-            * glam::Mat4::from_translation(-origin);
-        return Some(glam::Mat4::from_translation(t) * rot);
-    }
-    let mut rot = glam::Mat4::IDENTITY;
-    for (axis, angle) in op.rotations() {
-        let Some(axis) = axis else { continue };
-        let angle_rad = if angle.trim().is_empty() {
-            0.0
-        } else {
-            crate::value::eval_angle_rad_in_doc(angle, doc)?
-        };
-        if angle_rad.abs() <= 1e-9 {
-            continue;
-        }
-        let (axis_origin, dir) = axis_world(doc, axis)?;
-        // The move turns about its picked rotation point when it has one (#651) — the axis
-        // then only supplies a direction. Without one it turns about the axis itself.
-        let origin = pivot.unwrap_or(axis_origin);
-        rot = glam::Mat4::from_translation(origin)
-            * glam::Mat4::from_axis_angle(dir, angle_rad)
-            * glam::Mat4::from_translation(-origin)
-            * rot;
-    }
-    Some(glam::Mat4::from_translation(t) * rot)
+    Some(glam::Mat4::from_translation(move_op_translation(doc, op)?))
 }
 
 /// Resolve a rotation/revolve axis to world origin + unit direction.
@@ -4662,12 +4582,6 @@ mod tests {
         use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
         let doc = Document::default();
         let base = MoveOperation {
-                                                rotate_source: Default::default(),
-                                                rotate_target: Default::default(),
-                                                rotate_orientation: 0,
-                                                extra_rotations: Default::default(),
-                        rotate_mode: Default::default(),
-            rotation_point: None,
             targets: Vec::new(),
             translate_mode: MoveTranslateMode::Snap,
             source_point: None,
@@ -4677,8 +4591,6 @@ mod tests {
             tx: "7".to_string(),
             ty: String::new(),
             tz: String::new(),
-            axis: None,
-            angle: String::new(),
             outputs: Vec::new(),
             name: None,
             deleted: false,
@@ -4691,12 +4603,6 @@ mod tests {
         );
         // One point isn't enough either.
         let half = MoveOperation {
-                                                rotate_source: Default::default(),
-                                                rotate_target: Default::default(),
-                                                rotate_orientation: 0,
-                                                extra_rotations: Default::default(),
-                        rotate_mode: Default::default(),
-            rotation_point: None,
             source_point: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
             ..base.clone()
         };
@@ -4705,87 +4611,11 @@ mod tests {
         // With both, the snap takes over — and points that no longer resolve contribute
         // nothing rather than killing the op.
         let full = MoveOperation {
-                                                rotate_source: Default::default(),
-                                                rotate_target: Default::default(),
-                                                rotate_orientation: 0,
-                                                extra_rotations: Default::default(),
-                        rotate_mode: Default::default(),
-            rotation_point: None,
             target_point: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
             ..half
         };
         assert!(full.has_snap_translation());
         assert_eq!(move_op_translation(&doc, &full), Some(Vec3::ZERO));
-    }
-
-    /// #653: a Snap Rotate alignment turns the moving face+edge onto the target face+edge,
-    /// and the four orientations are the four ways "parallel" can be satisfied.
-    #[test]
-    fn snap_rotate_alignment_lines_the_frames_up() {
-        use crate::hierarchy::quantize_body_point as q;
-        use crate::model::{MoveAlignRef, MoveOperation, MoveRotateMode};
-        let align = |normal: Vec3, edge: Vec3| MoveAlignRef {
-            face: Some((q(Vec3::ZERO), q(normal))),
-            edge: Some((q(Vec3::ZERO), q(edge))),
-        };
-        let op = |orientation: u8| MoveOperation {
-            targets: vec![0],
-            translate_mode: Default::default(),
-            source_point: None,
-            target_point: None,
-            rotate_mode: MoveRotateMode::Snap,
-            rotation_point: None,
-            plane_targets: Vec::new(),
-            image_targets: Vec::new(),
-            tx: String::new(),
-            ty: String::new(),
-            tz: String::new(),
-            axis: None,
-            angle: String::new(),
-            extra_rotations: Default::default(),
-            // Source: face facing +Z with an edge along +X. Target: face facing +X, edge +Y.
-            rotate_source: align(Vec3::Z, Vec3::X),
-            rotate_target: align(Vec3::X, Vec3::Y),
-            rotate_orientation: orientation,
-            outputs: Vec::new(),
-            name: None,
-            deleted: false,
-        };
-        let base = op(0);
-        assert!(base.has_snap_rotation());
-        let r = move_align_rotation(&base).expect("alignment resolves");
-        // Every orientation is a proper rotation and maps the source frame onto the target's
-        // up to the allowed flips.
-        assert!((r.determinant() - 1.0).abs() < 1e-4, "a pure rotation, det {}", r.determinant());
-        assert!(
-            (r * Vec3::X - Vec3::Y).length() < 1e-4,
-            "the source edge lands on the target edge, got {:?}",
-            r * Vec3::X
-        );
-        assert!(
-            (r * Vec3::Z - Vec3::X).length() < 1e-4,
-            "the source normal lands on the target normal, got {:?}",
-            r * Vec3::Z
-        );
-        // The other three orientations flip the edge and/or the normal, and stay rotations.
-        for orientation in 1..=3u8 {
-            let r = move_align_rotation(&op(orientation)).expect("alignment resolves");
-            assert!(
-                (r.determinant() - 1.0).abs() < 1e-4,
-                "orientation {orientation} is a pure rotation"
-            );
-            let edge = r * Vec3::X;
-            assert!(
-                (edge - Vec3::Y).length() < 1e-4 || (edge + Vec3::Y).length() < 1e-4,
-                "orientation {orientation} keeps the edges parallel, got {edge:?}"
-            );
-        }
-        // An incomplete pick produces no rotation.
-        let partial = MoveOperation {
-            rotate_target: MoveAlignRef { face: Some((q(Vec3::ZERO), q(Vec3::X))), edge: None },
-            ..base
-        };
-        assert!(!partial.has_snap_rotation());
     }
 
     /// #644: the distance gizmo hangs off the targets' **start** plane along the axis, centred
@@ -4879,12 +4709,6 @@ mod tests {
             deleted: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
-                                                rotate_source: Default::default(),
-                                                rotate_target: Default::default(),
-                                                rotate_orientation: 0,
-                                                extra_rotations: Default::default(),
-                        rotate_mode: Default::default(),
-            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,
@@ -4894,8 +4718,6 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
-            axis: None,
-            angle: String::new(),
             outputs: vec![3],
             name: None,
             deleted: false,
@@ -4929,12 +4751,6 @@ mod tests {
             shadow: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
-                                                rotate_source: Default::default(),
-                                                rotate_target: Default::default(),
-                                                rotate_orientation: 0,
-                                                extra_rotations: Default::default(),
-                        rotate_mode: Default::default(),
-            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,
@@ -4944,8 +4760,6 @@ mod tests {
             tx: "0mm".to_string(),
             ty: String::new(),
             tz: String::new(),
-            axis: None,
-            angle: String::new(),
             outputs: vec![1],
             name: None,
             deleted: false,
@@ -5473,12 +5287,6 @@ mod tests {
             source: None,
         });
         doc.move_ops.push(MoveOperation {
-                                                rotate_source: Default::default(),
-                                                rotate_target: Default::default(),
-                                                rotate_orientation: 0,
-                                                extra_rotations: Default::default(),
-                        rotate_mode: Default::default(),
-            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,
@@ -5488,8 +5296,6 @@ mod tests {
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
-            axis: None,
-            angle: String::new(),
             outputs: vec![1],
             name: None,
             deleted: false,

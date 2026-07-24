@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke-width="2" stroke-linejoin="round">
-  <!-- Snap-rotate orientation (#653/#657): the moving square lands exactly on the stationary
-       one, so the two coincide — an orange-filled square with the blue border drawn on top. -->
-  <rect x="18" y="18" width="11" height="11" rx="1.5" fill="#e0a458" stroke="none" />
-  <rect x="18" y="18" width="11" height="11" rx="1.5" fill="none" stroke="#7aa2f7" />
-</svg>

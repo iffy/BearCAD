@@ -677,15 +677,8 @@ fn parse_move_op_args(
     String,
     String,
     String,
-    Option<crate::model::RevolveAxis>,
-    String,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
-    Option<crate::model::MovePointRef>,
-    [crate::model::MoveRotationSlot; 2],
-    crate::model::MoveAlignRef,
-    crate::model::MoveAlignRef,
-    u8,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -701,86 +694,12 @@ fn parse_move_op_args(
             }
         })
     };
-    let (tx, ty, tz, angle) = (expr("x")?, expr("y")?, expr("z")?, expr("angle")?);
+    let (tx, ty, tz) = (expr("x")?, expr("y")?, expr("z")?);
     // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
     // `from` exactly on `to`, and x/y/z are ignored.
     let source_point = parse_move_point(opts.get::<Value>("from")?, "from")?;
     let target_point = parse_move_point(opts.get::<Value>("to")?, "to")?;
-    // `pivot` is the point the rotation turns about (#651); omitted, it follows `from`.
-    let rotation_point = parse_move_point(opts.get::<Value>("pivot")?, "pivot")?;
-    // Free Rotate's other two turns (#652): `axis2`/`angle2` and `axis3`/`angle3`.
-    let mut extra_rotations: [crate::model::MoveRotationSlot; 2] = Default::default();
-    for (i, slot) in extra_rotations.iter_mut().enumerate() {
-        let n = i + 2;
-        slot.axis = match opts.get::<Value>(format!("axis{n}"))? {
-            Value::Nil => None,
-            v => Some(parse_revolve_axis(v, "move")?),
-        };
-        slot.angle = expr(&format!("angle{n}"))?;
-    }
-    // Snap Rotate's alignment (#653): each side names a face (a point on it plus its normal)
-    // and one adjacent edge, all in millimetres.
-    let rotate_source = parse_align_ref(opts.get::<Value>("align_from")?, "align_from")?;
-    let rotate_target = parse_align_ref(opts.get::<Value>("align_to")?, "align_to")?;
-    let rotate_orientation: u8 = opts.get::<Option<u8>>("orientation")?.unwrap_or(0).min(3);
-    let axis = match opts.get::<Value>("axis")? {
-        Value::Nil => None,
-        value => Some(parse_revolve_axis(value, "move")?),
-    };
-    Ok((
-        targets,
-        tx,
-        ty,
-        tz,
-        axis,
-        angle,
-        source_point,
-        target_point,
-        rotation_point,
-        extra_rotations,
-        rotate_source,
-        rotate_target,
-        rotate_orientation,
-    ))
-}
-
-/// A [`crate::model::MoveAlignRef`] from `{ face = { at = {x,y,z}, normal = {x,y,z} },
-/// edge = { {x,y,z}, {x,y,z} } }` (#653) — millimetres, re-quantized to the selection grid.
-fn parse_align_ref(value: Value, what: &str) -> mlua::Result<crate::model::MoveAlignRef> {
-    let Value::Table(t) = value else {
-        return match value {
-            Value::Nil => Ok(Default::default()),
-            _ => Err(mlua::Error::external(format!("move `{what}` must be a table"))),
-        };
-    };
-    let mm = |v: &[f32]| -> mlua::Result<[i32; 3]> {
-        if v.len() != 3 {
-            return Err(mlua::Error::external(format!(
-                "move `{what}` points must be {{x, y, z}} in mm"
-            )));
-        }
-        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
-            v[0], v[1], v[2],
-        )))
-    };
-    let face = match t.get::<Option<Table>>("face")? {
-        Some(f) => {
-            let at: Vec<f32> = f.get("at")?;
-            let normal: Vec<f32> = f.get("normal")?;
-            Some((mm(&at)?, mm(&normal)?))
-        }
-        None => None,
-    };
-    let edge = match t.get::<Option<Vec<Vec<f32>>>>("edge")? {
-        Some(ends) if ends.len() == 2 => Some((mm(&ends[0])?, mm(&ends[1])?)),
-        Some(_) => {
-            return Err(mlua::Error::external(format!(
-                "move `{what}.edge` must be two {{x, y, z}} points"
-            )))
-        }
-        None => None,
-    };
-    Ok(crate::model::MoveAlignRef { face, edge })
+    Ok((targets, tx, ty, tz, source_point, target_point))
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3558,25 +3477,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (
-                targets,
-                tx,
-                ty,
-                tz,
-                axis,
-                angle,
-                source_point,
-                target_point,
-                rotation_point,
-                extra_rotations,
-                rotate_source,
-                rotate_target,
-                rotate_orientation,
-            ) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, source_point, target_point) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
-                    extra_rotations, rotate_source, rotate_target, rotate_orientation,
+                    targets, tx, ty, tz, source_point, target_point,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3592,25 +3496,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (
-                targets,
-                tx,
-                ty,
-                tz,
-                axis,
-                angle,
-                source_point,
-                target_point,
-                rotation_point,
-                extra_rotations,
-                rotate_source,
-                rotate_target,
-                rotate_orientation,
-            ) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, source_point, target_point) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
-                    extra_rotations, rotate_source, rotate_target, rotate_orientation,
+                    op, targets, tx, ty, tz, source_point, target_point,
                 })?;
             }
             Ok(())
@@ -6330,110 +6219,6 @@ mod tests {
         assert_eq!(
             free.doc.move_ops[0].translate_mode,
             crate::model::MoveTranslateMode::Free
-        );
-    }
-
-    /// #653: naming both sides of a face+edge alignment makes the rotation a **snap** — the
-    /// moving face+edge turns onto the target's, with no translation of its own.
-    #[test]
-    fn lua_move_snap_rotate_aligns_a_face_and_edge() {
-        let state = run_lua(
-            r#"
-            bearcad.rect{ width = 10, height = 10 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-            -- Turn the box's top face (+Z, edge along +X) to face +X with its edge along +Y.
-            bearcad.move_bodies{
-                bodies = {0},
-                align_from = { face = { at = {0, 0, 5}, normal = {0, 0, 1} },
-                               edge = { {0, 0, 5}, {10, 0, 5} } },
-                align_to   = { face = { at = {0, 0, 0}, normal = {1, 0, 0} },
-                               edge = { {0, 0, 0}, {0, 10, 0} } },
-                pivot = { body = 0, vertex = {0, 0, 0} },
-            }
-            "#,
-        );
-        let op = &state.doc.move_ops[0];
-        assert_eq!(op.rotate_mode, crate::model::MoveRotateMode::Snap);
-        assert!(op.has_snap_rotation());
-        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
-        // The source normal (+Z) lands on the target normal (+X); the edge (+X) on +Y.
-        let normal = m.transform_vector3(glam::Vec3::Z);
-        let edge = m.transform_vector3(glam::Vec3::X);
-        assert!((normal - glam::Vec3::X).length() < 1e-4, "normal → +X, got {normal:?}");
-        assert!((edge - glam::Vec3::Y).length() < 1e-4, "edge → +Y, got {edge:?}");
-        // Rotation only: the pivot corner doesn't move.
-        let held = m.transform_point3(glam::Vec3::ZERO);
-        assert!(held.length() < 1e-4, "no translation, got {held:?}");
-    }
-
-    /// #652: Free Rotate turns about three axes in one move — each with its own angle, all
-    /// about the same pivot.
-    #[test]
-    fn lua_move_rotates_about_three_axes() {
-        let state = run_lua(
-            r#"
-            bearcad.rect{ width = 10, height = 10 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-            -- 90° about X, then 90° about Y, about the box's origin corner.
-            bearcad.move_bodies{
-                bodies = {0},
-                axis = "x", angle = 90,
-                axis2 = "y", angle2 = 90,
-                pivot = { body = 0, vertex = {0, 0, 0} },
-            }
-            "#,
-        );
-        let op = &state.doc.move_ops[0];
-        assert_eq!(op.extra_rotations[0].axis, Some(crate::model::RevolveAxis::Y));
-        assert_eq!(op.extra_rotations[0].angle, "90");
-        assert!(op.has_extra_rotation());
-        // Both turns land in the transform: the composed matrix takes +X to -Z.
-        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
-        let mapped = m.transform_vector3(glam::Vec3::X);
-        assert!(
-            (mapped - glam::Vec3::NEG_Z).length() < 1e-4,
-            "X → -Z after 90° about X then 90° about Y, got {mapped:?}"
-        );
-        // The pivot corner stays put.
-        let held = m.transform_point3(glam::Vec3::ZERO);
-        assert!(held.length() < 1e-4, "the pivot corner holds, got {held:?}");
-    }
-
-    /// #651: a rotation turns about its `pivot` point when one is named, else about the
-    /// snap source point, else about the axis's own origin.
-    #[test]
-    fn lua_move_rotates_about_a_picked_pivot() {
-        let script = |extra: &str| {
-            format!(
-                r#"
-                -- A 10x10x5 box sitting at x in [20, 30].
-                bearcad.rect{{ x = 20, y = 0, width = 10, height = 10 }}
-                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
-                bearcad.move_bodies{{ bodies = {{0}}, axis = "z", angle = 180{extra} }}
-                "#
-            )
-        };
-        // No pivot: a half turn about the world Z axis mirrors it to x in [-30, -20].
-        let plain = run_lua(&script(""));
-        let out = plain.doc.move_ops[0].outputs[0];
-        let (min, max) = crate::extrude::body_solid_mesh(&plain.doc, out)
-            .and_then(|m| m.bounds())
-            .expect("mesh");
-        assert!(max.x < 0.0, "turns about the origin, got {min:?}..{max:?}");
-
-        // Pivoting on the box's own near corner (20, 0, 0) keeps that corner put.
-        let pivoted = run_lua(&script(
-            ", pivot = { body = 0, vertex = {20, 0, 0} }",
-        ));
-        let op = &pivoted.doc.move_ops[0];
-        assert!(op.rotation_point.is_some());
-        let out = op.outputs[0];
-        let (min, max) = crate::extrude::body_solid_mesh(&pivoted.doc, out)
-            .and_then(|m| m.bounds())
-            .expect("mesh");
-        assert!(
-            (max.x - 20.0).abs() < 1e-2 && (min.x - 10.0).abs() < 1e-2,
-            "a half turn about (20,0,0) lands x in [10, 20], got {min:?}..{max:?}"
         );
     }
 
