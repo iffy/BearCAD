@@ -763,7 +763,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   states so the input column never jumps (#641);
   editable fields are expression inputs with autocomplete/error display and a `= value`
   computed preview beside them; the "N instances" label is gone (Count shows it) and the
-  commit button sits in the input column. **Esc** drops the in-progress repeat (clearing
+  commit button sits in the input column. A **distance gizmo (#644)** hangs off the targets'
+  start plane along the axis — the same click-to-grab arrow+handle the Extrude tool uses
+  (`repeat_gizmo_anchor` for the anchor, `offset_gizmo_hit`/`offset_from_normal_drag` for the
+  grab and drag): one click grabs it, it then follows the cursor writing **Distance** live
+  (which also makes Distance one of the two *set* variables), and the next click releases it.
+  It shows the computed span while Distance is the computed variable, so the handle always sits
+  at the real end of the pattern. **Esc** drops the in-progress repeat (clearing
   the ghost previews, #450). **Selection seeding (#439):** activating the tool seeds its
   targets from the current selection (bodies/planes/sketches), the axis starts **unset**
   (`CreatingRepeat::axis: Option` — commit refuses without one), and exactly one picker reads

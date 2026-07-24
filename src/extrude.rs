@@ -1024,6 +1024,34 @@ pub fn descendant_bodies(doc: &Document, seeds: &[usize]) -> std::collections::H
 /// The repeat targets' combined **extent** along the axis (the item length `L`) — used by the
 /// count/gap/distance UI (#257) to convert between a clear gap and a start-to-start pitch, and
 /// to derive the computed variable's value. Point-like targets (planes/sketches) have extent 0.
+/// Where a repeat's **distance gizmo** hangs (#644): the point on the targets' start plane
+/// (their minimum along the axis) at their centroid in the other two directions, plus the
+/// axis's unit direction. Distances are measured from that plane, so the handle sits exactly
+/// at `anchor + dir * distance`. `None` without a resolvable axis or any meshed target.
+pub fn repeat_gizmo_anchor(
+    doc: &Document,
+    targets: &[usize],
+    axis: crate::model::RevolveAxis,
+) -> Option<(Vec3, Vec3)> {
+    let (_, dir) = axis_world(doc, axis)?;
+    let mut sum = Vec3::ZERO;
+    let mut n = 0u32;
+    let mut min_p = f32::INFINITY;
+    for &bi in targets {
+        let mesh = body_solid_mesh(doc, bi)?;
+        for p in mesh.triangles.iter().flatten() {
+            sum += *p;
+            n += 1;
+            min_p = min_p.min(p.dot(dir));
+        }
+    }
+    if n == 0 || !min_p.is_finite() {
+        return None;
+    }
+    let centroid = sum / n as f32;
+    Some((centroid - dir * (centroid.dot(dir) - min_p), dir))
+}
+
 pub fn repeat_extent(doc: &Document, op: &crate::model::RepeatOperation) -> Option<f32> {
     let (_, dir) = axis_world(doc, op.axis)?;
     let mut min_p = f32::INFINITY;
@@ -4525,6 +4553,37 @@ fn extrude_profile_with_treatments(
 mod tests {
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
+
+    /// #644: the distance gizmo hangs off the targets' **start** plane along the axis, centred
+    /// on them in the other two directions, so the handle sits at `anchor + dir * distance`.
+    #[test]
+    fn repeat_gizmo_anchor_sits_on_the_start_plane() {
+        let mut doc = Document::default();
+        // A triangle spanning x in [10, 30], y in [0, 4], flat at z = 0.
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(30.0, 0.0, 0.0),
+                Vec3::new(20.0, 6.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let (anchor, dir) = repeat_gizmo_anchor(&doc, &[0], crate::model::RevolveAxis::X)
+            .expect("anchor resolves");
+        assert_eq!(dir, Vec3::X);
+        // Along X the anchor pins to the minimum (10); across it, the centroid (y = 2).
+        assert!((anchor.x - 10.0).abs() < 1e-4, "start plane, got {anchor:?}");
+        assert!((anchor.y - 2.0).abs() < 1e-4, "centroid across the axis, got {anchor:?}");
+        // No targets, or an axis that can't resolve, gives no gizmo.
+        assert!(repeat_gizmo_anchor(&doc, &[], crate::model::RevolveAxis::X).is_none());
+        assert!(repeat_gizmo_anchor(&doc, &[0], crate::model::RevolveAxis::Line(9)).is_none());
+    }
 
     /// #643: a body feature edge resolves as an axis (origin `a`, unit direction `a → b`) and
     /// goes dead with the body it was picked on.

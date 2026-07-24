@@ -22,6 +22,9 @@ wall, teeth on a rack.
    parameters work. Ghost previews show the pattern.
 4. Press **Enter**.
 
+A **distance handle** sits on the pattern along the axis: click it to grab, move the mouse to
+drag the distance out, click again to drop it.
+
 Count, Offset and Distance are interlinked: two are yours to set and the third is computed.
 A **green lock** marks the computed one; click a grey lock to move it there. Clicking the
 **Offset** or **Distance** label (or its icon) switches how that value is measured.

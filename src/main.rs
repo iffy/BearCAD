@@ -1626,6 +1626,9 @@ struct App {
     /// closure may run on a later frame than the click itself).
     viewport_context_menu: Option<ViewportContextMenu>,
     extrude_gizmo_drag: Option<ExtrudeGizmoDrag>,
+    /// Grab state for the Repeat tool's distance gizmo (#644): the same click-to-grab handle
+    /// the Extrude tool uses, dragged along the repeat axis to set the fill distance.
+    repeat_gizmo_drag: Option<ExtrudeGizmoDrag>,
     /// Object the extrude gizmo is currently snapped to (applied on release).
     pending_extrude_target: Option<model::ExtrudeTarget>,
     /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
@@ -2430,6 +2433,7 @@ impl App {
             drawing_text_anchor: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
+            repeat_gizmo_drag: None,
             pending_extrude_target: None,
             extrude_target_pick: false,
             vertex_treatment_gizmo_drag: None,
@@ -6335,6 +6339,11 @@ impl App {
             self.state.apply(Action::CommitRepeat);
             return;
         }
+        // The distance gizmo (#644) owns the click while it's grabbed, and grabs on a click
+        // over its handle — so it has to run before the pick path below.
+        if self.handle_repeat_distance_gizmo(ui, project, pointer_screen) {
+            return;
+        }
         if !ui.input(|i| i.pointer.primary_pressed()) {
             return;
         }
@@ -6379,6 +6388,125 @@ impl App {
             cr.targets.push(bi);
         }
         self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+    }
+
+    /// The Repeat tool's **distance gizmo** (#644): the same click-to-grab handle the Extrude
+    /// tool uses, hanging off the targets' start plane along the repeat axis. One click grabs
+    /// it, it then follows the cursor (no held button) writing the Distance field live, and the
+    /// next click releases it. Returns `true` when the gizmo consumed this frame's click, so the
+    /// caller's pick path stands down.
+    fn handle_repeat_distance_gizmo(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+    ) -> bool {
+        // The gizmo can't outlive the repeat it belongs to.
+        if self.state.creating_repeat.is_none() {
+            self.repeat_gizmo_drag = None;
+            return false;
+        }
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let Some((anchor, dir, distance)) = self.repeat_distance_gizmo_geom() else {
+            self.repeat_gizmo_drag = None;
+            return false;
+        };
+        let following = self.repeat_gizmo_drag.is_some();
+        if !following {
+            let hovered = pointer_screen.is_some_and(|pp| {
+                construction::offset_gizmo_hit(pp, project, anchor, dir, distance)
+            });
+            if !(primary_pressed && hovered) {
+                return false;
+            }
+            let Some(pp) = pointer_screen else { return false };
+            self.repeat_gizmo_drag = Some(ExtrudeGizmoDrag {
+                start_screen: pp,
+                start_distance: distance,
+            });
+            // Grabbing the handle hands Distance to the gizmo: it becomes one of the two set
+            // variables (#257), and any typed-in focus is released so the dragged value isn't
+            // appended to.
+            if let Some(cr) = self.state.creating_repeat.as_mut() {
+                cr.touch_var(model::RepeatVar::Distance);
+            }
+            ui.ctx().memory_mut(|m| {
+                for label in ["Distance"] {
+                    m.surrender_focus(egui::Id::new(("repeat_var_field", label)));
+                }
+            });
+            return true;
+        }
+        // Following: track the cursor every frame, no button required.
+        if let (Some(pp), Some(drag)) = (pointer_screen, self.repeat_gizmo_drag) {
+            let new_distance = construction::offset_from_normal_drag(
+                anchor,
+                dir,
+                project,
+                drag.start_distance,
+                drag.start_screen,
+                pp,
+            );
+            let unit = self.state.doc.default_length_unit;
+            if let Some(cr) = self.state.creating_repeat.as_mut() {
+                cr.length = crate::value::format_length_display_in(new_distance.max(0.0), unit);
+                cr.touch_var(model::RepeatVar::Distance);
+            }
+        }
+        // A click while following just releases the handle; the repeat still commits on Enter.
+        if primary_pressed {
+            self.repeat_gizmo_drag = None;
+        }
+        true
+    }
+
+    /// Anchor, axis direction, and current distance for the Repeat tool's distance gizmo
+    /// (#644) — `None` until there's an axis, a meshed target, and a distance that evaluates.
+    fn repeat_distance_gizmo_geom(&self) -> Option<(Vec3, Vec3, f32)> {
+        let cr = self.state.creating_repeat.as_ref()?;
+        let axis = cr.axis?;
+        let (anchor, dir) = extrude::repeat_gizmo_anchor(&self.state.doc, &cr.targets, axis)?;
+        Some((anchor, dir, self.repeat_display_distance(cr)?))
+    }
+
+    /// The distance the gizmo shows: the Distance field when the user owns it, otherwise the
+    /// value the other two variables compute (#257) — so the handle sits at the real span
+    /// either way.
+    fn repeat_display_distance(&self, cr: &actions::CreatingRepeat) -> Option<f32> {
+        if cr.computed_var() != model::RepeatVar::Distance {
+            return crate::value::computed_length_in_doc(&cr.length, &self.state.doc);
+        }
+        let probe = self.repeat_probe_op(cr)?;
+        let offsets = extrude::repeat_offsets(&self.state.doc, &probe)?;
+        let last = offsets.last().copied().unwrap_or(0.0);
+        Some(if cr.distance_is_end {
+            last + extrude::repeat_extent(&self.state.doc, &probe)?
+        } else {
+            last
+        })
+    }
+
+    /// A throwaway [`model::RepeatOperation`] matching the in-progress repeat, for the
+    /// offset/extent math the pane and the gizmo both need.
+    fn repeat_probe_op(&self, cr: &actions::CreatingRepeat) -> Option<model::RepeatOperation> {
+        Some(model::RepeatOperation {
+            targets: cr.targets.clone(),
+            plane_targets: cr.plane_targets.clone(),
+            extrusion_targets: cr.extrusion_targets.clone(),
+            sketch_targets: cr.sketch_targets.clone(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis: cr.axis?,
+            mode: cr.mode,
+            count: cr.count.clone(),
+            spacing: cr.spacing.clone(),
+            length: cr.length.clone(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        })
     }
 
     /// In-sketch Repeat tool (#232): click sketch lines/circles to toggle them into the repeat
@@ -8383,24 +8511,7 @@ impl eframe::App for App {
                 .then(|| {
                     let cr = self.state.creating_repeat.as_ref();
                     let preview = cr.and_then(|c| {
-                        let probe = model::RepeatOperation {
-                            targets: c.targets.clone(),
-                            plane_targets: c.plane_targets.clone(),
-                            extrusion_targets: c.extrusion_targets.clone(),
-                            sketch_targets: c.sketch_targets.clone(),
-                            sketch_plane_outputs: Vec::new(),
-                            sketch_outputs: Vec::new(),
-                            axis: c.axis?,
-                            mode: c.mode,
-                            count: c.count.clone(),
-                            spacing: c.spacing.clone(),
-                            length: c.length.clone(),
-                            length_target: None,
-                            outputs: Vec::new(),
-                            plane_outputs: Vec::new(),
-                            name: None,
-                            deleted: false,
-                        };
+                        let probe = self.repeat_probe_op(c)?;
                         (!c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
                             .then(|| crate::extrude::repeat_offsets(&self.state.doc, &probe))
                             .flatten()
@@ -8409,24 +8520,7 @@ impl eframe::App for App {
                     // The value of the computed variable (#257): derived from the offsets + the
                     // targets' along-axis extent L.
                     let computed_value = cr.and_then(|c| {
-                        let probe = model::RepeatOperation {
-                            targets: c.targets.clone(),
-                            plane_targets: c.plane_targets.clone(),
-                            extrusion_targets: c.extrusion_targets.clone(),
-                            sketch_targets: c.sketch_targets.clone(),
-                            sketch_plane_outputs: Vec::new(),
-                            sketch_outputs: Vec::new(),
-                            axis: c.axis?,
-                            mode: c.mode,
-                            count: c.count.clone(),
-                            spacing: c.spacing.clone(),
-                            length: c.length.clone(),
-                            length_target: None,
-                            outputs: Vec::new(),
-                            plane_outputs: Vec::new(),
-                            name: None,
-                            deleted: false,
-                        };
+                        let probe = self.repeat_probe_op(c)?;
                         let offsets = crate::extrude::repeat_offsets(&self.state.doc, &probe)?;
                         let l = crate::extrude::repeat_extent(&self.state.doc, &probe)?;
                         let unit = self.state.doc.default_length_unit;
@@ -17980,6 +18074,23 @@ impl App {
                         hovered,
                     });
                 }
+            }
+        }
+        // Repeat tool (#644): the distance gizmo, drawn through the same arrow+handle the
+        // Extrude tool uses — grab it to drag the fill distance out along the repeat axis.
+        if self.state.tool == Tool::Repeat && self.state.sketch_session.is_none() {
+            if let Some((anchor, dir, distance)) = self.repeat_distance_gizmo_geom() {
+                let hovered = self.repeat_gizmo_drag.is_some()
+                    || pointer_screen.is_some_and(|pp| {
+                        construction::offset_gizmo_hit(pp, &project, anchor, dir, distance)
+                    });
+                extrude_gizmo = Some(gpu_viewport::ViewportExtrudeGizmo {
+                    origin: anchor,
+                    normal: dir,
+                    offset: distance,
+                    color: col::PREVIEW,
+                    hovered,
+                });
             }
         }
         // Mirror tool (#604/#605): outside a sketch, hover-highlight exactly what a click would
