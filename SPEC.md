@@ -164,7 +164,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   click pins one point on the rim and the cursor drags to the diametrically opposite rim point,
   the two clicks spanning a diameter). It is a persisted tool setting
   (`AppState::circle_anchor`, `Action::SetCircleAnchor`); pressing **O** while already on the
-  Circle tool (and not mid-draw) **toggles** it (the same key that selects the tool). The
+  Circle tool (and not mid-draw) **toggles** it (the same key that selects the tool); the radio
+  shows in 3D as well as in a sketch (#635). The
   diameter input constrains the circle in both modes. `CreatingCircle::center_local`/`radius`
   resolve the centre and radius for the preview, the live diameter, and the commit — in edge
   mode the centre is the midpoint of the two rim points, so a snapped first edge only positions
@@ -266,7 +267,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   midpoint snap), deduped against existing constraints. A point-on-axis snap is a point-on-line
   coincidence against the origin axis, pinning that coordinate to 0. A ring marks the active
   snap. Snapping is toggleable from the context pane and the toggle only appears for tools that
-  snap (Select, Line, Rectangle, Circle) while a sketch is open. The origin (`SceneElement::Origin`,
+  snap (Select, Line, Rectangle, Circle); the Select tool shows it only while a sketch is open,
+  while the three drawing tools show it in 3D too (#636) so their context sections read the same
+  either way — the setting is sticky and carries into the sketch their first click opens. The
+  origin (`SceneElement::Origin`,
   drawn as a small marker where the axes cross) and the origin axes (`ConstraintLine::OriginAxis`)
   are also directly viewport-selectable in the constraint tool — not just reachable by snapping —
   so a point can be constrained coincident with the origin, or onto an axis, by clicking them. A

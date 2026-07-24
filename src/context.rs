@@ -686,6 +686,12 @@ pub fn tool_uses_snapping(tool: Tool) -> bool {
     )
 }
 
+/// The sketch-entity drawing tools (#636). Their context sections are identical in 3D and
+/// inside a sketch — in 3D the first click just opens the sketch they draw into.
+pub fn is_draw_tool(tool: Tool) -> bool {
+    matches!(tool, Tool::Line | Tool::Rectangle | Tool::Circle)
+}
+
 /// Tri-state value for a property shared by multiple targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriState {
@@ -1198,8 +1204,13 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let tool_title = tool_context_title(input);
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
-    let snapping =
-        (input.in_sketch && tool_uses_snapping(input.tool)).then_some(input.snapping_enabled);
+    // Snapping shows for the drawing tools in 3D as well as in a sketch (#636): the
+    // Rectangle/Line/Circle sections read identically either way, and the toggle is sticky,
+    // so setting it in 3D carries into the sketch the first click opens. The Select tool
+    // keeps its sketch-only toggle — there's nothing to snap while picking in 3D.
+    let snapping = (tool_uses_snapping(input.tool)
+        && (input.in_sketch || is_draw_tool(input.tool)))
+    .then_some(input.snapping_enabled);
     // #505: always show New/Add/Cut while extruding (Add/Cut need a host body candidate).
     let extrude_body = input.extrude_body_mode.map(|mode| {
         let merge_body = input.extrude_merge_candidate;
@@ -1559,8 +1570,10 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_title,
             name,
             curve_mode: None,
-            rect_anchor: None,
-            circle_anchor: None,
+            // The Anchor row (centre+radius vs edge-to-edge) rides along here (#635) — it
+            // used to be dropped, hiding a mode that `O` could still toggle blind.
+            rect_anchor: input.rect_anchor,
+            circle_anchor: input.circle_anchor,
             tangent_constraint: None,
             construction: Some(ConstructionControl {
                 value: tri_state_from_bool(construction),
@@ -4683,6 +4696,64 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+        }
+    }
+
+    /// #635: the Circle tool's Anchor row (centre+radius vs edge-to-edge) survives the
+    /// circle branch of the pane builder — it used to be dropped, so the toggle never
+    /// appeared even though the anchor mode itself worked.
+    #[test]
+    fn circle_tool_shows_the_anchor_row() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        for in_sketch in [false, true] {
+            let content = context_pane_content(&ContextInput {
+                tool: Tool::Circle,
+                draw_circle_construction: Some(false),
+                circle_anchor: Some(crate::actions::CircleAnchor::Edge),
+                in_sketch,
+                ..input(&doc, &selection)
+            });
+            assert_eq!(
+                content.circle_anchor,
+                Some(crate::actions::CircleAnchor::Edge),
+                "Circle tool shows its Anchor row (in_sketch={in_sketch})"
+            );
+        }
+    }
+
+    /// #636: the Rectangle/Line/Circle context sections read the same in 3D as they do
+    /// inside a sketch — the Snapping toggle used to be sketch-only.
+    #[test]
+    fn draw_tools_show_the_same_pane_in_3d_and_in_sketch() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        for (tool, ctor) in [
+            (Tool::Rectangle, "rect"),
+            (Tool::Line, "line"),
+            (Tool::Circle, "circle"),
+        ] {
+            let build = |in_sketch: bool| {
+                context_pane_content(&ContextInput {
+                    tool,
+                    draw_rect_construction: (tool == Tool::Rectangle).then_some(false),
+                    draw_line_construction: (tool == Tool::Line).then_some(false),
+                    draw_circle_construction: (tool == Tool::Circle).then_some(false),
+                    rect_anchor: (tool == Tool::Rectangle)
+                        .then_some(crate::actions::RectAnchor::Corner),
+                    circle_anchor: (tool == Tool::Circle)
+                        .then_some(crate::actions::CircleAnchor::Center),
+                    draw_line_curve_mode: (tool == Tool::Line).then_some(false),
+                    draw_line_tangent_constraint: (tool == Tool::Line).then_some(false),
+                    in_sketch,
+                    ..input(&doc, &selection)
+                })
+            };
+            assert_eq!(build(false), build(true), "{ctor} tool pane matches in 3D");
+            assert!(
+                build(false).snapping.is_some(),
+                "{ctor} tool shows Snapping in 3D"
+            );
         }
     }
 
