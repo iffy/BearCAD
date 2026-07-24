@@ -10001,7 +10001,14 @@ impl eframe::App for App {
                             ui.add_space(4.0);
                             let can_submit =
                                 !window.text.trim().is_empty() && window.pending.is_none();
-                            if ui.add_enabled(can_submit, egui::Button::new("Submit")).clicked() {
+                            // Cmd/Ctrl+Enter submits from inside the textbox (#634).
+                            let hotkey = can_submit
+                                && ui.input_mut(|i| {
+                                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                                });
+                            if ui.add_enabled(can_submit, egui::Button::new("Submit")).clicked()
+                                || hotkey
+                            {
                                 submit = Some((
                                     window.text.trim().to_string(),
                                     window.include_screenshot,
