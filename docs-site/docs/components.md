@@ -46,6 +46,10 @@ graph, so hiding a category (say, sketches) thins out either view the same way.
 element, add it to a drawing, export a body, move it to a component, roll back to it, or
 delete it.
 
+Nodes are draggable, and the graph always keeps its flow readable: an element's inputs
+stay **above** it and its outputs stay **below** it. Drag a node past one of its
+neighbors and the neighbors slide out of the way to preserve that order.
+
 ## Rolling back
 
 Right-click any element in the Elements pane and open the **Rollback** submenu:

@@ -953,6 +953,9 @@ pub struct GraphLayout {
     /// Persistent per-node drag offsets (#451): the user can grab any node and move it;
     /// the offset adds to the computed layout position so physics/declutter still run.
     drag_offsets: HashMap<HierarchyNode, egui::Vec2>,
+    /// The node currently being dragged, if any (#622): the layering enforcement treats it
+    /// as authoritative, pushing *other* nodes out of the way instead of snapping it back.
+    active_drag: Option<HierarchyNode>,
 }
 
 /// One node's live physics state in [`GraphLayout`]: current position and velocity.
@@ -1169,6 +1172,42 @@ impl GraphLayout {
 
     fn pos_of(&self, node: HierarchyNode) -> Option<egui::Vec2> {
         self.nodes.get(&node).map(|s| s.pos)
+    }
+}
+
+/// Enforce the Graph view's layering rule (#622) on proposed node ys: every
+/// `(input, consumer)` edge keeps the input at least `gap` above its consumer — inputs
+/// always render above the thing they feed, outputs always below what makes them. The
+/// node being dragged (if any) is authoritative: violations against it push the *other*
+/// node out of the way (its inputs slide up, its consumers slide down) instead of the
+/// dragged node snapping back, so the graph moves in response to the drag. Everything
+/// else resolves downward (consumers pushed below their inputs). Bounded relaxation, so
+/// even a (malformed) cyclic edge set terminates.
+fn enforce_graph_layering(
+    ys: &mut HashMap<HierarchyNode, f32>,
+    edges: &[(HierarchyNode, HierarchyNode)],
+    dragging: Option<HierarchyNode>,
+    gap: f32,
+) {
+    let passes = ys.len().max(8);
+    for _ in 0..passes {
+        let mut changed = false;
+        for (input, consumer) in edges {
+            let (Some(&yi), Some(&yc)) = (ys.get(input), ys.get(consumer)) else {
+                continue;
+            };
+            if yc < yi + gap {
+                if dragging == Some(*consumer) {
+                    ys.insert(*input, yc - gap);
+                } else {
+                    ys.insert(*consumer, yi + gap);
+                }
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }
 
@@ -3548,8 +3587,35 @@ fn show_graph_view(
         base + row_of(n) as f32 * ROW_H
     };
 
+    // Enforced layering (#622): start from the band layout plus each node's drag offset,
+    // then push nodes apart until every input sits above its consumers — tree parents and
+    // dependency inputs alike — with the actively-dragged node authoritative, so the graph
+    // reshuffles in response to a drag instead of ever showing an input below its consumer.
+    let mut final_y: HashMap<HierarchyNode, f32> = positions
+        .iter()
+        .map(|p| (p.node, node_y(&p.node) + graph_layout.drag_offset(p.node).y))
+        .collect();
+    let mut layer_edges: Vec<(HierarchyNode, HierarchyNode)> = positions
+        .iter()
+        .filter_map(|p| p.parent.map(|parent| (parent, p.node)))
+        .collect();
+    for (input, consumer) in graph_dependency_edges(doc) {
+        if final_y.contains_key(&input) && final_y.contains_key(&consumer) {
+            layer_edges.push((input, consumer));
+        }
+    }
+    enforce_graph_layering(&mut final_y, &layer_edges, graph_layout.active_drag, ROW_H * 0.6);
+    // Inputs pushed above the top edge would clip; slide everything down instead.
+    let min_y = final_y.values().fold(f32::MAX, |m, y| m.min(*y));
+    if min_y.is_finite() && min_y < 0.0 {
+        for y in final_y.values_mut() {
+            *y -= min_y;
+        }
+    }
+    let max_y = final_y.values().fold(0.0f32, |m, y| m.max(*y));
+
     let content_width = available_width;
-    let content_height = acc + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS;
+    let content_height = max_y.max(acc) + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS + ROW_H;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -3564,8 +3630,13 @@ fn show_graph_view(
                 .collect();
             let pos_of = |node: HierarchyNode| -> egui::Pos2 {
                 let x = display.get(&node).map(|(x, _)| *x).unwrap_or(GRAPH_MARGIN);
-                let offset = drag_offsets.get(&node).copied().unwrap_or(egui::Vec2::ZERO);
-                egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + node_y(&node)) + offset
+                // The drag offset's y is already folded into the layering-enforced
+                // `final_y` (#622); only x applies directly.
+                let dx = drag_offsets.get(&node).map(|o| o.x).unwrap_or(0.0);
+                egui::pos2(
+                    rect.left() + x + dx,
+                    rect.top() + TOP_PADDING + final_y.get(&node).copied().unwrap_or(0.0),
+                )
             };
             let mut dragged_delta: Option<(HierarchyNode, egui::Vec2)> = None;
 
@@ -3770,7 +3841,10 @@ fn show_graph_view(
             }
             if let Some((node, delta)) = dragged_delta {
                 graph_layout.add_drag_offset(node, delta);
+                graph_layout.active_drag = Some(node);
                 ui.ctx().request_repaint();
+            } else {
+                graph_layout.active_drag = None;
             }
         });
 }
@@ -4508,6 +4582,29 @@ fn component_member_node(node: HierarchyNode) -> bool {
 mod tests {
     use super::*;
     use crate::model::ShapeKind;
+
+    /// #622: layering enforcement — inputs always end up above consumers; a dragged
+    /// consumer pushes its input up instead of snapping back; without a drag, violated
+    /// chains resolve downward.
+    #[test]
+    fn graph_layering_enforcement_keeps_inputs_above_consumers() {
+        let a = HierarchyNode::Sketch(0);
+        let b = HierarchyNode::Extrusion(0);
+        let c = HierarchyNode::Body(0);
+        let edges = vec![(a, b), (b, c)];
+        // b dragged above its input a: a slides up; c stays below b.
+        let mut ys: HashMap<HierarchyNode, f32> =
+            [(a, 100.0), (b, 40.0), (c, 60.0)].into_iter().collect();
+        enforce_graph_layering(&mut ys, &edges, Some(b), 30.0);
+        assert!(ys[&a] <= ys[&b] - 30.0, "dragged consumer pushes its input up");
+        assert!(ys[&c] >= ys[&b] + 30.0, "output stays below its producer");
+        // No drag: the chain resolves downward from the input.
+        let mut ys: HashMap<HierarchyNode, f32> =
+            [(a, 100.0), (b, 0.0), (c, 0.0)].into_iter().collect();
+        enforce_graph_layering(&mut ys, &edges, None, 30.0);
+        assert!(ys[&b] >= ys[&a] + 30.0);
+        assert!(ys[&c] >= ys[&b] + 30.0);
+    }
 
     /// #448/#449: every operation's inputs appear as graph dependency edges — the
     /// repeat's input body was the reported gap.
