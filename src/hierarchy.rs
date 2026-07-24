@@ -1173,6 +1173,15 @@ impl GraphLayout {
     fn pos_of(&self, node: HierarchyNode) -> Option<egui::Vec2> {
         self.nodes.get(&node).map(|s| s.pos)
     }
+
+    /// Clamp a node's banked drag offset so it never encodes an upward drag the layering
+    /// rule refuses to honour (#638) — otherwise the slack has to be paid back before
+    /// dragging down moves anything.
+    fn clamp_drag_offset_y(&mut self, node: HierarchyNode, floor: f32) {
+        if let Some(offset) = self.drag_offsets.get_mut(&node) {
+            offset.y = offset.y.max(floor);
+        }
+    }
 }
 
 /// Enforce the Graph view's layering rule (#622) on proposed node ys: every
@@ -1183,12 +1192,39 @@ impl GraphLayout {
 /// dragged node snapping back, so the graph moves in response to the drag. Everything
 /// else resolves downward (consumers pushed below their inputs). Bounded relaxation, so
 /// even a (malformed) cyclic edge set terminates.
+///
+/// That upward shove is bounded by `top` (#638): a dragged node needs one `gap` of headroom
+/// per link in its longest input chain, so once the topmost input reaches `top` the whole
+/// chain — dragged node included — stops instead of sliding off the top of the pane.
 fn enforce_graph_layering(
     ys: &mut HashMap<HierarchyNode, f32>,
     edges: &[(HierarchyNode, HierarchyNode)],
     dragging: Option<HierarchyNode>,
     gap: f32,
+    top: f32,
 ) {
+    // Authority propagates up the whole input chain, not just one edge (#638): a node shoved
+    // up to clear the dragged node must in turn shove *its* inputs up, or the two rules fight
+    // and the chain never settles.
+    let mut authoritative: HashSet<HierarchyNode> = HashSet::new();
+    if let Some(node) = dragging {
+        let floor = top + gap * input_chain_depth(node, edges) as f32;
+        if let Some(y) = ys.get_mut(&node) {
+            *y = y.max(floor);
+        }
+        authoritative.insert(node);
+        for _ in 0..ys.len().max(1) {
+            let before = authoritative.len();
+            for (input, consumer) in edges {
+                if authoritative.contains(consumer) {
+                    authoritative.insert(*input);
+                }
+            }
+            if authoritative.len() == before {
+                break;
+            }
+        }
+    }
     let passes = ys.len().max(8);
     for _ in 0..passes {
         let mut changed = false;
@@ -1197,7 +1233,7 @@ fn enforce_graph_layering(
                 continue;
             };
             if yc < yi + gap {
-                if dragging == Some(*consumer) {
+                if authoritative.contains(consumer) {
                     ys.insert(*input, yc - gap);
                 } else {
                     ys.insert(*consumer, yi + gap);
@@ -1209,6 +1245,43 @@ fn enforce_graph_layering(
             break;
         }
     }
+}
+
+/// How many links long `node`'s **longest** chain of inputs is, following `(input, consumer)`
+/// edges backwards (#638). That's the headroom the node needs above it: each link occupies one
+/// layering gap, so a node this many gaps below the top edge can rise no further without
+/// pushing an ancestor off the top. A (malformed) cycle is cut by the visiting set.
+fn input_chain_depth(node: HierarchyNode, edges: &[(HierarchyNode, HierarchyNode)]) -> usize {
+    let mut inputs: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
+    for (input, consumer) in edges {
+        inputs.entry(*consumer).or_default().push(*input);
+    }
+    fn walk(
+        node: HierarchyNode,
+        inputs: &HashMap<HierarchyNode, Vec<HierarchyNode>>,
+        memo: &mut HashMap<HierarchyNode, usize>,
+        visiting: &mut HashSet<HierarchyNode>,
+    ) -> usize {
+        if let Some(&d) = memo.get(&node) {
+            return d;
+        }
+        if !visiting.insert(node) {
+            return 0;
+        }
+        let depth = inputs
+            .get(&node)
+            .map(|ins| {
+                ins.iter()
+                    .map(|i| 1 + walk(*i, inputs, memo, visiting))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        visiting.remove(&node);
+        memo.insert(node, depth);
+        depth
+    }
+    walk(node, &inputs, &mut HashMap::new(), &mut HashSet::new())
 }
 
 /// The [`HierarchyNode`] for a [`SceneElement`] — the inverse of [`scene_element_for_node`]
@@ -3605,14 +3678,22 @@ fn show_graph_view(
             layer_edges.push((input, consumer));
         }
     }
-    enforce_graph_layering(&mut final_y, &layer_edges, graph_layout.active_drag, ROW_H * 0.6);
-    // Inputs pushed above the top edge would clip; slide everything down instead.
+    const LAYER_GAP: f32 = ROW_H * 0.6;
+    enforce_graph_layering(&mut final_y, &layer_edges, graph_layout.active_drag, LAYER_GAP, 0.0);
+    // A node dragged up stops once its input chain reaches the top (#638); anything else that
+    // still lands above the top edge would clip, so slide everything down instead.
     let min_y = final_y.values().fold(f32::MAX, |m, y| m.min(*y));
     if min_y.is_finite() && min_y < 0.0 {
         for y in final_y.values_mut() {
             *y -= min_y;
         }
     }
+    // The same floor applied to the *stored* drag offset (#638), so a drag that has run into
+    // the top edge doesn't bank up invisible slack that swallows the first pixels of dragging
+    // back down.
+    let drag_offset_floor = |node: HierarchyNode| -> f32 {
+        LAYER_GAP * input_chain_depth(node, &layer_edges) as f32 - node_y(&node)
+    };
     let max_y = final_y.values().fold(0.0f32, |m, y| m.max(*y));
 
     let content_width = available_width;
@@ -3842,6 +3923,7 @@ fn show_graph_view(
             }
             if let Some((node, delta)) = dragged_delta {
                 graph_layout.add_drag_offset(node, delta);
+                graph_layout.clamp_drag_offset_y(node, drag_offset_floor(node));
                 graph_layout.active_drag = Some(node);
                 ui.ctx().request_repaint();
             } else {
@@ -4596,15 +4678,56 @@ mod tests {
         // b dragged above its input a: a slides up; c stays below b.
         let mut ys: HashMap<HierarchyNode, f32> =
             [(a, 100.0), (b, 40.0), (c, 60.0)].into_iter().collect();
-        enforce_graph_layering(&mut ys, &edges, Some(b), 30.0);
+        enforce_graph_layering(&mut ys, &edges, Some(b), 30.0, f32::NEG_INFINITY);
         assert!(ys[&a] <= ys[&b] - 30.0, "dragged consumer pushes its input up");
         assert!(ys[&c] >= ys[&b] + 30.0, "output stays below its producer");
         // No drag: the chain resolves downward from the input.
         let mut ys: HashMap<HierarchyNode, f32> =
             [(a, 100.0), (b, 0.0), (c, 0.0)].into_iter().collect();
-        enforce_graph_layering(&mut ys, &edges, None, 30.0);
+        enforce_graph_layering(&mut ys, &edges, None, 30.0, f32::NEG_INFINITY);
         assert!(ys[&b] >= ys[&a] + 30.0);
         assert!(ys[&c] >= ys[&b] + 30.0);
+    }
+
+    /// #638: dragging a node up shoves its inputs up ahead of it, but only until the
+    /// topmost input reaches the top edge — then the whole chain (dragged node included)
+    /// stops rather than sliding the graph off the top.
+    #[test]
+    fn graph_layering_stops_a_drag_once_its_inputs_hit_the_top() {
+        let a = HierarchyNode::Sketch(0);
+        let b = HierarchyNode::Extrusion(0);
+        let c = HierarchyNode::Body(0);
+        let edges = vec![(a, b), (b, c)];
+        // c is dragged far above the top. It has two inputs stacked above it (a → b → c),
+        // so it can rise no further than 2 gaps below the top.
+        let mut ys: HashMap<HierarchyNode, f32> =
+            [(a, 100.0), (b, 130.0), (c, -500.0)].into_iter().collect();
+        enforce_graph_layering(&mut ys, &edges, Some(c), 30.0, 0.0);
+        assert_eq!(ys[&a], 0.0, "the topmost input pins to the top edge");
+        assert_eq!(ys[&b], 30.0);
+        assert_eq!(ys[&c], 60.0, "the dragged node stops below its input chain");
+        // A node with no inputs can go all the way to the top, but no further.
+        let mut ys: HashMap<HierarchyNode, f32> =
+            [(a, -500.0), (b, 130.0), (c, 160.0)].into_iter().collect();
+        enforce_graph_layering(&mut ys, &edges, Some(a), 30.0, 0.0);
+        assert_eq!(ys[&a], 0.0, "an input-less node stops at the top edge");
+    }
+
+    /// #638: the headroom a node needs is its **longest** input chain, and a (malformed)
+    /// cycle still terminates.
+    #[test]
+    fn input_chain_depth_uses_the_longest_chain() {
+        let a = HierarchyNode::Sketch(0);
+        let b = HierarchyNode::Sketch(1);
+        let c = HierarchyNode::Extrusion(0);
+        let d = HierarchyNode::Body(0);
+        // a → c → d and b → d: d's longest chain is a → c → d, i.e. 2 above it.
+        let edges = vec![(a, c), (c, d), (b, d)];
+        assert_eq!(input_chain_depth(a, &edges), 0);
+        assert_eq!(input_chain_depth(c, &edges), 1);
+        assert_eq!(input_chain_depth(d, &edges), 2);
+        let cyclic = vec![(a, b), (b, a)];
+        let _ = input_chain_depth(a, &cyclic); // terminates
     }
 
     /// #448/#449: every operation's inputs appear as graph dependency edges — the
