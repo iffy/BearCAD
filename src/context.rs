@@ -244,6 +244,9 @@ pub struct MoveControl {
     pub targets: Vec<usize>,
     /// Snap (default) or free translation (#648) — the Translate dropdown.
     pub translate_mode: crate::model::MoveTranslateMode,
+    /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
+    /// other pickers is armed.
+    pub bodies_focused: bool,
     /// The picked source point's label, if any (#649), and whether its picker is armed.
     pub source_point_rows: Vec<String>,
     pub source_point_focused: bool,
@@ -1412,12 +1415,14 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }
     }
     if let Some(m) = input.move_op.as_ref() {
+        // Exactly one Move picker reads as focused (#658): the Bodies picker only while the
+        // step-through hasn't moved on to a point/axis/alignment picker.
         tool_pickers.push(body_tool_picker(
             "Bodies",
             PickerTarget::MoveTargets,
             &m.targets,
             None,
-            true,
+            m.bodies_focused,
         ));
     }
     if let Some(m) = input.mirror_op.as_ref() {
@@ -5475,6 +5480,7 @@ mod tests {
             in_drawing_workbench: false,
             move_op: Some(MoveControl {
                 translate_mode: crate::model::MoveTranslateMode::Free,
+                bodies_focused: true,
                 rotate_mode: crate::model::MoveRotateMode::Free,
                 rotation_point_rows: Vec::new(),
                 rotation_point_focused: false,

@@ -436,15 +436,23 @@ fn align_ref_rows(align: &model::MoveAlignRef) -> Vec<String> {
     rows
 }
 
-/// Which of the Move tool's two point pickers a viewport click is arming (#649/#650).
+/// Which of the Move tool's pickers the next viewport click feeds (#656). Exactly one is
+/// active at a time — it's what the pane draws a focus ring around and what the viewport
+/// hover-highlights, so what lights up is always what a click takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MovePointSlot {
+enum MoveFocus {
+    /// The bodies being moved.
+    Bodies,
     /// A point on one of the **moving** bodies (#649).
-    Source,
+    SourcePoint,
     /// A point on **stationary** geometry the source lands on (#650).
-    Target,
+    TargetPoint,
     /// The point the rotation turns about (#651) — either side of the fence is fine.
-    Rotation,
+    RotationPoint,
+    /// One of Free Rotate's three axis slots (#652).
+    RotationAxis(usize),
+    /// Snap Rotate's face+edge on the moving bodies (`true`) or on stationary geometry (#653).
+    RotateAlign(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1658,16 +1666,9 @@ struct App {
     /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
     /// click on a plane/face sets the extrusion's target instead of toggling a profile face.
     extrude_target_pick: bool,
-    /// Armed by focusing the Move pane's Source/Target point picker (#649/#650): the next
-    /// viewport click on a body corner or edge takes that point.
-    move_point_pick: Option<MovePointSlot>,
-    /// Armed by focusing one of Free Rotate's three axis pickers (#652): the next viewport
-    /// click on a line, body edge, or origin axis sets that slot's axis.
-    move_rotation_axis_pick: Option<usize>,
-    /// Armed by focusing one of Snap Rotate's face+edge pickers (#653): `Some(true)` for the
-    /// source (on a moving body), `Some(false)` for the target. Each click takes a face or an
-    /// edge, filling whichever half is still empty.
-    move_align_pick: Option<bool>,
+    /// A Move picker the user focused **by hand** (#656/#658), overriding the automatic
+    /// step-through. Cleared once that picker is satisfied, handing the chain back.
+    move_focus_override: Option<MoveFocus>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -2474,9 +2475,7 @@ impl App {
             pending_extrude_target: None,
             extrude_target_pick: false,
             repeat_target_pick: false,
-            move_point_pick: None,
-            move_rotation_axis_pick: None,
-            move_align_pick: None,
+            move_focus_override: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -5845,35 +5844,28 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
-        // Point-pick mode (#649/#650), armed by focusing the pane's Source/Target point
-        // picker: this click takes a body corner or edge midpoint instead of toggling a body.
-        if let Some(slot) = self.move_point_pick {
-            // The source point must sit on a moving body and the target on a stationary one;
-            // the rotation point may be either (#651).
-            let side = match slot {
-                MovePointSlot::Source => Some(true),
-                MovePointSlot::Target => Some(false),
-                MovePointSlot::Rotation => None,
-            };
+        let focus = self.move_focus();
+        // Point pick (#649/#650/#651): the focused picker takes a body corner or edge midpoint
+        // instead of toggling a body. The source point must sit on a moving body and the
+        // target on a stationary one; the rotation point may be either.
+        if let Some((side, what)) = match focus {
+            MoveFocus::SourcePoint => Some((Some(true), "source")),
+            MoveFocus::TargetPoint => Some((Some(false), "target")),
+            MoveFocus::RotationPoint => Some((None, "rotation")),
+            _ => None,
+        } {
             match self.pick_move_point(pp, project, pick_occlusion, side) {
                 Some(point) => {
                     let label = self.move_point_label(&point);
                     if let Some(cm) = self.state.creating_move.as_mut() {
-                        match slot {
-                            MovePointSlot::Source => cm.source_point = Some(point),
-                            MovePointSlot::Target => cm.target_point = Some(point),
-                            MovePointSlot::Rotation => cm.rotation_point = Some(point),
+                        match focus {
+                            MoveFocus::SourcePoint => cm.source_point = Some(point),
+                            MoveFocus::TargetPoint => cm.target_point = Some(point),
+                            _ => cm.rotation_point = Some(point),
                         }
                     }
-                    self.move_point_pick = None;
-                    self.state.status = format!(
-                        "Move: {} point — {label}",
-                        match slot {
-                            MovePointSlot::Source => "source",
-                            MovePointSlot::Target => "target",
-                            MovePointSlot::Rotation => "rotation",
-                        }
-                    );
+                    self.release_satisfied_move_focus();
+                    self.state.status = format!("Move: {what} point — {label}");
                 }
                 // Missing the allowed geometry leaves the picker armed, so the user can try
                 // again without re-focusing it.
@@ -5897,7 +5889,7 @@ impl App {
         // Snap Rotate face/edge pick (#653), armed by focusing one of its two pickers: a body
         // edge fills the picker's edge half, anything else resolves to a face and fills the
         // face half. The source must sit on a moving body, the target on stationary geometry.
-        if let Some(is_source) = self.move_align_pick {
+        if let MoveFocus::RotateAlign(is_source) = focus {
             let moving_bodies: Vec<usize> = self
                 .state
                 .creating_move
@@ -5942,11 +5934,9 @@ impl App {
                         } else {
                             slot.face = Some(pair);
                         }
-                        // Both halves picked: the picker's work is done.
-                        if slot.is_complete() {
-                            self.move_align_pick = None;
-                        }
                     }
+                    // Both halves picked: hand the chain back.
+                    self.release_satisfied_move_focus();
                     self.state.status = format!(
                         "Move: rotation {} {what}",
                         if is_source { "source" } else { "target" }
@@ -5965,7 +5955,7 @@ impl App {
         // Free Rotate axis-pick mode (#652), armed by focusing one of the three axis pickers:
         // this click sets that slot from any straight reference — a sketch line, a body edge,
         // or an origin axis (the same set the Repeat tool's axis picker takes).
-        if let Some(slot) = self.move_rotation_axis_pick {
+        if let MoveFocus::RotationAxis(slot) = focus {
             if let Some(axis) = repeat_axis_from_pick(&target.kind, true) {
                 let label = names::revolve_axis_label(&self.state.doc, axis);
                 if let Some(cm) = self.state.creating_move.as_mut() {
@@ -5974,7 +5964,7 @@ impl App {
                         s => cm.extra_rotations[s - 1].axis = Some(axis),
                     }
                 }
-                self.move_rotation_axis_pick = None;
+                self.move_focus_override = None;
                 self.state.status = format!("Move: rotation axis {} — {label}", slot + 1);
             } else {
                 self.state.status = "Pick an edge, a sketch line, or an origin axis".to_string();
@@ -6653,6 +6643,30 @@ impl App {
             cr.targets.push(bi);
         }
         self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+    }
+
+    /// Which Move picker the next viewport click feeds (#656). A picker the user focused by
+    /// hand wins; otherwise the tool **steps through** its pickers on its own — bodies, then
+    /// the source point, then whatever the chosen Snap modes still need — so picking one thing
+    /// arms the next without a trip to the pane. The rotation point isn't in the chain: it
+    /// already reads "Source point" and only needs visiting to override that.
+    fn move_focus(&self) -> MoveFocus {
+        move_focus_for(self.state.creating_move.as_ref(), self.move_focus_override)
+    }
+
+    /// Drop a hand-picked Move focus once that picker has what it needs (#656), so the
+    /// automatic step-through takes over again.
+    fn release_satisfied_move_focus(&mut self) {
+        let Some(focus) = self.move_focus_override else {
+            return;
+        };
+        let Some(cm) = self.state.creating_move.as_ref() else {
+            self.move_focus_override = None;
+            return;
+        };
+        if move_focus_satisfied(cm, focus) {
+            self.move_focus_override = None;
+        }
     }
 
     /// The planar face under the cursor for a Snap Rotate alignment (#653), as
@@ -8827,19 +8841,23 @@ impl eframe::App for App {
                     && self.state.sketch_session.is_none())
                 .then(|| {
                     let cm = self.state.creating_move.as_ref();
+                    // Exactly one Move picker reads as focused (#656/#658): the one the next
+                    // viewport click feeds.
+                    let move_focus = self.move_focus();
                     context::MoveControl {
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
+                        bodies_focused: move_focus == MoveFocus::Bodies,
                         source_point_rows: cm
                             .and_then(|c| c.source_point)
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
-                        source_point_focused: self.move_point_pick == Some(MovePointSlot::Source),
+                        source_point_focused: move_focus == MoveFocus::SourcePoint,
                         target_point_rows: cm
                             .and_then(|c| c.target_point)
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
-                        target_point_focused: self.move_point_pick == Some(MovePointSlot::Target),
+                        target_point_focused: move_focus == MoveFocus::TargetPoint,
                         rotate_mode: cm.map(|c| c.rotate_mode).unwrap_or_default(),
                         rotation_point_rows: cm
                             .and_then(|c| c.rotation_point)
@@ -8847,8 +8865,7 @@ impl eframe::App for App {
                             // Empty means "the source point" (#651) — say so, rather than
                             // leaving the picker looking unset.
                             .unwrap_or_else(|| vec!["Source point".to_string()]),
-                        rotation_point_focused: self.move_point_pick
-                            == Some(MovePointSlot::Rotation),
+                        rotation_point_focused: move_focus == MoveFocus::RotationPoint,
                         rotation_slots: {
                             let label = |axis: Option<model::RevolveAxis>| {
                                 axis.map(|a| vec![names::revolve_axis_label(&self.state.doc, a)])
@@ -8867,14 +8884,20 @@ impl eframe::App for App {
                             let (a2, g2) = extra(1);
                             [(label(a0), g0), (label(a1), g1), (label(a2), g2)]
                         },
-                        rotation_axis_focused: self.move_rotation_axis_pick,
+                        rotation_axis_focused: match move_focus {
+                            MoveFocus::RotationAxis(slot) => Some(slot),
+                            _ => None,
+                        },
                         rotate_source_rows: cm
                             .map(|c| align_ref_rows(&c.rotate_source))
                             .unwrap_or_default(),
                         rotate_target_rows: cm
                             .map(|c| align_ref_rows(&c.rotate_target))
                             .unwrap_or_default(),
-                        rotate_align_focused: self.move_align_pick,
+                        rotate_align_focused: match move_focus {
+                            MoveFocus::RotateAlign(is_source) => Some(is_source),
+                            _ => None,
+                        },
                         rotate_orientation: cm.map(|c| c.rotate_orientation).unwrap_or(0),
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
@@ -9704,42 +9727,30 @@ impl eframe::App for App {
                 }
             }
             if let Some(edit) = move_edit {
-                // Which point picker is armed is App state, not move state (#649/#650).
+                // Clicking a picker overrides the automatic step-through (#656); clearing one
+                // or committing hands the chain back.
                 match edit {
                     context::MoveEdit::SourcePointFocus => {
-                        self.move_point_pick = Some(MovePointSlot::Source);
-                        self.move_rotation_axis_pick = None;
+                        self.move_focus_override = Some(MoveFocus::SourcePoint)
                     }
                     context::MoveEdit::TargetPointFocus => {
-                        self.move_point_pick = Some(MovePointSlot::Target);
-                        self.move_rotation_axis_pick = None;
+                        self.move_focus_override = Some(MoveFocus::TargetPoint)
                     }
                     context::MoveEdit::RotationPointFocus => {
-                        self.move_point_pick = Some(MovePointSlot::Rotation);
-                        self.move_rotation_axis_pick = None;
+                        self.move_focus_override = Some(MoveFocus::RotationPoint)
                     }
                     context::MoveEdit::RotationAxisFocus(slot) => {
-                        self.move_rotation_axis_pick = Some(slot);
-                        self.move_point_pick = None;
-                        self.move_align_pick = None;
+                        self.move_focus_override = Some(MoveFocus::RotationAxis(slot))
                     }
                     context::MoveEdit::RotateAlignFocus(is_source) => {
-                        self.move_align_pick = Some(is_source);
-                        self.move_point_pick = None;
-                        self.move_rotation_axis_pick = None;
+                        self.move_focus_override = Some(MoveFocus::RotateAlign(is_source))
                     }
-                    context::MoveEdit::ClearRotateAlign(_) => self.move_align_pick = None,
-                    context::MoveEdit::ClearRotationAxis(_) => {
-                        self.move_rotation_axis_pick = None
-                    }
-                    context::MoveEdit::ClearSourcePoint
+                    context::MoveEdit::ClearRotateAlign(_)
+                    | context::MoveEdit::ClearRotationAxis(_)
+                    | context::MoveEdit::ClearSourcePoint
                     | context::MoveEdit::ClearTargetPoint
-                    | context::MoveEdit::ClearRotationPoint => self.move_point_pick = None,
-                    context::MoveEdit::Commit => {
-                        self.move_point_pick = None;
-                        self.move_rotation_axis_pick = None;
-                        self.move_align_pick = None;
-                    }
+                    | context::MoveEdit::ClearRotationPoint
+                    | context::MoveEdit::Commit => self.move_focus_override = None,
                     _ => {}
                 }
                 match edit {
@@ -10339,6 +10350,9 @@ impl eframe::App for App {
                         }
                     }
                     context::PickerTarget::MoveTargets => {
+                        // Clicking the Bodies picker takes focus back off whichever picker the
+                        // step-through had armed (#656/#658).
+                        self.move_focus_override = Some(MoveFocus::Bodies);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
                         }
@@ -11248,10 +11262,73 @@ fn repeat_axis_from_pick(
     }
 }
 
+/// The Move picker a viewport click feeds (#656): the hand-picked `override` when there is
+/// one, else the first step the tool still needs. See [`App::move_focus`].
+fn move_focus_for(
+    creating: Option<&actions::CreatingMove>,
+    focus_override: Option<MoveFocus>,
+) -> MoveFocus {
+    if let Some(explicit) = focus_override {
+        return explicit;
+    }
+    let Some(cm) = creating else {
+        return MoveFocus::Bodies;
+    };
+    if cm.targets.is_empty() {
+        return MoveFocus::Bodies;
+    }
+    if cm.source_point.is_none() {
+        return MoveFocus::SourcePoint;
+    }
+    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.target_point.is_none() {
+        return MoveFocus::TargetPoint;
+    }
+    if cm.rotate_mode == model::MoveRotateMode::Snap {
+        if !cm.rotate_source.is_complete() {
+            return MoveFocus::RotateAlign(true);
+        }
+        if !cm.rotate_target.is_complete() {
+            return MoveFocus::RotateAlign(false);
+        }
+    }
+    MoveFocus::Bodies
+}
+
+/// Whether a hand-picked Move focus now has what it needs (#656), so the automatic
+/// step-through can take over again. See [`App::release_satisfied_move_focus`].
+fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
+    match focus {
+        MoveFocus::Bodies => false,
+        MoveFocus::SourcePoint => cm.source_point.is_some(),
+        MoveFocus::TargetPoint => cm.target_point.is_some(),
+        MoveFocus::RotationPoint => cm.rotation_point.is_some(),
+        MoveFocus::RotationAxis(slot) => match slot {
+            0 => cm.axis.is_some(),
+            s => cm.extra_rotations[s - 1].axis.is_some(),
+        },
+        MoveFocus::RotateAlign(true) => cm.rotate_source.is_complete(),
+        MoveFocus::RotateAlign(false) => cm.rotate_target.is_complete(),
+    }
+}
+
+/// What the Move tool's focused picker wants the viewport to hover-highlight (#659).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MovePickHover {
+    /// The Bodies picker: whole bodies, as for every other body-set tool.
+    Bodies,
+    /// A source/target/rotation point: body corners and edges.
+    Point,
+    /// A Free Rotate axis slot: straight references (lines, body edges, origin axes).
+    Axis,
+    /// A Snap Rotate alignment: faces and edges.
+    Align,
+}
+
 fn resolve_viewport_hover_highlight(
     suppress_hover: bool,
     tool: Tool,
     sketch_session: Option<SketchSession>,
+    move_pick: MovePickHover,
     repeat_axis_pick: bool,
     creating_plane: bool,
     editing_committed_dim: bool,
@@ -11426,6 +11503,41 @@ fn resolve_viewport_hover_highlight(
             crate::face::pick_body_face(pp, project, doc, cam.eye())
                 .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
                 .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
+        }
+        // Move tool with a sub-picker focused (#659): the click is for a point, axis, or
+        // alignment, so hover exactly that instead of the whole body — a corner or edge for a
+        // point pick, a straight reference for an axis, a face or edge for an alignment.
+        Tool::Move if move_pick != MovePickHover::Bodies && sketch_session.is_none() => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            if move_pick == MovePickHover::Point {
+                // A corner outranks the edge under it, matching the click path.
+                if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
+                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+                }
+            }
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            let wanted = match move_pick {
+                MovePickHover::Point | MovePickHover::Align => matches!(
+                    target.kind,
+                    construction::PickTargetKind::BodyEdge { .. }
+                ) || (move_pick == MovePickHover::Align
+                    && matches!(target.kind, construction::PickTargetKind::BodyFace { .. })),
+                MovePickHover::Axis => repeat_axis_from_pick(&target.kind, true).is_some(),
+                MovePickHover::Bodies => false,
+            };
+            wanted
+                .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+                .or_else(|| {
+                    // An alignment also takes a whole planar face, which the generic pick
+                    // doesn't resolve.
+                    (move_pick == MovePickHover::Align)
+                        .then(|| {
+                            crate::face::pick_body_face(pp, project, doc, cam.eye())
+                                .filter(|k| occlusion.is_none_or(|occ| occ.pickable(doc, k)))
+                        })
+                        .flatten()
+                        .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
+                })
         }
         // Repeat tool with the **axis** picker focused (#643): the click is for the axis, so
         // hover the straight reference under the cursor — a sketch line, a body's feature
@@ -18489,6 +18601,14 @@ impl App {
             suppress_hover_highlight,
             self.state.tool,
             sketch_session,
+            match self.move_focus() {
+                MoveFocus::Bodies => MovePickHover::Bodies,
+                MoveFocus::SourcePoint
+                | MoveFocus::TargetPoint
+                | MoveFocus::RotationPoint => MovePickHover::Point,
+                MoveFocus::RotationAxis(_) => MovePickHover::Axis,
+                MoveFocus::RotateAlign(_) => MovePickHover::Align,
+            },
             repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
             self.state.creating_plane.is_some(),
             self.state.editing_committed_dim.is_some(),
@@ -22112,6 +22232,7 @@ mod tests {
                 true,
                 crate::actions::Tool::Select,
                 None,
+                MovePickHover::Bodies,
                 false,
                 false,
                 false,
@@ -22166,6 +22287,7 @@ mod tests {
             false,
             crate::actions::Tool::Combine,
             None,
+            MovePickHover::Bodies,
             false,
             false,
             false,
@@ -22226,6 +22348,7 @@ mod tests {
                 false,
                 crate::actions::Tool::Repeat,
                 None,
+                MovePickHover::Bodies,
                 axis_pick,
                 false,
                 false,
@@ -22293,6 +22416,7 @@ mod tests {
                 false,
                 crate::actions::Tool::Dimension,
                 None,
+                MovePickHover::Bodies,
                 false,
                 false,
                 false,
@@ -22330,6 +22454,148 @@ mod tests {
                 ))
             ),
             "a body corner should outrank the edges meeting there, got {on_corner:?}"
+        );
+    }
+
+    /// #656: the Move tool steps through its pickers on its own — bodies, source point, then
+    /// whatever the chosen Snap modes still need — so picking one thing arms the next. A
+    /// picker focused by hand wins until it's satisfied (#658).
+    #[test]
+    fn move_focus_steps_through_its_pickers() {
+        use super::{move_focus_for, move_focus_satisfied};
+        use crate::model::{MovePointRef, MoveRotateMode, MoveTranslateMode};
+        let point = |body| MovePointRef::Vertex { body, p: [0; 3] };
+        let focus = |cm: &actions::CreatingMove| move_focus_for(Some(cm), None);
+        assert_eq!(move_focus_for(None, None), MoveFocus::Bodies, "no move in progress");
+
+        let mut cm = actions::CreatingMove {
+            translate_mode: MoveTranslateMode::Snap,
+            rotate_mode: MoveRotateMode::Snap,
+            ..Default::default()
+        };
+        assert_eq!(focus(&cm), MoveFocus::Bodies, "no bodies picked yet");
+
+        cm.targets.push(0);
+        assert_eq!(focus(&cm), MoveFocus::SourcePoint, "a body arms the source point");
+
+        cm.source_point = Some(point(0));
+        assert_eq!(focus(&cm), MoveFocus::TargetPoint);
+
+        cm.target_point = Some(point(1));
+        assert_eq!(
+            focus(&cm),
+            MoveFocus::RotateAlign(true),
+            "the rotation point already reads Source point, so it's skipped"
+        );
+
+        cm.rotate_source = crate::model::MoveAlignRef {
+            face: Some(([0; 3], [0, 0, 100])),
+            edge: Some(([0; 3], [100, 0, 0])),
+        };
+        assert_eq!(focus(&cm), MoveFocus::RotateAlign(false));
+
+        cm.rotate_target = cm.rotate_source;
+        assert_eq!(focus(&cm), MoveFocus::Bodies, "everything picked");
+
+        // Free translate skips the target point; free rotate skips the alignment.
+        let mut free = actions::CreatingMove {
+            targets: vec![0],
+            translate_mode: MoveTranslateMode::Free,
+            rotate_mode: MoveRotateMode::Free,
+            ..Default::default()
+        };
+        assert_eq!(focus(&free), MoveFocus::SourcePoint);
+        free.source_point = Some(point(0));
+        assert_eq!(focus(&free), MoveFocus::Bodies);
+
+        // A hand-picked focus wins until it's satisfied, then hands the chain back (#658).
+        let held = Some(MoveFocus::RotationPoint);
+        assert_eq!(move_focus_for(Some(&cm), held), MoveFocus::RotationPoint);
+        assert!(!move_focus_satisfied(&cm, MoveFocus::RotationPoint), "still unset");
+        cm.rotation_point = Some(point(0));
+        assert!(move_focus_satisfied(&cm, MoveFocus::RotationPoint));
+        assert_eq!(move_focus_for(Some(&cm), None), MoveFocus::Bodies);
+    }
+
+    /// #659: with a Move point picker focused, the viewport hovers body corners and edges —
+    /// what a click would take — instead of the whole body.
+    #[test]
+    fn move_point_pick_hovers_corners_and_edges() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::hierarchy::SceneElement;
+
+        let mut doc = crate::model::Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::new(-20.0, -20.0, 0.0),
+                glam::Vec3::new(20.0, -20.0, 0.0),
+                glam::Vec3::new(0.0, 20.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let hover = |cursor: egui::Pos2, pick: MovePickHover| {
+            resolve_viewport_hover_highlight(
+                false,
+                crate::actions::Tool::Move,
+                None,
+                pick,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(cursor),
+                &cam,
+                viewport,
+                &vp,
+                &doc,
+                &project,
+                None,
+            )
+        };
+
+        let corner = project(glam::Vec3::new(20.0, -20.0, 0.0)).unwrap();
+        let on_corner = hover(corner, MovePickHover::Point);
+        assert!(
+            matches!(
+                on_corner,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    crate::construction::PickTargetKind::BodyVertex { body: 0, .. }
+                ))
+            ),
+            "a corner hovers while picking a point, got {on_corner:?}"
+        );
+        let edge_mid = project(glam::Vec3::new(0.0, -20.0, 0.0)).unwrap();
+        let on_edge = hover(edge_mid, MovePickHover::Point);
+        assert!(
+            matches!(
+                on_edge,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    crate::construction::PickTargetKind::BodyEdge { body: 0, .. }
+                ))
+            ),
+            "an edge hovers while picking a point, got {on_edge:?}"
+        );
+        // Back on the Bodies picker, the whole body hovers again.
+        let on_body = hover(edge_mid, MovePickHover::Bodies);
+        assert!(
+            matches!(
+                on_body,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
+            ),
+            "the Bodies picker hovers whole bodies, got {on_body:?}"
         );
     }
 
@@ -22386,6 +22652,7 @@ mod tests {
                 false,
                 crate::actions::Tool::Constraint,
                 Some(SketchSession { sketch }),
+                MovePickHover::Bodies,
                 false,
                 false,
                 false,
@@ -22448,6 +22715,7 @@ mod tests {
             false,
             crate::actions::Tool::Dimension,
             Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
             false,
             false,
             false,
@@ -22496,6 +22764,7 @@ mod tests {
             false,
             crate::actions::Tool::Mirror,
             Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
             false,
             false,
             false,

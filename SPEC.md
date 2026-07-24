@@ -660,6 +660,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     moving; the translation is then `target - source`, and the X/Y/Z fields and drag arrows are
     hidden.
 
+  **One focused picker, stepping through (#656/#658/#659):** exactly one Move picker is armed
+  at a time — it's the one the pane rings and the one the viewport hover-highlights, so what
+  lights up is always what a click takes (`MoveFocus`, `move_focus_for`). The tool **advances
+  on its own**: Bodies until one is picked, then Source point, then whatever the chosen Snap
+  modes still need (Target point, then the rotation source and target alignments). The rotation
+  point is skipped — it already reads "Source point" and only needs visiting to override that.
+  Clicking any picker overrides the chain until that picker is satisfied
+  (`move_focus_satisfied`), then it resumes. The hover follows the armed picker: body corners
+  and edges for a point, straight references for an axis, faces and edges for an alignment.
+
   **Rotate mode (#651, `model::MoveRotateMode`):** a second dropdown picks **Snap** (the
   default) or **Free**, and a **Rotation point** picker takes the point the rotation turns
   about — a corner or edge midpoint on *any* body, moving or not. Left empty it reads "Source

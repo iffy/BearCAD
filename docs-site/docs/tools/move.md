@@ -34,6 +34,9 @@ Move translates and/or rotates whole bodies, producing moved copies.
    midpoint on any body; left alone it follows the source point.
 4. Press **Enter**.
 
+The tool moves you along as you go: pick a body and it's ready for the source point, pick that
+and it's ready for the target, and so on. Click any picker to jump back to it.
+
 Once a source point is picked the moving bodies go translucent, so you can see the gizmos and
 the target you're aiming at through them.
 
