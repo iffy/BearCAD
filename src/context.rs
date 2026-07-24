@@ -2337,8 +2337,8 @@ pub fn show_pane(
         // the same icons the Extrude "into" picker uses. A cut needs the kernel, so it's only
         // offered on an `occt` build (mirrors the Extrude cut option).
         let choice = control.body_choice;
-        ui.horizontal(|ui| {
-            let mut choices = vec![
+        labeled_row(ui, "Output", |ui| {
+            for (value, icon, tooltip) in [
                 (
                     crate::actions::RevolveBodyChoice::NewBody,
                     crate::icons::IconId::NewBody,
@@ -2347,15 +2347,14 @@ pub fn show_pane(
                 (
                     crate::actions::RevolveBodyChoice::AddTouching,
                     crate::icons::IconId::AddToBody,
-                    "Add to touching bodies",
+                    "Join body",
                 ),
-            ];
-            choices.push((
-                crate::actions::RevolveBodyChoice::Cut,
-                crate::icons::IconId::CutBody,
-                "Cut bodies",
-            ));
-            for (value, icon, tooltip) in choices {
+                (
+                    crate::actions::RevolveBodyChoice::Cut,
+                    crate::icons::IconId::CutBody,
+                    "Cut",
+                ),
+            ] {
                 if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
                     .clicked()
                     && choice != value
@@ -2425,8 +2424,8 @@ pub fn show_pane(
         // New body / Add to touching / Cut — the same segmented icon group as Revolve.
         // A cut needs the kernel, so it's only offered on an `occt` build.
         let choice = control.body_choice;
-        ui.horizontal(|ui| {
-            let mut choices = vec![
+        labeled_row(ui, "Output", |ui| {
+            for (value, icon, tooltip) in [
                 (
                     crate::actions::RevolveBodyChoice::NewBody,
                     crate::icons::IconId::NewBody,
@@ -2435,15 +2434,14 @@ pub fn show_pane(
                 (
                     crate::actions::RevolveBodyChoice::AddTouching,
                     crate::icons::IconId::AddToBody,
-                    "Add to touching bodies",
+                    "Join body",
                 ),
-            ];
-            choices.push((
-                crate::actions::RevolveBodyChoice::Cut,
-                crate::icons::IconId::CutBody,
-                "Cut bodies",
-            ));
-            for (value, icon, tooltip) in choices {
+                (
+                    crate::actions::RevolveBodyChoice::Cut,
+                    crate::icons::IconId::CutBody,
+                    "Cut",
+                ),
+            ] {
                 if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
                     .clicked()
                     && choice != value
@@ -2463,9 +2461,9 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, "Loft");
-        // The same segmented icon group as Revolve/Sweep (#479).
+        // The same segmented icon group as Revolve/Sweep (#479), under a shared "Output" label.
         let choice = control.body_choice;
-        ui.horizontal(|ui| {
+        labeled_row(ui, "Output", |ui| {
             for (value, icon, tooltip) in [
                 (
                     crate::actions::RevolveBodyChoice::NewBody,
@@ -2475,12 +2473,12 @@ pub fn show_pane(
                 (
                     crate::actions::RevolveBodyChoice::AddTouching,
                     crate::icons::IconId::AddToBody,
-                    "Add to touching bodies",
+                    "Join body",
                 ),
                 (
                     crate::actions::RevolveBodyChoice::Cut,
                     crate::icons::IconId::CutBody,
-                    "Cut bodies",
+                    "Cut",
                 ),
             ] {
                 if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
@@ -3913,8 +3911,9 @@ pub fn show_pane(
     if let Some(control) = &content.extrude_body {
         any_control = true;
         let mut mode = control.mode;
-        // The same segmented icon group the Revolve/Sweep/Loft tools use (#479/#505).
-        labeled_row_top(ui, "Extrude into", |ui| {
+        // The same segmented icon group the Revolve/Sweep/Loft tools use (#479/#505), under a
+        // shared "Output" label (#600).
+        labeled_row(ui, "Output", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 ui.horizontal(|ui| {
                     let add_cut_enabled = control.merge_body.is_some();
@@ -3929,9 +3928,9 @@ pub fn show_pane(
                             ExtrudeBodyMode::MergeInto(control.merge_body.unwrap_or(0)),
                             crate::icons::IconId::AddToBody,
                             if add_cut_enabled {
-                                format!("Add to {}", control.merge_body_label)
+                                format!("Join {}", control.merge_body_label)
                             } else {
-                                "Add to body (sketch must sit on a body face)".to_string()
+                                "Join body (sketch must sit on a body face)".to_string()
                             },
                             add_cut_enabled,
                         ),
