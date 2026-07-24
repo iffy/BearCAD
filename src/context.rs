@@ -296,8 +296,10 @@ pub struct RepeatControl {
     pub extrusion_targets: Vec<usize>,
     /// Picked axis label; `None` until an axis is picked (#439).
     pub axis_label: Option<String>,
-    /// The picked axis itself, for highlighting the X/Y/Z quick buttons (#442).
-    pub axis: Option<crate::model::RevolveAxis>,
+    /// Whether one of the section's value fields (Count / Offset / Distance) holds keyboard
+    /// focus (#646). While it does, neither element picker reads as focused — the pane's
+    /// focus ring belongs where the keyboard is, not on a picker the user isn't using.
+    pub value_field_focused: bool,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     /// The gap field (start-to-start pitch when `gap_is_offset`, else clear gap).
@@ -406,12 +408,10 @@ pub enum SketchMirrorEdit {
 /// then computed).
 #[derive(Clone, Debug, PartialEq)]
 pub enum RepeatEdit {
-    Axis(crate::model::RevolveAxis),
     /// Clear the picked axis (#439): the picker's ✕ empties it instead of resetting to X.
     ClearAxis,
-    /// Pencil-on click (#443): make this variable editable (another becomes computed).
-    MakeEditable(crate::model::RepeatVar),
-    /// Pencil-off click (#443): make this variable the computed one.
+    /// Grey-lock click (#443/#642): make this variable the computed one, freeing whichever
+    /// was computed before to be edited.
     SetComputed(crate::model::RepeatVar),
     Count(String),
     Gap(String),
@@ -684,6 +684,24 @@ pub fn tool_uses_snapping(tool: Tool) -> bool {
         tool,
         Tool::Select | Tool::Line | Tool::Rectangle | Tool::Circle
     )
+}
+
+/// The egui id of one of the Repeat section's value fields — the same id
+/// [`crate::expression_input::ValueInput`] is built with when the row renders.
+fn repeat_value_field_id(label: &str) -> egui::Id {
+    egui::Id::new(("repeat_var_field", label))
+}
+
+/// Whether one of the Repeat section's Count / Offset / Distance fields holds keyboard focus
+/// (#646). Both labels the gap row can carry ("Gap" and "Offset") count, since the row's id
+/// follows its display label.
+pub fn repeat_value_field_focused(ctx: &egui::Context) -> bool {
+    let focused = ctx.memory(|m| m.focused());
+    focused.is_some_and(|id| {
+        ["Count", "Gap", "Offset", "Distance"]
+            .iter()
+            .any(|l| repeat_value_field_id(l) == id)
+    })
 }
 
 /// The sketch-entity drawing tools (#636). Their context sections are identical in 3D and
@@ -1378,7 +1396,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     if let Some(r) = input.repeat_op.as_ref() {
         // Only one Repeat picker reads as focused (#439): the axis while it's unset and
         // there's already something to repeat (the axis is the next pick), the bodies
-        // otherwise.
+        // otherwise. Typing in Count/Offset/Distance blurs both (#646) — the pane's focus
+        // ring should sit where the keyboard is, not on a picker the user isn't using.
         let has_targets = !r.targets.is_empty()
             || !r.plane_targets.is_empty()
             || !r.sketch_targets.is_empty()
@@ -1389,7 +1408,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             PickerTarget::RepeatTargets,
             &r.targets,
             None,
-            !axis_is_next,
+            !axis_is_next && !r.value_field_focused,
         ));
     }
     if let Some(b) = input.boolean_op.as_ref() {
@@ -2092,6 +2111,32 @@ fn checkbox_row(
     });
     changed
 }
+
+/// A field label that is itself a click target (#640): it tints gold on hover, exactly like the
+/// [`crate::icons::icon_button_hover_gold`] toggle beside it, so the label and the icon read as
+/// one control. Used where a row's label names a mode the click cycles.
+fn clickable_label(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let hovered = ui
+        .ctx()
+        .read_response(ui.next_auto_id())
+        .is_some_and(|r| r.hovered());
+    let text = if hovered {
+        egui::RichText::new(label).color(HOVER_GOLD)
+    } else {
+        egui::RichText::new(label)
+    };
+    ui.add(egui::Label::new(text).sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+}
+
+/// The gold an interactive-on-hover control tints to (#440), shared by the icon toggles and the
+/// clickable labels beside them (#640).
+const HOVER_GOLD: egui::Color32 = egui::Color32::from_rgb(255, 210, 90);
 
 /// [`labeled_row`] for tall inputs (pickers, multiline text): the label top-aligns with the
 /// input, centred against its **first row** — 26 px, the height of an element picker's
@@ -3100,10 +3145,12 @@ pub fn show_pane(
                 .size(11.0),
             );
         }
-        // Axis element picker (#257/#439): empty until an axis is picked (clicking a
-        // straight line or a global axis in the viewport, or the X/Y/Z buttons); the ✕
-        // clears it. It reads as the focused picker exactly while unset — once targets
-        // are seeded, the axis is the next thing to pick.
+        // Axis element picker (#257/#439): empty until an axis is picked — click a straight
+        // edge, a sketch line, or an origin axis in the viewport; the ✕ clears it. It reads
+        // as the focused picker exactly while unset — once targets are seeded, the axis is
+        // the next thing to pick. The X/Y/Z shortcut buttons are gone (#643): the origin axes
+        // are pickable in the viewport like everything else, so the buttons were a second,
+        // inconsistent way in.
         let axis_rows: Vec<String> = control
             .axis_label
             .iter()
@@ -3113,7 +3160,8 @@ pub fn show_pane(
             || !control.plane_targets.is_empty()
             || !control.sketch_targets.is_empty()
             || !control.extrusion_targets.is_empty();
-        let axis_focused = control.axis_label.is_none() && has_targets;
+        let axis_focused =
+            control.axis_label.is_none() && has_targets && !control.value_field_focused;
         labeled_row_top(ui, "Axis", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
@@ -3130,28 +3178,11 @@ pub fn show_pane(
                 pending = Some(RepeatEdit::ClearAxis);
             }
         }
-        ui.horizontal(|ui| {
-            for (axis, label) in [
-                (crate::model::RevolveAxis::X, "X"),
-                (crate::model::RevolveAxis::Y, "Y"),
-                (crate::model::RevolveAxis::Z, "Z"),
-            ] {
-                // The active axis button highlights (#442) and clicking it again clears.
-                let selected = control.axis == Some(axis);
-                if ui.selectable_label(selected, label).clicked() {
-                    pending = Some(if selected {
-                        RepeatEdit::ClearAxis
-                    } else {
-                        RepeatEdit::Axis(axis)
-                    });
-                }
-            }
         });
-        });
-        // Count / gap / distance (#257/#443/#444): two fields are editable (pencil on),
-        // the third is computed (pencil off). Clicking a pencil toggles which; editable
-        // fields are expression inputs showing their computed value beside them; the
-        // measure toggles hover gold.
+        // Count / gap / distance (#257/#443/#444): two fields are editable, the third is
+        // computed. A **green lock** marks the computed one and grey locks the other two
+        // (#642) — clicking a grey lock moves the green one there. Editable fields are
+        // expression inputs; the measure toggles (icon *and* label, #640) hover gold.
         use crate::model::RepeatVar;
         {
             let mut var_row = |ui: &mut egui::Ui,
@@ -3168,26 +3199,32 @@ pub fn show_pane(
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                            if let Some((icon, edit)) = toggle {
-                                // The measure toggle hovers gold to read as clickable (#440).
-                                if crate::icons::icon_button_hover_gold(
-                                    ui,
-                                    icon,
-                                    "Click to toggle how this is measured",
-                                )
-                                .clicked()
-                                {
-                                    pending = Some(edit);
+                            match toggle {
+                                // The measure toggle hovers gold to read as clickable (#440),
+                                // and its label is the same target (#640).
+                                Some((icon, edit)) => {
+                                    const TIP: &str = "Click to toggle how this is measured";
+                                    if crate::icons::icon_button_hover_gold(ui, icon, TIP).clicked()
+                                        || clickable_label(ui, label, TIP).clicked()
+                                    {
+                                        pending = Some(edit);
+                                    }
+                                }
+                                None => {
+                                    ui.label(label);
                                 }
                             }
-                            ui.label(label);
                         },
                     );
+                    // Both states render at the same width (#641) so the column of inputs
+                    // doesn't jump as the computed one moves between rows.
+                    const VAR_FIELD_W: f32 = 110.0;
                     if computed {
                         let shown = control.computed_value.clone().unwrap_or_else(|| "—".to_string());
                         ui.add_enabled(
                             false,
-                            egui::TextEdit::singleline(&mut shown.clone()).desired_width(90.0),
+                            egui::TextEdit::singleline(&mut shown.clone())
+                                .desired_width(VAR_FIELD_W),
                         )
                         .on_hover_text("Computed from the other two");
                     } else {
@@ -3197,41 +3234,39 @@ pub fn show_pane(
                         } else {
                             crate::expression_input::ValueKind::Length
                         };
-                        let resp = crate::expression_input::ValueInput::new(
-                            ("repeat_var_field", label),
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            repeat_value_field_id(label),
                             kind,
                         )
-                        .width(110.0)
+                        .width(VAR_FIELD_W)
                         .show(ui, &mut text, doc);
                         if resp.changed() {
                             pending = Some(make(text.clone()));
                         }
                     }
-                    // Pencil toggle (#443): on = editable, off = computed. Clicking an
-                    // off pencil makes this field editable (another becomes computed);
-                    // clicking an on pencil makes this the computed one.
-                    let pencil = crate::icons::icon_button_hover_gold(
+                    // Lock (#642): green on the one value the app computes, grey on the two
+                    // the user sets. Clicking a grey lock moves the green lock to it.
+                    let lock = crate::icons::tinted_icon_button(
                         ui,
-                        crate::icons::IconId::Pencil,
+                        crate::icons::IconId::Lock,
                         if computed {
-                            "Computed from the other two — click to edit this instead"
+                            crate::theme::LOCKED_ACCENT
                         } else {
-                            "Editable — click to compute this from the other two"
+                            crate::theme::UNLOCKED_GRAY
+                        },
+                        if computed {
+                            crate::theme::LOCKED_ACCENT
+                        } else {
+                            crate::theme::LOCKED_ACCENT.gamma_multiply(0.7)
+                        },
+                        if computed {
+                            "Computed from the other two"
+                        } else {
+                            "Click to compute this from the other two instead"
                         },
                     );
-                    if computed {
-                        ui.painter().rect_filled(
-                            pencil.rect,
-                            0.0,
-                            egui::Color32::from_rgba_unmultiplied(20, 20, 20, 140),
-                        );
-                    }
-                    if pencil.clicked() {
-                        pending = Some(if computed {
-                            RepeatEdit::MakeEditable(var)
-                        } else {
-                            RepeatEdit::SetComputed(var)
-                        });
+                    if lock.clicked() && !computed {
+                        pending = Some(RepeatEdit::SetComputed(var));
                     }
                 });
             };
@@ -5200,8 +5235,8 @@ mod tests {
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
                 extrusion_targets: Vec::new(),
-                axis: Some(crate::model::RevolveAxis::X),
                 axis_label: Some("the X axis".to_string()),
+                value_field_focused: false,
                 mode: crate::model::RepeatMode::CountGap,
                 count: "3".to_string(),
                 spacing: String::new(),
@@ -5220,6 +5255,48 @@ mod tests {
         assert_eq!(pickers.len(), 1);
         assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
         assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(7)]);
+    }
+
+    /// #646: typing in the Repeat section's Count/Offset/Distance fields blurs the Bodies
+    /// picker (and the Axis picker) — the focus ring belongs where the keyboard is.
+    #[test]
+    fn repeat_value_field_focus_blurs_the_pickers() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let control = |value_field_focused, axis_label: Option<&str>| RepeatControl {
+            targets: vec![7],
+            plane_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            axis_label: axis_label.map(str::to_string),
+            value_field_focused,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: String::new(),
+            length: String::new(),
+            computed_var: crate::model::RepeatVar::Distance,
+            gap_is_offset: false,
+            distance_is_end: true,
+            computed_value: None,
+            preview_instances: Some(3),
+            editing: false,
+            can_commit: true,
+        };
+        let pane = |c: RepeatControl| {
+            context_pane_content(&ContextInput {
+                tool: Tool::Repeat,
+                in_drawing_workbench: false,
+                repeat_op: Some(c),
+                ..input(&doc, &selection)
+            })
+        };
+        // Axis already picked: the Bodies picker normally reads as focused…
+        assert!(pane(control(false, Some("the X axis"))).tool_pickers[0].picker.is_focused());
+        // …but not while a value field has the keyboard.
+        assert!(!pane(control(true, Some("the X axis"))).tool_pickers[0].picker.is_focused());
+        // With no axis yet, the Bodies picker defers to the Axis picker either way.
+        assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
+        assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());
     }
 
     #[test]

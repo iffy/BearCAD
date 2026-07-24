@@ -30,6 +30,13 @@ pub const FOCUS_ACCENT: Color32 = Color32::from_rgb(120, 170, 240);
 /// e.g. the Slice cutters or the Revolve cut bodies (#213) — the red override that a picker can
 /// set in place of the default [`FOCUS_ACCENT`].
 pub const CUT_ACCENT: Color32 = Color32::from_rgb(220, 90, 90);
+/// Marks the one value in a set of interlinked inputs that the app computes rather than the
+/// user setting it — the green lock in the Repeat tool's Count/Offset/Distance trio (#642).
+/// The two locks that aren't green use [`UNLOCKED_GRAY`].
+pub const LOCKED_ACCENT: Color32 = Color32::from_rgb(90, 220, 130);
+/// The resting tint of a lock that *isn't* the computed one (#642) — click it to move the
+/// green lock here.
+pub const UNLOCKED_GRAY: Color32 = Color32::from_gray(130);
 /// Input-like control background (matches text inputs' `extreme_bg_color`).
 pub const INPUT_BG: Color32 = Color32::from_gray(18);
 /// Resting outline for an input-like control.

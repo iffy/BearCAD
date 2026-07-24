@@ -52,7 +52,6 @@ pub enum IconId {
     Body,
     Component,
     AutoZoom,
-    Pencil,
     ShadowBody,
     Plus,
     Showing,
@@ -237,7 +236,6 @@ impl IconId {
             Self::Body => include_str!("assets/icons/body.svg"),
             Self::Component => include_str!("assets/icons/component.svg"),
             Self::AutoZoom => include_str!("assets/icons/auto_zoom.svg"),
-            Self::Pencil => include_str!("assets/icons/pencil.svg"),
             Self::Plus => include_str!("assets/icons/plus.svg"),
             Self::Showing => include_str!("assets/icons/showing.svg"),
             Self::Hidden => include_str!("assets/icons/hidden.svg"),
@@ -322,7 +320,6 @@ impl IconId {
             Self::Body => "Body",
             Self::Component => "Component",
             Self::AutoZoom => "Auto-zoom",
-            Self::Pencil => "Editable",
             Self::Plus => "Plus",
             Self::Showing => "Showing",
             Self::Hidden => "Hidden",
@@ -592,6 +589,24 @@ pub fn icon_button_hover_gold(
     } else {
         egui::Color32::WHITE
     };
+    egui::Image::new(texture).tint(tint).paint_at(ui, rect);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip)
+}
+
+/// An icon button drawn in an explicit `tint`, brightening to `hover_tint` while hovered
+/// (#642) — for icons whose *color* carries the state, like the Repeat tool's green
+/// computed-value lock against its two grey siblings.
+pub fn tinted_icon_button(
+    ui: &mut Ui,
+    id: IconId,
+    tint: Color32,
+    hover_tint: Color32,
+    tooltip: impl Into<WidgetText>,
+) -> egui::Response {
+    let texture = sized_texture(ui.ctx(), id);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE), egui::Sense::click());
+    let tint = if response.hovered() { hover_tint } else { tint };
     egui::Image::new(texture).tint(tint).paint_at(ui, rect);
     response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip)
 }

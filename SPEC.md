@@ -736,19 +736,23 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
   an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch
-  line; the ✕ clears it) (#257). **Pane polish (#440–#447):** the Gap/Distance
-  measure-toggle icons hover **gold**; the X/Y/Z quick buttons highlight the picked axis
-  (clicking the active one clears it) and the picker's ✕ clears it too; each of
-  Count/Gap/Distance carries a **pencil toggle** — two editable (pencil lit), one
-  computed (pencil dimmed; clicking an off pencil makes that field editable via the MRU,
-  clicking an on pencil makes it the computed one, `CreatingRepeat::set_computed`);
+  line; the ✕ clears it) (#257) — the picker is the only way in, the X/Y/Z quick buttons
+  having been dropped as a second, inconsistent path (#643). **Pane polish (#440–#447):**
+  the Gap/Distance measure-toggle icons hover **gold**, and so do their **labels**, which are
+  the same click target (#640); each of Count/Gap/Distance carries a **lock** — a green one
+  (`theme::LOCKED_ACCENT`) on the value the app computes, grey (`theme::UNLOCKED_GRAY`) on the
+  two the user sets, and clicking a grey lock moves the green one there
+  (`CreatingRepeat::set_computed`, #642); the three fields render at the **same width** in both
+  states so the input column never jumps (#641);
   editable fields are expression inputs with autocomplete/error display and a `= value`
   computed preview beside them; the "N instances" label is gone (Count shows it) and the
   commit button sits in the input column. **Esc** drops the in-progress repeat (clearing
   the ghost previews, #450). **Selection seeding (#439):** activating the tool seeds its
   targets from the current selection (bodies/planes/sketches), the axis starts **unset**
   (`CreatingRepeat::axis: Option` — commit refuses without one), and exactly one picker reads
-  focused: the axis while it's unset and targets exist, the bodies picker otherwise. The Default-units section is hidden while the tool is active.
+  focused: the axis while it's unset and targets exist, the bodies picker otherwise — and
+  **neither** while a value field holds the keyboard (#646, `RepeatControl::value_field_focused`).
+  The Default-units section is hidden while the tool is active.
   One multi-select body picker; the original stays as instance 0; each
   further instance of each target is an output body (`BodySource::Repeated { op, target,
   instance }`) nested under an editable **repeat operation element**

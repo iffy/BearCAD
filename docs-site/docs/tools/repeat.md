@@ -16,10 +16,14 @@ wall, teeth on a rack.
 
 1. Pick the **Repeat** tool and click one or more bodies (a body selected beforehand is
    picked automatically).
-2. Pick the **axis**: the X/Y/Z buttons, or click any line in the viewport.
+2. Pick the **axis**: click any straight edge, sketch line, or origin axis in the viewport.
 3. Choose a spacing mode and fill in the values — every value is an expression, so
    parameters work. Ghost previews show the pattern.
 4. Press **Enter**.
+
+Count, Offset and Distance are interlinked: two are yours to set and the third is computed.
+A **green lock** marks the computed one; click a grey lock to move it there. Clicking the
+**Offset** or **Distance** label (or its icon) switches how that value is measured.
 
 The originals stay put as the first instance; every copy is a real body nested under the
 repeat element. **Edit repeat** on the element changes anything later.
