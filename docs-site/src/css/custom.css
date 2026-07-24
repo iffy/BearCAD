@@ -29,17 +29,21 @@
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
 }
 
-/* Tool icons in the docs (#280): a neutral grey baked into the SVGs themselves reads on
-   both themes in every browser — no theme-dependent filter tricks. `max-width: none`
-   opts them out of Infima's `img { max-width: 100% }`: inside an auto-layout table
-   cell, WebKit resolves that percentage against a cell whose width depends on the
-   image (circular), and when the icon loads after first layout the cell has collapsed
-   and iOS Safari squeezes the icon to a few pixels. The width="…" attribute alone then
-   sizes them, which every engine honors before the image loads. */
+/* Tool icons in the docs (#616): every SVG strokes with `currentColor`, which inside an
+   <img> resolves to black — dark on the light theme — and the dark theme inverts them to
+   bright white with a filter, so all icons read consistently on both themes.
+   `max-width: none` opts them out of Infima's `img { max-width: 100% }`: inside an
+   auto-layout table cell, WebKit resolves that percentage against a cell whose width
+   depends on the image (circular), and when the icon loads after first layout the cell
+   has collapsed and iOS Safari squeezes the icon to a few pixels. The width="…"
+   attribute alone then sizes them, which every engine honors before the image loads. */
 img[src*="/img/icons/"] {
   vertical-align: middle;
   margin-right: 0.15rem;
   max-width: none;
+}
+[data-theme='dark'] img[src*="/img/icons/"] {
+  filter: invert(1);
 }
 /* The icon shown next to a tool page's H1 title. */
 .tool-title-icon {
