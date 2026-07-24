@@ -7,6 +7,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/move.svg")} width="30" /> Move
 
+**Shortcut:** `M`
+
 Move slides whole bodies to a new place, producing moved copies.
 
 ![A box moved into a second position](/img/screenshots/move.png)
@@ -14,6 +16,7 @@ Move slides whole bodies to a new place, producing moved copies.
 ## How to use it
 
 1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one.
+   Pressing **M** again switches between the two Translate modes.
 2. Choose how to **Translate**:
    - **Snap** (the default) — pick a **Source point** on a moving body, then a **Target
      point** on something that isn't moving, and the bodies slide so the first lands on the

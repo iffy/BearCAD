@@ -3506,6 +3506,35 @@ impl App {
                 && self.state.creating_line.is_none()
                 && self.state.creating_circle.is_none()
                 && self.state.creating_plane.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::M))
+            {
+                if self.state.tool != Tool::Move {
+                    self.state.apply(Action::SetTool(Tool::Move));
+                } else {
+                    // Already on the Move tool: repeated M cycles the translate mode (#665),
+                    // the same way R and O cycle the rect/circle anchors.
+                    let cm = self
+                        .state
+                        .creating_move
+                        .get_or_insert_with(actions::CreatingMove::default);
+                    cm.translate_mode = match cm.translate_mode {
+                        model::MoveTranslateMode::Snap => model::MoveTranslateMode::Free,
+                        model::MoveTranslateMode::Free => model::MoveTranslateMode::Snap,
+                    };
+                    self.state.status = format!(
+                        "Move: {} translate",
+                        match cm.translate_mode {
+                            model::MoveTranslateMode::Snap => "snap",
+                            model::MoveTranslateMode::Free => "free",
+                        }
+                    );
+                }
+            }
+
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.creating_circle.is_none()
+                && self.state.creating_plane.is_none()
                 && ctx.input(|i| i.key_pressed(egui::Key::E))
             {
                 if self.state.tool != Tool::Extrude {

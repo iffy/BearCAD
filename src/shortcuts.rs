@@ -80,6 +80,9 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         Tool::Circle => Some(ShortcutHint::plain("O")),
         Tool::Dimension => Some(ShortcutHint::plain("D")),
         Tool::Constraint => Some(ShortcutHint::plain("C")),
+        // M is free of the constraint mnemonics (those are digits) and of every other tool
+        // letter (#665). Repeated M cycles the translate mode.
+        Tool::Move => Some(ShortcutHint::plain("M")),
         Tool::Extrude => Some(ShortcutHint::plain("E")),
         // K/F: no conflict with any other tool letter or constraint mnemonic (A/T/I/M/V/H).
         Tool::Chamfer => Some(ShortcutHint::plain("K")),
@@ -96,7 +99,6 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Revolve
         | Tool::Sweep
         | Tool::Combine
-        | Tool::Move
         | Tool::Mirror
         | Tool::Repeat
         | Tool::Slice
@@ -387,7 +389,25 @@ mod tests {
             tool_shortcut(Tool::Rectangle),
             Some(ShortcutHint::plain("R"))
         );
+        // #665: the Move tool has a letter now.
+        assert_eq!(tool_shortcut(Tool::Move), Some(ShortcutHint::plain("M")));
         assert_eq!(tool_shortcut(Tool::Select), None);
+    }
+
+    /// No two tools claim the same plain letter — a collision would make one of them
+    /// unreachable from the keyboard.
+    #[test]
+    fn tool_shortcut_letters_are_unique() {
+        use std::collections::HashMap;
+        let mut seen: HashMap<String, Tool> = HashMap::new();
+        for tool in Tool::ALL {
+            if let Some(hint) = tool_shortcut(tool) {
+                let key = format_shortcut(hint);
+                if let Some(other) = seen.insert(key.clone(), tool) {
+                    panic!("{key} is claimed by both {other:?} and {tool:?}");
+                }
+            }
+        }
     }
 
     #[test]

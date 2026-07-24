@@ -643,7 +643,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (A∪B) − (A∩B); multi-solid results split via `Shape::solids`), on desktop and web
     alike via the kernel module.
 
-- **Move tool (#176/#183):** a rigid **translation** of whole bodies — rotation was pulled
+- **Move tool (#176/#183):** shortcut **M** (#665) — pressing it again while the tool is
+  already active **cycles the translate mode** (Snap ⇄ Free), the same way `R`/`O` cycle the
+  rectangle/circle anchors. A rigid **translation** of whole bodies — rotation was pulled
   back out for now (#663), so the tool translates only. One multi-select body picker (viewport
   clicks toggle); translation X/Y/Z are **expressions** (parameters work — moves rebuild
   parametrically).

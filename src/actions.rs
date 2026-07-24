@@ -138,6 +138,35 @@ pub enum Tool {
 }
 
 impl Tool {
+    /// Every tool, for exhaustive checks (e.g. that no two claim the same shortcut letter).
+    #[cfg(test)]
+    pub const ALL: [Self; 24] = [
+        Self::Select,
+        Self::Rectangle,
+        Self::Line,
+        Self::Circle,
+        Self::ConstructionPlane,
+        Self::Sketch,
+        Self::Dimension,
+        Self::Constraint,
+        Self::Extrude,
+        Self::Chamfer,
+        Self::Fillet,
+        Self::Offset,
+        Self::Project,
+        Self::Loft,
+        Self::Revolve,
+        Self::Sweep,
+        Self::Combine,
+        Self::Move,
+        Self::Mirror,
+        Self::Repeat,
+        Self::Slice,
+        Self::Text,
+        Self::DrawingAdd,
+        Self::DrawingAlign,
+    ];
+
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "select" => Some(Tool::Select),
