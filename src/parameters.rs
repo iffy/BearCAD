@@ -1140,6 +1140,17 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     );
 
                     let name_cell = ui.horizontal(|ui| {
+                        // A derived (read-only) parameter shows a lock left of its name
+                        // (#631); the measurement it tracks is the lock's hover text.
+                        if value_readonly {
+                            let lock = ui.add(egui::Image::new(crate::icons::sized_texture(
+                                ui.ctx(),
+                                crate::icons::IconId::Lock,
+                            )));
+                            if let Some(reason) = &source_description {
+                                lock.on_hover_text(reason.clone());
+                            }
+                        }
                         if editing_name {
                             let response = ui.add(
                                 TextEdit::singleline(&mut app.parameters_pane.draft)
@@ -1257,13 +1268,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         if remove.on_hover_text("Delete parameter").clicked() {
                             delete_index = Some(index);
                         }
-                        if let Some(reason) = source_description {
-                            ui.label(
-                                RichText::new(reason)
-                                    .color(egui::Color32::from_gray(140))
-                                    .size(11.0),
-                            );
-                        } else if param_frozen {
+                        if param_frozen {
                             let reason = app
                                 .document_health
                                 .parameter_reason(index)

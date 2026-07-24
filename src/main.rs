@@ -7879,10 +7879,36 @@ impl eframe::App for App {
                     let mut queue_delete = |element: SceneElement| {
                         delete_element = Some(element);
                     };
-                    // Highlight the elements that use the variable focused in the Parameters pane.
-                    let highlight_elements = parameters::focused_parameter_name(ctx, &self.state.doc)
+                    // Highlight the elements that use the variable hovered or focused in
+                    // the Parameters pane (#633; hover state is from the pane's last
+                    // render, one frame behind — imperceptible).
+                    let mut highlight_elements = self
+                        .state
+                        .parameters_pane
+                        .hovered_name
+                        .clone()
+                        .or_else(|| parameters::focused_parameter_name(ctx, &self.state.doc))
                         .map(|name| parameters::elements_using_parameter(&self.state.doc, &name))
                         .unwrap_or_default();
+                    // With sketch children hidden in the pane, the owning sketch row
+                    // still shows where the parameter is used (#633).
+                    let owner_sketches: Vec<usize> = highlight_elements
+                        .iter()
+                        .filter_map(|e| match e {
+                            SceneElement::Line(i) => {
+                                self.state.doc.lines.get(*i).map(|l| l.sketch)
+                            }
+                            SceneElement::Circle(i) => {
+                                self.state.doc.circles.get(*i).map(|c| c.sketch)
+                            }
+                            SceneElement::Constraint(i) => {
+                                self.state.doc.constraints.get(*i).map(|c| c.sketch)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    highlight_elements
+                        .extend(owner_sketches.into_iter().map(SceneElement::Sketch));
                     // Everything created after the rollback marker (#524): faded in the pane.
                     let rolled_back = self
                         .rollback_marker

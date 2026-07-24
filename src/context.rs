@@ -2025,9 +2025,12 @@ fn labeled_row<R>(
             egui::vec2(FIELD_LABEL_W, 18.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                // The parent advances by the *used* rect, so pin the column width.
+                // The parent advances by the *used* rect, so pin the column width — and
+                // wrap labels wider than it (#632: "Parameter name") onto a second line,
+                // so every row's input starts at the same x.
                 ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                ui.label(label);
+                ui.set_max_width(FIELD_LABEL_W);
+                ui.add(egui::Label::new(label).wrap());
             },
         );
         add_input(ui)
@@ -2092,9 +2095,11 @@ fn labeled_row_top<R>(
             egui::vec2(FIELD_LABEL_W, 26.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                // The parent advances by the *used* rect, so pin the column width.
+                // The parent advances by the *used* rect, so pin the column width; wide
+                // labels wrap within it (#632) so every input starts at the same x.
                 ui.set_min_size(egui::vec2(FIELD_LABEL_W, 26.0));
-                ui.label(label);
+                ui.set_max_width(FIELD_LABEL_W);
+                ui.add(egui::Label::new(label).wrap());
             },
         );
         ui.vertical(add_input)

@@ -2591,8 +2591,9 @@ enum RowStyle {
 const RELATED_CONSTRAINT_TEXT: Color32 = Color32::from_rgb(255, 205, 88);
 const INVALID_TEXT: Color32 = Color32::from_rgb(220, 80, 80);
 const UNSTABLE_TEXT: Color32 = Color32::from_rgb(255, 180, 60);
-/// Accent for rows whose dimension uses the focused variable.
-const USES_VARIABLE_TEXT: Color32 = Color32::from_rgb(120, 215, 230);
+/// Accent for rows whose dimension uses the hovered/focused variable — the same green the
+/// 3D viewport uses for those elements (#633, `gpu_viewport::PARAMETER_HIGHLIGHT`).
+const USES_VARIABLE_TEXT: Color32 = Color32::from_rgb(90, 220, 130);
 
 fn row_is_selected(element: &SceneElement, selection: &SceneSelection) -> bool {
     selection.is_selected(element.clone())

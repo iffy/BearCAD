@@ -43,9 +43,8 @@ existing parameter; `name=value` redefines it.
 ## Derived parameters
 
 A **derived** parameter's value comes from measuring geometry. The
-[Dimension tool](/docs/tools/dimension#in-3d-mode) in 3D mode captures one with a click,
-or make a selection and the Parameters pane shows the measured value next to a **Derive
-from selection** button. Valid selections:
+[Dimension tool](/docs/tools/dimension#in-3d-mode) in 3D mode records one from the
+selection with its **Derive parameter** button. Valid selections:
 
 - **One line or edge** — its length (also on right-click: **Create parameter from
   length**).
@@ -53,7 +52,8 @@ from selection** button. Valid selections:
 - **Two parallel lines** — the distance between them.
 - **Two non-parallel lines in the same plane** — the angle between them.
 
-Derived values are read-only in the pane (the name stays editable) and re-measure as the
+Derived values are read-only in the pane — a **lock** icon sits left of the name (hover
+it to see what's measured), while the name itself stays editable — and re-measure as the
 geometry changes. Focusing a derived parameter's row highlights the geometry that defines
 it; clicking into its **name** field draws that source geometry in **green** in the 3D view.
 
