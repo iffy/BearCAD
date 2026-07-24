@@ -3871,7 +3871,8 @@ pub fn show_pane(
     if let Some(control) = &content.extrude {
         any_control = true;
         // The Distance and "Up to" rows only appear once an extrusion is in progress; the primary
-        // button shows for the whole tool, disabled until a face is picked (#601).
+        // "Extrude" button renders at the very bottom of the section (after Output/Symmetric),
+        // matching Sweep/Loft/Revolve (#601).
         if control.has_extrusion {
             // Distance value input mirroring the 3D field (#584). Shows empty ("null") while an
             // extrude-to target drives the depth; typing here clears the target.
@@ -3912,10 +3913,6 @@ pub fn show_pane(
                 }
             });
         }
-        if primary_button(ui, controls_enabled && control.can_commit, "Extrude") {
-            on_extrude_edit(ExtrudeEdit::Commit);
-        }
-        ui.add_space(4.0);
     }
 
     if let Some(control) = &content.extrude_body {
@@ -3979,6 +3976,16 @@ pub fn show_pane(
         let mut symmetric = control.symmetric;
         if checkbox_row(ui, "Symmetric", &mut symmetric, None) {
             on_extrude_symmetric_changed(symmetric);
+        }
+        ui.add_space(4.0);
+    }
+
+    // The primary "Extrude" button sits at the bottom of the Extrude section — after the Faces
+    // picker, Output, and Symmetric — so it reads as the final action, like Sweep/Loft/Revolve
+    // (#601). Shown (disabled) as soon as the tool is selected, enabled once a face is picked.
+    if let Some(control) = &content.extrude {
+        if primary_button(ui, controls_enabled && control.can_commit, "Extrude") {
+            on_extrude_edit(ExtrudeEdit::Commit);
         }
         ui.add_space(4.0);
     }
