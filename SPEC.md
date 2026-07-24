@@ -1720,11 +1720,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   `ConstraintPoint`s — 2D or 3D), the distance between two **parallel** lines
   (`LineDistance`), or the angle between two non-parallel **same-sketch** lines
   (`LineAngle`, stored in degrees).
-- The Parameters pane classifies the current selection
-  (`parameters::derived_source_from_selection`) and, when it measures something, shows
-  the value it would capture beside a **Derive from selection** button
-  (`Action::CreateDerivedParameter` → `parameters::add_derived_parameter`; duplicate
-  measurements are refused).
+- Derived parameters are created from the **Dimension tool's** context-pane block
+  (#618/#629, below); creation goes through `Action::CreateDerivedParameter` →
+  `parameters::add_derived_parameter` (duplicate measurements are refused).
 - Derived expressions are **read-only** (names stay editable) and re-sync from geometry
   on every rebuild (`sync_computed_parameters` → `derived_source_value`; lengths format
   in the document length unit, angles in the document angle unit).
@@ -1737,13 +1735,17 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - The **Dimension tool measures in 3D mode** (#453/#618): outside a sketch it selects like
   the Select tool (measurable lines/points hover-glow, accumulated in the pane's element
   picker), and the context pane shows a **derived-parameter block**: a **Parameter name**
-  text box (`AppState::dimension_param_name`; blank auto-names), a **Value** row with the
-  selection's live measurement — one line → its length, two parallel lines → the distance
-  between them, two non-parallel lines → the angle, two vertices → the distance
+  text box **prefilled with the derived default name as editable text** (#629,
+  `default_derived_parameter_name`; refreshed on selection changes until the user types
+  their own — `AppState::dimension_param_name`/`dimension_param_auto`), a **Value** row
+  with the selection's live measurement — one line → its length, two parallel lines → the
+  distance between them, two non-parallel lines → the angle, two vertices → the distance
   (`derived_source_from_selection`/`derived_source_value`) — and a **Derive parameter**
-  primary button that records it as a read-only derived parameter and clears the name and
-  selection for the next one. Nothing fires on click alone (the pre-#618 auto-capture is
-  gone), so the parameter can be named before it's recorded.
+  primary button **labeled with visible text** (#629, `primary_text_button`) that records
+  it as a read-only derived parameter and clears the name and selection for the next one.
+  Nothing fires on click alone (the pre-#618 auto-capture is gone), the pane shows no
+  Construction toggle in this mode (#630), and the Parameters pane's old "Derive from
+  selection" button is gone (#629) — the Dimension tool is the one derive entry point.
 - Scriptable: `bearcad.derive_parameter{ kind = "line_length"|"point_distance"|
   "line_distance"|"line_angle", a =, b =, name = }`.
 

@@ -425,6 +425,22 @@ fn line_world_segment(doc: &Document, index: usize) -> Option<(glam::Vec3, glam:
     ))
 }
 
+/// The default name a derived parameter for `source` would get (#629) — the same choices
+/// [`add_derived_parameter`] makes — so the Dimension tool's name box can prefill with
+/// editable text instead of an opaque "auto".
+pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) -> String {
+    match source {
+        ParameterSource::LineLength(line) => default_computed_parameter_name_for_line(doc, *line),
+        ParameterSource::PointDistance(..) => unique_parameter_name(doc, "distance"),
+        ParameterSource::LineDistance(a, b) => {
+            unique_parameter_name(doc, &format!("line{a}_line{b}_distance"))
+        }
+        ParameterSource::LineAngle(a, b) => {
+            unique_parameter_name(doc, &format!("line{a}_line{b}_angle"))
+        }
+    }
+}
+
 pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: usize) -> String {
     unique_parameter_name(doc, &format!("line{line_index}_length"))
 }
@@ -1380,41 +1396,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     }
     app.parameters_pane.hovered_name = hovered_name;
 
-    // Derived parameter from the selection (#432): when the selection measures something
-    // (a line, two points, two parallel lines, two same-plane lines), show the value it
-    // would capture next to a create button.
-    if let Some(source) = derived_source_from_selection(&app.doc, &app.scene_selection) {
-        if let Some((value, is_angle)) = derived_source_value(&app.doc, &source) {
-            ui.add_space(6.0);
-            ui.separator();
-            let display = if is_angle {
-                crate::value::format_angle_display_in(
-                    value.to_radians(),
-                    app.doc.default_angle_unit,
-                )
-            } else {
-                format_length_display_in(value, app.doc.default_length_unit)
-            };
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Derive from selection")
-                    .on_hover_text(
-                        "Create a read-only parameter that tracks this measurement",
-                    )
-                    .clicked()
-                {
-                    apply_parameter_action(
-                        app,
-                        Action::CreateDerivedParameter { source: source.clone(), name: None },
-                    );
-                }
-                ui.add_enabled(
-                    false,
-                    egui::TextEdit::singleline(&mut display.clone()).desired_width(80.0),
-                );
-            });
-        }
-    }
+    // Deriving a parameter from the selection lives in the Dimension tool's context-pane
+    // block (#618/#629) — the pane's old "Derive from selection" button is gone.
 
     if let Some(message) = &app.parameters_pane.message {
         ui.add_space(4.0);

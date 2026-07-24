@@ -8097,6 +8097,24 @@ impl eframe::App for App {
         }
 
         if self.state.panes.is_visible(Pane::Context) {
+            // Dimension tool in 3D (#629): prefill the parameter-name box with the derived
+            // default (editable text, not a hint) and keep it refreshed on selection
+            // changes until the user types their own name.
+            if self.state.tool == Tool::Dimension && self.state.sketch_session.is_none() {
+                if let Some(source) = parameters::derived_source_from_selection(
+                    &self.state.doc,
+                    &self.state.scene_selection,
+                ) {
+                    let auto =
+                        parameters::default_derived_parameter_name(&self.state.doc, &source);
+                    if self.state.dimension_param_name.is_empty()
+                        || self.state.dimension_param_name == self.state.dimension_param_auto
+                    {
+                        self.state.dimension_param_name = auto.clone();
+                    }
+                    self.state.dimension_param_auto = auto;
+                }
+            }
             let context_input = context::ContextInput {
                 doc: &self.state.doc,
                 selection: &self.state.scene_selection,
@@ -9673,6 +9691,7 @@ impl eframe::App for App {
                         self.state.apply(Action::CreateDerivedParameter { source, name });
                         if self.state.doc.parameters.len() > before {
                             self.state.dimension_param_name.clear();
+                            self.state.dimension_param_auto.clear();
                             self.state.scene_selection.clear();
                         }
                     }

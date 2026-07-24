@@ -2423,6 +2423,9 @@ pub struct AppState {
     pub auto_zoom: bool,
     /// Name typed for the next 3D-derived parameter (Dimension tool, #618); cleared on commit.
     pub dimension_param_name: String,
+    /// The last auto-prefilled derived-parameter name (#629): while the field still holds
+    /// this (or is empty), selection changes refresh it; a user edit stops the refresh.
+    pub dimension_param_auto: String,
     /// The active component (#429): set when a component is created or selected; newly
     /// created top-level elements are filed into it. `None` = the document root. UI-only
     /// state (never persisted); cleared when the component is deleted.
@@ -2589,6 +2592,7 @@ impl Default for AppState {
         Self {
             auto_zoom: false,
             dimension_param_name: String::new(),
+            dimension_param_auto: String::new(),
             active_component: None,
             doc: Document::default(),
             path: None,

@@ -1610,7 +1610,13 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         };
     }
 
-    let targets = construction_targets_from_selection(input.selection);
+    // The Dimension tool in 3D measures the selection (#618) — its pane is the
+    // derived-parameter block, not per-entity editing, so no Construction toggle (#630).
+    let targets = if input.tool == Tool::Dimension && !input.in_sketch {
+        Vec::new()
+    } else {
+        construction_targets_from_selection(input.selection)
+    };
     let constraints = (input.tool == Tool::Constraint)
         .then(|| constraint_pane_rows(input.selection));
     ContextPaneContent {
@@ -1969,6 +1975,28 @@ fn primary_button(ui: &mut egui::Ui, enabled: bool, tooltip: &str) -> bool {
     clicked || enter
 }
 
+/// A primary action button with a **visible text label** (#629) — the same blue fill and
+/// Enter-fires-it behavior as [`primary_button`], for actions whose name should read
+/// without hovering (e.g. "Derive parameter").
+fn primary_text_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
+    let clicked = labeled_row(ui, "", |ui| {
+        let blue = egui::Color32::from_rgb(56, 120, 224);
+        let w = ui.available_width().max(56.0);
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(label).color(egui::Color32::WHITE))
+                .fill(blue)
+                .min_size(egui::vec2(w, 24.0)),
+        )
+        .on_hover_text(format!("{label} (Enter)"))
+        .clicked()
+    });
+    let enter = enabled
+        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        && ui.memory(|m| m.focused().is_none());
+    clicked || enter
+}
+
 /// A faint section heading (#393): quieter than the field labels beneath it, so sections
 /// read as grouping rather than competing with the label column.
 fn section_label(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -2201,11 +2229,8 @@ pub fn show_pane(
         labeled_row(ui, "Parameter name", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 let mut text = control.name_text.clone();
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut text)
-                        .hint_text("auto")
-                        .desired_width(120.0),
-                );
+                let resp =
+                    ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0));
                 if resp.changed() {
                     on_dimension_derive_edit(DimensionDeriveEdit::SetName(text));
                 }
@@ -2221,7 +2246,8 @@ pub fn show_pane(
                 ),
             };
         });
-        if primary_button(ui, controls_enabled && control.can_commit, "Derive parameter") {
+        // A labeled button (#629): the action's name should be readable, not a bare ✓.
+        if primary_text_button(ui, controls_enabled && control.can_commit, "Derive parameter") {
             on_dimension_derive_edit(DimensionDeriveEdit::Commit);
         }
         ui.add_space(4.0);
