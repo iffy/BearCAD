@@ -2750,6 +2750,11 @@ pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
             mm_point_lua(*a),
             mm_point_lua(*b)
         ),
+        // A point along an edge (#670) is spelled by its position, like a corner — the
+        // parser doesn't need to know which edge it came from.
+        crate::model::MovePointRef::OnEdge { body, p } => {
+            format!("{{ body = {body}, on_edge = {} }}", mm_point_lua(*p))
+        }
     }
 }
 

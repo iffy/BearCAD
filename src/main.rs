@@ -1645,6 +1645,9 @@ struct App {
     /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
     /// click on a plane/face sets the extrusion's target instead of toggling a profile face.
     extrude_target_pick: bool,
+    /// The end-point-B candidate under the cursor (#670), so the click path takes exactly the
+    /// spot the viewport is highlighting.
+    move_b_hover: Option<(usize, Vec3)>,
     /// A Move picker the user focused **by hand** (#656/#658), overriding the automatic
     /// step-through. Cleared once that picker is satisfied, handing the chain back.
     move_focus_override: Option<MoveFocus>,
@@ -2453,6 +2456,7 @@ impl App {
             extrude_target_pick: false,
             repeat_target_pick: false,
             move_focus_override: None,
+            move_b_hover: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -5820,8 +5824,17 @@ impl App {
                     )
                 })
             };
-            match self
-                .pick_move_point(pp, project, pick_occlusion, side)
+            // The highlighted candidate wins for end point B (#670): it's a spot *on* an edge,
+            // not a corner, so the ordinary corner/midpoint pick would never find it.
+            let candidate = (focus == MoveFocus::EndPointB)
+                .then_some(self.move_b_hover)
+                .flatten()
+                .map(|(body, world)| model::MovePointRef::OnEdge {
+                    body,
+                    p: hierarchy::quantize_body_point(world),
+                });
+            match candidate
+                .or_else(|| self.pick_move_point(pp, project, pick_occlusion, side))
                 .filter(|point| reachable(self, point))
             {
                 Some(point) => {
@@ -6563,6 +6576,7 @@ impl App {
         match point {
             model::MovePointRef::Vertex { .. } => format!("Corner of {body}"),
             model::MovePointRef::EdgeMidpoint { .. } => format!("Edge midpoint of {body}"),
+            model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
         }
     }
 
@@ -18663,6 +18677,73 @@ impl App {
             .as_ref()
             .map(|e| e.hovered_group_members())
             .unwrap_or_default();
+        // End-point-B candidates (#670): while that picker is armed, every spot on the
+        // constraint sphere a body edge crosses is offered in blue, and the one under the
+        // cursor reads yellow — the pick a click would take.
+        let (move_b_candidates, move_b_hover) = {
+            let armed = self.state.tool == Tool::Move
+                && self.state.sketch_session.is_none()
+                && self.move_focus() == MoveFocus::EndPointB;
+            let found = armed
+                .then(|| self.state.creating_move.as_ref())
+                .flatten()
+                .and_then(|cm| {
+                    let centre =
+                        extrude::move_point_world(&self.state.doc, &cm.end_point_a?)?;
+                    let radius = extrude::snap_rotation_radius(
+                        &self.state.doc,
+                        cm.start_point_a.as_ref(),
+                        cm.start_point_b.as_ref(),
+                    )?;
+                    Some(extrude::snap_rotation_candidates(
+                        &self.state.doc,
+                        &cm.targets,
+                        centre,
+                        radius,
+                    ))
+                })
+                .unwrap_or_default();
+            // The nearest candidate under the cursor, within the usual point pick radius.
+            let hovered = pointer_screen.and_then(|pp| {
+                found
+                    .iter()
+                    .filter_map(|(bi, p)| project(*p).map(|sp| ((*bi, *p), (sp - pp).length())))
+                    .filter(|(_, d)| *d <= touch::hit(construction::POINT_PICK_RADIUS_PX))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(hit, _)| hit)
+            });
+            (found, hovered)
+        };
+        self.move_b_hover = move_b_hover;
+        // Hovering a candidate previews the move you'd get by clicking it (#670): the ghost is
+        // built from a copy of the in-progress move with that candidate as end point B.
+        let move_hover_preview = move_b_hover.and_then(|(body, world)| {
+            let cm = self.state.creating_move.as_ref()?;
+            Some(actions::CreatingMove {
+                end_point_b: Some(model::MovePointRef::OnEdge {
+                    body,
+                    p: hierarchy::quantize_body_point(world),
+                }),
+                ..cm.clone()
+            })
+        });
+        // Candidates render through the same coloured-mark channel as the A points (#660):
+        // blue for reachable, gold for the one a click would take.
+        let move_b_marks: Vec<(construction::PickTargetKind, egui::Color32)> = move_b_candidates
+            .iter()
+            .map(|(bi, p)| {
+                let hovered = move_b_hover.is_some_and(|(_, h)| (h - *p).length() < 1e-4);
+                (
+                    construction::PickTargetKind::BodyVertex { body: *bi, position: *p },
+                    if hovered {
+                        theme::MOVE_CANDIDATE_HOVER
+                    } else {
+                        theme::MOVE_CANDIDATE
+                    },
+                )
+            })
+            .collect();
+
         // The start-A → end-A connector (#668): the translation drawn as a vector, in the
         // same green→red pair the two point marks use (the line takes the end colour).
         let move_connector: Vec<(Vec3, Vec3, egui::Color32)> = self
@@ -19042,7 +19123,7 @@ impl App {
             self.state.creating_loft.as_ref(),
             self.state.creating_repeat.as_ref(),
             self.state.creating_mirror.as_ref(),
-            self.state.creating_move.as_ref(),
+            move_hover_preview.as_ref().or(self.state.creating_move.as_ref()),
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -19053,7 +19134,7 @@ impl App {
             vertex_treatment_preview,
             hover_highlight,
             exploder_group_highlight,
-            move_point_marks,
+            [move_point_marks, move_b_marks].concat(),
             move_connector,
             {
                 // Hovering a Parameters-pane row (or focusing its name/value cell)

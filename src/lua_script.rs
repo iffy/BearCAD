@@ -737,6 +737,10 @@ fn parse_move_point(
     if let Some(v) = t.get::<Option<Vec<f32>>>("vertex")? {
         return Ok(Some(crate::model::MovePointRef::Vertex { body, p: mm(v)? }));
     }
+    // A point along an edge (#670), by its position rather than by which edge it's on.
+    if let Some(v) = t.get::<Option<Vec<f32>>>("on_edge")? {
+        return Ok(Some(crate::model::MovePointRef::OnEdge { body, p: mm(v)? }));
+    }
     let ends: Vec<Vec<f32>> = t.get("edge").map_err(|_| {
         mlua::Error::external(format!("move `{what}` needs a `vertex` or an `edge`"))
     })?;

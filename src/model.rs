@@ -1619,6 +1619,14 @@ pub enum MovePointRef {
         a: [i32; 3],
         b: [i32; 3],
     },
+    /// A point **along** a body's feature edge (#670) — where the end-point-B constraint
+    /// sphere crosses it. It isn't a mesh vertex, so unlike the other two it can't be
+    /// re-found by matching; it keeps its own quantized world position and simply stops
+    /// resolving if the body goes away.
+    OnEdge {
+        body: usize,
+        p: [i32; 3],
+    },
 }
 
 impl MoveOperation {
@@ -1646,7 +1654,9 @@ impl MovePointRef {
     /// The body this point lives on — what tells a *moving* point from a stationary one.
     pub fn body(&self) -> usize {
         match self {
-            MovePointRef::Vertex { body, .. } | MovePointRef::EdgeMidpoint { body, .. } => *body,
+            MovePointRef::Vertex { body, .. }
+            | MovePointRef::EdgeMidpoint { body, .. }
+            | MovePointRef::OnEdge { body, .. } => *body,
         }
     }
 }

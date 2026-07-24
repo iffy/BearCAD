@@ -24,8 +24,9 @@ Move slides whole bodies to a new place, producing moved copies.
      To **turn** the bodies as well, pick a second pair: **Start point B** on a moving body
      and **End point B** on something that isn't. The bodies then rotate about end point A
      until start B lands on end B. End point B has to be somewhere start B can actually reach
-     — the same distance from end point A as start B is from start point A — so picks off that
-     sphere are refused.
+     — the same distance from end point A as start B is from start point A — so once you're
+     picking it, every reachable spot on the surrounding edges is marked in **blue**. The one
+     under the cursor turns **gold** and the preview shows the move you'd get.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
@@ -66,7 +67,8 @@ bearcad.move_bodies{ bodies = {0},
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or
-edge you mean.
+edge you mean. `vertex` is a corner, `edge` takes an edge's midpoint, and `on_edge` is a
+position along one.
 
 ## Moving geometry inside a sketch
 

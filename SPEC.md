@@ -688,7 +688,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     an off-sphere pick is refused (`snap_rotation_reachable`, ±0.05 mm for the quantisation).
     Re-picking start B resizes the sphere and clears end B; clearing start B clears end B too.
     The pair is opt-in, so the focus chain only walks into End point B once Start point B is
-    picked.
+    picked. While that picker is armed, **every spot a stationary body's feature edge crosses
+    the sphere** is offered as a **blue** candidate mark (`snap_rotation_candidates` — the roots
+    of the edge/sphere quadratic), and the one under the cursor reads **gold**; hovering it
+    previews the move it would produce, and clicking takes it. A candidate sits mid-edge rather
+    than on a corner, so it's kept as `MovePointRef::OnEdge` (its own quantized world position)
+    instead of being re-found by matching.
 
   A Snap move with either A point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
@@ -709,7 +714,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, from?, to?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation. **Moving construction planes (#217):** a Move op can also
+  on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation; a point table takes
+  `vertex`, `edge` (its midpoint), or `on_edge` (a position along one). **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane

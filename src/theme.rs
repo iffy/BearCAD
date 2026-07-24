@@ -41,6 +41,10 @@ pub const UNLOCKED_GRAY: Color32 = Color32::from_gray(130);
 /// **stop**, so the direction of the snap is obvious at a glance.
 pub const MOVE_START_POINT: Color32 = Color32::from_rgb(90, 220, 130);
 pub const MOVE_END_POINT: Color32 = Color32::from_rgb(230, 80, 80);
+/// The reachable spots offered for end point B (#670): blue for a candidate, and the gold the
+/// rest of the app hovers with for the one under the cursor.
+pub const MOVE_CANDIDATE: Color32 = Color32::from_rgb(110, 165, 245);
+pub const MOVE_CANDIDATE_HOVER: Color32 = Color32::from_rgb(255, 210, 90);
 /// Input-like control background (matches text inputs' `extreme_bg_color`).
 pub const INPUT_BG: Color32 = Color32::from_gray(18);
 /// Resting outline for an input-like control.

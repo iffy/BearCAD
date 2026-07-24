@@ -671,6 +671,11 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
             let (p0, p1) = crate::parameters::body_edge_world_segment(doc, *body, *a, *b)?;
             Some((p0 + p1) * 0.5)
         }
+        // A point along an edge (#670) is its own position; it only needs its body alive.
+        crate::model::MovePointRef::OnEdge { body, p } => {
+            doc.bodies.get(*body).filter(|b| !b.deleted)?;
+            Some(crate::hierarchy::dequantize_body_point(*p))
+        }
     }
 }
 
@@ -736,6 +741,54 @@ pub fn snap_rotation_reachable(
 
 /// How far off the constraint sphere an end-point-B pick may sit and still count (#669).
 pub const SNAP_ROTATION_TOLERANCE_MM: f32 = 0.05;
+
+/// Every point where a body's feature edges cross the end-point-B constraint sphere (#670):
+/// the reachable landing spots for start point B, offered as candidates while that picker is
+/// armed. Bodies being moved are skipped — start B has to land on something that stays put.
+///
+/// Each edge is a segment; the crossings are the roots of `|p(t) - centre|² = r²` for
+/// `p(t) = a + t(b - a)`, `t ∈ [0, 1]`.
+pub fn snap_rotation_candidates(
+    doc: &Document,
+    moving: &[usize],
+    centre: Vec3,
+    radius: f32,
+) -> Vec<(usize, Vec3)> {
+    let mut out: Vec<(usize, Vec3)> = Vec::new();
+    if !(radius.is_finite() && radius > 1e-4) {
+        return out;
+    }
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted || body.shadow || moving.contains(&bi) {
+            continue;
+        }
+        let Some(solid) = body_solid_mesh(doc, bi) else { continue };
+        for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(&solid) {
+            let d = b - a;
+            let f = a - centre;
+            let (qa, qb, qc) = (d.dot(d), 2.0 * f.dot(d), f.dot(f) - radius * radius);
+            if qa < 1e-12 {
+                continue;
+            }
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc < 0.0 {
+                continue;
+            }
+            let root = disc.sqrt();
+            for t in [(-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)] {
+                if !(0.0..=1.0).contains(&t) {
+                    continue;
+                }
+                let p = a + d * t;
+                // Two edges meeting at a crossing would offer the same spot twice.
+                if !out.iter().any(|(_, q)| (*q - p).length() < 1e-3) {
+                    out.push((bi, p));
+                }
+            }
+        }
+    }
+    out
+}
 
 /// The rotation the optional B pair asks for (#669): after the A translation has landed start
 /// point A on end point A, turn the bodies **about end point A** so that the moved start point
@@ -4741,6 +4794,54 @@ mod tests {
         assert!(reachable(Vec3::new(0.0, 0.0, 10.0)), "any direction, same radius");
         assert!(!reachable(Vec3::new(0.0, 40.0, 0.0)), "too far to reach");
         assert!(!reachable(Vec3::new(0.0, 2.0, 0.0)), "too close to reach");
+    }
+
+    /// #670: the reachable end-point-B spots are where body edges cross the constraint
+    /// sphere. Bodies being moved don't offer any — start B has to land on something that
+    /// stays put.
+    #[test]
+    fn snap_rotation_candidates_are_edge_sphere_crossings() {
+        let mut doc = Document::default();
+        // A single edge running along X from (-10, 0, 0) to (10, 0, 0), as a degenerate
+        // triangle so the mesh has that edge.
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                Vec3::new(-10.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 6.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        // A sphere of radius 5 about the origin crosses that edge at ±5 along X.
+        let found = snap_rotation_candidates(&doc, &[], Vec3::ZERO, 5.0);
+        let xs: Vec<f32> = found
+            .iter()
+            .filter(|(_, p)| p.y.abs() < 1e-3)
+            .map(|(_, p)| p.x)
+            .collect();
+        assert!(
+            xs.iter().any(|x| (x - 5.0).abs() < 1e-3)
+                && xs.iter().any(|x| (x + 5.0).abs() < 1e-3),
+            "expected crossings at ±5 along X, got {xs:?}"
+        );
+        assert!(found.iter().all(|(bi, _)| *bi == 0), "each candidate names its body");
+        // Every candidate really is on the sphere.
+        for (_, p) in &found {
+            assert!((p.length() - 5.0).abs() < 1e-3, "{p:?} is off the sphere");
+        }
+
+        // A body that's being moved offers nothing, and a sphere that misses entirely too.
+        assert!(snap_rotation_candidates(&doc, &[0], Vec3::ZERO, 5.0).is_empty());
+        assert!(snap_rotation_candidates(&doc, &[], Vec3::new(0.0, 0.0, 100.0), 5.0).is_empty());
+        // A degenerate radius offers nothing rather than dividing by zero.
+        assert!(snap_rotation_candidates(&doc, &[], Vec3::ZERO, 0.0).is_empty());
     }
 
     /// #648/#650: a Snap move only overrides the X/Y/Z expressions once **both** points are
