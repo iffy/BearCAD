@@ -376,6 +376,19 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
             "Driven by angle between lines {a} and {b}{}",
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
+        ParameterSource::BodyEdgeLength { body, .. } => Some(format!(
+            "Driven by an edge of body {body}{}",
+            gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
+        )),
+        ParameterSource::BodyVertexDistance { body_a, body_b, .. } => Some(format!(
+            "Driven by the distance between two corners of {}{}",
+            if body_a == body_b {
+                format!("body {body_a}")
+            } else {
+                format!("bodies {body_a} and {body_b}")
+            },
+            gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
+        )),
     }
 }
 
@@ -413,7 +426,57 @@ pub fn derived_source_value(doc: &Document, source: &ParameterSource) -> Option<
             }
             Some((da.dot(db).clamp(-1.0, 1.0).acos().to_degrees(), true))
         }
+        ParameterSource::BodyEdgeLength { body, a, b } => {
+            let (p0, p1) = body_edge_world_segment(doc, *body, *a, *b)?;
+            Some(((p1 - p0).length(), false))
+        }
+        ParameterSource::BodyVertexDistance { body_a, a, body_b, b } => {
+            let pa = body_vertex_world_position(doc, *body_a, *a)?;
+            let pb = body_vertex_world_position(doc, *body_b, *b)?;
+            Some(((pb - pa).length(), false))
+        }
     }
+}
+
+/// The live world endpoints of a body feature edge identified by its quantized key (#647) —
+/// the same identity `SceneElement::BodyEdge` carries, matched against the body's current
+/// edge chains (either endpoint order). `None` once the mesh no longer has that edge.
+pub fn body_edge_world_segment(
+    doc: &Document,
+    body: usize,
+    a: [i32; 3],
+    b: [i32; 3],
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    doc.bodies.get(body).filter(|b| !b.deleted && !b.shadow)?;
+    let solid = crate::extrude::body_solid_mesh(doc, body)?;
+    for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
+        let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
+        let (ka, kb) = (
+            crate::hierarchy::quantize_body_point(ca),
+            crate::hierarchy::quantize_body_point(cb),
+        );
+        if (ka, kb) == (a, b) || (ka, kb) == (b, a) {
+            return Some((ca, cb));
+        }
+    }
+    None
+}
+
+/// The live world position of a body mesh corner identified by its quantized key (#647).
+/// `None` once the mesh no longer has a corner there.
+pub fn body_vertex_world_position(
+    doc: &Document,
+    body: usize,
+    key: [i32; 3],
+) -> Option<glam::Vec3> {
+    doc.bodies.get(body).filter(|b| !b.deleted && !b.shadow)?;
+    let solid = crate::extrude::body_solid_mesh(doc, body)?;
+    solid
+        .triangles
+        .iter()
+        .flatten()
+        .copied()
+        .find(|p| crate::hierarchy::quantize_body_point(*p) == key)
 }
 
 fn line_world_segment(doc: &Document, index: usize) -> Option<(glam::Vec3, glam::Vec3)> {
@@ -437,6 +500,12 @@ pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) 
         }
         ParameterSource::LineAngle(a, b) => {
             unique_parameter_name(doc, &format!("line{a}_line{b}_angle"))
+        }
+        ParameterSource::BodyEdgeLength { body, .. } => {
+            unique_parameter_name(doc, &format!("body{body}_edge_length"))
+        }
+        ParameterSource::BodyVertexDistance { body_a, .. } => {
+            unique_parameter_name(doc, &format!("body{body_a}_corner_distance"))
         }
     }
 }
@@ -554,6 +623,24 @@ pub fn derived_source_from_selection(
                 None
             }
         }
+        // Body geometry measures like sketch geometry does (#647): one feature edge gives its
+        // length, two mesh corners give the distance between them.
+        [SceneElement::BodyEdge { body, a, b }] => {
+            let source = ParameterSource::BodyEdgeLength { body: *body, a: *a, b: *b };
+            derived_source_value(doc, &source).map(|_| source)
+        }
+        [
+            SceneElement::BodyVertex { body: body_a, p: a },
+            SceneElement::BodyVertex { body: body_b, p: b },
+        ] if (body_a, a) != (body_b, b) => {
+            let source = ParameterSource::BodyVertexDistance {
+                body_a: *body_a,
+                a: *a,
+                body_b: *body_b,
+                b: *b,
+            };
+            derived_source_value(doc, &source).map(|_| source)
+        }
         _ => None,
     }
 }
@@ -577,16 +664,10 @@ pub fn add_derived_parameter(
     {
         return Err("A parameter already tracks this measurement".to_string());
     }
-    let base = match &source {
-        ParameterSource::LineLength(_) => unreachable!(),
-        ParameterSource::PointDistance(..) => "distance".to_string(),
-        ParameterSource::LineDistance(a, b) => format!("line{a}_line{b}_distance"),
-        ParameterSource::LineAngle(a, b) => format!("line{a}_line{b}_angle"),
-    };
     let name = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| unique_parameter_name(doc, &base));
+        .unwrap_or_else(|| default_derived_parameter_name(doc, &source));
     validate_new_parameter_name(doc, &name, None)?;
     let expression = if is_angle {
         crate::value::format_angle_display_in(value.to_radians(), doc.default_angle_unit)
@@ -619,6 +700,13 @@ pub fn derived_source_elements(
         ParameterSource::LineDistance(a, b) | ParameterSource::LineAngle(a, b) => {
             vec![SceneElement::Line(*a), SceneElement::Line(*b)]
         }
+        ParameterSource::BodyEdgeLength { body, a, b } => {
+            vec![SceneElement::BodyEdge { body: *body, a: *a, b: *b }]
+        }
+        ParameterSource::BodyVertexDistance { body_a, a, body_b, b } => vec![
+            SceneElement::BodyVertex { body: *body_a, p: *a },
+            SceneElement::BodyVertex { body: *body_b, p: *b },
+        ],
     }
 }
 
@@ -1427,6 +1515,81 @@ mod tests {
         let mut doc = Document::default();
         add_parameter(&mut doc, "A".to_string(), "5mm".to_string()).unwrap();
         doc
+    }
+
+    /// #647: a body's feature edge measures its length and two mesh corners measure the
+    /// distance between them — the Dimension tool in 3D can now derive from body geometry,
+    /// not just sketch geometry. Values come from the body's *live* mesh, so the source goes
+    /// unavailable once the geometry no longer has that edge/corner.
+    fn doc_with_one_triangle_body() -> Document {
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::new(0.0, 0.0, 0.0),
+                glam::Vec3::new(30.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 40.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc
+    }
+
+    #[test]
+    fn body_edge_and_corner_pair_are_derivable_measurements() {
+        use crate::hierarchy::quantize_body_point as q;
+        let mut doc = doc_with_one_triangle_body();
+        let (o, x, y) = (
+            glam::Vec3::ZERO,
+            glam::Vec3::new(30.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 40.0, 0.0),
+        );
+
+        // One selected body edge → its length.
+        let mut selection = crate::selection::SceneSelection::default();
+        selection.insert(SceneElement::BodyEdge { body: 0, a: q(o), b: q(x) });
+        let source = derived_source_from_selection(&doc, &selection)
+            .expect("a body edge is measurable");
+        assert_eq!(
+            source,
+            ParameterSource::BodyEdgeLength { body: 0, a: q(o), b: q(x) }
+        );
+        let (value, is_angle) = derived_source_value(&doc, &source).unwrap();
+        assert!((value - 30.0).abs() < 1e-3, "edge length, got {value}");
+        assert!(!is_angle);
+
+        // Two selected corners → the distance between them (3-4-5 triangle).
+        let mut selection = crate::selection::SceneSelection::default();
+        selection.insert(SceneElement::BodyVertex { body: 0, p: q(x) });
+        selection.insert(SceneElement::BodyVertex { body: 0, p: q(y) });
+        let source = derived_source_from_selection(&doc, &selection)
+            .expect("two body corners are measurable");
+        let (value, _) = derived_source_value(&doc, &source).unwrap();
+        assert!((value - 50.0).abs() < 1e-3, "corner distance, got {value}");
+
+        // The same corner twice measures nothing.
+        let mut selection = crate::selection::SceneSelection::default();
+        selection.insert(SceneElement::BodyVertex { body: 0, p: q(x) });
+        selection.insert(SceneElement::BodyVertex { body: 0, p: q(x) });
+        assert!(derived_source_from_selection(&doc, &selection).is_none());
+
+        // Geometry that no longer exists reads as unavailable, like a deleted line's.
+        doc.bodies[0].deleted = true;
+        assert!(derived_source_value(
+            &doc,
+            &ParameterSource::BodyEdgeLength { body: 0, a: q(o), b: q(x) }
+        )
+        .is_none());
+        assert!(derived_source_value(
+            &doc,
+            &ParameterSource::BodyVertexDistance { body_a: 0, a: q(x), body_b: 0, b: q(y) }
+        )
+        .is_none());
     }
 
     #[test]

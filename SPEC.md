@@ -1734,8 +1734,14 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   `model::ParameterSource`): a line's length (`LineLength`, the original #measured flow),
   the world-space distance between two points (`PointDistance`, any two
   `ConstraintPoint`s — 2D or 3D), the distance between two **parallel** lines
-  (`LineDistance`), or the angle between two non-parallel **same-sketch** lines
-  (`LineAngle`, stored in degrees).
+  (`LineDistance`), the angle between two non-parallel **same-sketch** lines
+  (`LineAngle`, stored in degrees), a **body feature edge's** length (`BodyEdgeLength`, #647),
+  or the distance between two **body mesh corners** (`BodyVertexDistance`, #647, which may sit
+  on different bodies). The two body kinds are keyed the way `SceneElement::BodyEdge`/
+  `BodyVertex` are — the body plus quantized world points — and re-resolve against the body's
+  live mesh (`body_edge_world_segment`/`body_vertex_world_position`), so they read the current
+  geometry and go **unavailable** if a rebuild moves the edge/corner off that key, exactly as a
+  deleted line's source does.
 - Derived parameters are created from the **Dimension tool's** context-pane block
   (#618/#629, below); creation goes through `Action::CreateDerivedParameter` →
   `parameters::add_derived_parameter` (duplicate measurements are refused).
@@ -1751,13 +1757,15 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   view (#536, `focused_derived_parameter_source` → `draw_derived_source_highlight`), so it's
   clear which geometry drives the value being renamed.
 - The **Dimension tool measures in 3D mode** (#453/#618): outside a sketch it selects like
-  the Select tool (measurable lines/points hover-glow, accumulated in the pane's element
+  the Select tool (measurable lines/points **and body edges/corners** hover-glow, #647, with a
+  corner outranking the edge under it as in the click path; accumulated in the pane's element
   picker), and the context pane shows a **derived-parameter block**: a **Parameter name**
   text box **prefilled with the derived default name as editable text** (#629,
   `default_derived_parameter_name`; refreshed on selection changes until the user types
   their own — `AppState::dimension_param_name`/`dimension_param_auto`), a **Value** row
   with the selection's live measurement — one line → its length, two parallel lines → the
-  distance between them, two non-parallel lines → the angle, two vertices → the distance
+  distance between them, two non-parallel lines → the angle, two vertices → the distance, one
+  body edge → its length, two body corners → the distance
   (`derived_source_from_selection`/`derived_source_value`) — and a **Derive parameter**
   primary button **labeled with visible text** (#629, `primary_text_button`) that records
   it as a read-only derived parameter and clears the name and selection for the next one.
@@ -1765,7 +1773,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   Construction toggle in this mode (#630), and the Parameters pane's old "Derive from
   selection" button is gone (#629) — the Dimension tool is the one derive entry point.
 - Scriptable: `bearcad.derive_parameter{ kind = "line_length"|"point_distance"|
-  "line_distance"|"line_angle", a =, b =, name = }`.
+  "line_distance"|"line_angle"|"body_edge_length"|"body_vertex_distance", a =, b =, body =,
+  body_b =, name = }`. The body kinds take `a`/`b` as plain `{x, y, z}` **millimetre** points on
+  the body's mesh, re-quantized to the selection grid — so they need only land on the picked
+  geometry, not match bit for bit.
 
 ### 5.2 Expressions
 - **Any input that accepts a value accepts an expression**, e.g. `1 + 2 + lengthOfThing / 2`.

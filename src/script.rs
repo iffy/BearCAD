@@ -1286,6 +1286,18 @@ impl Instruction {
                         format!("kind = \"line_distance\", a = {a}, b = {b}")
                     }
                     PS::LineAngle(a, b) => format!("kind = \"line_angle\", a = {a}, b = {b}"),
+                    // Body geometry (#647) is keyed on quantized world points; scripts spell
+                    // them as plain **mm** coordinates, which the parser re-quantizes.
+                    PS::BodyEdgeLength { body, a, b } => format!(
+                        "kind = \"body_edge_length\", body = {body}, a = {}, b = {}",
+                        mm_point_lua(*a),
+                        mm_point_lua(*b)
+                    ),
+                    PS::BodyVertexDistance { body_a, a, body_b, b } => format!(
+                        "kind = \"body_vertex_distance\", body = {body_a}, a = {}, body_b = {body_b}, b = {}",
+                        mm_point_lua(*a),
+                        mm_point_lua(*b)
+                    ),
                 };
                 match name {
                     Some(name) => {
@@ -2657,6 +2669,13 @@ fn sketch_axis_lua_name(axis: crate::model::SketchAxis) -> &'static str {
 
 fn constraint_point_lua_ref(point: &ConstraintPoint) -> String {
     format!("{{ {} }}", point_lua_fields(point))
+}
+
+/// A quantized body point (#647) as the `{x, y, z}` **millimetre** table scripts use — the
+/// inverse of the parser's re-quantization, so `derive_parameter` round-trips.
+fn mm_point_lua(p: [i32; 3]) -> String {
+    let v = crate::hierarchy::dequantize_body_point(p);
+    format!("{{ {}, {}, {} }}", v.x, v.y, v.z)
 }
 
 /// The `axis = …` argument for a [`crate::model::RevolveAxis`], matching what

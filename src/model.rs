@@ -108,6 +108,25 @@ pub enum ParameterSource {
     LineDistance(usize, usize),
     /// Angle between two non-parallel lines in the same sketch (#432), stored in degrees.
     LineAngle(usize, usize),
+    /// Length of a **body's feature edge** (#647), keyed the way
+    /// [`crate::hierarchy::SceneElement::BodyEdge`] is: the body plus the edge's quantized
+    /// world endpoints. Re-resolved against the body's live mesh, so it reads the current
+    /// length; if a rebuild moves the edge off that key, the parameter reads as unavailable
+    /// (the same way a deleted line's does).
+    BodyEdgeLength {
+        body: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
+    /// Distance between two **body mesh corners** (#647), keyed like
+    /// [`crate::hierarchy::SceneElement::BodyVertex`]. The two corners may sit on different
+    /// bodies.
+    BodyVertexDistance {
+        body_a: usize,
+        a: [i32; 3],
+        body_b: usize,
+        b: [i32; 3],
+    },
 }
 
 /// A named length or angle parameter (expression stored verbatim, evaluated on demand).

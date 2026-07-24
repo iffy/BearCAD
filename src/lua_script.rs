@@ -1330,16 +1330,34 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // Components (#423): `bearcad.component{ name = "Frame", parent = 0 }` creates one and
     // returns its index; `bearcad.move_to_component{ kind = "body", index = 0,
     // component = 1 }` files an element into it (`component = false` moves it back out).
-    // Derived (measured) parameters (#432): `bearcad.derive_parameter{ kind =
-    // "line_length"|"point_distance"|"line_distance"|"line_angle", a =, b =, name = }`.
-    // Point kinds take constraint-point tables for a/b; line kinds take line indices.
+    // Derived (measured) parameters (#432/#647): `bearcad.derive_parameter{ kind =
+    // "line_length"|"point_distance"|"line_distance"|"line_angle"|"body_edge_length"|
+    // "body_vertex_distance", a =, b =, body =, body_b =, name = }`.
+    // Point kinds take constraint-point tables for a/b; line kinds take line indices; the body
+    // kinds take world points in **mm** on the body's mesh (quantized to the 0.01 mm selection
+    // grid, so they need only land on the picked geometry, not match bit for bit).
     api.set(
         "derive_parameter",
         lua.create_function(|lua, opts: Table| {
             use crate::model::ParameterSource as PS;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "derive_parameter", &["kind", "a", "b", "name"])?;
+            check_keys(
+                &opts,
+                "derive_parameter",
+                &["kind", "a", "b", "body", "body_b", "name"],
+            )?;
             let kind: String = opts.get("kind")?;
+            let mm_point = |key: &str| -> mlua::Result<[i32; 3]> {
+                let v: Vec<f32> = opts.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "derive_parameter `{key}` must be {{x, y, z}} in mm"
+                    )));
+                }
+                Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+                    v[0], v[1], v[2],
+                )))
+            };
             let source = match kind.as_str() {
                 "line_length" => PS::LineLength(opts.get("a")?),
                 "point_distance" => PS::PointDistance(
@@ -1348,6 +1366,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 ),
                 "line_distance" => PS::LineDistance(opts.get("a")?, opts.get("b")?),
                 "line_angle" => PS::LineAngle(opts.get("a")?, opts.get("b")?),
+                "body_edge_length" => PS::BodyEdgeLength {
+                    body: opts.get("body")?,
+                    a: mm_point("a")?,
+                    b: mm_point("b")?,
+                },
+                "body_vertex_distance" => {
+                    let body_a: usize = opts.get("body")?;
+                    PS::BodyVertexDistance {
+                        body_a,
+                        a: mm_point("a")?,
+                        body_b: opts.get::<Option<usize>>("body_b")?.unwrap_or(body_a),
+                        b: mm_point("b")?,
+                    }
+                }
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown derive kind '{other}'"
@@ -6058,6 +6090,37 @@ mod tests {
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
         assert_eq!(state.doc.drawings[0].views.len(), 1);
+    }
+
+    /// #647: body geometry is derivable — an edge's length and the distance between two mesh
+    /// corners, given as plain mm points on the body.
+    #[test]
+    fn lua_derive_parameter_measures_body_edges_and_corners() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 30, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.derive_parameter{
+                kind = "body_edge_length", body = 0,
+                a = {0, 0, 0}, b = {30, 0, 0}, name = "edge",
+            }
+            bearcad.derive_parameter{
+                kind = "body_vertex_distance", body = 0,
+                a = {0, 0, 0}, b = {30, 40, 0}, name = "diag",
+            }
+            "#,
+        );
+        let value = |name: &str| {
+            let p = state.doc.parameters.iter().find(|p| p.name == name).unwrap();
+            crate::value::computed_length_in_doc(&p.expression, &state.doc).unwrap()
+        };
+        assert!((value("edge") - 30.0).abs() < 1e-2, "edge = {}", value("edge"));
+        assert!((value("diag") - 50.0).abs() < 1e-2, "diag = {}", value("diag"));
+        // Both are read-only, geometry-driven parameters.
+        for name in ["edge", "diag"] {
+            let p = state.doc.parameters.iter().find(|p| p.name == name).unwrap();
+            assert!(p.source.is_some(), "{name} is derived");
+        }
     }
 
     /// #643: a repeat axis can be a **body edge**, given by the body it lives on plus the

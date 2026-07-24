@@ -51,6 +51,8 @@ selection with its **Derive parameter** button. Valid selections:
 - **Two points** — the distance between them (2D or 3D).
 - **Two parallel lines** — the distance between them.
 - **Two non-parallel lines in the same plane** — the angle between them.
+- **One body edge** — its length.
+- **Two body corners** — the distance between them, on one body or across two.
 
 Derived values are read-only in the pane — a **lock** icon sits left of the name (hover
 it to see what's measured), while the name itself stays editable — and re-measure as the
@@ -64,6 +66,10 @@ bearcad.derive_parameter{ kind = "line_angle", a = 0, b = 2 }
 bearcad.derive_parameter{ kind = "point_distance",
   a = { kind = "line", index = 0, ["end"] = "start" },
   b = { kind = "line", index = 0, ["end"] = "end" } }
+-- Body geometry: a/b are mm points anywhere on the picked edge's ends or the corners.
+bearcad.derive_parameter{ kind = "body_edge_length", body = 0, a = {0, 0, 0}, b = {30, 0, 0} }
+bearcad.derive_parameter{ kind = "body_vertex_distance", body = 0,
+  a = {0, 0, 0}, b = {30, 40, 0} }
 ```
 
 ## Display units

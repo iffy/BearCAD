@@ -10595,6 +10595,28 @@ fn suppress_viewport_pick_hover(
         || bezier_handle_drag_active
 }
 
+/// The body mesh corner under the cursor, if one is genuinely pickable: hidden/shadow bodies
+/// don't count (#258) and neither does a corner sitting behind another body (#155). Shared by
+/// the hover and click paths so what lights up is what a click selects (#144/#156/#647).
+fn pickable_body_vertex(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    occlusion: Option<&construction::PickOcclusion>,
+) -> Option<construction::PickTargetKind> {
+    construction::nearest_body_vertex(pp, project, doc)
+        .filter(|(kind, _)| {
+            occlusion.is_none_or(|occ| occ.pickable(doc, kind))
+                && match kind {
+                    construction::PickTargetKind::BodyVertex { position, .. } => {
+                        occlusion.is_none_or(|occ| !occ.occluded(*position))
+                    }
+                    _ => true,
+                }
+        })
+        .map(|(kind, _)| kind)
+}
+
 /// Whether the Repeat tool's **axis** picker is the focused one (#643) — the axis is unset and
 /// there's already something to repeat, so the axis is what the next click is for. Mirrors the
 /// pane's own focus rule in `context::context_pane_content`.
@@ -10721,6 +10743,13 @@ fn resolve_viewport_hover_highlight(
             if !editing_committed_dim && !over_committed_dim_label && !dim_label_drag =>
         {
             let gp = cam.ground_point(pp, viewport, vp);
+            // 3D mode: a body mesh **corner** outranks the edge/face under it, exactly as in
+            // the click path (#144/#156/#647).
+            if sketch_session.is_none() {
+                if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
+                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+                }
+            }
             let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
             match sketch_session {
                 Some(session) => crate::constraints::distance_target_from_pick(
@@ -10730,10 +10759,16 @@ fn resolve_viewport_hover_highlight(
                 )
                 .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
                 // 3D mode (#453): glow the measurable line or point a click would capture
-                // as a derived parameter.
+                // as a derived parameter — body feature edges and mesh corners included
+                // (#647), which the click path has always selected.
                 None => matches!(
                     scene_element_from_pick(&target.kind),
-                    Some(SceneElement::Line(_) | SceneElement::Point(_))
+                    Some(
+                        SceneElement::Line(_)
+                            | SceneElement::Point(_)
+                            | SceneElement::BodyEdge { .. }
+                            | SceneElement::BodyVertex { .. }
+                    )
                 )
                 .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
             }
@@ -10744,20 +10779,7 @@ fn resolve_viewport_hover_highlight(
             let gp = cam.ground_point(pp, viewport, vp);
             // 3D body sub-elements (#144): a vertex, edge, or face of any body highlights under
             // the cursor, in that priority order (a corner beats an edge beats the face it's on).
-            // A vertex hidden behind another body is not a candidate (#155).
-            if let Some((kind, _)) =
-                construction::nearest_body_vertex(pp, project, doc).filter(|(kind, _)| {
-                    // Hidden/shadow bodies aren't pickable (#258); a vertex behind another body
-                    // isn't either (#155).
-                    occlusion.is_none_or(|occ| occ.pickable(doc, kind))
-                        && match kind {
-                            construction::PickTargetKind::BodyVertex { position, .. } => {
-                                occlusion.is_none_or(|occ| !occ.occluded(*position))
-                            }
-                            _ => true,
-                        }
-                })
-            {
+            if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
                 return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
             }
             let t = resolve_pick_target(pp, project, gp, doc, occlusion);
@@ -16798,19 +16820,10 @@ impl App {
                     // Body vertices outrank edges/other targets, mirroring the hover
                     // priority in `resolve_viewport_hover_highlight` (#144/#156) — what the
                     // hover shows is what the click selects.
-                    let body_vertex = construction::nearest_body_vertex(pp, &project, &self.state.doc)
-                        .filter(|(kind, _)| {
-                            // Hidden/shadow bodies aren't selectable (#258); occluded ones aren't
-                            // either (#155).
-                            pick_occlusion.is_none_or(|occ| occ.pickable(&self.state.doc, kind))
-                                && match kind {
-                                    construction::PickTargetKind::BodyVertex { position, .. } => {
-                                        pick_occlusion.is_none_or(|occ| !occ.occluded(*position))
-                                    }
-                                    _ => true,
-                                }
-                        })
-                        .and_then(|(kind, _)| scene_element_from_pick(&kind));
+                    let body_vertex =
+                        pickable_body_vertex(pp, &project, &self.state.doc, pick_occlusion)
+                            .as_ref()
+                            .and_then(scene_element_from_pick);
                     if let Some(index) =
                         pointer_over_constraint_icon(&constraint_icon_hits, pp)
                     {
@@ -21608,6 +21621,79 @@ mod tests {
                 Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
             ),
             "with the axis set, the whole body hovers again, got {picking_bodies:?}"
+        );
+    }
+
+    /// #647: the Dimension tool in 3D hover-highlights body feature edges and mesh corners,
+    /// which it has always been able to select and can now measure. A corner outranks the
+    /// edge under it, matching the click path.
+    #[test]
+    fn dimension_tool_in_3d_hovers_body_edges_and_corners() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+
+        let mut doc = crate::model::Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::new(-20.0, -20.0, 0.0),
+                glam::Vec3::new(20.0, -20.0, 0.0),
+                glam::Vec3::new(0.0, 20.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let hover = |cursor: egui::Pos2| {
+            resolve_viewport_hover_highlight(
+                false,
+                crate::actions::Tool::Dimension,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(cursor),
+                &cam,
+                viewport,
+                &vp,
+                &doc,
+                &project,
+                None,
+            )
+        };
+
+        let edge_mid = project(glam::Vec3::new(0.0, -20.0, 0.0)).unwrap();
+        let on_edge = hover(edge_mid);
+        assert!(
+            matches!(
+                on_edge,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    crate::construction::PickTargetKind::BodyEdge { body: 0, .. }
+                ))
+            ),
+            "a body edge should hover under the Dimension tool, got {on_edge:?}"
+        );
+
+        let corner = project(glam::Vec3::new(20.0, -20.0, 0.0)).unwrap();
+        let on_corner = hover(corner);
+        assert!(
+            matches!(
+                on_corner,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    crate::construction::PickTargetKind::BodyVertex { body: 0, .. }
+                ))
+            ),
+            "a body corner should outrank the edges meeting there, got {on_corner:?}"
         );
     }
 
