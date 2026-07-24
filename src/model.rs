@@ -1589,6 +1589,59 @@ pub struct BooleanOperation {
     pub deleted: bool,
 }
 
+/// How a [`MoveOperation`]'s translation is specified (#648), the Move pane's Translate
+/// dropdown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveTranslateMode {
+    /// Snap a picked **source point** on the moving bodies onto a picked **target point** on
+    /// the stationary geometry (#650). The default.
+    #[default]
+    Snap,
+    /// Type or drag X/Y/Z components outright (#648) — the pre-#648 behavior.
+    Free,
+}
+
+/// A point on a body's mesh that a Move snaps from or onto (#649/#650): either a corner or
+/// the midpoint of a feature edge. Keyed exactly like [`crate::hierarchy::SceneElement::
+/// BodyVertex`]/`BodyEdge` — the body plus quantized world points — and resolved against the
+/// body's live mesh, so it follows the geometry and simply stops resolving if a rebuild takes
+/// it away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MovePointRef {
+    Vertex {
+        body: usize,
+        p: [i32; 3],
+    },
+    EdgeMidpoint {
+        body: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
+}
+
+impl MoveOperation {
+    /// Whether this move's translation actually comes from its two snap points (#650). A Snap
+    /// move that hasn't got both points yet — or one with no bodies at all, like a plane or
+    /// image move — still reads its `tx`/`ty`/`tz` expressions, so the tool stays usable while
+    /// the points are being picked and gizmo drags keep working.
+    pub fn has_snap_translation(&self) -> bool {
+        self.translate_mode == MoveTranslateMode::Snap
+            && self.source_point.is_some()
+            && self.target_point.is_some()
+    }
+}
+
+impl MovePointRef {
+    /// The body this point lives on — what tells a *moving* point from a stationary one.
+    pub fn body(&self) -> usize {
+        match self {
+            MovePointRef::Vertex { body, .. } | MovePointRef::EdgeMidpoint { body, .. } => *body,
+        }
+    }
+}
+
 /// A move operation (Move tool, #176/#183): rigid translation and/or rotation applied to
 /// whole bodies. Inputs become **shadow** bodies; each input gets a moved output body
 /// (`BodySource::Moved`), and the operation itself is an editable pane element. The
@@ -1598,6 +1651,17 @@ pub struct BooleanOperation {
 pub struct MoveOperation {
     /// Input body indices, one output per entry (same order).
     pub targets: Vec<usize>,
+    /// How the translation is specified (#648).
+    #[serde(default)]
+    pub translate_mode: MoveTranslateMode,
+    /// The point on the moving bodies that a snap translation moves **from** (#649).
+    #[serde(default)]
+    pub source_point: Option<MovePointRef>,
+    /// The point on the stationary geometry that a snap translation moves the source point
+    /// **onto** (#650). With both set, the translation is `target - source` and the `tx`/`ty`/
+    /// `tz` expressions are ignored.
+    #[serde(default)]
+    pub target_point: Option<MovePointRef>,
     /// Construction planes moved by this op (#217): transformed in place at recompute, so
     /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
     #[serde(default)]

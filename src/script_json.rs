@@ -380,13 +380,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
         "move_bodies" => {
-            let (targets, tx, ty, tz, axis, angle) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle })
+            let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
-            let (targets, tx, ty, tz, axis, angle) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })
+            let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -1052,9 +1052,22 @@ fn boolean_op_args(o: &Map<String, Value>) -> Result<(BooleanOpKind, Vec<usize>,
 /// `move_bodies`/`edit_move` shared arguments: target bodies, X/Y/Z/angle expression fields,
 /// and an optional rotation axis.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity)]
 fn move_op_args(
     o: &Map<String, Value>,
-) -> Result<(Vec<usize>, String, String, String, Option<RevolveAxis>, String), String> {
+) -> Result<
+    (
+        Vec<usize>,
+        String,
+        String,
+        String,
+        Option<RevolveAxis>,
+        String,
+        Option<crate::model::MovePointRef>,
+        Option<crate::model::MovePointRef>,
+    ),
+    String,
+> {
     let targets = usize_list(o, "bodies")?;
     let axis = match o.get("axis") {
         None | Some(Value::Null) => None,
@@ -1067,7 +1080,54 @@ fn move_op_args(
         expr_arg(o, "z")?,
         axis,
         expr_arg(o, "angle")?,
+        // Naming both points makes the translation a snap (#648/#649/#650).
+        move_point_from_json(o.get("from"), "from")?,
+        move_point_from_json(o.get("to"), "to")?,
     ))
+}
+
+/// A [`crate::model::MovePointRef`] from `{ "body": i, "vertex": [x,y,z] }` or
+/// `{ "body": i, "edge": [[x,y,z], [x,y,z]] }` — millimetres, re-quantized (#649/#650).
+fn move_point_from_json(
+    v: Option<&Value>,
+    what: &str,
+) -> Result<Option<crate::model::MovePointRef>, String> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let t = v
+        .as_object()
+        .ok_or_else(|| format!("move `{what}` must be an object"))?;
+    let body = req_usize(t, "body", what)?;
+    let point = |v: &Value| -> Result<[i32; 3], String> {
+        let a = v
+            .as_array()
+            .filter(|a| a.len() == 3)
+            .ok_or_else(|| format!("move `{what}` points must be [x, y, z] in mm"))?;
+        let n = |i: usize| -> Result<f32, String> {
+            a[i].as_f64()
+                .map(|f| f as f32)
+                .ok_or_else(|| format!("move `{what}` points must be numbers"))
+        };
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+            n(0)?,
+            n(1)?,
+            n(2)?,
+        )))
+    };
+    if let Some(v) = t.get("vertex").filter(|v| !v.is_null()) {
+        return Ok(Some(crate::model::MovePointRef::Vertex { body, p: point(v)? }));
+    }
+    let ends = t
+        .get("edge")
+        .and_then(Value::as_array)
+        .filter(|a| a.len() == 2)
+        .ok_or_else(|| format!("move `{what}` needs a `vertex` or a two-point `edge`"))?;
+    Ok(Some(crate::model::MovePointRef::EdgeMidpoint {
+        body,
+        a: point(&ends[0])?,
+        b: point(&ends[1])?,
+    }))
 }
 
 /// `repeat_bodies`/`edit_repeat` shared arguments: target bodies, axis (default X), mode
@@ -1984,6 +2044,8 @@ mod tests {
                 &json!({ "bodies": [0], "x": 10, "y": "w/2", "angle": 45, "axis": "z" })
             ),
             Ok(Instruction::CreateMoveOp {
+                source_point: None,
+                target_point: None,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -1996,6 +2058,8 @@ mod tests {
         assert_eq!(
             instruction_from_json("edit_move", &json!({ "index": 1, "bodies": [0], "z": 5 })),
             Ok(Instruction::EditMoveOp {
+                source_point: None,
+                target_point: None,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),

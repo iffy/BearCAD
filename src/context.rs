@@ -242,6 +242,17 @@ pub struct BooleanControl {
 pub struct MoveControl {
     /// Picked bodies to move (rendered through the unified element picker, #213).
     pub targets: Vec<usize>,
+    /// Snap (default) or free translation (#648) — the Translate dropdown.
+    pub translate_mode: crate::model::MoveTranslateMode,
+    /// The picked source point's label, if any (#649), and whether its picker is armed.
+    pub source_point_rows: Vec<String>,
+    pub source_point_focused: bool,
+    /// The picked target point's label, if any (#650), and whether its picker is armed.
+    pub target_point_rows: Vec<String>,
+    pub target_point_focused: bool,
+    /// The snap translation the two points work out to, formatted (#650) — shown instead of
+    /// the X/Y/Z fields while snapping.
+    pub snap_offset: Option<String>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -259,6 +270,14 @@ pub enum MoveEdit {
     Tz(String),
     Angle(String),
     Axis(Option<crate::model::RevolveAxis>),
+    /// Translate dropdown (#648).
+    TranslateMode(crate::model::MoveTranslateMode),
+    /// Arm / clear the source-point picker (#649).
+    SourcePointFocus,
+    ClearSourcePoint,
+    /// Arm / clear the target-point picker (#650).
+    TargetPointFocus,
+    ClearTargetPoint,
     Commit,
 }
 
@@ -3014,6 +3033,88 @@ pub fn show_pane(
         ui.separator();
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<MoveEdit> = None;
+        // Translate mode (#648): snapping a picked point onto another (the default), or typing
+        // and dragging X/Y/Z outright.
+        {
+            use crate::model::MoveTranslateMode as M;
+            let mut mode = control.translate_mode;
+            labeled_row(ui, "Translate", |ui| {
+                egui::ComboBox::from_id_salt("move_translate_mode")
+                    .selected_text(match mode {
+                        M::Snap => "Snap",
+                        M::Free => "Free",
+                    })
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut mode, M::Snap, "Snap");
+                        ui.selectable_value(&mut mode, M::Free, "Free");
+                    });
+            });
+            if mode != control.translate_mode {
+                pending = Some(MoveEdit::TranslateMode(mode));
+            }
+        }
+        // The source point is picked in both modes (#649): it's the handle a snap moves *from*,
+        // and it's what the rotation point defaults to.
+        let mut picker_row = |ui: &mut egui::Ui,
+                              label: &str,
+                              id: &'static str,
+                              rows: &[String],
+                              focused: bool,
+                              on_focus: MoveEdit,
+                              on_clear: MoveEdit| {
+            labeled_row_top(ui, label, |ui| {
+                if let Some(event) = crate::element_picker::show_labeled(
+                    ui,
+                    id,
+                    focused,
+                    true,
+                    crate::icons::IconId::Coincident,
+                    rows,
+                ) {
+                    pending = Some(match event {
+                        crate::element_picker::PickerEvent::Focus => on_focus,
+                        crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear => on_clear,
+                    });
+                }
+            });
+        };
+        picker_row(
+            ui,
+            "Source point",
+            "move_source_point",
+            &control.source_point_rows,
+            control.source_point_focused,
+            MoveEdit::SourcePointFocus,
+            MoveEdit::ClearSourcePoint,
+        );
+        // Snap (#650): a target point on stationary geometry; the offset is derived from the
+        // pair, so there are no X/Y/Z fields.
+        if control.translate_mode == crate::model::MoveTranslateMode::Snap {
+            picker_row(
+                ui,
+                "Target point",
+                "move_target_point",
+                &control.target_point_rows,
+                control.target_point_focused,
+                MoveEdit::TargetPointFocus,
+                MoveEdit::ClearTargetPoint,
+            );
+        }
+        drop(picker_row);
+        if control.translate_mode == crate::model::MoveTranslateMode::Snap {
+            ui.label(
+                egui::RichText::new(match &control.snap_offset {
+                    Some(offset) => format!("Moves {offset}"),
+                    None => {
+                        "Pick a point on the moving bodies, then where it should land".to_string()
+                    }
+                })
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+            );
+        }
         {
             let mut field = |ui: &mut egui::Ui,
                              label: &str,
@@ -3031,9 +3132,11 @@ pub fn show_pane(
                 });
             };
             use crate::expression_input::ValueKind;
-            field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
-            field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
-            field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
+            if control.translate_mode == crate::model::MoveTranslateMode::Free {
+                field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
+                field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
+                field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
+            }
             field(ui, "Angle", &control.angle, ValueKind::Angle, &MoveEdit::Angle);
         }
         ui.horizontal(|ui| {
@@ -5292,6 +5395,12 @@ mod tests {
             tool: Tool::Move,
             in_drawing_workbench: false,
             move_op: Some(MoveControl {
+                translate_mode: crate::model::MoveTranslateMode::Free,
+                source_point_rows: Vec::new(),
+                source_point_focused: false,
+                target_point_rows: Vec::new(),
+                target_point_focused: false,
+                snap_offset: None,
                 targets: vec![1, 4],
                 tx: String::new(),
                 ty: String::new(),

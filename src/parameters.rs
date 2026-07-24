@@ -447,8 +447,12 @@ pub fn body_edge_world_segment(
     a: [i32; 3],
     b: [i32; 3],
 ) -> Option<(glam::Vec3, glam::Vec3)> {
-    doc.bodies.get(body).filter(|b| !b.deleted && !b.shadow)?;
-    let solid = crate::extrude::body_solid_mesh(doc, body)?;
+    // A shadow body still has real geometry — it's just consumed by an operation — and a Move
+    // shadows its own inputs (#650), so shadows resolve here; only a deleted body doesn't.
+    doc.bodies.get(body).filter(|b| !b.deleted)?;
+    // Uncached: a Move's own transform resolves its snap points (#650) from inside the mesh
+    // cache's borrow, so going through the cached wrapper would double-borrow the RefCell.
+    let solid = crate::extrude::body_solid_mesh_uncached_pub(doc, body)?;
     for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
         let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
         let (ka, kb) = (
@@ -469,8 +473,11 @@ pub fn body_vertex_world_position(
     body: usize,
     key: [i32; 3],
 ) -> Option<glam::Vec3> {
-    doc.bodies.get(body).filter(|b| !b.deleted && !b.shadow)?;
-    let solid = crate::extrude::body_solid_mesh(doc, body)?;
+    // Shadow bodies resolve too, for the same reason as `body_edge_world_segment`.
+    doc.bodies.get(body).filter(|b| !b.deleted)?;
+    // Uncached: a Move's own transform resolves its snap points (#650) from inside the mesh
+    // cache's borrow, so going through the cached wrapper would double-borrow the RefCell.
+    let solid = crate::extrude::body_solid_mesh_uncached_pub(doc, body)?;
     solid
         .triangles
         .iter()

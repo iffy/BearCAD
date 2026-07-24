@@ -423,6 +423,15 @@ struct AngleGizmoDrag {
     constraint_id: DimLabelTarget,
 }
 
+/// Which of the Move tool's two point pickers a viewport click is arming (#649/#650).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MovePointSlot {
+    /// A point on one of the **moving** bodies (#649).
+    Source,
+    /// A point on **stationary** geometry the source lands on (#650).
+    Target,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ExtrudeGizmoDrag {
     start_screen: egui::Pos2,
@@ -1634,6 +1643,9 @@ struct App {
     /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
     /// click on a plane/face sets the extrusion's target instead of toggling a profile face.
     extrude_target_pick: bool,
+    /// Armed by focusing the Move pane's Source/Target point picker (#649/#650): the next
+    /// viewport click on a body corner or edge takes that point.
+    move_point_pick: Option<MovePointSlot>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -2440,6 +2452,7 @@ impl App {
             pending_extrude_target: None,
             extrude_target_pick: false,
             repeat_target_pick: false,
+            move_point_pick: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -4686,6 +4699,58 @@ impl App {
     }
 
     /// Floating distance field next to the offset push-pull gizmo (#493), like extrude.
+    /// A value input floating beside each Free-translate arrow (#648), so the X/Y/Z components
+    /// can be typed right where they're being dragged instead of only in the pane. Nothing
+    /// renders in Snap mode, where the arrows are gone too.
+    fn show_move_translation_inputs(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let Some((anchor, axes)) = self.move_gizmo_arrows() else {
+            return;
+        };
+        let mut edits: Vec<(usize, String)> = Vec::new();
+        for &(axis, id_source, dir, translation) in &axes {
+            let handle = construction::offset_handle(
+                anchor,
+                dir,
+                extrude_gizmo_display_offset(translation),
+            );
+            let Some(pos) = project(handle).map(|p| p + egui::vec2(14.0, -12.0)) else {
+                continue;
+            };
+            let Some(mut text) = self.state.creating_move.as_ref().map(|cm| {
+                [cm.tx.clone(), cm.ty.clone(), cm.tz.clone()][axis].clone()
+            }) else {
+                continue;
+            };
+            egui::Area::new(egui::Id::new((id_source, "value")))
+                .fixed_pos(pos)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    let resp = crate::expression_input::ValueInput::from_id(
+                        egui::Id::new(id_source),
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(64.0)
+                    .show(ui, &mut text, &self.state.doc);
+                    if resp.changed() {
+                        edits.push((axis, text.clone()));
+                    }
+                });
+        }
+        if let Some(cm) = self.state.creating_move.as_mut() {
+            for (axis, text) in edits {
+                match axis {
+                    0 => cm.tx = text,
+                    1 => cm.ty = text,
+                    _ => cm.tz = text,
+                }
+            }
+        }
+    }
+
     fn show_sketch_offset_distance_input(
         &mut self,
         ui: &egui::Ui,
@@ -5334,7 +5399,9 @@ impl App {
     /// current translation mm)`. `None` when nothing is picked (nothing to anchor to).
     fn move_gizmo_arrows(&self) -> Option<(Vec3, [(usize, &'static str, Vec3, f32); 3])> {
         let cm = self.state.creating_move.as_ref()?;
-        if cm.targets.is_empty() {
+        // Only Free translation has X/Y/Z to drag (#648); a snap's offset comes from its
+        // two picked points.
+        if cm.targets.is_empty() || cm.translate_mode != crate::model::MoveTranslateMode::Free {
             return None;
         }
         let doc = &self.state.doc;
@@ -5754,6 +5821,37 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
+        // Point-pick mode (#649/#650), armed by focusing the pane's Source/Target point
+        // picker: this click takes a body corner or edge midpoint instead of toggling a body.
+        if let Some(slot) = self.move_point_pick {
+            let moving = slot == MovePointSlot::Source;
+            match self.pick_move_point(pp, project, pick_occlusion, moving) {
+                Some(point) => {
+                    let label = self.move_point_label(&point);
+                    if let Some(cm) = self.state.creating_move.as_mut() {
+                        match slot {
+                            MovePointSlot::Source => cm.source_point = Some(point),
+                            MovePointSlot::Target => cm.target_point = Some(point),
+                        }
+                    }
+                    self.move_point_pick = None;
+                    self.state.status = format!(
+                        "Move: {} point — {label}",
+                        if moving { "source" } else { "target" }
+                    );
+                }
+                // Missing the allowed geometry leaves the picker armed, so the user can try
+                // again without re-focusing it.
+                None => {
+                    self.state.status = if moving {
+                        "Pick a corner or edge on a body being moved".to_string()
+                    } else {
+                        "Pick a corner or edge on a body that isn't moving".to_string()
+                    };
+                }
+            }
+            return;
+        }
         let gp = cam.ground_point(pp, viewport, vp);
         let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
         else {
@@ -5817,6 +5915,9 @@ impl App {
                 if let Some(existing) = self.state.doc.move_ops.get(op).cloned() {
                     self.state.creating_move = Some(actions::CreatingMove {
                         targets: existing.targets,
+                        translate_mode: existing.translate_mode,
+                        source_point: existing.source_point,
+                        target_point: existing.target_point,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         tx: existing.tx,
@@ -6422,6 +6523,58 @@ impl App {
             cr.targets.push(bi);
         }
         self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+    }
+
+    /// How a picked Move point reads in its element picker (#649/#650): the body's name plus
+    /// which feature of it was taken.
+    fn move_point_label(&self, point: &model::MovePointRef) -> String {
+        let body = names::element_name(&self.state.doc, SceneElement::Body(point.body()))
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| format!("Body {}", point.body()));
+        match point {
+            model::MovePointRef::Vertex { .. } => format!("Corner of {body}"),
+            model::MovePointRef::EdgeMidpoint { .. } => format!("Edge midpoint of {body}"),
+        }
+    }
+
+    /// Resolve a viewport click into a Move source/target point (#649/#650): a body **corner**
+    /// under the cursor wins, else the midpoint of the body **edge** under it. `moving` picks
+    /// which side of the fence the body must be on — the source point has to sit on a body
+    /// being moved, the target point on one that isn't.
+    fn pick_move_point(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        moving: bool,
+    ) -> Option<model::MovePointRef> {
+        let targets: Vec<usize> = self
+            .state
+            .creating_move
+            .as_ref()
+            .map(|cm| cm.targets.clone())
+            .unwrap_or_default();
+        let allowed = |body: usize| targets.contains(&body) == moving;
+        if let Some(construction::PickTargetKind::BodyVertex { body, position }) =
+            pickable_body_vertex(pp, project, &self.state.doc, pick_occlusion)
+        {
+            if allowed(body) {
+                return Some(model::MovePointRef::Vertex {
+                    body,
+                    p: hierarchy::quantize_body_point(position),
+                });
+            }
+        }
+        // No ground point: only body corners and edges are Move points, never the ground.
+        let target = resolve_pick_target(pp, project, None, &self.state.doc, pick_occlusion)?;
+        let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind else {
+            return None;
+        };
+        allowed(body).then_some(model::MovePointRef::EdgeMidpoint {
+            body,
+            a: hierarchy::quantize_body_point(a),
+            b: hierarchy::quantize_body_point(b),
+        })
     }
 
     /// The Repeat tool's **distance gizmo** (#644): the same click-to-grab handle the Extrude
@@ -8524,6 +8677,26 @@ impl eframe::App for App {
                     let cm = self.state.creating_move.as_ref();
                     context::MoveControl {
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                        translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
+                        source_point_rows: cm
+                            .and_then(|c| c.source_point)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        source_point_focused: self.move_point_pick == Some(MovePointSlot::Source),
+                        target_point_rows: cm
+                            .and_then(|c| c.target_point)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        target_point_focused: self.move_point_pick == Some(MovePointSlot::Target),
+                        snap_offset: cm.and_then(|c| {
+                            let (from, to) = (c.source_point?, c.target_point?);
+                            let a = extrude::move_point_world(&self.state.doc, &from)?;
+                            let b = extrude::move_point_world(&self.state.doc, &to)?;
+                            let d = b - a;
+                            let unit = self.state.doc.default_length_unit;
+                            let f = |v: f32| crate::value::format_length_display_in(v, unit);
+                            Some(format!("{}, {}, {}", f(d.x), f(d.y), f(d.z)))
+                        }),
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
@@ -9357,6 +9530,19 @@ impl eframe::App for App {
                 }
             }
             if let Some(edit) = move_edit {
+                // Which point picker is armed is App state, not move state (#649/#650).
+                match edit {
+                    context::MoveEdit::SourcePointFocus => {
+                        self.move_point_pick = Some(MovePointSlot::Source)
+                    }
+                    context::MoveEdit::TargetPointFocus => {
+                        self.move_point_pick = Some(MovePointSlot::Target)
+                    }
+                    context::MoveEdit::ClearSourcePoint
+                    | context::MoveEdit::ClearTargetPoint
+                    | context::MoveEdit::Commit => self.move_point_pick = None,
+                    _ => {}
+                }
                 match edit {
                     context::MoveEdit::Commit => {
                         self.state.apply(Action::CommitMove);
@@ -9372,6 +9558,11 @@ impl eframe::App for App {
                             context::MoveEdit::Tz(v) => cm.tz = v,
                             context::MoveEdit::Angle(v) => cm.angle = v,
                             context::MoveEdit::Axis(a) => cm.axis = a,
+                            context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
+                            context::MoveEdit::ClearSourcePoint => cm.source_point = None,
+                            context::MoveEdit::ClearTargetPoint => cm.target_point = None,
+                            context::MoveEdit::SourcePointFocus
+                            | context::MoveEdit::TargetPointFocus => {}
                             context::MoveEdit::Commit => unreachable!(),
                         }
                     }
@@ -17404,6 +17595,8 @@ impl App {
 
         if self.state.tool == Tool::Move {
             self.handle_move_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            // Value inputs beside the free-translate arrows (#648).
+            self.show_move_translation_inputs(ui, &project);
         }
 
         if self.state.tool == Tool::Mirror {
@@ -18490,7 +18683,7 @@ impl App {
         };
         // Fade the descendants of the operation being edited (#260): the bodies downstream of the
         // edited op's outputs, so its live changes are visually de-emphasized.
-        let faded_bodies = {
+        let mut faded_bodies: Vec<usize> = {
             let seeds = self.edited_operation_output_bodies();
             if seeds.is_empty() {
                 Vec::new()
@@ -18500,6 +18693,22 @@ impl App {
                     .collect()
             }
         };
+        // Move tool (#649): once a source point is picked, the moving bodies go translucent so
+        // the gizmos and the points on them stay visible through the solid.
+        if self.state.tool == Tool::Move {
+            if let Some(cm) = self
+                .state
+                .creating_move
+                .as_ref()
+                .filter(|cm| cm.source_point.is_some())
+            {
+                for &bi in &cm.targets {
+                    if !faded_bodies.contains(&bi) {
+                        faded_bodies.push(bi);
+                    }
+                }
+            }
+        }
         // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
         let move_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()

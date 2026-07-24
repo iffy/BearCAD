@@ -14,15 +14,41 @@ Move translates and/or rotates whole bodies, producing moved copies.
 ## How to use it
 
 1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one.
-2. Type the translation **X / Y / Z** amounts — expressions, so the move stays parametric.
+2. Choose how to **Translate**:
+   - **Snap** (the default) — pick a **Source point** on a moving body, then a **Target
+     point** on something that isn't moving, and the bodies slide so the first lands on the
+     second. Either point can be a corner or the midpoint of an edge.
+   - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
+     box beside its handle). They're expressions, so the move stays parametric.
 3. To rotate, pick an **axis** (X/Y/Z buttons, or click any line in the viewport) and type
    the **Angle** (degrees by default; `rad` and parameters work).
 4. Press **Enter**.
+
+Once a source point is picked the moving bodies go translucent, so you can see the gizmos and
+the target you're aiming at through them.
 
 The inputs become [shadow bodies](/docs/tools/combine#shadow-bodies) and each gains a
 moved copy — a real body for further operations. **Edit move** changes anything later;
 deleting the move restores the originals. Editing a parameter re-places every body moved
 by it.
+
+## Scripting
+
+```lua
+-- Free: explicit components.
+bearcad.move_bodies{ bodies = {0}, x = 40, z = "plate_thickness" }
+
+-- Snap: land one point on another. `vertex` is a corner; `edge` takes a midpoint.
+bearcad.move_bodies{ bodies = {0},
+  from = { body = 0, vertex = {0, 0, 0} },
+  to   = { body = 1, vertex = {40, 0, 0} } }
+bearcad.move_bodies{ bodies = {0},
+  from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
+  to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } } }
+```
+
+Points are millimetre coordinates on the body's mesh — they only need to land on the corner or
+edge you mean.
 
 ## Moving geometry inside a sketch
 

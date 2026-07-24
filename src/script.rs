@@ -282,6 +282,10 @@ pub enum Instruction {
         tz: String,
         axis: Option<crate::model::RevolveAxis>,
         angle: String,
+        /// Snap-translate points (#649/#650): with both set the move snaps `source` onto
+        /// `target` and the tx/ty/tz expressions are ignored.
+        source_point: Option<crate::model::MovePointRef>,
+        target_point: Option<crate::model::MovePointRef>,
     },
     /// Re-point an existing move operation.
     EditMoveOp {
@@ -292,6 +296,8 @@ pub enum Instruction {
         tz: String,
         axis: Option<crate::model::RevolveAxis>,
         angle: String,
+        source_point: Option<crate::model::MovePointRef>,
+        target_point: Option<crate::model::MovePointRef>,
     },
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
@@ -960,11 +966,11 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle } => {
-                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, *axis, angle)
+            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point } => {
+                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, *axis, angle, source_point, target_point)
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
-                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle)
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle, source_point, target_point)
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {
                 mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
@@ -1657,7 +1663,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle, .. } => {
+        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle, source_point, target_point, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: targets.clone(),
                 tx: tx.clone(),
@@ -1665,9 +1671,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 tz: tz.clone(),
                 axis: *axis,
                 angle: angle.clone(),
+                source_point: *source_point,
+                target_point: *target_point,
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle, .. } => {
+        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle, source_point, target_point, .. } => {
             Some(Instruction::EditMoveOp {
                 op: *op,
                 targets: targets.clone(),
@@ -1676,6 +1684,8 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 tz: tz.clone(),
                 axis: *axis,
                 angle: angle.clone(),
+                source_point: *source_point,
+                target_point: *target_point,
             })
         }
         Action::CreateMirrorOperation { plane, targets, mode } => Some(Instruction::CreateMirrorOp {
@@ -2222,6 +2232,8 @@ fn move_op_lua(
     tz: &str,
     axis: Option<crate::model::RevolveAxis>,
     angle: &str,
+    source_point: &Option<crate::model::MovePointRef>,
+    target_point: &Option<crate::model::MovePointRef>,
 ) -> String {
     let mut parts = Vec::new();
     if let Some(op) = op {
@@ -2231,6 +2243,12 @@ fn move_op_lua(
         "bodies = {{{}}}",
         targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
     ));
+    // Naming both points makes it a snap translation (#648); the x/y/z components below are
+    // then ignored, so they're left out.
+    if let (Some(source), Some(target)) = (source_point, target_point) {
+        parts.push(format!("from = {}", move_point_lua(source)));
+        parts.push(format!("to = {}", move_point_lua(target)));
+    }
     for (name, value) in [("x", tx), ("y", ty), ("z", tz)] {
         if !value.trim().is_empty() {
             parts.push(format!("{name} = \"{value}\""));
@@ -2704,6 +2722,34 @@ fn sketch_axis_lua_name(axis: crate::model::SketchAxis) -> &'static str {
 
 fn constraint_point_lua_ref(point: &ConstraintPoint) -> String {
     format!("{{ {} }}", point_lua_fields(point))
+}
+
+/// A scripted move is a **snap** translation exactly when it names both points (#648) — the
+/// terse form, so a plain `move_bodies{x = …}` stays a free translation.
+pub fn move_translate_mode(
+    source: &Option<crate::model::MovePointRef>,
+    target: &Option<crate::model::MovePointRef>,
+) -> crate::model::MoveTranslateMode {
+    if source.is_some() && target.is_some() {
+        crate::model::MoveTranslateMode::Snap
+    } else {
+        crate::model::MoveTranslateMode::Free
+    }
+}
+
+/// A [`crate::model::MovePointRef`] as the Lua table scripts use (#649/#650): a body plus
+/// either a `vertex` in millimetres or the two ends of an `edge` (its midpoint is the point).
+pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
+    match point {
+        crate::model::MovePointRef::Vertex { body, p } => {
+            format!("{{ body = {body}, vertex = {} }}", mm_point_lua(*p))
+        }
+        crate::model::MovePointRef::EdgeMidpoint { body, a, b } => format!(
+            "{{ body = {body}, edge = {{ {}, {} }} }}",
+            mm_point_lua(*a),
+            mm_point_lua(*b)
+        ),
+    }
 }
 
 /// A quantized body point (#647) as the `{x, y, z}` **millimetre** table scripts use — the
@@ -4167,15 +4213,29 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle } => {
-                let result =
-                    state.apply(Action::CreateMoveOperation { targets, plane_targets: Vec::new(), image_targets: Vec::new(), tx, ty, tz, axis, angle });
+            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point } => {
+                let result = state.apply(Action::CreateMoveOperation {
+                    translate_mode: move_translate_mode(&source_point, &target_point),
+                    source_point,
+                    target_point,
+                    targets,
+                    plane_targets: Vec::new(),
+                    image_targets: Vec::new(),
+                    tx,
+                    ty,
+                    tz,
+                    axis,
+                    angle,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point } => {
                 let result = state.apply(Action::EditMoveOperation {
                     op,
+                    translate_mode: move_translate_mode(&source_point, &target_point),
+                    source_point,
+                    target_point,
                     targets,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),

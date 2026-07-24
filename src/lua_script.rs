@@ -679,6 +679,8 @@ fn parse_move_op_args(
     String,
     Option<crate::model::RevolveAxis>,
     String,
+    Option<crate::model::MovePointRef>,
+    Option<crate::model::MovePointRef>,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -695,11 +697,60 @@ fn parse_move_op_args(
         })
     };
     let (tx, ty, tz, angle) = (expr("x")?, expr("y")?, expr("z")?, expr("angle")?);
+    // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
+    // `from` exactly on `to`, and x/y/z are ignored.
+    let source_point = parse_move_point(opts.get::<Value>("from")?, "from")?;
+    let target_point = parse_move_point(opts.get::<Value>("to")?, "to")?;
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => None,
         value => Some(parse_revolve_axis(value, "move")?),
     };
-    Ok((targets, tx, ty, tz, axis, angle))
+    Ok((targets, tx, ty, tz, axis, angle, source_point, target_point))
+}
+
+/// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
+/// `{ body = i, edge = { {x,y,z}, {x,y,z} } }` table (#649/#650). Coordinates are plain
+/// millimetres on the body's mesh, re-quantized to the selection grid.
+fn parse_move_point(
+    value: Value,
+    what: &str,
+) -> mlua::Result<Option<crate::model::MovePointRef>> {
+    let Value::Table(t) = value else {
+        return match value {
+            Value::Nil => Ok(None),
+            _ => Err(mlua::Error::external(format!(
+                "move `{what}` must be {{body = i, vertex = {{x,y,z}}}} or \
+                 {{body = i, edge = {{{{x,y,z}}, {{x,y,z}}}}}}"
+            ))),
+        };
+    };
+    let body: usize = t.get("body")?;
+    let mm = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
+        if v.len() != 3 {
+            return Err(mlua::Error::external(format!(
+                "move `{what}` points must be {{x, y, z}} in mm"
+            )));
+        }
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+            v[0], v[1], v[2],
+        )))
+    };
+    if let Some(v) = t.get::<Option<Vec<f32>>>("vertex")? {
+        return Ok(Some(crate::model::MovePointRef::Vertex { body, p: mm(v)? }));
+    }
+    let ends: Vec<Vec<f32>> = t.get("edge").map_err(|_| {
+        mlua::Error::external(format!("move `{what}` needs a `vertex` or an `edge`"))
+    })?;
+    if ends.len() != 2 {
+        return Err(mlua::Error::external(format!(
+            "move `{what}.edge` must be two {{x, y, z}} points"
+        )));
+    }
+    Ok(Some(crate::model::MovePointRef::EdgeMidpoint {
+        body,
+        a: mm(ends[0].clone())?,
+        b: mm(ends[1].clone())?,
+    }))
 }
 
 /// Parses `bearcad.repeat_bodies{}`/`bearcad.edit_repeat{}` arguments.
@@ -3432,9 +3483,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, axis, angle) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, axis, angle, source_point, target_point) =
+                parse_move_op_args(&opts)?;
             unsafe {
-                tick.exec(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle })?;
+                tick.exec(Instruction::CreateMoveOp {
+                    targets, tx, ty, tz, axis, angle, source_point, target_point,
+                })?;
             }
             let element = SceneElement::MoveOp(unsafe {
                 tick.state().doc.move_ops.len().saturating_sub(1)
@@ -3449,9 +3503,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, axis, angle) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, axis, angle, source_point, target_point) =
+                parse_move_op_args(&opts)?;
             unsafe {
-                tick.exec(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })?;
+                tick.exec(Instruction::EditMoveOp {
+                    op, targets, tx, ty, tz, axis, angle, source_point, target_point,
+                })?;
             }
             Ok(())
         })?,
@@ -6123,6 +6180,79 @@ mod tests {
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
         assert_eq!(state.doc.drawings[0].views.len(), 1);
+    }
+
+    /// #648/#649/#650: naming both points makes a move a **snap** — the picked source corner
+    /// lands exactly on the picked target corner, and x/y/z are ignored.
+    #[test]
+    fn lua_move_snaps_a_source_point_onto_a_target_point() {
+        let state = run_lua(
+            r#"
+            -- Two 10x10x5 boxes: A at the origin, B 40mm along +X.
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            -- Snap A's origin corner onto B's near-bottom corner.
+            bearcad.move_bodies{
+                bodies = {0},
+                from = { body = 0, vertex = {0, 0, 0} },
+                to   = { body = 1, vertex = {40, 0, 0} },
+                x = 999,  -- ignored: the points win
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops[0];
+        assert_eq!(op.translate_mode, crate::model::MoveTranslateMode::Snap);
+        assert!(op.has_snap_translation());
+        let t = crate::extrude::move_op_translation(&state.doc, op).expect("translation");
+        assert!(
+            (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,
+            "snap offset should be +40 X, got {t:?}"
+        );
+        // The moved output really sits over body B.
+        let out = op.outputs[0];
+        let (min, _) = crate::extrude::body_solid_mesh(&state.doc, out)
+            .and_then(|m| m.bounds())
+            .expect("moved mesh");
+        assert!((min.x - 40.0).abs() < 1e-2, "moved body starts at x=40, got {min:?}");
+        // A plain x/y/z move stays free.
+        let free = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.move_bodies{ bodies = {0}, x = 7 }
+            "#,
+        );
+        assert_eq!(
+            free.doc.move_ops[0].translate_mode,
+            crate::model::MoveTranslateMode::Free
+        );
+    }
+
+    /// #649/#650: an **edge midpoint** works as either point too.
+    #[test]
+    fn lua_move_snaps_from_an_edge_midpoint() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            -- A's bottom front edge midpoint (5, 0, 0) onto B's (45, 0, 0).
+            bearcad.move_bodies{
+                bodies = {0},
+                from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
+                to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } },
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops[0];
+        let t = crate::extrude::move_op_translation(&state.doc, op).expect("translation");
+        assert!(
+            (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,
+            "midpoint-to-midpoint offset should be +40 X, got {t:?}"
+        );
     }
 
     /// #645: `repeat_bodies{ to = }` measures the fill length to a picked plane instead of a

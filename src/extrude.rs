@@ -660,14 +660,50 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
 /// op's axis (through its world origin) then translation. Expressions evaluate against
 /// document parameters, so moves rebuild parametrically. `None` when the axis line died
 /// or an expression doesn't evaluate.
-pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
+/// The world position of a [`crate::model::MovePointRef`] (#649/#650), resolved against the
+/// body's live mesh. `None` once the mesh no longer has that corner/edge.
+pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> Option<Vec3> {
+    match point {
+        crate::model::MovePointRef::Vertex { body, p } => {
+            crate::parameters::body_vertex_world_position(doc, *body, *p)
+        }
+        crate::model::MovePointRef::EdgeMidpoint { body, a, b } => {
+            let (p0, p1) = crate::parameters::body_edge_world_segment(doc, *body, *a, *b)?;
+            Some((p0 + p1) * 0.5)
+        }
+    }
+}
+
+/// A move's translation vector (#648/#650): in `Snap` mode the offset that lands the source
+/// point on the target point, otherwise the `tx`/`ty`/`tz` expressions. A snap with either
+/// point missing or unresolvable contributes no translation, so the op stays valid while the
+/// user is still picking.
+pub fn move_op_translation(doc: &Document, op: &crate::model::MoveOperation) -> Option<Vec3> {
+    if op.has_snap_translation() {
+        let (source, target) = (op.source_point.as_ref()?, op.target_point.as_ref()?);
+        // Points that no longer resolve contribute nothing rather than killing the op — the
+        // same forgiveness a repeat's dead length target gets.
+        if let (Some(from), Some(to)) = (move_point_world(doc, source), move_point_world(doc, target))
+        {
+            return Some(to - from);
+        }
+        return Some(Vec3::ZERO);
+    }
     let eval_len = |expr: &str| -> Option<f32> {
         if expr.trim().is_empty() {
             return Some(0.0);
         }
         crate::value::eval_length_mm_in_doc(expr, doc)
     };
-    let t = Vec3::new(eval_len(&op.tx)?, eval_len(&op.ty)?, eval_len(&op.tz)?);
+    Some(Vec3::new(
+        eval_len(&op.tx)?,
+        eval_len(&op.ty)?,
+        eval_len(&op.tz)?,
+    ))
+}
+
+pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
+    let t = move_op_translation(doc, op)?;
     let mut m = glam::Mat4::from_translation(t);
     if let Some(axis) = op.axis {
         let angle_rad = if op.angle.trim().is_empty() {
@@ -4554,6 +4590,52 @@ mod tests {
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
 
+    /// #648/#650: a Snap move only overrides the X/Y/Z expressions once **both** points are
+    /// picked — while one is missing (or there are no bodies at all, as for a plane or image
+    /// move) the expressions still drive it, so the tool stays usable mid-pick.
+    #[test]
+    fn snap_move_falls_back_to_expressions_until_both_points_are_picked() {
+        use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
+        let doc = Document::default();
+        let base = MoveOperation {
+            targets: Vec::new(),
+            translate_mode: MoveTranslateMode::Snap,
+            source_point: None,
+            target_point: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            tx: "7".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        assert!(!base.has_snap_translation());
+        assert_eq!(
+            move_op_translation(&doc, &base),
+            Some(Vec3::new(7.0, 0.0, 0.0)),
+            "no points yet: the expressions still drive it"
+        );
+        // One point isn't enough either.
+        let half = MoveOperation {
+            source_point: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
+            ..base.clone()
+        };
+        assert!(!half.has_snap_translation());
+        assert_eq!(move_op_translation(&doc, &half), Some(Vec3::new(7.0, 0.0, 0.0)));
+        // With both, the snap takes over — and points that no longer resolve contribute
+        // nothing rather than killing the op.
+        let full = MoveOperation {
+            target_point: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
+            ..half
+        };
+        assert!(full.has_snap_translation());
+        assert_eq!(move_op_translation(&doc, &full), Some(Vec3::ZERO));
+    }
+
     /// #644: the distance gizmo hangs off the targets' **start** plane along the axis, centred
     /// on them in the other two directions, so the handle sits at `anchor + dir * distance`.
     #[test]
@@ -4645,6 +4727,9 @@ mod tests {
             deleted: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
+            translate_mode: Default::default(),
+            source_point: None,
+            target_point: None,
             targets: vec![2],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -4686,6 +4771,9 @@ mod tests {
             shadow: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
+            translate_mode: Default::default(),
+            source_point: None,
+            target_point: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -5221,6 +5309,9 @@ mod tests {
             source: None,
         });
         doc.move_ops.push(MoveOperation {
+            translate_mode: Default::default(),
+            source_point: None,
+            target_point: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),

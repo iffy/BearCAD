@@ -646,7 +646,24 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Move tool (#176/#183):** rigid translation and/or rotation of whole bodies. One
   multi-select body picker (viewport clicks toggle); translation X/Y/Z and the rotation
   angle are **expressions** (parameters work — moves rebuild parametrically); the rotation
-  axis is a global axis or any clicked line. Committing creates an editable **move
+  axis is a global axis or any clicked line.
+  **Translate mode (#648, `model::MoveTranslateMode`):** a pane dropdown picks **Snap** (the
+  default) or **Free**. Free is the classic behaviour — typed/dragged X/Y/Z. Snap instead
+  derives the offset from two picked points:
+  - A **Source point** picker (#649) takes a corner, or the midpoint of a feature edge, on one
+    of the **moving** bodies (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/
+    `BodyEdge` and resolved against the live mesh). While one is set the moving bodies render
+    **translucent** (they join `faded_bodies`) so the gizmos and points stay visible through
+    the solid. The source point is picked in both modes — Snap Rotate and the rotation point
+    build on it.
+  - A **Target point** picker (#650) takes the same kinds of point on a body that **isn't**
+    moving; the translation is then `target - source`, and the X/Y/Z fields and drag arrows are
+    hidden (the pane shows the derived offset instead).
+
+  A Snap move with either point still unpicked — or with no bodies at all, as for a plane or
+  image move — falls back to its `tx`/`ty`/`tz` expressions
+  (`MoveOperation::has_snap_translation`), so the tool stays usable mid-pick and gizmo drags
+  keep working; only a *resolved* snap is excluded from move coalescing. Committing creates an editable **move
   operation element** (`Document::move_ops`, `ShapeKind::MoveOperation`) with one moved
   output body per input (`BodySource::Moved { op, target }`); inputs become shadow bodies,
   exactly like the Combine tool. "Edit move" re-opens the tool (outputs grow/shrink with
@@ -660,9 +677,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Rotation ring (#216):** once a rotation axis is picked, a circle in the plane perpendicular
   to that axis (at the centroid, sized to the bodies) drags round to set the angle, driving
   `move_angle`. A **line selected while the Move tool is active** (Elements pane or viewport)
-  sets the rotation axis, alongside the context pane's X/Y/Z buttons. Scripting:
-  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, name? }` and
-  `bearcad.edit_move{ index, … }`. **Moving construction planes (#217):** a Move op can also
+  sets the rotation axis, alongside the context pane's X/Y/Z buttons. Each free-translate arrow
+  also carries a **value input floating beside its handle** (#648), so a component can be typed
+  where it's being dragged. Scripting:
+  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, from?, to?, name? }` and
+  `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
+  (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
+  on the body's mesh). **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane
