@@ -178,6 +178,17 @@ pub struct PlaneToolControl {
     /// One label per normal candidate at a picked vertex (empty or 1 when unambiguous).
     pub normal_labels: Vec<String>,
     pub normal_choice: usize,
+    /// An anchor is picked, so the offset/angle inputs and the Do button show (#611).
+    pub has_anchor: bool,
+    /// The anchor is an axis (edge or global axis), so an **angle** input shows alongside the
+    /// offset (#613). Face/plane/vertex anchors only offset (#614).
+    pub show_angle: bool,
+    /// Offset expression mirroring the 3D field (#613/#614).
+    pub offset_text: String,
+    /// Angle expression (degrees) mirroring the 3D field, when `show_angle` (#613).
+    pub angle_text: String,
+    pub offset_focused: bool,
+    pub angle_focused: bool,
 }
 
 /// The Loft tool's body-mode state (#479): the New/Add/Cut choice plus Cut's picked
@@ -191,12 +202,21 @@ pub struct LoftBodyControl {
 }
 
 /// One edit from the Construction Plane tool's context section (#474).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PlaneToolEdit {
     /// Clear the picked anchor (start over).
     ClearAnchor,
     /// Anchor the plane on the `i`-th normal candidate at the picked vertex.
     NormalChoice(usize),
+    /// Set the offset expression (mirrors the 3D field, #613/#614).
+    SetOffset(String),
+    /// Set the angle expression in degrees (mirrors the 3D field, #613).
+    SetAngle(String),
+    /// Focus the offset / angle field.
+    FocusOffset,
+    FocusAngle,
+    /// Create the plane (the blue primary button / Enter, #611).
+    Commit,
 }
 
 /// What the Combine tool's context section shows: the operation kind, both picker
@@ -2650,22 +2670,80 @@ pub fn show_pane(
             }
         });
 
-        // Several curves meet the picked vertex: choose which one's direction is the
-        // plane's normal (#474).
+        // Several lines meet the picked vertex: a single-select picker chooses which connected
+        // line's direction is the plane's normal (#612), instead of a stack of "Along line X"
+        // buttons.
         if control.normal_labels.len() > 1 {
-            labeled_row_top(ui, "Normal", |ui| {
-                ui.vertical(|ui| {
-                    for (i, label) in control.normal_labels.iter().enumerate() {
-                        if ui
-                            .selectable_label(control.normal_choice == i, format!("Along {label}"))
-                            .clicked()
-                            && control.normal_choice != i
-                        {
-                            on_plane_tool_edit(PlaneToolEdit::NormalChoice(i));
-                        }
+            let selected = control
+                .normal_labels
+                .get(control.normal_choice)
+                .cloned()
+                .unwrap_or_default();
+            labeled_row(ui, "Normal", |ui| {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    egui::ComboBox::from_id_salt("plane_normal_line")
+                        .selected_text(selected)
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for (i, label) in control.normal_labels.iter().enumerate() {
+                                if ui
+                                    .selectable_label(control.normal_choice == i, label)
+                                    .clicked()
+                                    && control.normal_choice != i
+                                {
+                                    on_plane_tool_edit(PlaneToolEdit::NormalChoice(i));
+                                }
+                            }
+                        });
+                });
+            });
+        }
+
+        // Offset (and, for an edge/axis anchor, angle) inputs mirroring the 3D viewport fields
+        // (#613/#614). Both edit the same in-progress plane, so the pane and the floating fields
+        // stay in lock-step.
+        if control.has_anchor {
+            labeled_row(ui, "Offset", |ui| {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    let mut text = control.offset_text.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        "plane_offset_ctx",
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        on_plane_tool_edit(PlaneToolEdit::SetOffset(text));
+                    }
+                    if resp.gained_focus() {
+                        on_plane_tool_edit(PlaneToolEdit::FocusOffset);
                     }
                 });
             });
+            if control.show_angle {
+                labeled_row(ui, "Angle", |ui| {
+                    ui.add_enabled_ui(controls_enabled, |ui| {
+                        let mut text = control.angle_text.clone();
+                        let resp = crate::expression_input::ValueInput::new(
+                            "plane_angle_ctx",
+                            crate::expression_input::ValueKind::Angle,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            on_plane_tool_edit(PlaneToolEdit::SetAngle(text));
+                        }
+                        if resp.gained_focus() {
+                            on_plane_tool_edit(PlaneToolEdit::FocusAngle);
+                        }
+                    });
+                });
+            }
+            // The plane is only created when this fires (button or Enter) — never on a stray
+            // viewport click (#611).
+            if primary_button(ui, controls_enabled, "Create plane") {
+                on_plane_tool_edit(PlaneToolEdit::Commit);
+            }
         }
     }
 

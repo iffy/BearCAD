@@ -8618,6 +8618,16 @@ impl eframe::App for App {
                             })
                             .unwrap_or_default(),
                         normal_choice: cp.map(|c| c.normal_choice).unwrap_or(0),
+                        // An anchor is picked → offset/angle inputs + Do button show (#611).
+                        has_anchor: cp.is_some(),
+                        // Edge/axis anchors get an angle input too; face/plane/vertex only offset
+                        // (#613/#614).
+                        show_angle: cp.is_some_and(|c| c.reference.is_axis()),
+                        offset_text: cp.map(|c| c.offset_text.clone()).unwrap_or_default(),
+                        angle_text: cp.map(|c| c.angle_text.clone()).unwrap_or_default(),
+                        offset_focused: cp
+                            .is_some_and(|c| c.focused == construction::PlaneDim::Offset),
+                        angle_focused: cp.is_some_and(|c| c.focused == construction::PlaneDim::Angle),
                     }
                 }),
                 sweep: (self.state.tool == Tool::Sweep).then(|| {
@@ -8902,6 +8912,23 @@ impl eframe::App for App {
                                 }
                             }
                         }
+                    }
+                    context::PlaneToolEdit::SetOffset(value) => {
+                        self.state.apply(Action::SetPlaneOffset { value });
+                    }
+                    context::PlaneToolEdit::SetAngle(value) => {
+                        self.state.apply(Action::SetPlaneAngle { value });
+                    }
+                    context::PlaneToolEdit::FocusOffset => {
+                        self.state
+                            .apply(Action::FocusPlaneDim { dim: construction::PlaneDim::Offset });
+                    }
+                    context::PlaneToolEdit::FocusAngle => {
+                        self.state
+                            .apply(Action::FocusPlaneDim { dim: construction::PlaneDim::Angle });
+                    }
+                    context::PlaneToolEdit::Commit => {
+                        self.state.apply(Action::CommitConstructionPlane);
                     }
                 }
             }
@@ -17262,8 +17289,6 @@ impl App {
                     }
                 }
 
-                let mut commit_click = false;
-                let was_creating = self.state.creating_plane.is_some();
                 if let Some(cp) = &mut self.state.creating_plane {
                     let scroll = ui.input(|i| i.raw_scroll_delta.y);
                     let primary_down = ui.input(|i| i.pointer.primary_down());
@@ -17412,56 +17437,9 @@ impl App {
                         }
                     }
 
-                    let preview = cp.preview_plane();
-                    let dim_layouts = plane_dim_layouts(
-                        &project,
-                        &preview,
-                        &cp.reference,
-                        cp.offset_live,
-                        cp.axis_angle_deg,
-                    );
-                    let over_input = dim_layouts.as_ref().is_some_and(|(offset, angle)| {
-                        let mut layouts = vec![*offset];
-                        if let Some(angle) = angle {
-                            layouts.push(*angle);
-                        }
-                        pointer_over_dim_inputs(pp, &layouts)
-                    });
-                    let over_gizmo = match &cp.reference {
-                        PlaneReference::Face { origin, normal, .. } => offset_gizmo_hit(
-                            pp,
-                            &project,
-                            *origin,
-                            *normal,
-                            cp.offset_live,
-                        ),
-                        PlaneReference::Axis {
-                            origin,
-                            direction,
-                            ..
-                        } => axis_gizmo_hit(
-                            pp,
-                            &project,
-                            *origin,
-                            *direction,
-                            cp.offset_live,
-                            cp.axis_angle_deg,
-                        )
-                        .is_some(),
-                    };
-
-                    if !complemented
-                        && should_commit_sketch_on_click(
-                            was_creating,
-                            primary_pressed,
-                            over_input || over_gizmo || cp.axis_gizmo_drag.is_some(),
-                        )
-                    {
-                        commit_click = true;
-                    }
-                }
-                if commit_click {
-                    self.state.apply(Action::CommitConstructionPlane);
+                    // The plane is no longer committed by a stray viewport click (#611): it's
+                    // created only by the context "Create plane" button or Enter. A click here
+                    // just grabs/drags the gizmo or completes a line+point anchor.
                 }
             }
         }
@@ -19370,18 +19348,18 @@ impl App {
                     });
                     if from_axis {
                         if editing {
-                            "Edit plane • drag arrow/circle or type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                            "Edit plane • drag arrow/circle or type to lock • Tab: switch dims • Enter or ✓: commit • Esc: cancel"
                         } else if can_add_point {
-                            "Drag arrow for offset • click a point for normal-to-line • drag circle for angle • Click/Enter: commit • Esc: cancel"
+                            "Drag arrow for offset • click a point for normal-to-line • drag circle for angle • Enter or ✓: commit • Esc: cancel"
                         } else {
-                            "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                            "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Enter or ✓: commit • Esc: cancel"
                         }
                     } else if editing {
-                        "Edit plane • drag arrow or type to lock offset • Click/Enter: commit • Esc: cancel"
+                        "Edit plane • drag arrow or type to lock offset • Enter or ✓: commit • Esc: cancel"
                     } else if can_add_point {
-                        "Drag arrow for offset • click a line/curve for normal direction • Click/Enter: create plane • Esc: cancel"
+                        "Drag arrow for offset • click a line/curve for normal direction • Enter or ✓: create plane • Esc: cancel"
                     } else {
-                        "Drag arrow for offset • wheel or type to lock • Click/Enter: create plane • Esc: cancel"
+                        "Drag arrow for offset • wheel or type to lock • Enter or ✓: create plane • Esc: cancel"
                     }
                 } else {
                     "plane  •  Click a face, straight edge, or curve+point (endpoint = normal-at-end) • then set offset"
