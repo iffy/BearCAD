@@ -430,6 +430,8 @@ enum MovePointSlot {
     Source,
     /// A point on **stationary** geometry the source lands on (#650).
     Target,
+    /// The point the rotation turns about (#651) — either side of the fence is fine.
+    Rotation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5824,29 +5826,42 @@ impl App {
         // Point-pick mode (#649/#650), armed by focusing the pane's Source/Target point
         // picker: this click takes a body corner or edge midpoint instead of toggling a body.
         if let Some(slot) = self.move_point_pick {
-            let moving = slot == MovePointSlot::Source;
-            match self.pick_move_point(pp, project, pick_occlusion, moving) {
+            // The source point must sit on a moving body and the target on a stationary one;
+            // the rotation point may be either (#651).
+            let side = match slot {
+                MovePointSlot::Source => Some(true),
+                MovePointSlot::Target => Some(false),
+                MovePointSlot::Rotation => None,
+            };
+            match self.pick_move_point(pp, project, pick_occlusion, side) {
                 Some(point) => {
                     let label = self.move_point_label(&point);
                     if let Some(cm) = self.state.creating_move.as_mut() {
                         match slot {
                             MovePointSlot::Source => cm.source_point = Some(point),
                             MovePointSlot::Target => cm.target_point = Some(point),
+                            MovePointSlot::Rotation => cm.rotation_point = Some(point),
                         }
                     }
                     self.move_point_pick = None;
                     self.state.status = format!(
                         "Move: {} point — {label}",
-                        if moving { "source" } else { "target" }
+                        match slot {
+                            MovePointSlot::Source => "source",
+                            MovePointSlot::Target => "target",
+                            MovePointSlot::Rotation => "rotation",
+                        }
                     );
                 }
                 // Missing the allowed geometry leaves the picker armed, so the user can try
                 // again without re-focusing it.
                 None => {
-                    self.state.status = if moving {
-                        "Pick a corner or edge on a body being moved".to_string()
-                    } else {
-                        "Pick a corner or edge on a body that isn't moving".to_string()
+                    self.state.status = match side {
+                        Some(true) => "Pick a corner or edge on a body being moved".to_string(),
+                        Some(false) => {
+                            "Pick a corner or edge on a body that isn't moving".to_string()
+                        }
+                        None => "Pick a corner or edge on any body".to_string(),
                     };
                 }
             }
@@ -5918,6 +5933,8 @@ impl App {
                         translate_mode: existing.translate_mode,
                         source_point: existing.source_point,
                         target_point: existing.target_point,
+                        rotate_mode: existing.rotate_mode,
+                        rotation_point: existing.rotation_point,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         tx: existing.tx,
@@ -6540,13 +6557,14 @@ impl App {
     /// Resolve a viewport click into a Move source/target point (#649/#650): a body **corner**
     /// under the cursor wins, else the midpoint of the body **edge** under it. `moving` picks
     /// which side of the fence the body must be on — the source point has to sit on a body
-    /// being moved, the target point on one that isn't.
+    /// being moved, the target point on one that isn't, and `None` (the rotation point, #651)
+    /// takes either.
     fn pick_move_point(
         &self,
         pp: egui::Pos2,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pick_occlusion: Option<&construction::PickOcclusion>,
-        moving: bool,
+        moving: Option<bool>,
     ) -> Option<model::MovePointRef> {
         let targets: Vec<usize> = self
             .state
@@ -6554,7 +6572,7 @@ impl App {
             .as_ref()
             .map(|cm| cm.targets.clone())
             .unwrap_or_default();
-        let allowed = |body: usize| targets.contains(&body) == moving;
+        let allowed = |body: usize| moving.is_none_or(|m| targets.contains(&body) == m);
         if let Some(construction::PickTargetKind::BodyVertex { body, position }) =
             pickable_body_vertex(pp, project, &self.state.doc, pick_occlusion)
         {
@@ -8688,6 +8706,15 @@ impl eframe::App for App {
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
                         target_point_focused: self.move_point_pick == Some(MovePointSlot::Target),
+                        rotate_mode: cm.map(|c| c.rotate_mode).unwrap_or_default(),
+                        rotation_point_rows: cm
+                            .and_then(|c| c.rotation_point)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            // Empty means "the source point" (#651) — say so, rather than
+                            // leaving the picker looking unset.
+                            .unwrap_or_else(|| vec!["Source point".to_string()]),
+                        rotation_point_focused: self.move_point_pick
+                            == Some(MovePointSlot::Rotation),
                         snap_offset: cm.and_then(|c| {
                             let (from, to) = (c.source_point?, c.target_point?);
                             let a = extrude::move_point_world(&self.state.doc, &from)?;
@@ -9538,8 +9565,12 @@ impl eframe::App for App {
                     context::MoveEdit::TargetPointFocus => {
                         self.move_point_pick = Some(MovePointSlot::Target)
                     }
+                    context::MoveEdit::RotationPointFocus => {
+                        self.move_point_pick = Some(MovePointSlot::Rotation)
+                    }
                     context::MoveEdit::ClearSourcePoint
                     | context::MoveEdit::ClearTargetPoint
+                    | context::MoveEdit::ClearRotationPoint
                     | context::MoveEdit::Commit => self.move_point_pick = None,
                     _ => {}
                 }
@@ -9561,8 +9592,11 @@ impl eframe::App for App {
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearSourcePoint => cm.source_point = None,
                             context::MoveEdit::ClearTargetPoint => cm.target_point = None,
+                            context::MoveEdit::RotateMode(m) => cm.rotate_mode = m,
+                            context::MoveEdit::ClearRotationPoint => cm.rotation_point = None,
                             context::MoveEdit::SourcePointFocus
-                            | context::MoveEdit::TargetPointFocus => {}
+                            | context::MoveEdit::TargetPointFocus
+                            | context::MoveEdit::RotationPointFocus => {}
                             context::MoveEdit::Commit => unreachable!(),
                         }
                     }

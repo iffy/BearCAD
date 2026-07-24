@@ -660,6 +660,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     moving; the translation is then `target - source`, and the X/Y/Z fields and drag arrows are
     hidden (the pane shows the derived offset instead).
 
+  **Rotate mode (#651, `model::MoveRotateMode`):** a second dropdown picks **Snap** (the
+  default) or **Free**, and a **Rotation point** picker takes the point the rotation turns
+  about — a corner or edge midpoint on *any* body, moving or not. Left empty it reads "Source
+  point" and follows the source-point pick (`MoveOperation::rotation_pivot`); with neither set
+  the rotation falls back to the axis's own origin, as before. The axis then only supplies a
+  direction.
+
   A Snap move with either point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
   (`MoveOperation::has_snap_translation`), so the tool stays usable mid-pick and gizmo drags
@@ -680,10 +687,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   sets the rotation axis, alongside the context pane's X/Y/Z buttons. Each free-translate arrow
   also carries a **value input floating beside its handle** (#648), so a component can be typed
   where it's being dragged. Scripting:
-  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, from?, to?, name? }` and
+  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, from?, to?, pivot?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh). **Moving construction planes (#217):** a Move op can also
+  on the body's mesh); `pivot` takes the same table and sets the rotation point. **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane

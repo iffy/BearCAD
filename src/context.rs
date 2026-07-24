@@ -250,6 +250,11 @@ pub struct MoveControl {
     /// The picked target point's label, if any (#650), and whether its picker is armed.
     pub target_point_rows: Vec<String>,
     pub target_point_focused: bool,
+    /// Snap (default) or free rotation, and the picked rotation point (#651). Empty rows read
+    /// as "Source point", which is what a rotation with no explicit pivot turns about.
+    pub rotate_mode: crate::model::MoveRotateMode,
+    pub rotation_point_rows: Vec<String>,
+    pub rotation_point_focused: bool,
     /// The snap translation the two points work out to, formatted (#650) — shown instead of
     /// the X/Y/Z fields while snapping.
     pub snap_offset: Option<String>,
@@ -278,6 +283,11 @@ pub enum MoveEdit {
     /// Arm / clear the target-point picker (#650).
     TargetPointFocus,
     ClearTargetPoint,
+    /// Rotate dropdown (#651).
+    RotateMode(crate::model::MoveRotateMode),
+    /// Arm / clear the rotation-point picker (#651).
+    RotationPointFocus,
+    ClearRotationPoint,
     Commit,
 }
 
@@ -3139,6 +3149,45 @@ pub fn show_pane(
             }
             field(ui, "Angle", &control.angle, ValueKind::Angle, &MoveEdit::Angle);
         }
+        // Rotate mode (#651): lining a face+edge up with another (the default) or turning by
+        // explicit angles.
+        {
+            use crate::model::MoveRotateMode as R;
+            let mut mode = control.rotate_mode;
+            labeled_row(ui, "Rotate", |ui| {
+                egui::ComboBox::from_id_salt("move_rotate_mode")
+                    .selected_text(match mode {
+                        R::Snap => "Snap",
+                        R::Free => "Free",
+                    })
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut mode, R::Snap, "Snap");
+                        ui.selectable_value(&mut mode, R::Free, "Free");
+                    });
+            });
+            if mode != control.rotate_mode {
+                pending = Some(MoveEdit::RotateMode(mode));
+            }
+        }
+        // The point the rotation turns about (#651). Left empty it follows the source point,
+        // which the picker's empty state says outright.
+        labeled_row_top(ui, "Rotation point", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "move_rotation_point",
+                control.rotation_point_focused,
+                true,
+                crate::icons::IconId::Coincident,
+                &control.rotation_point_rows,
+            ) {
+                pending = Some(match event {
+                    crate::element_picker::PickerEvent::Focus => MoveEdit::RotationPointFocus,
+                    crate::element_picker::PickerEvent::Remove(_)
+                    | crate::element_picker::PickerEvent::Clear => MoveEdit::ClearRotationPoint,
+                });
+            }
+        });
         ui.horizontal(|ui| {
             ui.label("Axis");
             for (axis, label) in [
@@ -5396,6 +5445,9 @@ mod tests {
             in_drawing_workbench: false,
             move_op: Some(MoveControl {
                 translate_mode: crate::model::MoveTranslateMode::Free,
+                rotate_mode: crate::model::MoveRotateMode::Free,
+                rotation_point_rows: Vec::new(),
+                rotation_point_focused: false,
                 source_point_rows: Vec::new(),
                 source_point_focused: false,
                 target_point_rows: Vec::new(),

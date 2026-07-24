@@ -712,7 +712,13 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
             crate::value::eval_angle_rad_in_doc(&op.angle, doc)?
         };
         if angle_rad.abs() > 1e-9 {
-            let (origin, dir) = axis_world(doc, axis)?;
+            let (axis_origin, dir) = axis_world(doc, axis)?;
+            // The move turns about its picked rotation point when it has one (#651) — the
+            // axis then only supplies a direction. Without one it turns about the axis itself.
+            let origin = op
+                .rotation_pivot()
+                .and_then(|p| move_point_world(doc, p))
+                .unwrap_or(axis_origin);
             let rot = glam::Mat4::from_translation(origin)
                 * glam::Mat4::from_axis_angle(dir, angle_rad)
                 * glam::Mat4::from_translation(-origin);
@@ -4598,6 +4604,8 @@ mod tests {
         use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
         let doc = Document::default();
         let base = MoveOperation {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             targets: Vec::new(),
             translate_mode: MoveTranslateMode::Snap,
             source_point: None,
@@ -4621,6 +4629,8 @@ mod tests {
         );
         // One point isn't enough either.
         let half = MoveOperation {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             source_point: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
             ..base.clone()
         };
@@ -4629,6 +4639,8 @@ mod tests {
         // With both, the snap takes over — and points that no longer resolve contribute
         // nothing rather than killing the op.
         let full = MoveOperation {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             target_point: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
             ..half
         };
@@ -4727,6 +4739,8 @@ mod tests {
             deleted: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,
@@ -4771,6 +4785,8 @@ mod tests {
             shadow: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,
@@ -5309,6 +5325,8 @@ mod tests {
             source: None,
         });
         doc.move_ops.push(MoveOperation {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,

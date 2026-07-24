@@ -381,12 +381,12 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         }
         "move_bodies" => {
             let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point })
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")? })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point })
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")? })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -2046,6 +2046,7 @@ mod tests {
             Ok(Instruction::CreateMoveOp {
                 source_point: None,
                 target_point: None,
+                rotation_point: None,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -2060,6 +2061,7 @@ mod tests {
             Ok(Instruction::EditMoveOp {
                 source_point: None,
                 target_point: None,
+                rotation_point: None,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),

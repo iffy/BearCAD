@@ -286,6 +286,8 @@ pub enum Instruction {
         /// `target` and the tx/ty/tz expressions are ignored.
         source_point: Option<crate::model::MovePointRef>,
         target_point: Option<crate::model::MovePointRef>,
+        /// The point the rotation turns about (#651); `None` follows `source_point`.
+        rotation_point: Option<crate::model::MovePointRef>,
     },
     /// Re-point an existing move operation.
     EditMoveOp {
@@ -298,6 +300,7 @@ pub enum Instruction {
         angle: String,
         source_point: Option<crate::model::MovePointRef>,
         target_point: Option<crate::model::MovePointRef>,
+        rotation_point: Option<crate::model::MovePointRef>,
     },
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
@@ -966,11 +969,11 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point } => {
-                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, *axis, angle, source_point, target_point)
+            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point } => {
+                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, *axis, angle, source_point, target_point, rotation_point)
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point } => {
-                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle, source_point, target_point)
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle, source_point, target_point, rotation_point)
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {
                 mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
@@ -1663,7 +1666,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle, source_point, target_point, .. } => {
+        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: targets.clone(),
                 tx: tx.clone(),
@@ -1673,9 +1676,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 angle: angle.clone(),
                 source_point: *source_point,
                 target_point: *target_point,
+                rotation_point: *rotation_point,
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle, source_point, target_point, .. } => {
+        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point, .. } => {
             Some(Instruction::EditMoveOp {
                 op: *op,
                 targets: targets.clone(),
@@ -1686,6 +1690,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 angle: angle.clone(),
                 source_point: *source_point,
                 target_point: *target_point,
+                rotation_point: *rotation_point,
             })
         }
         Action::CreateMirrorOperation { plane, targets, mode } => Some(Instruction::CreateMirrorOp {
@@ -2234,6 +2239,7 @@ fn move_op_lua(
     angle: &str,
     source_point: &Option<crate::model::MovePointRef>,
     target_point: &Option<crate::model::MovePointRef>,
+    rotation_point: &Option<crate::model::MovePointRef>,
 ) -> String {
     let mut parts = Vec::new();
     if let Some(op) = op {
@@ -2248,6 +2254,10 @@ fn move_op_lua(
     if let (Some(source), Some(target)) = (source_point, target_point) {
         parts.push(format!("from = {}", move_point_lua(source)));
         parts.push(format!("to = {}", move_point_lua(target)));
+    }
+    // An explicit rotation point (#651); omitted, the rotation follows `from`.
+    if let Some(pivot) = rotation_point {
+        parts.push(format!("pivot = {}", move_point_lua(pivot)));
     }
     for (name, value) in [("x", tx), ("y", ty), ("z", tz)] {
         if !value.trim().is_empty() {
@@ -4213,11 +4223,14 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point } => {
+            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point } => {
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&source_point, &target_point),
                     source_point,
                     target_point,
+                    // A scripted move states its axes outright, so its rotation is free (#651).
+                    rotate_mode: crate::model::MoveRotateMode::Free,
+                    rotation_point,
                     targets,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),
@@ -4230,12 +4243,14 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point } => {
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point } => {
                 let result = state.apply(Action::EditMoveOperation {
                     op,
                     translate_mode: move_translate_mode(&source_point, &target_point),
                     source_point,
                     target_point,
+                    rotate_mode: crate::model::MoveRotateMode::Free,
+                    rotation_point,
                     targets,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),

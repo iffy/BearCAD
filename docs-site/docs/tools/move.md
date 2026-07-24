@@ -21,7 +21,9 @@ Move translates and/or rotates whole bodies, producing moved copies.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. To rotate, pick an **axis** (X/Y/Z buttons, or click any line in the viewport) and type
-   the **Angle** (degrees by default; `rad` and parameters work).
+   the **Angle** (degrees by default; `rad` and parameters work). The **Rotation point** picker
+   sets what it turns about — a corner or edge midpoint on any body. Left alone it follows the
+   source point.
 4. Press **Enter**.
 
 Once a source point is picked the moving bodies go translucent, so you can see the gizmos and
@@ -45,6 +47,10 @@ bearcad.move_bodies{ bodies = {0},
 bearcad.move_bodies{ bodies = {0},
   from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
   to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } } }
+
+-- Turn about a picked corner instead of the axis itself.
+bearcad.move_bodies{ bodies = {0}, axis = "z", angle = 90,
+                     pivot = { body = 0, vertex = {20, 0, 0} } }
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or

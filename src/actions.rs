@@ -921,6 +921,10 @@ pub struct CreatingMove {
     /// The picked point on the moving bodies (#649) and the point it snaps onto (#650).
     pub source_point: Option<crate::model::MovePointRef>,
     pub target_point: Option<crate::model::MovePointRef>,
+    /// Snap (default) or free rotation, and the point turned about (#651). A `None`
+    /// rotation point follows the source point.
+    pub rotate_mode: crate::model::MoveRotateMode,
+    pub rotation_point: Option<crate::model::MovePointRef>,
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
@@ -1832,6 +1836,9 @@ pub enum Action {
         translate_mode: crate::model::MoveTranslateMode,
         source_point: Option<crate::model::MovePointRef>,
         target_point: Option<crate::model::MovePointRef>,
+        /// How the rotation is specified and what it turns about (#651).
+        rotate_mode: crate::model::MoveRotateMode,
+        rotation_point: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -1849,6 +1856,9 @@ pub enum Action {
         translate_mode: crate::model::MoveTranslateMode,
         source_point: Option<crate::model::MovePointRef>,
         target_point: Option<crate::model::MovePointRef>,
+        /// How the rotation is specified and what it turns about (#651).
+        rotate_mode: crate::model::MoveRotateMode,
+        rotation_point: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -9660,6 +9670,8 @@ label_hidden: false,
                         translate_mode: cm.translate_mode,
                         source_point: cm.source_point,
                         target_point: cm.target_point,
+                        rotate_mode: cm.rotate_mode,
+                        rotation_point: cm.rotation_point,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
@@ -9684,6 +9696,8 @@ label_hidden: false,
                                     translate_mode: crate::model::MoveTranslateMode::Free,
                                     source_point: None,
                                     target_point: None,
+                                    rotate_mode: self.doc.move_ops[op].rotate_mode,
+                                    rotation_point: self.doc.move_ops[op].rotation_point,
                                     targets: self.doc.move_ops[op].targets.clone(),
                                     plane_targets: self.doc.move_ops[op].plane_targets.clone(),
                                     image_targets: self.doc.move_ops[op].image_targets.clone(),
@@ -9698,6 +9712,8 @@ label_hidden: false,
                                 translate_mode: cm.translate_mode,
                                 source_point: cm.source_point,
                                 target_point: cm.target_point,
+                                rotate_mode: cm.rotate_mode,
+                                rotation_point: cm.rotation_point,
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
                                 image_targets: cm.image_targets.clone(),
@@ -9717,7 +9733,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, source_point, target_point, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
+            Action::CreateMoveOperation { translate_mode, source_point, target_point, rotate_mode, rotation_point, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
                 if targets.is_empty() && plane_targets.is_empty() && image_targets.is_empty() {
                     let e = "Pick at least one body, plane, or image to move".to_string();
                     self.status = e.clone();
@@ -9735,6 +9751,8 @@ label_hidden: false,
                     translate_mode,
                     source_point,
                     target_point,
+                    rotate_mode,
+                    rotation_point,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
                     tx,
@@ -9782,7 +9800,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, source_point, target_point, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
+            Action::EditMoveOperation { op, translate_mode, source_point, target_point, rotate_mode, rotation_point, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -9806,6 +9824,8 @@ label_hidden: false,
                     entry.translate_mode = translate_mode;
                     entry.source_point = source_point;
                     entry.target_point = target_point;
+                    entry.rotate_mode = rotate_mode;
+                    entry.rotation_point = rotation_point;
                     entry.plane_targets = plane_targets.clone();
                     entry.image_targets = image_targets.clone();
                     entry.tx = tx;
@@ -14041,6 +14061,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
@@ -14064,6 +14086,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -14085,6 +14109,8 @@ mod tests {
         let base = state.doc.construction_planes[0].origin.z;
         let move_plane = |state: &mut AppState, tz: &str| {
             state.creating_move = Some(CreatingMove {
+                                rotate_mode: Default::default(),
+                rotation_point: None,
                 translate_mode: Default::default(),
                 source_point: None,
                 target_point: None,
@@ -14136,6 +14162,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![0],
@@ -14160,6 +14188,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             op,
             targets: vec![],
             plane_targets: vec![],
@@ -14177,6 +14207,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -14210,6 +14242,8 @@ mod tests {
         });
         let move_image = |state: &mut AppState, tx: &str| {
             state.creating_move = Some(CreatingMove {
+                                rotate_mode: Default::default(),
+                rotation_point: None,
                 translate_mode: Default::default(),
                 source_point: None,
                 target_point: None,
@@ -14373,6 +14407,8 @@ mod tests {
         use std::f32::consts::PI;
         let mut state = AppState::default();
         state.creating_move = Some(CreatingMove {
+                        rotate_mode: Default::default(),
+            rotation_point: None,
             translate_mode: Default::default(),
             source_point: None,
             target_point: None,
@@ -16700,6 +16736,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             targets: vec![0, 1],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16741,6 +16779,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16755,6 +16795,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             op: 0,
             targets: vec![0, 1],
             plane_targets: vec![],
@@ -16782,6 +16824,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -17745,6 +17789,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             source_point: None,
             target_point: None,
+            rotate_mode: Default::default(),
+            rotation_point: None,
             targets: Vec::new(),
             plane_targets: vec![0],
             image_targets: Vec::new(),

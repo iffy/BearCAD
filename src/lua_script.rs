@@ -681,6 +681,7 @@ fn parse_move_op_args(
     String,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
+    Option<crate::model::MovePointRef>,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -701,11 +702,13 @@ fn parse_move_op_args(
     // `from` exactly on `to`, and x/y/z are ignored.
     let source_point = parse_move_point(opts.get::<Value>("from")?, "from")?;
     let target_point = parse_move_point(opts.get::<Value>("to")?, "to")?;
+    // `pivot` is the point the rotation turns about (#651); omitted, it follows `from`.
+    let rotation_point = parse_move_point(opts.get::<Value>("pivot")?, "pivot")?;
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => None,
         value => Some(parse_revolve_axis(value, "move")?),
     };
-    Ok((targets, tx, ty, tz, axis, angle, source_point, target_point))
+    Ok((targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point))
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3483,11 +3486,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, axis, angle, source_point, target_point) =
+            let (targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point) =
                 parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, axis, angle, source_point, target_point,
+                    targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3503,11 +3506,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, axis, angle, source_point, target_point) =
+            let (targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point) =
                 parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, axis, angle, source_point, target_point,
+                    op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
                 })?;
             }
             Ok(())
@@ -6227,6 +6230,44 @@ mod tests {
         assert_eq!(
             free.doc.move_ops[0].translate_mode,
             crate::model::MoveTranslateMode::Free
+        );
+    }
+
+    /// #651: a rotation turns about its `pivot` point when one is named, else about the
+    /// snap source point, else about the axis's own origin.
+    #[test]
+    fn lua_move_rotates_about_a_picked_pivot() {
+        let script = |extra: &str| {
+            format!(
+                r#"
+                -- A 10x10x5 box sitting at x in [20, 30].
+                bearcad.rect{{ x = 20, y = 0, width = 10, height = 10 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+                bearcad.move_bodies{{ bodies = {{0}}, axis = "z", angle = 180{extra} }}
+                "#
+            )
+        };
+        // No pivot: a half turn about the world Z axis mirrors it to x in [-30, -20].
+        let plain = run_lua(&script(""));
+        let out = plain.doc.move_ops[0].outputs[0];
+        let (min, max) = crate::extrude::body_solid_mesh(&plain.doc, out)
+            .and_then(|m| m.bounds())
+            .expect("mesh");
+        assert!(max.x < 0.0, "turns about the origin, got {min:?}..{max:?}");
+
+        // Pivoting on the box's own near corner (20, 0, 0) keeps that corner put.
+        let pivoted = run_lua(&script(
+            ", pivot = { body = 0, vertex = {20, 0, 0} }",
+        ));
+        let op = &pivoted.doc.move_ops[0];
+        assert!(op.rotation_point.is_some());
+        let out = op.outputs[0];
+        let (min, max) = crate::extrude::body_solid_mesh(&pivoted.doc, out)
+            .and_then(|m| m.bounds())
+            .expect("mesh");
+        assert!(
+            (max.x - 20.0).abs() < 1e-2 && (min.x - 10.0).abs() < 1e-2,
+            "a half turn about (20,0,0) lands x in [10, 20], got {min:?}..{max:?}"
         );
     }
 

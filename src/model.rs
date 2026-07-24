@@ -1602,6 +1602,18 @@ pub enum MoveTranslateMode {
     Free,
 }
 
+/// How a [`MoveOperation`]'s rotation is specified (#651), the Move pane's Rotate dropdown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveRotateMode {
+    /// Line a face+edge on the moving bodies up with a face+edge on stationary geometry
+    /// (#653). The default.
+    #[default]
+    Snap,
+    /// Turn about explicit axes by explicit angles (#652).
+    Free,
+}
+
 /// A point on a body's mesh that a Move snaps from or onto (#649/#650): either a corner or
 /// the midpoint of a feature edge. Keyed exactly like [`crate::hierarchy::SceneElement::
 /// BodyVertex`]/`BodyEdge` — the body plus quantized world points — and resolved against the
@@ -1626,6 +1638,12 @@ impl MoveOperation {
     /// move that hasn't got both points yet — or one with no bodies at all, like a plane or
     /// image move — still reads its `tx`/`ty`/`tz` expressions, so the tool stays usable while
     /// the points are being picked and gizmo drags keep working.
+    /// The world point this move rotates about (#651): the explicit rotation point, else the
+    /// snap source point, else `None` (meaning "the axis's own origin").
+    pub fn rotation_pivot(&self) -> Option<&MovePointRef> {
+        self.rotation_point.as_ref().or(self.source_point.as_ref())
+    }
+
     pub fn has_snap_translation(&self) -> bool {
         self.translate_mode == MoveTranslateMode::Snap
             && self.source_point.is_some()
@@ -1677,6 +1695,14 @@ pub struct MoveOperation {
     pub ty: String,
     #[serde(default)]
     pub tz: String,
+    /// How the rotation is specified (#651).
+    #[serde(default)]
+    pub rotate_mode: MoveRotateMode,
+    /// The point rotated **about** (#651). `None` follows the [`source_point`], which is the
+    /// pane's default; either way, falling back to the axis's own origin when neither resolves.
+    /// It may sit on a moving body or a stationary one.
+    #[serde(default)]
+    pub rotation_point: Option<MovePointRef>,
     /// Rotation axis; `None` = no rotation.
     #[serde(default)]
     pub axis: Option<RevolveAxis>,
