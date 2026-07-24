@@ -38,7 +38,8 @@ The tool moves you along as you go: pick a body and it's ready for the source po
 and it's ready for the target, and so on. Click any picker to jump back to it.
 
 Once a source point is picked the moving bodies go translucent, so you can see the gizmos and
-the target you're aiming at through them.
+the target you're aiming at through them. The source point marks **green** and the target
+**red** — go and stop — and a ghost shows where the bodies will land before you commit.
 
 The inputs become [shadow bodies](/docs/tools/combine#shadow-bodies) and each gains a
 moved copy — a real body for further operations. **Edit move** changes anything later;

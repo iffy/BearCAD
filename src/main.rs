@@ -11619,6 +11619,7 @@ fn build_viewport_scene_input<'a>(
     creating_loft: Option<&actions::CreatingLoft>,
     creating_repeat: Option<&actions::CreatingRepeat>,
     creating_mirror: Option<&actions::CreatingMirror>,
+    creating_move: Option<&actions::CreatingMove>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
@@ -11629,6 +11630,9 @@ fn build_viewport_scene_input<'a>(
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     extra_pick_highlights: Vec<construction::PickTargetKind>,
+    // Marks with a colour of their own (#660): the Move tool's green source point and red
+    // target point.
+    colored_pick_highlights: Vec<(construction::PickTargetKind, egui::Color32)>,
     parameter_highlight_elements: Vec<SceneElement>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
@@ -11934,6 +11938,56 @@ fn build_viewport_scene_input<'a>(
         }
     }
 
+    // Move-tool preview (#660): ghost each body at where the in-progress move would put it,
+    // through the same translucent preview-solid path the Mirror and Repeat previews use — so
+    // a snap translation shows its destination before commit like everything else.
+    if let Some(cm) = creating_move.filter(|c| !c.targets.is_empty()) {
+        let probe = model::MoveOperation {
+            targets: cm.targets.clone(),
+            translate_mode: cm.translate_mode,
+            source_point: cm.source_point,
+            target_point: cm.target_point,
+            rotate_mode: cm.rotate_mode,
+            rotation_point: cm.rotation_point,
+            extra_rotations: cm.extra_rotations.clone(),
+            rotate_source: cm.rotate_source,
+            rotate_target: cm.rotate_target,
+            rotate_orientation: cm.rotate_orientation,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            tx: cm.tx.clone(),
+            ty: cm.ty.clone(),
+            tz: cm.tz.clone(),
+            axis: cm.axis,
+            angle: cm.angle.clone(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        // An identity transform would just double-draw the bodies where they already are.
+        if let Some(m) = extrude::move_op_transform(doc, &probe)
+            .filter(|m| *m != glam::Mat4::IDENTITY)
+        {
+            for &bi in &cm.targets {
+                if let Some(base) = extrude::body_solid_mesh(doc, bi) {
+                    repeat_ghosts.push(extrude::SolidMesh {
+                        triangles: base
+                            .triangles
+                            .iter()
+                            .map(|[a, b, c]| {
+                                [
+                                    m.transform_point3(*a),
+                                    m.transform_point3(*b),
+                                    m.transform_point3(*c),
+                                ]
+                            })
+                            .collect(),
+                    });
+                }
+            }
+        }
+    }
+
     gpu_viewport::ViewportSceneInput {
         doc,
         cam,
@@ -11986,6 +12040,7 @@ fn build_viewport_scene_input<'a>(
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
         hover_highlight,
         extra_pick_highlights,
+        colored_pick_highlights,
         parameter_highlight_elements,
         hover_color: construction::PICK_HOVER_RGBA,
         document_health,
@@ -18834,6 +18889,34 @@ impl App {
             .as_ref()
             .map(|e| e.hovered_group_members())
             .unwrap_or_default();
+        // Move tool (#660): mark the picked points — source green ("go"), target red ("stop"),
+        // and the rotation point in the pivot's own colour when it's been set apart from them.
+        let move_point_marks: Vec<(construction::PickTargetKind, egui::Color32)> = self
+            .state
+            .creating_move
+            .as_ref()
+            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
+            .map(|cm| {
+                [
+                    (cm.source_point, theme::MOVE_SOURCE_POINT),
+                    (cm.target_point, theme::MOVE_TARGET_POINT),
+                    (cm.rotation_point, theme::MOVE_ROTATION_POINT),
+                ]
+                .into_iter()
+                .filter_map(|(point, color)| {
+                    let point = point?;
+                    let position = extrude::move_point_world(&self.state.doc, &point)?;
+                    Some((
+                        construction::PickTargetKind::BodyVertex {
+                            body: point.body(),
+                            position,
+                        },
+                        color,
+                    ))
+                })
+                .collect()
+            })
+            .unwrap_or_default();
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored
         // at the picked vertex and pointing along the inward bisector of its two lines. Shares
         // one gizmo slot between the 2D (sketch vertex) and 3D (extrusion edge, #77) cases,
@@ -19191,6 +19274,7 @@ impl App {
             self.state.creating_loft.as_ref(),
             self.state.creating_repeat.as_ref(),
             self.state.creating_mirror.as_ref(),
+            self.state.creating_move.as_ref(),
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -19201,6 +19285,7 @@ impl App {
             vertex_treatment_preview,
             hover_highlight,
             exploder_group_highlight,
+            move_point_marks,
             {
                 // Hovering a Parameters-pane row (or focusing its name/value cell)
                 // green-glows everything that parameter drives in the viewport (#620).
@@ -21413,6 +21498,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -21422,6 +21508,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             &[],
@@ -21501,11 +21588,13 @@ mod tests {
             None,
             None,
             None,
+            None,
             Vec::new(),
             None,
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             &[],
@@ -21520,6 +21609,100 @@ mod tests {
         // 3 instances = original + 2 ghosts; each ghost is a non-empty translated copy.
         assert_eq!(scene_input.repeat_ghosts.len(), 2);
         assert!(scene_input.repeat_ghosts.iter().all(|g| !g.is_empty()));
+    }
+
+    /// #660: an in-progress snap move ghosts each body at its destination, so the translation
+    /// previews before commit like the Mirror and Repeat ones do.
+    #[test]
+    fn move_tool_ghosts_the_snapped_destination() {
+        use crate::model::{MovePointRef, MoveTranslateMode};
+        let mut state = crate::actions::AppState::default();
+        state.doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::ZERO,
+                glam::Vec3::new(10.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 10.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        state.doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let cam = crate::camera::Camera::default();
+        let element_visibility = crate::hierarchy::ElementVisibility::default();
+        let selection = crate::selection::SceneSelection::default();
+        let health = crate::document_health::DocumentHealth::default();
+        let q = crate::hierarchy::quantize_body_point;
+
+        let ghosts = |cm: Option<&actions::CreatingMove>| {
+            build_viewport_scene_input(
+                &state.doc,
+                &cam,
+                test_viewport_rect(),
+                None,
+                &element_visibility,
+                &selection,
+                &health,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                None,
+                None,
+                cm,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                &[],
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                std::collections::HashMap::new(),
+            )
+            .repeat_ghosts
+            .len()
+        };
+
+        // Nothing picked yet, or a move that resolves to no motion: no ghost to draw.
+        assert_eq!(ghosts(None), 0);
+        let picking = actions::CreatingMove {
+            targets: vec![0],
+            translate_mode: MoveTranslateMode::Snap,
+            source_point: Some(MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) }),
+            ..Default::default()
+        };
+        assert_eq!(ghosts(Some(&picking)), 0, "an identity move has nothing to preview");
+
+        // Both points picked: one ghost, at the destination.
+        let snapped = actions::CreatingMove {
+            target_point: Some(MovePointRef::Vertex {
+                body: 0,
+                p: q(glam::Vec3::new(10.0, 0.0, 0.0)),
+            }),
+            ..picking
+        };
+        assert_eq!(ghosts(Some(&snapped)), 1, "the snapped destination ghosts");
     }
 
     /// #180: drawing-view projection axes are orthonormal and orient as expected — a Front
@@ -21599,13 +21782,15 @@ mod tests {
                 None,
                 None,
                 None,
-                Vec::new(),
-                None,
-                None,
-                None,
                 None,
                 Vec::new(),
-            Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
                 &[],
                 None,
                 None,
@@ -21696,11 +21881,13 @@ mod tests {
             None,
             None,
             None,
+            None,
             Vec::new(),
             None,
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             &[],
