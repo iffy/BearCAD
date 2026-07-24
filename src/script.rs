@@ -891,12 +891,7 @@ impl Instruction {
                         parts.push(format!("polygon = {{{}}}", index_list(lines)));
                     }
                 }
-                parts.push(match axis {
-                    crate::model::RevolveAxis::Line(li) => format!("axis = {{ line = {li} }}"),
-                    crate::model::RevolveAxis::X => "axis = \"x\"".to_string(),
-                    crate::model::RevolveAxis::Y => "axis = \"y\"".to_string(),
-                    crate::model::RevolveAxis::Z => "axis = \"z\"".to_string(),
-                });
+                parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
                 parts.push(format!("angle = {angle_deg}"));
                 if *symmetric {
                     parts.push("symmetric = true".to_string());
@@ -2219,14 +2214,8 @@ fn move_op_lua(
             parts.push(format!("{name} = \"{value}\""));
         }
     }
-    match axis {
-        Some(crate::model::RevolveAxis::X) => parts.push("axis = \"x\"".to_string()),
-        Some(crate::model::RevolveAxis::Y) => parts.push("axis = \"y\"".to_string()),
-        Some(crate::model::RevolveAxis::Z) => parts.push("axis = \"z\"".to_string()),
-        Some(crate::model::RevolveAxis::Line(li)) => {
-            parts.push(format!("axis = {{ line = {li} }}"))
-        }
-        None => {}
+    if let Some(axis) = axis {
+        parts.push(format!("axis = {}", revolve_axis_lua(axis)));
     }
     if !angle.trim().is_empty() {
         parts.push(format!("angle = \"{angle}\""));
@@ -2268,12 +2257,7 @@ fn repeat_op_lua(
         "bodies = {{{}}}",
         targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
     ));
-    match axis {
-        crate::model::RevolveAxis::X => parts.push("axis = \"x\"".to_string()),
-        crate::model::RevolveAxis::Y => parts.push("axis = \"y\"".to_string()),
-        crate::model::RevolveAxis::Z => parts.push("axis = \"z\"".to_string()),
-        crate::model::RevolveAxis::Line(li) => parts.push(format!("axis = {{ line = {li} }}")),
-    }
+    parts.push(format!("axis = {}", revolve_axis_lua(axis)));
     parts.push(format!("mode = \"{}\"", match mode {
         crate::model::RepeatMode::CountGap => "count_gap",
         crate::model::RepeatMode::CountFitEnds => "count_fit_ends",
@@ -2673,6 +2657,22 @@ fn sketch_axis_lua_name(axis: crate::model::SketchAxis) -> &'static str {
 
 fn constraint_point_lua_ref(point: &ConstraintPoint) -> String {
     format!("{{ {} }}", point_lua_fields(point))
+}
+
+/// The `axis = …` argument for a [`crate::model::RevolveAxis`], matching what
+/// `lua_script::parse_revolve_axis` accepts. Shared by the revolve, move, and repeat calls so
+/// every axis kind — including a picked body edge (#643) — round-trips through a script.
+pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
+    match axis {
+        crate::model::RevolveAxis::X => "\"x\"".to_string(),
+        crate::model::RevolveAxis::Y => "\"y\"".to_string(),
+        crate::model::RevolveAxis::Z => "\"z\"".to_string(),
+        crate::model::RevolveAxis::Line(li) => format!("{{ line = {li} }}"),
+        crate::model::RevolveAxis::BodyEdge { body, a, b } => format!(
+            "{{ body = {body}, from = {{ {}, {}, {} }}, to = {{ {}, {}, {} }} }}",
+            a.x, a.y, a.z, b.x, b.y, b.z
+        ),
+    }
 }
 
 /// Lua table literal for a `FaceId`, matching `lua_script::parse_face_id_table`'s shape.

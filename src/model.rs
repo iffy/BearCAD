@@ -1428,12 +1428,22 @@ pub struct LoftSection {
     pub face: ExtrudeFace,
 }
 
-/// The axis a [`Revolution`] sweeps around: a line in the profile's own sketch (plain,
-/// construction, or projected — any line works), or one of the origin's global axes.
+/// A straight reference axis: a line in a sketch (plain, construction, or projected — any
+/// line works), a **feature edge of a solid body** (#643), or one of the origin's global axes.
+/// Used as a [`Revolution`]'s sweep axis, a move's rotation axis, and a [`RepeatOperation`]'s
+/// direction.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevolveAxis {
     Line(usize),
+    /// One feature edge of a body's solid mesh, by its world-space endpoints (#643) — the same
+    /// identity [`crate::construction::PickTargetKind::BodyEdge`] carries. Only the direction
+    /// `a → b` matters to a linear repeat; a revolve/rotation also uses `a` as the pivot.
+    BodyEdge {
+        body: usize,
+        a: glam::Vec3,
+        b: glam::Vec3,
+    },
     X,
     Y,
     Z,

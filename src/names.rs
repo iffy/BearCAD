@@ -105,6 +105,23 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
     None
 }
 
+/// How a picked [`crate::model::RevolveAxis`] reads in a context pane's axis picker — the
+/// sketch line's name, the body's name for an edge picked on it (#643), or the origin axis.
+pub fn revolve_axis_label(doc: &Document, axis: crate::model::RevolveAxis) -> String {
+    use crate::model::RevolveAxis;
+    match axis {
+        RevolveAxis::Line(li) => element_name(doc, SceneElement::Line(li))
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| format!("line {li}")),
+        RevolveAxis::BodyEdge { body, .. } => element_name(doc, SceneElement::Body(body))
+            .map(|n| format!("an edge of {n}"))
+            .unwrap_or_else(|| format!("an edge of body {body}")),
+        RevolveAxis::X => "the X axis".to_string(),
+        RevolveAxis::Y => "the Y axis".to_string(),
+        RevolveAxis::Z => "the Z axis".to_string(),
+    }
+}
+
 pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
     let name = match element {
         SceneElement::ConstructionPlane(index) => doc.construction_planes.get(index)?.name.as_deref(),

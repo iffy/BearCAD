@@ -735,9 +735,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     circles }` / `bearcad.edit_sketch_mirror{ index, … }`.
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
-  an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch
-  line; the ✕ clears it) (#257) — the picker is the only way in, the X/Y/Z quick buttons
-  having been dropped as a second, inconsistent path (#643). **Pane polish (#440–#447):**
+  an **element picker** of one edge/axis (a global X/Y/Z axis, a straight sketch line, or a
+  **feature edge of a body**; the ✕ clears it) (#257/#643) — the picker is the only way in, the
+  X/Y/Z quick buttons having been dropped as a second, inconsistent path. While the axis picker
+  is the focused one, the viewport hover switches from whole bodies to those straight
+  references, so every pickable axis lights up under the cursor; once an axis is set, a click on
+  a body's edge goes back to toggling that body. Origin axes and body edges only resolve as an
+  axis in that state, keeping body picking unambiguous. **Pane polish (#440–#447):**
   the Gap/Distance measure-toggle icons hover **gold**, and so do their **labels**, which are
   the same click target (#640); each of Count/Gap/Distance carries a **lock** — a green one
   (`theme::LOCKED_ACCENT`) on the value the app computes, grey (`theme::UNLOCKED_GRAY`) on the

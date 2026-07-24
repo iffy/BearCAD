@@ -625,6 +625,48 @@ fn parse_boolean_op_args(
     Ok((kind, a, b, keep_b))
 }
 
+/// Parses an `axis = …` argument into a [`crate::model::RevolveAxis`]: `"x"`/`"y"`/`"z"` for
+/// an origin axis, `{ line = i }` for a sketch line, or `{ body = i, from = {x,y,z},
+/// to = {x,y,z} }` for a body edge (#643). `what` names the call in error messages.
+fn parse_revolve_axis(value: Value, what: &str) -> mlua::Result<crate::model::RevolveAxis> {
+    const SHAPES: &str = "\"x\"|\"y\"|\"z\", {line = i}, or {body = i, from = {x,y,z}, to = {x,y,z}}";
+    match value {
+        Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
+            "x" => Ok(crate::model::RevolveAxis::X),
+            "y" => Ok(crate::model::RevolveAxis::Y),
+            "z" => Ok(crate::model::RevolveAxis::Z),
+            other => Err(mlua::Error::external(format!(
+                "unknown {what} axis '{other}' ({SHAPES})"
+            ))),
+        },
+        Value::Table(t) => {
+            if let Some(li) = t.get::<Option<usize>>("line")? {
+                return Ok(crate::model::RevolveAxis::Line(li));
+            }
+            let body: usize = t.get("body").map_err(|_| {
+                mlua::Error::external(format!("{what} `axis` table needs `line` or `body` ({SHAPES})"))
+            })?;
+            let point = |key: &str| -> mlua::Result<glam::Vec3> {
+                let v: Vec<f32> = t.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "{what} `axis.{key}` must be {{x, y, z}}"
+                    )));
+                }
+                Ok(glam::Vec3::new(v[0], v[1], v[2]))
+            };
+            Ok(crate::model::RevolveAxis::BodyEdge {
+                body,
+                a: point("from")?,
+                b: point("to")?,
+            })
+        }
+        _ => Err(mlua::Error::external(format!(
+            "{what} `axis` must be {SHAPES}"
+        ))),
+    }
+}
+
 /// Parses `bearcad.move_bodies{}`/`bearcad.edit_move{}` arguments. Numbers are accepted
 /// for the expression fields and stringified.
 #[allow(clippy::type_complexity)]
@@ -655,25 +697,7 @@ fn parse_move_op_args(
     let (tx, ty, tz, angle) = (expr("x")?, expr("y")?, expr("z")?, expr("angle")?);
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => None,
-        Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
-            "x" => Some(crate::model::RevolveAxis::X),
-            "y" => Some(crate::model::RevolveAxis::Y),
-            "z" => Some(crate::model::RevolveAxis::Z),
-            other => {
-                return Err(mlua::Error::external(format!(
-                    "unknown move axis '{other}' (x|y|z or {{line = i}})"
-                )))
-            }
-        },
-        Value::Table(t) => {
-            let li: usize = t.get("line")?;
-            Some(crate::model::RevolveAxis::Line(li))
-        }
-        _ => {
-            return Err(mlua::Error::external(
-                "move `axis` must be \"x\"|\"y\"|\"z\" or {line = i}",
-            ))
-        }
+        value => Some(parse_revolve_axis(value, "move")?),
     };
     Ok((targets, tx, ty, tz, axis, angle))
 }
@@ -693,25 +717,7 @@ fn parse_repeat_op_args(
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => crate::model::RevolveAxis::X,
-        Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
-            "x" => crate::model::RevolveAxis::X,
-            "y" => crate::model::RevolveAxis::Y,
-            "z" => crate::model::RevolveAxis::Z,
-            other => {
-                return Err(mlua::Error::external(format!(
-                    "unknown repeat axis '{other}' (x|y|z or {{line = i}})"
-                )))
-            }
-        },
-        Value::Table(t) => {
-            let li: usize = t.get("line")?;
-            crate::model::RevolveAxis::Line(li)
-        }
-        _ => {
-            return Err(mlua::Error::external(
-                "repeat `axis` must be \"x\"|\"y\"|\"z\" or {line = i}",
-            ))
-        }
+        value => parse_revolve_axis(value, "repeat")?,
     };
     let mode_name: String = opts
         .get::<Option<String>>("mode")?
@@ -3498,27 +3504,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "revolve requires a `circle`/`circles`/`polygon` face",
                 ));
             }
-            let axis = match opts.get::<mlua::Value>("axis")? {
-                mlua::Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
-                    "x" => crate::model::RevolveAxis::X,
-                    "y" => crate::model::RevolveAxis::Y,
-                    "z" => crate::model::RevolveAxis::Z,
-                    other => {
-                        return Err(mlua::Error::external(format!(
-                            "unknown revolve axis '{other}' (x|y|z or {{line = i}})"
-                        )))
-                    }
-                },
-                mlua::Value::Table(t) => {
-                    let li: usize = t.get("line")?;
-                    crate::model::RevolveAxis::Line(li)
-                }
-                _ => {
-                    return Err(mlua::Error::external(
-                        "revolve requires `axis` (\"x\"|\"y\"|\"z\" or {line = i})",
-                    ))
-                }
-            };
+            let axis = parse_revolve_axis(opts.get::<mlua::Value>("axis")?, "revolve")?;
             let angle_deg: f32 = opts.get::<Option<f32>>("angle")?.unwrap_or(360.0);
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
@@ -6072,6 +6058,50 @@ mod tests {
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
         assert_eq!(state.doc.drawings[0].views.len(), 1);
+    }
+
+    /// #643: a repeat axis can be a **body edge**, given by the body it lives on plus the
+    /// edge's world endpoints — the scripted form of picking an edge in the viewport.
+    #[test]
+    fn lua_repeat_axis_accepts_a_body_edge() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            -- The body's bottom front edge runs along +X.
+            bearcad.repeat_bodies{
+                bodies = {0},
+                axis = { body = 0, from = {0, 0, 0}, to = {20, 0, 0} },
+                count = 3, gap = 5,
+            }
+            "#,
+        );
+        let op = &state.doc.repeat_ops[0];
+        assert_eq!(
+            op.axis,
+            crate::model::RevolveAxis::BodyEdge {
+                body: 0,
+                a: glam::Vec3::ZERO,
+                b: glam::Vec3::new(20.0, 0.0, 0.0),
+            }
+        );
+        // It resolves to a real direction, so the repeat actually produced copies.
+        assert_eq!(
+            crate::extrude::axis_world(&state.doc, op.axis).map(|(_, d)| d),
+            Some(glam::Vec3::X)
+        );
+        assert!(!op.outputs.is_empty(), "the repeat produced instances");
+        // …and the axis renders back out in the form the parser accepts.
+        let rendered = crate::script::revolve_axis_lua(op.axis);
+        assert_eq!(rendered, "{ body = 0, from = { 0, 0, 0 }, to = { 20, 0, 0 } }");
+        let round_tripped = run_lua(&format!(
+            r#"
+            bearcad.rect{{ width = 20, height = 20 }}
+            bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+            bearcad.repeat_bodies{{ bodies = {{0}}, axis = {rendered}, count = 3, gap = 5 }}
+            "#
+        ));
+        assert_eq!(round_tripped.doc.repeat_ops[0].axis, op.axis);
     }
 
     /// #406: a boolean-profiled extrusion's cap hosts a scripted sketch, and a drawing's

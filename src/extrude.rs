@@ -698,6 +698,16 @@ pub fn axis_world(doc: &Document, axis: crate::model::RevolveAxis) -> Option<(Ve
             let dir = (b - a).normalize_or_zero();
             (dir.length_squared() > 1e-8).then_some((a, dir))
         }
+        // A body edge (#643) keeps its world endpoints; it resolves as long as the body it
+        // was picked on is still around.
+        crate::model::RevolveAxis::BodyEdge { body, a, b } => {
+            let alive = doc.bodies.get(body).is_some_and(|b| !b.deleted);
+            if !alive {
+                return None;
+            }
+            let dir = (b - a).normalize_or_zero();
+            (dir.length_squared() > 1e-8).then_some((a, dir))
+        }
         crate::model::RevolveAxis::X => Some((Vec3::ZERO, Vec3::X)),
         crate::model::RevolveAxis::Y => Some((Vec3::ZERO, Vec3::Y)),
         crate::model::RevolveAxis::Z => Some((Vec3::ZERO, Vec3::Z)),
@@ -1430,20 +1440,7 @@ pub fn revolve_axis_world(
     doc: &Document,
     rev: &crate::model::Revolution,
 ) -> Option<(Vec3, Vec3)> {
-    match rev.axis {
-        crate::model::RevolveAxis::Line(li) => {
-            let line = doc.lines.get(li)?;
-            if !crate::document_lifecycle::line_alive(doc, li) {
-                return None;
-            }
-            let (a, b) = crate::face::line_world_endpoints(doc, line)?;
-            let dir = (b - a).normalize_or_zero();
-            (dir.length_squared() > 1e-8).then_some((a, dir))
-        }
-        crate::model::RevolveAxis::X => Some((Vec3::ZERO, Vec3::X)),
-        crate::model::RevolveAxis::Y => Some((Vec3::ZERO, Vec3::Y)),
-        crate::model::RevolveAxis::Z => Some((Vec3::ZERO, Vec3::Z)),
-    }
+    axis_world(doc, rev.axis)
 }
 
 /// Effective sweep angle in degrees, clamped to a sane range (360 = full revolution).
@@ -4514,6 +4511,42 @@ fn extrude_profile_with_treatments(
 mod tests {
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
+
+    /// #643: a body feature edge resolves as an axis (origin `a`, unit direction `a → b`) and
+    /// goes dead with the body it was picked on.
+    #[test]
+    fn axis_world_resolves_a_body_edge() {
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let axis = crate::model::RevolveAxis::BodyEdge {
+            body: 0,
+            a: Vec3::new(1.0, 2.0, 3.0),
+            b: Vec3::new(1.0, 7.0, 3.0),
+        };
+        let (origin, dir) = axis_world(&doc, axis).expect("live body resolves");
+        assert_eq!(origin, Vec3::new(1.0, 2.0, 3.0));
+        assert!((dir - Vec3::Y).length() < 1e-6, "unit direction along a → b, got {dir:?}");
+        // A degenerate edge has no direction.
+        assert!(axis_world(
+            &doc,
+            crate::model::RevolveAxis::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::ZERO }
+        )
+        .is_none());
+        // A deleted body takes its edges with it.
+        doc.bodies[0].deleted = true;
+        assert!(axis_world(&doc, axis).is_none());
+        assert!(axis_world(&doc, crate::model::RevolveAxis::BodyEdge {
+            body: 9,
+            a: Vec3::ZERO,
+            b: Vec3::X
+        })
+        .is_none());
+    }
 
     /// #260: descendants walk forward through operations — a body feeding a boolean whose output
     /// feeds a move op yields both downstream bodies, but not unrelated bodies.

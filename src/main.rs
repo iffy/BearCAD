@@ -6345,11 +6345,19 @@ impl App {
         else {
             return;
         };
-        if let construction::PickTargetKind::Line(li) = target.kind {
+        // Any straight reference under the cursor sets the axis (#643): a sketch line, an
+        // origin axis, or a feature edge of a body — the same set the hover highlights.
+        // Origin axes and body edges only count while the axis picker is the focused one,
+        // so a click on a body's edge still toggles that body once an axis is chosen.
+        if let Some(axis) = repeat_axis_from_pick(
+            &target.kind,
+            repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
+        ) {
+            let label = names::revolve_axis_label(&self.state.doc, axis);
             if let Some(cr) = self.state.creating_repeat.as_mut() {
-                cr.axis = Some(model::RevolveAxis::Line(li));
-                self.state.status = "Repeat: axis set".to_string();
+                cr.axis = Some(axis);
             }
+            self.state.status = format!("Repeat: axis set — {label}");
             return;
         }
         let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
@@ -8343,17 +8351,9 @@ impl eframe::App for App {
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
-                        axis_label: cm.and_then(|c| c.axis).map(|a| match a {
-                            model::RevolveAxis::Line(li) => names::element_name(
-                                &self.state.doc,
-                                SceneElement::Line(li),
-                            )
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| format!("line {li}")),
-                            model::RevolveAxis::X => "the X axis".to_string(),
-                            model::RevolveAxis::Y => "the Y axis".to_string(),
-                            model::RevolveAxis::Z => "the Z axis".to_string(),
-                        }),
+                        axis_label: cm
+                            .and_then(|c| c.axis)
+                            .map(|a| names::revolve_axis_label(&self.state.doc, a)),
                         angle: cm.map(|c| c.angle.clone()).unwrap_or_default(),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cm
@@ -8447,17 +8447,9 @@ impl eframe::App for App {
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
                         extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
                         value_field_focused: context::repeat_value_field_focused(ctx),
-                        axis_label: cr.and_then(|c| c.axis).map(|axis| match axis {
-                            model::RevolveAxis::Line(li) => names::element_name(
-                                &self.state.doc,
-                                SceneElement::Line(li),
-                            )
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| format!("line {li}")),
-                            model::RevolveAxis::X => "the X axis".to_string(),
-                            model::RevolveAxis::Y => "the Y axis".to_string(),
-                            model::RevolveAxis::Z => "the Z axis".to_string(),
-                        }),
+                        axis_label: cr
+                            .and_then(|c| c.axis)
+                            .map(|a| names::revolve_axis_label(&self.state.doc, a)),
                         mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
                         count: cr.map(|c| c.count.clone()).unwrap_or_default(),
                         spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
@@ -8864,17 +8856,9 @@ impl eframe::App for App {
                                     .collect()
                             })
                             .unwrap_or_default(),
-                        axis_label: cr.and_then(|c| c.axis).map(|a| match a {
-                            model::RevolveAxis::Line(li) => names::element_name(
-                                &self.state.doc,
-                                SceneElement::Line(li),
-                            )
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| format!("line {li}")),
-                            model::RevolveAxis::X => "the X axis".to_string(),
-                            model::RevolveAxis::Y => "the Y axis".to_string(),
-                            model::RevolveAxis::Z => "the Z axis".to_string(),
-                        }),
+                        axis_label: cr
+                            .and_then(|c| c.axis)
+                            .map(|a| names::revolve_axis_label(&self.state.doc, a)),
                         // Exactly one picker shows the focus ring (#304): Axis once a
                         // profile is picked but no axis yet, Profile otherwise.
                         axis_focused: cr
@@ -10611,10 +10595,45 @@ fn suppress_viewport_pick_hover(
         || bezier_handle_drag_active
 }
 
+/// Whether the Repeat tool's **axis** picker is the focused one (#643) — the axis is unset and
+/// there's already something to repeat, so the axis is what the next click is for. Mirrors the
+/// pane's own focus rule in `context::context_pane_content`.
+fn repeat_axis_pick_active(creating: Option<&actions::CreatingRepeat>) -> bool {
+    creating.is_some_and(|c| {
+        c.axis.is_none()
+            && (!c.targets.is_empty()
+                || !c.plane_targets.is_empty()
+                || !c.sketch_targets.is_empty()
+                || !c.extrusion_targets.is_empty())
+    })
+}
+
+/// The repeat axis a pick target would set (#643). Sketch lines always count; origin axes and
+/// body feature edges count only while the axis picker is focused (`axis_pick`), so that once
+/// an axis is chosen a click on a body's edge goes back to toggling that body.
+fn repeat_axis_from_pick(
+    kind: &construction::PickTargetKind,
+    axis_pick: bool,
+) -> Option<model::RevolveAxis> {
+    match *kind {
+        construction::PickTargetKind::Line(li) => Some(model::RevolveAxis::Line(li)),
+        construction::PickTargetKind::GlobalAxis(axis) if axis_pick => Some(match axis {
+            construction::GlobalAxis::X => model::RevolveAxis::X,
+            construction::GlobalAxis::Y => model::RevolveAxis::Y,
+            construction::GlobalAxis::Z => model::RevolveAxis::Z,
+        }),
+        construction::PickTargetKind::BodyEdge { body, a, b } if axis_pick => {
+            Some(model::RevolveAxis::BodyEdge { body, a, b })
+        }
+        _ => None,
+    }
+}
+
 fn resolve_viewport_hover_highlight(
     suppress_hover: bool,
     tool: Tool,
     sketch_session: Option<SketchSession>,
+    repeat_axis_pick: bool,
     creating_plane: bool,
     editing_committed_dim: bool,
     over_committed_dim_label: bool,
@@ -10788,6 +10807,15 @@ fn resolve_viewport_hover_highlight(
             crate::face::pick_body_face(pp, project, doc, cam.eye())
                 .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
                 .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
+        }
+        // Repeat tool with the **axis** picker focused (#643): the click is for the axis, so
+        // hover the straight reference under the cursor — a sketch line, a body's feature
+        // edge, or an origin axis — instead of the whole body.
+        Tool::Repeat if repeat_axis_pick && sketch_session.is_none() => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            repeat_axis_from_pick(&target.kind, true)
+                .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
         }
         // Body-set tools (#227): while one is active its picker accepts whole bodies, so the
         // body under the cursor styles as selectable — hover-highlight it via the same
@@ -17845,6 +17873,7 @@ impl App {
             suppress_hover_highlight,
             self.state.tool,
             sketch_session,
+            repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
             self.state.creating_plane.is_some(),
             self.state.editing_committed_dim.is_some(),
             over_committed_dim_label,
@@ -21438,6 +21467,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 Some(egui::Pos2::ZERO),
                 &cam,
                 viewport,
@@ -21491,6 +21521,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             Some(cursor),
             &cam,
             viewport,
@@ -21505,6 +21536,106 @@ mod tests {
                 Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
             ),
             "combine tool should hover-highlight the whole body, got {hover:?}"
+        );
+    }
+
+    /// #643: with the Repeat tool's axis picker focused, a body's feature **edge** under the
+    /// cursor hover-highlights as the axis a click would set — not the whole body, and not
+    /// some other body. With the axis already picked, the whole-body hover comes back.
+    #[test]
+    fn repeat_axis_pick_hovers_the_body_edge_not_the_body() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::hierarchy::SceneElement;
+
+        let mut doc = crate::model::Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::new(-20.0, -20.0, 0.0),
+                glam::Vec3::new(20.0, -20.0, 0.0),
+                glam::Vec3::new(0.0, 20.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        // Aim at the midpoint of the triangle's bottom edge.
+        let edge_mid = glam::Vec3::new(0.0, -20.0, 0.0);
+        let cursor = project(edge_mid).expect("edge midpoint projects into the viewport");
+
+        let hover = |axis_pick| {
+            resolve_viewport_hover_highlight(
+                false,
+                crate::actions::Tool::Repeat,
+                None,
+                axis_pick,
+                false,
+                false,
+                false,
+                false,
+                Some(cursor),
+                &cam,
+                viewport,
+                &vp,
+                &doc,
+                &project,
+                None,
+            )
+        };
+        let picking_axis = hover(true);
+        assert!(
+            matches!(
+                picking_axis,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    crate::construction::PickTargetKind::BodyEdge { body: 0, .. }
+                ))
+            ),
+            "the axis pick should hover the body edge, got {picking_axis:?}"
+        );
+        let picking_bodies = hover(false);
+        assert!(
+            matches!(
+                picking_bodies,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
+            ),
+            "with the axis set, the whole body hovers again, got {picking_bodies:?}"
+        );
+    }
+
+    /// #643: which picks become a repeat axis. Sketch lines always; origin axes and body
+    /// edges only while the axis picker is the focused one, so a body's edge still toggles
+    /// that body once an axis is chosen.
+    #[test]
+    fn repeat_axis_from_pick_covers_lines_axes_and_body_edges() {
+        use super::repeat_axis_from_pick;
+        use crate::construction::{GlobalAxis, PickTargetKind};
+        let a = glam::Vec3::ZERO;
+        let b = glam::Vec3::X;
+        assert_eq!(
+            repeat_axis_from_pick(&PickTargetKind::Line(3), false),
+            Some(crate::model::RevolveAxis::Line(3))
+        );
+        assert_eq!(
+            repeat_axis_from_pick(&PickTargetKind::GlobalAxis(GlobalAxis::Y), true),
+            Some(crate::model::RevolveAxis::Y)
+        );
+        assert_eq!(repeat_axis_from_pick(&PickTargetKind::GlobalAxis(GlobalAxis::Y), false), None);
+        assert_eq!(
+            repeat_axis_from_pick(&PickTargetKind::BodyEdge { body: 2, a, b }, true),
+            Some(crate::model::RevolveAxis::BodyEdge { body: 2, a, b })
+        );
+        assert_eq!(
+            repeat_axis_from_pick(&PickTargetKind::BodyEdge { body: 2, a, b }, false),
+            None
         );
     }
 
@@ -21533,6 +21664,7 @@ mod tests {
                 false,
                 crate::actions::Tool::Constraint,
                 Some(SketchSession { sketch }),
+                false,
                 false,
                 false,
                 false,
@@ -21598,6 +21730,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             Some(mid),
             &cam,
             viewport,
@@ -21641,6 +21774,7 @@ mod tests {
             false,
             crate::actions::Tool::Mirror,
             Some(SketchSession { sketch }),
+            false,
             false,
             false,
             false,

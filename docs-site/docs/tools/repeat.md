@@ -16,7 +16,8 @@ wall, teeth on a rack.
 
 1. Pick the **Repeat** tool and click one or more bodies (a body selected beforehand is
    picked automatically).
-2. Pick the **axis**: click any straight edge, sketch line, or origin axis in the viewport.
+2. Pick the **axis**: click any body edge, sketch line, or origin axis in the viewport — each
+   lights up under the cursor while the axis is what you're picking.
 3. Choose a spacing mode and fill in the values — every value is an expression, so
    parameters work. Ghost previews show the pattern.
 4. Press **Enter**.
@@ -96,3 +97,7 @@ bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "fill_max_pitch",
                        length = "wall", spacing = "16in", name = "Studs" }
 bearcad.edit_repeat{ index = 0, bodies = {0}, axis = "x", mode = "count_gap", count = 6, spacing = 8 }
 ```
+
+`axis` is `"x"`/`"y"`/`"z"`, a sketch line (`{ line = 0 }`), or a body edge given by its world
+endpoints (`{ body = 0, from = {0, 0, 0}, to = {20, 0, 0} }`) — the same three the picker takes.
+Revolve and Move accept all three too.
