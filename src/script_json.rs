@@ -381,12 +381,12 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         }
         "move_bodies" => {
             let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")? })
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)? })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, axis, angle, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")? })
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point: move_point_from_json(o.get("pivot"), "pivot")?, extra_rotations: json_extra_rotations(o)? })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -1084,6 +1084,22 @@ fn move_op_args(
         move_point_from_json(o.get("from"), "from")?,
         move_point_from_json(o.get("to"), "to")?,
     ))
+}
+
+/// Free Rotate's two extra axis+angle slots from `axis2`/`angle2` and `axis3`/`angle3` (#652).
+fn json_extra_rotations(
+    o: &Map<String, Value>,
+) -> Result<[crate::model::MoveRotationSlot; 2], String> {
+    let mut slots: [crate::model::MoveRotationSlot; 2] = Default::default();
+    for (i, slot) in slots.iter_mut().enumerate() {
+        let n = i + 2;
+        slot.axis = match o.get(&format!("axis{n}")) {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(revolve_axis_from_value(v)?),
+        };
+        slot.angle = expr_arg(o, &format!("angle{n}"))?;
+    }
+    Ok(slots)
 }
 
 /// A [`crate::model::MovePointRef`] from `{ "body": i, "vertex": [x,y,z] }` or
@@ -2047,6 +2063,7 @@ mod tests {
                 source_point: None,
                 target_point: None,
                 rotation_point: None,
+                extra_rotations: Default::default(),
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -2062,6 +2079,7 @@ mod tests {
                 source_point: None,
                 target_point: None,
                 rotation_point: None,
+                extra_rotations: Default::default(),
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),

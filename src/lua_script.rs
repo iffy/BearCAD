@@ -682,6 +682,7 @@ fn parse_move_op_args(
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
+    [crate::model::MoveRotationSlot; 2],
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -704,11 +705,32 @@ fn parse_move_op_args(
     let target_point = parse_move_point(opts.get::<Value>("to")?, "to")?;
     // `pivot` is the point the rotation turns about (#651); omitted, it follows `from`.
     let rotation_point = parse_move_point(opts.get::<Value>("pivot")?, "pivot")?;
+    // Free Rotate's other two turns (#652): `axis2`/`angle2` and `axis3`/`angle3`.
+    let mut extra_rotations: [crate::model::MoveRotationSlot; 2] = Default::default();
+    for (i, slot) in extra_rotations.iter_mut().enumerate() {
+        let n = i + 2;
+        slot.axis = match opts.get::<Value>(format!("axis{n}"))? {
+            Value::Nil => None,
+            v => Some(parse_revolve_axis(v, "move")?),
+        };
+        slot.angle = expr(&format!("angle{n}"))?;
+    }
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => None,
         value => Some(parse_revolve_axis(value, "move")?),
     };
-    Ok((targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point))
+    Ok((
+        targets,
+        tx,
+        ty,
+        tz,
+        axis,
+        angle,
+        source_point,
+        target_point,
+        rotation_point,
+        extra_rotations,
+    ))
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3486,11 +3508,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point) =
-                parse_move_op_args(&opts)?;
+            let (
+                targets,
+                tx,
+                ty,
+                tz,
+                axis,
+                angle,
+                source_point,
+                target_point,
+                rotation_point,
+                extra_rotations,
+            ) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
                     targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
+                    extra_rotations,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3506,11 +3539,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point) =
-                parse_move_op_args(&opts)?;
+            let (
+                targets,
+                tx,
+                ty,
+                tz,
+                axis,
+                angle,
+                source_point,
+                target_point,
+                rotation_point,
+                extra_rotations,
+            ) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
                     op, targets, tx, ty, tz, axis, angle, source_point, target_point, rotation_point,
+                    extra_rotations,
                 })?;
             }
             Ok(())
@@ -6231,6 +6275,39 @@ mod tests {
             free.doc.move_ops[0].translate_mode,
             crate::model::MoveTranslateMode::Free
         );
+    }
+
+    /// #652: Free Rotate turns about three axes in one move — each with its own angle, all
+    /// about the same pivot.
+    #[test]
+    fn lua_move_rotates_about_three_axes() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            -- 90° about X, then 90° about Y, about the box's origin corner.
+            bearcad.move_bodies{
+                bodies = {0},
+                axis = "x", angle = 90,
+                axis2 = "y", angle2 = 90,
+                pivot = { body = 0, vertex = {0, 0, 0} },
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops[0];
+        assert_eq!(op.extra_rotations[0].axis, Some(crate::model::RevolveAxis::Y));
+        assert_eq!(op.extra_rotations[0].angle, "90");
+        assert!(op.has_extra_rotation());
+        // Both turns land in the transform: the composed matrix takes +X to -Z.
+        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
+        let mapped = m.transform_vector3(glam::Vec3::X);
+        assert!(
+            (mapped - glam::Vec3::NEG_Z).length() < 1e-4,
+            "X → -Z after 90° about X then 90° about Y, got {mapped:?}"
+        );
+        // The pivot corner stays put.
+        let held = m.transform_point3(glam::Vec3::ZERO);
+        assert!(held.length() < 1e-4, "the pivot corner holds, got {held:?}");
     }
 
     /// #651: a rotation turns about its `pivot` point when one is named, else about the

@@ -1614,6 +1614,17 @@ pub enum MoveRotateMode {
     Free,
 }
 
+/// One of Free Rotate's extra turn slots (#652): an axis — an origin axis or any picked
+/// edge/line — and how far to turn about it. Slot 0 of the three is the op's own `axis`/
+/// `angle`; these are the other two.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MoveRotationSlot {
+    #[serde(default)]
+    pub axis: Option<RevolveAxis>,
+    #[serde(default)]
+    pub angle: String,
+}
+
 /// A point on a body's mesh that a Move snaps from or onto (#649/#650): either a corner or
 /// the midpoint of a feature edge. Keyed exactly like [`crate::hierarchy::SceneElement::
 /// BodyVertex`]/`BodyEdge` — the body plus quantized world points — and resolved against the
@@ -1642,6 +1653,21 @@ impl MoveOperation {
     /// snap source point, else `None` (meaning "the axis's own origin").
     pub fn rotation_pivot(&self) -> Option<&MovePointRef> {
         self.rotation_point.as_ref().or(self.source_point.as_ref())
+    }
+
+    /// All three Free-Rotate slots in order (#652): the op's own axis/angle, then the extras.
+    pub fn rotations(&self) -> [(Option<RevolveAxis>, &str); 3] {
+        [
+            (self.axis, self.angle.as_str()),
+            (self.extra_rotations[0].axis, self.extra_rotations[0].angle.as_str()),
+            (self.extra_rotations[1].axis, self.extra_rotations[1].angle.as_str()),
+        ]
+    }
+
+    /// Whether either **extra** rotation slot carries an angle (#652) — the case move
+    /// coalescing can't fold into a single axis+angle.
+    pub fn has_extra_rotation(&self) -> bool {
+        self.extra_rotations.iter().any(|r| !r.angle.trim().is_empty())
     }
 
     pub fn has_snap_translation(&self) -> bool {
@@ -1709,6 +1735,10 @@ pub struct MoveOperation {
     /// Rotation angle (angle expression; empty = 0).
     #[serde(default)]
     pub angle: String,
+    /// Free Rotate's other two axis+angle slots (#652); `axis`/`angle` above are the first.
+    /// All three turn about the same [`rotation_pivot`](MoveOperation::rotation_pivot).
+    #[serde(default)]
+    pub extra_rotations: [MoveRotationSlot; 2],
     /// Output body indices, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<usize>,

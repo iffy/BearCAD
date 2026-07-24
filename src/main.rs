@@ -1648,6 +1648,9 @@ struct App {
     /// Armed by focusing the Move pane's Source/Target point picker (#649/#650): the next
     /// viewport click on a body corner or edge takes that point.
     move_point_pick: Option<MovePointSlot>,
+    /// Armed by focusing one of Free Rotate's three axis pickers (#652): the next viewport
+    /// click on a line, body edge, or origin axis sets that slot's axis.
+    move_rotation_axis_pick: Option<usize>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -2455,6 +2458,7 @@ impl App {
             extrude_target_pick: false,
             repeat_target_pick: false,
             move_point_pick: None,
+            move_rotation_axis_pick: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -5872,6 +5876,25 @@ impl App {
         else {
             return;
         };
+        // Free Rotate axis-pick mode (#652), armed by focusing one of the three axis pickers:
+        // this click sets that slot from any straight reference — a sketch line, a body edge,
+        // or an origin axis (the same set the Repeat tool's axis picker takes).
+        if let Some(slot) = self.move_rotation_axis_pick {
+            if let Some(axis) = repeat_axis_from_pick(&target.kind, true) {
+                let label = names::revolve_axis_label(&self.state.doc, axis);
+                if let Some(cm) = self.state.creating_move.as_mut() {
+                    match slot {
+                        0 => cm.axis = Some(axis),
+                        s => cm.extra_rotations[s - 1].axis = Some(axis),
+                    }
+                }
+                self.move_rotation_axis_pick = None;
+                self.state.status = format!("Move: rotation axis {} — {label}", slot + 1);
+            } else {
+                self.state.status = "Pick an edge, a sketch line, or an origin axis".to_string();
+            }
+            return;
+        }
         if let construction::PickTargetKind::Line(li) = target.kind {
             if let Some(cm) = self.state.creating_move.as_mut() {
                 cm.axis = Some(model::RevolveAxis::Line(li));
@@ -5935,6 +5958,7 @@ impl App {
                         target_point: existing.target_point,
                         rotate_mode: existing.rotate_mode,
                         rotation_point: existing.rotation_point,
+                        extra_rotations: existing.extra_rotations.clone(),
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         tx: existing.tx,
@@ -8715,6 +8739,25 @@ impl eframe::App for App {
                             .unwrap_or_else(|| vec!["Source point".to_string()]),
                         rotation_point_focused: self.move_point_pick
                             == Some(MovePointSlot::Rotation),
+                        rotation_slots: {
+                            let label = |axis: Option<model::RevolveAxis>| {
+                                axis.map(|a| vec![names::revolve_axis_label(&self.state.doc, a)])
+                                    .unwrap_or_default()
+                            };
+                            let (a0, g0) = cm
+                                .map(|c| (c.axis, c.angle.clone()))
+                                .unwrap_or((None, String::new()));
+                            let extra = |i: usize| {
+                                cm.map(|c| {
+                                    (c.extra_rotations[i].axis, c.extra_rotations[i].angle.clone())
+                                })
+                                .unwrap_or((None, String::new()))
+                            };
+                            let (a1, g1) = extra(0);
+                            let (a2, g2) = extra(1);
+                            [(label(a0), g0), (label(a1), g1), (label(a2), g2)]
+                        },
+                        rotation_axis_focused: self.move_rotation_axis_pick,
                         snap_offset: cm.and_then(|c| {
                             let (from, to) = (c.source_point?, c.target_point?);
                             let a = extrude::move_point_world(&self.state.doc, &from)?;
@@ -9560,18 +9603,31 @@ impl eframe::App for App {
                 // Which point picker is armed is App state, not move state (#649/#650).
                 match edit {
                     context::MoveEdit::SourcePointFocus => {
-                        self.move_point_pick = Some(MovePointSlot::Source)
+                        self.move_point_pick = Some(MovePointSlot::Source);
+                        self.move_rotation_axis_pick = None;
                     }
                     context::MoveEdit::TargetPointFocus => {
-                        self.move_point_pick = Some(MovePointSlot::Target)
+                        self.move_point_pick = Some(MovePointSlot::Target);
+                        self.move_rotation_axis_pick = None;
                     }
                     context::MoveEdit::RotationPointFocus => {
-                        self.move_point_pick = Some(MovePointSlot::Rotation)
+                        self.move_point_pick = Some(MovePointSlot::Rotation);
+                        self.move_rotation_axis_pick = None;
+                    }
+                    context::MoveEdit::RotationAxisFocus(slot) => {
+                        self.move_rotation_axis_pick = Some(slot);
+                        self.move_point_pick = None;
+                    }
+                    context::MoveEdit::ClearRotationAxis(_) => {
+                        self.move_rotation_axis_pick = None
                     }
                     context::MoveEdit::ClearSourcePoint
                     | context::MoveEdit::ClearTargetPoint
-                    | context::MoveEdit::ClearRotationPoint
-                    | context::MoveEdit::Commit => self.move_point_pick = None,
+                    | context::MoveEdit::ClearRotationPoint => self.move_point_pick = None,
+                    context::MoveEdit::Commit => {
+                        self.move_point_pick = None;
+                        self.move_rotation_axis_pick = None;
+                    }
                     _ => {}
                 }
                 match edit {
@@ -9592,7 +9648,29 @@ impl eframe::App for App {
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearSourcePoint => cm.source_point = None,
                             context::MoveEdit::ClearTargetPoint => cm.target_point = None,
-                            context::MoveEdit::RotateMode(m) => cm.rotate_mode = m,
+                            context::MoveEdit::RotateMode(m) => {
+                                cm.rotate_mode = m;
+                                // Free Rotate starts with one origin axis per slot (#652).
+                                if m == model::MoveRotateMode::Free {
+                                    cm.axis.get_or_insert(model::RevolveAxis::X);
+                                    for (i, axis) in
+                                        [model::RevolveAxis::Y, model::RevolveAxis::Z]
+                                            .into_iter()
+                                            .enumerate()
+                                    {
+                                        cm.extra_rotations[i].axis.get_or_insert(axis);
+                                    }
+                                }
+                            }
+                            context::MoveEdit::RotationAngle(slot, v) => match slot {
+                                0 => cm.angle = v,
+                                s => cm.extra_rotations[s - 1].angle = v,
+                            },
+                            context::MoveEdit::ClearRotationAxis(slot) => match slot {
+                                0 => cm.axis = None,
+                                s => cm.extra_rotations[s - 1].axis = None,
+                            },
+                            context::MoveEdit::RotationAxisFocus(_) => {}
                             context::MoveEdit::ClearRotationPoint => cm.rotation_point = None,
                             context::MoveEdit::SourcePointFocus
                             | context::MoveEdit::TargetPointFocus

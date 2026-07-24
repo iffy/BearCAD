@@ -665,7 +665,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   about — a corner or edge midpoint on *any* body, moving or not. Left empty it reads "Source
   point" and follows the source-point pick (`MoveOperation::rotation_pivot`); with neither set
   the rotation falls back to the axis's own origin, as before. The axis then only supplies a
-  direction.
+  direction. **Free Rotate (#652)** turns about **three** axes in one move: the op's own
+  `axis`/`angle` plus `MoveOperation::extra_rotations`, each an element picker taking an origin
+  axis, a sketch line, or a body edge (the same set the Repeat axis picker takes) with its own
+  angle expression beneath it. Selecting Free seeds the three with the X, Y and Z origin axes.
+  All three turn about the same pivot and compose **in slot order** — axis 1 acts on the body
+  first. A move carrying an extra rotation is excluded from coalescing (two of them don't fold
+  into one axis+angle).
 
   A Snap move with either point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
@@ -690,7 +696,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, from?, to?, pivot?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh); `pivot` takes the same table and sets the rotation point. **Moving construction planes (#217):** a Move op can also
+  on the body's mesh); `pivot` takes the same table and sets the rotation point, and
+  `axis2`/`angle2`, `axis3`/`angle3` are Free Rotate's other two turns. **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane

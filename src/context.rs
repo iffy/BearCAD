@@ -255,6 +255,11 @@ pub struct MoveControl {
     pub rotate_mode: crate::model::MoveRotateMode,
     pub rotation_point_rows: Vec<String>,
     pub rotation_point_focused: bool,
+    /// Free Rotate's three axis+angle slots (#652): the picked axis's label (empty until one
+    /// is set) and its angle expression, in slot order.
+    pub rotation_slots: [(Vec<String>, String); 3],
+    /// Which rotation-axis picker is armed, if any (#652).
+    pub rotation_axis_focused: Option<usize>,
     /// The snap translation the two points work out to, formatted (#650) — shown instead of
     /// the X/Y/Z fields while snapping.
     pub snap_offset: Option<String>,
@@ -285,6 +290,10 @@ pub enum MoveEdit {
     ClearTargetPoint,
     /// Rotate dropdown (#651).
     RotateMode(crate::model::MoveRotateMode),
+    /// Free Rotate slot edits (#652): arm/clear a slot's axis picker, or set its angle.
+    RotationAxisFocus(usize),
+    ClearRotationAxis(usize),
+    RotationAngle(usize, String),
     /// Arm / clear the rotation-point picker (#651).
     RotationPointFocus,
     ClearRotationPoint,
@@ -3147,7 +3156,6 @@ pub fn show_pane(
                 field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
                 field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
             }
-            field(ui, "Angle", &control.angle, ValueKind::Angle, &MoveEdit::Angle);
         }
         // Rotate mode (#651): lining a face+edge up with another (the default) or turning by
         // explicit angles.
@@ -3188,6 +3196,60 @@ pub fn show_pane(
                 });
             }
         });
+        {
+            use crate::expression_input::ValueKind;
+            // Free Rotate's three slots (#652) each get an axis picker with its own angle
+            // beneath; Snap Rotate keeps the single Angle field.
+            if control.rotate_mode == crate::model::MoveRotateMode::Free {
+                for (slot, (rows, angle)) in control.rotation_slots.iter().enumerate() {
+                    labeled_row_top(ui, format!("Axis {}", slot + 1), |ui| {
+                        if let Some(event) = crate::element_picker::show_labeled(
+                            ui,
+                            ("move_rotation_axis", slot),
+                            control.rotation_axis_focused == Some(slot),
+                            true,
+                            crate::icons::IconId::Line,
+                            rows,
+                        ) {
+                            pending = Some(match event {
+                                crate::element_picker::PickerEvent::Focus => {
+                                    MoveEdit::RotationAxisFocus(slot)
+                                }
+                                crate::element_picker::PickerEvent::Remove(_)
+                                | crate::element_picker::PickerEvent::Clear => {
+                                    MoveEdit::ClearRotationAxis(slot)
+                                }
+                            });
+                        }
+                    });
+                    labeled_row(ui, "Angle", |ui| {
+                        let mut text = angle.clone();
+                        let resp = crate::expression_input::ValueInput::new(
+                            ("move_rotation_angle", slot),
+                            ValueKind::Angle,
+                        )
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
+                        if resp.changed() {
+                            pending = Some(MoveEdit::RotationAngle(slot, text));
+                        }
+                    });
+                }
+            } else {
+                labeled_row(ui, "Angle", |ui| {
+                    let mut text = control.angle.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        ("move_field", "Angle"),
+                        ValueKind::Angle,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        pending = Some(MoveEdit::Angle(text));
+                    }
+                });
+            }
+        }
         ui.horizontal(|ui| {
             ui.label("Axis");
             for (axis, label) in [
@@ -5448,6 +5510,8 @@ mod tests {
                 rotate_mode: crate::model::MoveRotateMode::Free,
                 rotation_point_rows: Vec::new(),
                 rotation_point_focused: false,
+                rotation_slots: Default::default(),
+                rotation_axis_focused: None,
                 source_point_rows: Vec::new(),
                 source_point_focused: false,
                 target_point_rows: Vec::new(),

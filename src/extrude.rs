@@ -704,28 +704,31 @@ pub fn move_op_translation(doc: &Document, op: &crate::model::MoveOperation) -> 
 
 pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
     let t = move_op_translation(doc, op)?;
-    let mut m = glam::Mat4::from_translation(t);
-    if let Some(axis) = op.axis {
-        let angle_rad = if op.angle.trim().is_empty() {
+    // All three Free-Rotate slots turn about the same pivot (#652). They compose **in slot
+    // order** — axis 1 acts on the body first — which means pre-multiplying, since the
+    // rightmost factor is the one a point meets first.
+    let pivot = op.rotation_pivot().and_then(|p| move_point_world(doc, p));
+    let mut rot = glam::Mat4::IDENTITY;
+    for (axis, angle) in op.rotations() {
+        let Some(axis) = axis else { continue };
+        let angle_rad = if angle.trim().is_empty() {
             0.0
         } else {
-            crate::value::eval_angle_rad_in_doc(&op.angle, doc)?
+            crate::value::eval_angle_rad_in_doc(angle, doc)?
         };
-        if angle_rad.abs() > 1e-9 {
-            let (axis_origin, dir) = axis_world(doc, axis)?;
-            // The move turns about its picked rotation point when it has one (#651) — the
-            // axis then only supplies a direction. Without one it turns about the axis itself.
-            let origin = op
-                .rotation_pivot()
-                .and_then(|p| move_point_world(doc, p))
-                .unwrap_or(axis_origin);
-            let rot = glam::Mat4::from_translation(origin)
-                * glam::Mat4::from_axis_angle(dir, angle_rad)
-                * glam::Mat4::from_translation(-origin);
-            m *= rot;
+        if angle_rad.abs() <= 1e-9 {
+            continue;
         }
+        let (axis_origin, dir) = axis_world(doc, axis)?;
+        // The move turns about its picked rotation point when it has one (#651) — the axis
+        // then only supplies a direction. Without one it turns about the axis itself.
+        let origin = pivot.unwrap_or(axis_origin);
+        rot = glam::Mat4::from_translation(origin)
+            * glam::Mat4::from_axis_angle(dir, angle_rad)
+            * glam::Mat4::from_translation(-origin)
+            * rot;
     }
-    Some(m)
+    Some(glam::Mat4::from_translation(t) * rot)
 }
 
 /// Resolve a rotation/revolve axis to world origin + unit direction.
@@ -4604,6 +4607,7 @@ mod tests {
         use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
         let doc = Document::default();
         let base = MoveOperation {
+                                                extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
             targets: Vec::new(),
@@ -4629,6 +4633,7 @@ mod tests {
         );
         // One point isn't enough either.
         let half = MoveOperation {
+                                                extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
             source_point: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
@@ -4639,6 +4644,7 @@ mod tests {
         // With both, the snap takes over — and points that no longer resolve contribute
         // nothing rather than killing the op.
         let full = MoveOperation {
+                                                extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
             target_point: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
@@ -4739,6 +4745,7 @@ mod tests {
             deleted: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
+                                                extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
             translate_mode: Default::default(),
@@ -4785,6 +4792,7 @@ mod tests {
             shadow: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
+                                                extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
             translate_mode: Default::default(),
@@ -5325,6 +5333,7 @@ mod tests {
             source: None,
         });
         doc.move_ops.push(MoveOperation {
+                                                extra_rotations: Default::default(),
                         rotate_mode: Default::default(),
             rotation_point: None,
             translate_mode: Default::default(),
