@@ -340,6 +340,52 @@ fn parse_face_id_table(table: Table) -> mlua::Result<FaceId> {
                 })
             }
         }
+        // A revolve's flat sides (#621): same profile descriptors as extrude_cap/
+        // extrude_side, owned by a revolution instead of an extrusion. `revolve_cap` is a
+        // partial sweep's start/end profile face (`end = bool`); `revolve_side` is the flat
+        // washer face swept by one axis-perpendicular profile edge (`edge = i`).
+        "revolve_cap" | "revolve_side" => {
+            let revolution: usize = table.get("revolution")?;
+            let profile_kind: String =
+                table.get("profile").or_else(|_| table.get("profile_kind"))?;
+            let profile_index: usize = table
+                .get("profile_index")
+                .or_else(|_| table.get("index"))
+                .unwrap_or(0);
+            let profile = match profile_kind.to_ascii_lowercase().as_str() {
+                "circle" => crate::model::ExtrudeFace::Circle(profile_index),
+                "polygon" => {
+                    let lines: Vec<usize> = table
+                        .get("profile_lines")
+                        .or_else(|_| table.get("lines"))?;
+                    crate::model::ExtrudeFace::Polygon(lines)
+                }
+                "boolean" => {
+                    let spec: Table = table.get("boolean")?;
+                    parse_boolean_face_table(&spec)?
+                }
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unknown revolve profile kind '{other}' (circle|polygon|boolean)"
+                    )))
+                }
+            };
+            if kind.eq_ignore_ascii_case("revolve_cap") {
+                let end: bool = table.get("end").unwrap_or(false);
+                Ok(FaceId::RevolveCap {
+                    revolution,
+                    profile,
+                    end,
+                })
+            } else {
+                let edge: u8 = table.get("edge").unwrap_or(0);
+                Ok(FaceId::RevolveSide {
+                    revolution,
+                    profile,
+                    edge,
+                })
+            }
+        }
         _ => {
             let index: usize = table.get("index")?;
             FaceId::from_script(&kind, index).ok_or_else(|| {
@@ -893,6 +939,8 @@ fn face_kind_name(face: &FaceId) -> &'static str {
         FaceId::ConstructionPlane(_) => "construction_plane",
         FaceId::ExtrudeCap { .. } => "extrude_cap",
         FaceId::ExtrudeSide { .. } => "extrude_side",
+        FaceId::RevolveCap { .. } => "revolve_cap",
+        FaceId::RevolveSide { .. } => "revolve_side",
     }
 }
 

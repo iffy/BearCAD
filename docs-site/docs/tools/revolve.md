@@ -27,3 +27,10 @@ Revolve spins a flat profile around an axis into a solid — rings, shafts, vase
 5. **Enter** commits; **Esc** cancels.
 
 The profile can't cross its axis; keep it entirely on one side.
+
+## Sketching on the result
+
+Every **flat** face of a revolved body accepts new sketches, just like an extrusion's caps
+and side walls: a partial sweep's two flat profile ends, and the washer-shaped faces swept
+by any profile edge that runs perpendicular to the axis (a full 360° ring keeps those flat
+ends too). Hover them with the [Sketch tool](sketch.md) and click to start drawing there.

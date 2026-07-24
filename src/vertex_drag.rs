@@ -165,11 +165,10 @@ pub fn scene_element_for_point(point: ConstraintPoint) -> SceneElement {
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
-        // A face's own vertex tracks the extrusion that produced its face, same convention
+        // A face's own vertex tracks the feature that produced its face, same convention
         // as `document_health`/`hierarchy`'s owner mappings for `FaceVertex`/`FaceEdge`.
-        ConstraintPoint::FaceVertex { face, .. } => {
-            SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
-        }
+        ConstraintPoint::FaceVertex { face, .. } => crate::hierarchy::face_owner_element(&face)
+            .unwrap_or(SceneElement::Extrusion(usize::MAX)),
     }
 }
 

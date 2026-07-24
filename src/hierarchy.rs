@@ -358,16 +358,16 @@ impl ElementVisibility {
                             })
                     })
             }
-            // A face's own edge tracks the extrusion that produced its face, same as
+            // A face's own edge tracks the feature that produced its face, same as
             // `FaceVertex` in `point_effective_visible` below.
             SceneElement::FaceEdge(line) => {
-                let extrusion = match &line {
-                    ConstraintLine::FaceEdge { face, .. } => face.extrusion_index(),
+                let owner = match &line {
+                    ConstraintLine::FaceEdge { face, .. } => face_owner_element(face),
                     ConstraintLine::Line(_) | ConstraintLine::OriginAxis(_) => None,
                 };
                 self.effective_visible(
                     doc,
-                    SceneElement::Extrusion(extrusion.unwrap_or(usize::MAX)),
+                    owner.unwrap_or(SceneElement::Extrusion(usize::MAX)),
                 )
             }
             // A body's own edge/vertex/face (#156/#555) is visible exactly when its body is.
@@ -414,13 +414,11 @@ fn point_effective_visible(
         ConstraintPoint::CircleCenter(circle) => doc.circles.get(circle).is_some_and(|entity| {
             visibility.effective_visible(doc, SceneElement::Sketch(entity.sketch))
         }),
-        // A face's own vertex tracks the extrusion that produced its face — same dependency
+        // A face's own vertex tracks the feature that produced its face — same dependency
         // `face_element` gives a sketch placed on a body cap/side wall.
         ConstraintPoint::FaceVertex { face, .. } => visibility.effective_visible(
             doc,
-            face.extrusion_index()
-                .map(SceneElement::Extrusion)
-                .unwrap_or(SceneElement::Extrusion(usize::MAX)),
+            face_owner_element(&face).unwrap_or(SceneElement::Extrusion(usize::MAX)),
         ),
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(text).is_some_and(|entity| {
@@ -444,7 +442,20 @@ fn face_element(face: FaceId) -> SceneElement {
         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
             SceneElement::Extrusion(extrusion)
         }
+        // A sketch on a revolve's flat side depends on that revolution (#621).
+        FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
+            SceneElement::Revolution(revolution)
+        }
     }
+}
+
+/// The feature element that produced a body face — the owning extrusion or, for a
+/// partial revolve's flat side, the owning revolution (#621). `None` for sketch-profile
+/// and construction-plane faces (they have no producing feature).
+pub fn face_owner_element(face: &FaceId) -> Option<SceneElement> {
+    face.extrusion_index()
+        .map(SceneElement::Extrusion)
+        .or_else(|| face.revolution_index().map(SceneElement::Revolution))
 }
 
 /// A hierarchy entry with optional children (used to derive parent links).
@@ -2161,10 +2172,8 @@ fn point_parent_element(doc: &Document, point: ConstraintPoint) -> Option<SceneE
         ConstraintPoint::CircleCenter(circle) => Some(SceneElement::Circle(circle)),
         ConstraintPoint::TextAnchor { text, .. } => Some(SceneElement::SketchText(text)),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => Some(SceneElement::Image(image)),
-        // A face's own vertex nests under the extrusion that produced its face.
-        ConstraintPoint::FaceVertex { face, .. } => {
-            face.extrusion_index().map(SceneElement::Extrusion)
-        }
+        // A face's own vertex nests under the feature that produced its face.
+        ConstraintPoint::FaceVertex { face, .. } => face_owner_element(&face),
     }
 }
 

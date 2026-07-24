@@ -145,10 +145,9 @@ fn pane_element_for_constraint_line(line: crate::model::ConstraintLine) -> crate
     use crate::model::ConstraintLine;
     match line {
         ConstraintLine::Line(index) => SceneElement::Line(index),
-        // A face's own edge tracks the extrusion that produced its face, same as elsewhere.
-        ConstraintLine::FaceEdge { face, .. } => {
-            SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
-        }
+        // A face's own edge tracks the feature that produced its face, same as elsewhere.
+        ConstraintLine::FaceEdge { face, .. } => crate::hierarchy::face_owner_element(&face)
+            .unwrap_or(SceneElement::Extrusion(usize::MAX)),
         ConstraintLine::OriginAxis(_) => SceneElement::ConstructionPlane(0),
     }
 }
@@ -163,9 +162,8 @@ fn pane_element_for_constraint_point(
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
-        ConstraintPoint::FaceVertex { face, .. } => {
-            SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
-        }
+        ConstraintPoint::FaceVertex { face, .. } => crate::hierarchy::face_owner_element(&face)
+            .unwrap_or(SceneElement::Extrusion(usize::MAX)),
     }
 }
 

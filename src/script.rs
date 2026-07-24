@@ -2560,6 +2560,8 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         // A polygon's full line list isn't expressible as a single index; same limitation
         // as cap/side faces above (#66).
         FaceId::Polygon(lines) => ("polygon", *lines.first().unwrap_or(&0)),
+        FaceId::RevolveCap { revolution, .. } => ("revolve_cap", *revolution),
+        FaceId::RevolveSide { revolution, .. } => ("revolve_side", *revolution),
     }
 }
 
@@ -2690,6 +2692,14 @@ fn face_id_lua_ref(face: &FaceId) -> String {
         ),
         FaceId::ExtrudeSide { extrusion, profile, edge } => format!(
             "{{ kind = \"extrude_side\", extrusion = {extrusion}, {}, edge = {edge} }}",
+            extrude_face_profile_lua_fields(profile)
+        ),
+        FaceId::RevolveCap { revolution, profile, end } => format!(
+            "{{ kind = \"revolve_cap\", revolution = {revolution}, {}, [\"end\"] = {end} }}",
+            extrude_face_profile_lua_fields(profile)
+        ),
+        FaceId::RevolveSide { revolution, profile, edge } => format!(
+            "{{ kind = \"revolve_side\", revolution = {revolution}, {}, edge = {edge} }}",
             extrude_face_profile_lua_fields(profile)
         ),
     }

@@ -180,6 +180,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   seen from outside even on the concave inner walls of a non-convex (e.g. L-shaped) profile,
   and text or geometry sketched there reads correctly rather than mirrored (#362). A solid cap
   occludes the datum plane behind it for picking.
+  **Revolved bodies' flat faces are sketchable too (#621):** a partial (< 360°) revolve's two
+  profile caps (`FaceId::RevolveCap`, the profile rotated to the sweep's start/end angle, its
+  frame's normal facing out of the solid along the sweep tangent), and the flat washer/annular
+  faces swept by any polygon-profile edge whose endpoints share an axis coordinate
+  (`FaceId::RevolveSide`, one candidate per profile edge like an extrusion's side walls; full
+  360° sweeps keep these even though they have no caps). A revolve side's frame sits **on the
+  axis** (origin at the axis point, normal along the axis pointing away from the profile);
+  edges not perpendicular to the axis sweep curved surfaces and are not offered. Sketches on
+  either kind depend on the revolution that produced the face, and both faces hover-highlight
+  and pick like extrusion caps (a full washer's pick is hole-blind, matching extrusion caps).
+  Scripts address them as `{ kind = "revolve_cap", revolution = i, profile = …, ["end"] =
+  bool }` / `{ kind = "revolve_side", revolution = i, profile = …, edge = i }`.
   When several faces project onto the cursor (e.g. the near and far faces of a solid), face
   picking resolves to the one nearest the camera, so a hover/click never selects a face hidden
   behind the body. Entering a sketch reorients the camera head-on to the face and keeps the plane's

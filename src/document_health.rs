@@ -187,8 +187,8 @@ fn scene_element_for_point(point: &ConstraintPoint) -> SceneElement {
 fn scene_element_for_face(face: &crate::model::FaceId) -> SceneElement {
     // `usize::MAX` never indexes a real extrusion, so this resolves as a dead/unhealthy
     // reference rather than a real element — `face_boundary_loop_world` never resolves for
-    // non-extrusion `FaceId`s in the first place, so this arm should be unreachable.
-    SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
+    // non-body `FaceId`s in the first place, so this arm should be unreachable.
+    crate::hierarchy::face_owner_element(face).unwrap_or(SceneElement::Extrusion(usize::MAX))
 }
 
 fn scene_element_for_dimension_target(target: &DimensionTarget) -> SceneElement {

@@ -1451,6 +1451,128 @@ pub fn revolve_effective_angle(rev: &crate::model::Revolution) -> f32 {
     rev.angle_deg.clamp(0.1, 360.0)
 }
 
+/// World polygon of a partial revolve's flat start/end side (#621): the profile rotated
+/// to the sweep's start (`end = false`) or end (`end = true`) angle, plus the outward
+/// face normal (the sweep-tangent direction at the cap, pointing out of the solid).
+/// `None` for a full 360° sweep — that closes on itself and has no flat sides.
+pub fn revolve_cap_polygon_world(
+    doc: &Document,
+    revolution: usize,
+    profile: &crate::model::ExtrudeFace,
+    end: bool,
+) -> Option<(Vec<Vec3>, Vec3)> {
+    let rev = doc.revolutions.get(revolution)?;
+    if rev.deleted || !rev.faces.contains(profile) {
+        return None;
+    }
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let angle = revolve_effective_angle(rev);
+    if angle >= 359.99 {
+        return None;
+    }
+    let start = if rev.symmetric { -angle / 2.0 } else { 0.0 };
+    let cap_angle = if end { start + angle } else { start };
+    let q = glam::Quat::from_axis_angle(dir, cap_angle.to_radians());
+    let (pts, _) = face_profile_world(doc, profile)?;
+    if pts.len() < 3 {
+        return None;
+    }
+    let poly: Vec<Vec3> = pts.iter().map(|p| origin + q * (*p - origin)).collect();
+    // Sweep tangent at the rotated centroid (direction of increasing angle, right-hand
+    // rule about `dir`): the end cap faces along it, the start cap opposite.
+    let centroid = poly.iter().copied().sum::<Vec3>() / poly.len() as f32;
+    let tangent = dir.cross(centroid - origin).normalize_or_zero();
+    if tangent.length_squared() < 1e-8 {
+        return None;
+    }
+    let outward = if end { tangent } else { -tangent };
+    Some((poly, outward))
+}
+
+/// How many flat side-face candidates a revolve profile can sweep (#621): one per polygon
+/// edge (each validated by [`revolve_side_geom`] — only edges perpendicular to the axis
+/// sweep flat faces); circles and boolean profiles sweep no flat sides (mirrors
+/// [`side_face_count`]'s documented limitation).
+pub fn revolve_side_count(profile: &ExtrudeFace) -> usize {
+    match profile {
+        ExtrudeFace::Polygon(lines) => lines.len(),
+        _ => 0,
+    }
+}
+
+/// The flat washer/annular-sector face swept by one polygon-profile `edge` of a revolve
+/// (#621), when that edge's endpoints share an axis coordinate — the sweep then stays in
+/// the perpendicular plane there (e.g. the flat ends of a revolved ring). Returns the
+/// boundary polygon (world) and the face's sketch frame, whose normal points out of the
+/// solid (away from the profile along the axis) and whose origin sits on the axis. `None`
+/// for edges that sweep curved surfaces.
+pub fn revolve_side_geom(
+    doc: &Document,
+    revolution: usize,
+    profile: &ExtrudeFace,
+    edge: usize,
+) -> Option<(Vec<Vec3>, SketchFrame)> {
+    let rev = doc.revolutions.get(revolution)?;
+    if rev.deleted || !rev.faces.contains(profile) {
+        return None;
+    }
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let (pts, _) = face_profile_world(doc, profile)?;
+    let n = pts.len();
+    if n < 3 || edge >= n {
+        return None;
+    }
+    let (a, b) = (pts[edge], pts[(edge + 1) % n]);
+    let ta = (a - origin).dot(dir);
+    let tb = (b - origin).dot(dir);
+    if (ta - tb).abs() > 1e-3 {
+        return None;
+    }
+    let center = origin + dir * ((ta + tb) * 0.5);
+    let (ra, rb) = ((a - center).length(), (b - center).length());
+    if ra.max(rb) < 1e-4 {
+        return None;
+    }
+    // Outward normal: away from the rest of the profile along the axis.
+    let tc = pts.iter().map(|p| (*p - origin).dot(dir)).sum::<f32>() / n as f32;
+    let normal = if tc > ta { -dir } else { dir };
+    let u_axis = ((if ra >= rb { a } else { b }) - center).normalize_or_zero();
+    if u_axis.length_squared() < 1e-8 {
+        return None;
+    }
+    let v_axis = normal.cross(u_axis).normalize_or_zero();
+    let frame = SketchFrame {
+        origin: center,
+        u_axis,
+        v_axis,
+        normal,
+    };
+    let angle = revolve_effective_angle(rev);
+    let start = if rev.symmetric { -angle / 2.0 } else { 0.0 };
+    let full = angle >= 359.99;
+    let steps = (((CIRCLE_SEGMENTS as f32) * angle / 360.0).ceil() as usize).max(8);
+    let arc = |p: Vec3, reverse: bool| -> Vec<Vec3> {
+        (0..=steps)
+            .map(|i| {
+                let i = if reverse { steps - i } else { i };
+                let rad = (start + angle * i as f32 / steps as f32).to_radians();
+                center + glam::Quat::from_axis_angle(dir, rad) * (p - center)
+            })
+            .collect()
+    };
+    // Boundary: the two endpoints' sweep arcs (a forward, b back) close into a loop for
+    // partial sweeps. A full sweep's washer is approximated by its outer rim for
+    // pick/highlight purposes — the same hole-blind simplification extrusion caps use.
+    let boundary = if full {
+        arc(if ra >= rb { a } else { b }, false)
+    } else {
+        let mut poly = arc(a, false);
+        poly.extend(arc(b, true));
+        poly
+    };
+    Some((boundary, frame))
+}
+
 /// Hand-rolled lathe mesh for a revolution (the no-kernel fallback and the live ghost
 /// preview): each profile is swept around the axis in angular steps, walls stitched
 /// between consecutive rotated rings, with the start/end profile faces capped for a
@@ -3457,6 +3579,16 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
             profile,
             edge,
         } => side_quad_world(doc, *extrusion, profile, *edge as usize).map(|quad| quad.to_vec()),
+        FaceId::RevolveCap {
+            revolution,
+            profile,
+            end,
+        } => revolve_cap_polygon_world(doc, *revolution, profile, *end).map(|(poly, _)| poly),
+        FaceId::RevolveSide {
+            revolution,
+            profile,
+            edge,
+        } => revolve_side_geom(doc, *revolution, profile, *edge as usize).map(|(poly, _)| poly),
         FaceId::Circle(_)
         | FaceId::Polygon(_)
         | FaceId::ConstructionPlane(_) => None,
@@ -5217,6 +5349,43 @@ mod tests {
             (vol - expected).abs() < expected * 0.02,
             "expected ~{expected}, got {vol}"
         );
+    }
+
+    /// #621: a partial revolve's flat profile caps resolve world polygons (start in the
+    /// profile plane, end rotated by the sweep angle), and the axis-perpendicular profile
+    /// edges sweep flat annular sides with axis-aligned, outward sketch-frame normals.
+    #[test]
+    fn revolve_flat_faces_resolve_polygons_and_frames() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
+        doc.revolutions.push(test_revolution(
+            sketch,
+            vec![profile.clone()],
+            90.0,
+            false,
+            crate::model::RevolveMode::NewBody,
+        ));
+        // Start cap: the profile itself, in the sketch (z = 0) plane.
+        let (start, _) = revolve_cap_polygon_world(&doc, 0, &profile, false).expect("start cap");
+        assert!(start.iter().all(|p| p.z.abs() < 1e-3));
+        // End cap: the profile rotated 90° about +Y — (x, y, 0) lands on (0, y, −x).
+        let (end, _) = revolve_cap_polygon_world(&doc, 0, &profile, true).expect("end cap");
+        assert!(end.iter().all(|p| p.x.abs() < 1e-3 && p.z < 0.0));
+        // Exactly the two constant-height rect edges sweep flat sides; their frames'
+        // normals run along the axis, pointing away from the profile.
+        let flats: Vec<(usize, SketchFrame)> = (0..revolve_side_count(&profile))
+            .filter_map(|e| revolve_side_geom(&doc, 0, &profile, e).map(|(_, f)| (e, f)))
+            .collect();
+        assert_eq!(flats.len(), 2, "two axis-perpendicular edges sweep flat sides");
+        for (_, frame) in &flats {
+            assert!(frame.normal.cross(Vec3::Y).length() < 1e-4);
+        }
+        let normal_ys: Vec<f32> = flats.iter().map(|(_, f)| f.normal.y).collect();
+        assert!(normal_ys.contains(&-1.0) && normal_ys.contains(&1.0));
+        // A full sweep closes on itself: no caps, but the flat washer sides remain.
+        doc.revolutions[0].angle_deg = 360.0;
+        assert!(revolve_cap_polygon_world(&doc, 0, &profile, false).is_none());
+        assert!(revolve_side_geom(&doc, 0, &profile, flats[0].0).is_some());
     }
 
     /// #263: revolving the concentric-ring (annulus) face 360° about the Y axis makes a hollow

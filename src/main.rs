@@ -10157,6 +10157,11 @@ fn mirror_plane_scene_element(
             let body = other
                 .extrusion_index()
                 .and_then(|e| model::body_index_for_extrusion(doc, e))
+                .or_else(|| {
+                    other
+                        .revolution_index()
+                        .and_then(|r| model::body_index_for_revolution(doc, r))
+                })
                 .unwrap_or(0);
             hierarchy::SceneElement::BodyFace {
                 body,
@@ -12174,7 +12179,11 @@ fn pick_extrude_face(
     let base = match pick_sketch_face(pp, project, doc, eye)? {
         FaceId::Circle(i) => model::ExtrudeFace::Circle(i),
         FaceId::Polygon(lines) => model::ExtrudeFace::Polygon(lines),
-        FaceId::ConstructionPlane(_) | FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. } => {
+        FaceId::ConstructionPlane(_)
+        | FaceId::ExtrudeCap { .. }
+        | FaceId::ExtrudeSide { .. }
+        | FaceId::RevolveCap { .. }
+        | FaceId::RevolveSide { .. } => {
             return None;
         }
     };
@@ -13446,6 +13455,26 @@ fn draw_face_highlight(
         } => {
             if let Some(quad) = extrude::side_quad_world(doc, extrusion, &profile, edge as usize) {
                 draw_polygon_face_highlight(painter, project, &quad, color);
+            }
+        }
+        FaceId::RevolveCap {
+            revolution,
+            ref profile,
+            end,
+        } => {
+            if let Some((poly, _)) = extrude::revolve_cap_polygon_world(doc, revolution, profile, end)
+            {
+                draw_polygon_face_highlight(painter, project, &poly, color);
+            }
+        }
+        FaceId::RevolveSide {
+            revolution,
+            ref profile,
+            edge,
+        } => {
+            if let Some((poly, _)) = extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
+            {
+                draw_polygon_face_highlight(painter, project, &poly, color);
             }
         }
     }
@@ -19199,7 +19228,7 @@ impl App {
                 }
             }
             Tool::Sketch => {
-                "s: sketch  •  Click a rectangle or construction plane face  •  Esc: cancel"
+                "s: sketch  •  Click a plane or any flat face  •  Esc: cancel"
             }
             Tool::Project => {
                 "Project — click an outside edge or body to bring it in as a dashed reference • Esc: done"

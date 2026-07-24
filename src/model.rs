@@ -31,6 +31,21 @@ pub enum FaceId {
         profile: ExtrudeFace,
         edge: u8,
     },
+    /// A flat side of a partial (< 360°) revolve (#621): one profile face rotated to the
+    /// sweep's start (`end = false`) or end (`end = true`) angle. Full sweeps have none.
+    RevolveCap {
+        revolution: usize,
+        profile: ExtrudeFace,
+        end: bool,
+    },
+    /// The flat washer/annular-sector face a revolve sweeps from one polygon-profile
+    /// `edge` whose endpoints share an axis coordinate (#621) — e.g. the flat ends of a
+    /// revolved ring. Edges not perpendicular to the axis sweep curved surfaces instead.
+    RevolveSide {
+        revolution: usize,
+        profile: ExtrudeFace,
+        edge: u8,
+    },
 }
 
 impl Default for FaceId {
@@ -59,9 +74,22 @@ impl FaceId {
             FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
                 Some(*extrusion)
             }
-            FaceId::Circle(_) | FaceId::Polygon(_) | FaceId::ConstructionPlane(_) => {
-                None
+            FaceId::Circle(_)
+            | FaceId::Polygon(_)
+            | FaceId::ConstructionPlane(_)
+            | FaceId::RevolveCap { .. }
+            | FaceId::RevolveSide { .. } => None,
+        }
+    }
+
+    /// The revolution index that owns this face — the [`FaceId::extrusion_index`]
+    /// analogue for sketches hosted on a revolve's flat sides (#621).
+    pub fn revolution_index(&self) -> Option<usize> {
+        match self {
+            FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
+                Some(*revolution)
             }
+            _ => None,
         }
     }
 }
@@ -1339,6 +1367,14 @@ pub fn body_shadowed_by_other_ops(
 pub fn body_index_for_extrusion(doc: &Document, extrusion: usize) -> Option<usize> {
     doc.bodies.iter().position(|body| {
         !body.deleted && body.source.owns_extrusion(extrusion)
+    })
+}
+
+/// Body index whose source is `revolution` (#621) — the revolve analogue of
+/// [`body_index_for_extrusion`].
+pub fn body_index_for_revolution(doc: &Document, revolution: usize) -> Option<usize> {
+    doc.bodies.iter().position(|body| {
+        !body.deleted && matches!(body.source, BodySource::Revolve(r) if r == revolution)
     })
 }
 

@@ -152,6 +152,21 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
                 normal,
             })
         }
+        FaceId::RevolveCap {
+            revolution,
+            ref profile,
+            end,
+        } => {
+            let (poly, outward) =
+                crate::extrude::revolve_cap_polygon_world(doc, revolution, profile, end)?;
+            frame_from_polygon(&poly, outward)
+        }
+        FaceId::RevolveSide {
+            revolution,
+            ref profile,
+            edge,
+        } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
+            .map(|(_, frame)| frame),
     }
 }
 
@@ -595,6 +610,43 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
+        FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
+            let poly = match face {
+                FaceId::RevolveCap {
+                    revolution,
+                    ref profile,
+                    end,
+                } => {
+                    crate::extrude::revolve_cap_polygon_world(doc, revolution, profile, end)?.0
+                }
+                FaceId::RevolveSide {
+                    revolution,
+                    ref profile,
+                    edge,
+                } => {
+                    crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)?.0
+                }
+                _ => unreachable!(),
+            };
+            let mut zoom: Option<SketchZoomBounds> = None;
+            for p in &poly {
+                let (u, v) = world_to_local(&frame, *p);
+                extend_sketch_bounds(&mut zoom, u, v, u, v);
+            }
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
+                zoom = Some(match zoom {
+                    Some(z) => SketchZoomBounds::union(z, children),
+                    None => children,
+                });
+            }
+            let zoom = zoom?;
+            let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
+            Some(SketchCameraTarget {
+                target,
+                face_normal,
+                zoom: Some(zoom),
+            })
+        }
     }
 }
 
@@ -620,6 +672,15 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         FaceId::ExtrudeSide {
             extrusion, edge, ..
         } => format!("Extrusion {extrusion} side face {edge}"),
+        FaceId::RevolveCap {
+            revolution, end, ..
+        } => {
+            let side = if end { "end" } else { "start" };
+            format!("Revolution {revolution} {side} face")
+        }
+        FaceId::RevolveSide {
+            revolution, edge, ..
+        } => format!("Revolution {revolution} side face {edge}"),
     }
 }
 
@@ -661,9 +722,11 @@ fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
     let sketch = match face {
         FaceId::Circle(i) => doc.circles.get(*i)?.sketch,
         FaceId::Polygon(lines) => doc.lines.get(lines.first().copied()?)?.sketch,
-        FaceId::ConstructionPlane(_) | FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. } => {
-            return None
-        }
+        FaceId::ConstructionPlane(_)
+        | FaceId::ExtrudeCap { .. }
+        | FaceId::ExtrudeSide { .. }
+        | FaceId::RevolveCap { .. }
+        | FaceId::RevolveSide { .. } => return None,
     };
     doc.sketches.get(sketch).map(|s| s.face.clone())
 }
@@ -767,6 +830,49 @@ pub fn pick_sketch_face(
                 {
                     let candidate = FaceId::ExtrudeSide {
                         extrusion: ei,
+                        profile: profile.clone(),
+                        edge: edge as u8,
+                    };
+                    if !sketch_shadows(&best, &candidate, dist, doc) {
+                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    }
+                }
+            }
+        }
+    }
+
+    // Flat sides of revolves are sketchable too (#621): a partial sweep's start/end
+    // profile caps, and the flat washer faces swept by axis-perpendicular profile edges.
+    for (ri, rev) in doc.revolutions.iter().enumerate().rev() {
+        if rev.deleted {
+            continue;
+        }
+        for profile in &rev.faces {
+            for end in [false, true] {
+                let Some((poly, _)) =
+                    crate::extrude::revolve_cap_polygon_world(doc, ri, profile, end)
+                else {
+                    continue;
+                };
+                if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                    let candidate = FaceId::RevolveCap {
+                        revolution: ri,
+                        profile: profile.clone(),
+                        end,
+                    };
+                    if !sketch_shadows(&best, &candidate, dist, doc) {
+                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    }
+                }
+            }
+            for edge in 0..crate::extrude::revolve_side_count(profile) {
+                let Some((poly, _)) = crate::extrude::revolve_side_geom(doc, ri, profile, edge)
+                else {
+                    continue;
+                };
+                if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                    let candidate = FaceId::RevolveSide {
+                        revolution: ri,
                         profile: profile.clone(),
                         edge: edge as u8,
                     };

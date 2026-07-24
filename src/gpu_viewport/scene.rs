@@ -2576,6 +2576,44 @@ impl<'a> SceneMesh<'a> {
                     self.push_triangle(lift(quad[0]), lift(quad[2]), lift(quad[3]), fill);
                 }
             }
+            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
+                let poly = match face {
+                    FaceId::RevolveCap {
+                        revolution,
+                        ref profile,
+                        end,
+                    } => crate::extrude::revolve_cap_polygon_world(doc, revolution, profile, end)
+                        .map(|(poly, _)| poly),
+                    FaceId::RevolveSide {
+                        revolution,
+                        ref profile,
+                        edge,
+                    } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
+                        .map(|(poly, _)| poly),
+                    _ => None,
+                };
+                if let Some(poly) = poly {
+                    if poly.len() >= 3 {
+                        // Newell normal: consecutive arc points are nearly collinear, so a
+                        // three-point cross product would be degenerate here.
+                        let mut area = Vec3::ZERO;
+                        for i in 0..poly.len() {
+                            area += poly[i].cross(poly[(i + 1) % poly.len()]);
+                        }
+                        let normal = area.normalize_or_zero();
+                        let lift =
+                            |p: Vec3| offset_toward_camera(p, normal, eye, HOVER_FILL_DEPTH_BIAS);
+                        for i in 1..poly.len() - 1 {
+                            self.push_triangle(
+                                lift(poly[0]),
+                                lift(poly[i]),
+                                lift(poly[i + 1]),
+                                fill,
+                            );
+                        }
+                    }
+                }
+            }
             FaceId::ConstructionPlane(_) => {}
         }
     }
@@ -2745,6 +2783,32 @@ impl<'a> SceneMesh<'a> {
                         let j = (i + 1) % quad.len();
                         self.push_line_segment(
                             quad[i], quad[j], color, width, cam, viewport, view_proj,
+                        );
+                    }
+                }
+            }
+            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
+                let poly = match face {
+                    FaceId::RevolveCap {
+                        revolution,
+                        ref profile,
+                        end,
+                    } => crate::extrude::revolve_cap_polygon_world(doc, revolution, profile, end)
+                        .map(|(poly, _)| poly),
+                    FaceId::RevolveSide {
+                        revolution,
+                        ref profile,
+                        edge,
+                    } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
+                        .map(|(poly, _)| poly),
+                    _ => None,
+                };
+                if let Some(poly) = poly {
+                    let n = poly.len();
+                    for i in 0..n {
+                        let j = (i + 1) % n;
+                        self.push_line_segment(
+                            poly[i], poly[j], color, width, cam, viewport, view_proj,
                         );
                     }
                 }
