@@ -3475,29 +3475,38 @@ pub fn show_pane(
                     // Both states render at the same width (#641) so the column of inputs
                     // doesn't jump as the computed one moves between rows.
                     const VAR_FIELD_W: f32 = 110.0;
+                    // A read-only value renders through the very same widget as an editable
+                    // one, just disabled (#654) — a hand-rolled `TextEdit` sized its *text*
+                    // rather than its box, coming out both wider and shorter than its
+                    // neighbours.
+                    let read_only = |ui: &mut egui::Ui, shown: Option<String>, hover: &str| {
+                        let mut text = shown.unwrap_or_default();
+                        ui.add_enabled_ui(false, |ui| {
+                            crate::expression_input::ValueInput::from_id(
+                                repeat_value_field_id(label).with("computed"),
+                                crate::expression_input::ValueKind::Length,
+                            )
+                            .width(VAR_FIELD_W)
+                            .show(ui, &mut text, doc)
+                            .on_hover_text(hover.to_string());
+                        });
+                    };
                     // A picked distance target (#645) drives the Distance value, so its field
                     // reads back the derived length instead of an expression.
                     let target_driven = var == RepeatVar::Distance
                         && !control.length_target_rows.is_empty();
                     if target_driven {
-                        let shown = control
-                            .length_target_value
-                            .clone()
-                            .unwrap_or_else(|| "—".to_string());
-                        ui.add_enabled(
-                            false,
-                            egui::TextEdit::singleline(&mut shown.clone())
-                                .desired_width(VAR_FIELD_W),
-                        )
-                        .on_hover_text("Measured to the picked target");
+                        read_only(
+                            ui,
+                            control.length_target_value.clone(),
+                            "Measured to the picked target",
+                        );
                     } else if computed {
-                        let shown = control.computed_value.clone().unwrap_or_else(|| "—".to_string());
-                        ui.add_enabled(
-                            false,
-                            egui::TextEdit::singleline(&mut shown.clone())
-                                .desired_width(VAR_FIELD_W),
-                        )
-                        .on_hover_text("Computed from the other two");
+                        read_only(
+                            ui,
+                            control.computed_value.clone(),
+                            "Computed from the other two",
+                        );
                     } else {
                         let mut text = value.to_string();
                         let kind = if var == RepeatVar::Count {
