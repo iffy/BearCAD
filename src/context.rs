@@ -675,6 +675,10 @@ pub enum TriState {
 /// What the context pane should display.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContextPaneContent {
+    /// The active tool's title, shown once at the very top of the pane so every tool's context
+    /// section is labelled (#608). `None` for the Select tool and the drawing workbench, which
+    /// have their own selection/section headings instead.
+    pub tool_title: Option<&'static str>,
     pub name: Option<NameControl>,
     /// Curve-mode (`B`) checkbox while the line tool is active (#73).
     pub curve_mode: Option<bool>,
@@ -1065,7 +1069,84 @@ fn body_tool_picker(
     }
 }
 
+/// The active tool's title for the top of the context pane (#608). Every modelling/sketch tool
+/// gets a title; the Select tool and drawing workbench return `None` (they show selection info
+/// or their own section headings). The "Edit …" variants surface when a committed operation is
+/// being re-edited through its tool.
+fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
+    use crate::actions::Tool;
+    // The drawing workbench has its own titled sections (View / Add view), not a tool title.
+    if input.in_drawing_workbench {
+        return None;
+    }
+    let editing = input.move_op.as_ref().is_some_and(|c| c.editing)
+        || input.mirror_op.as_ref().is_some_and(|c| c.editing)
+        || input.boolean_op.as_ref().is_some_and(|c| c.editing)
+        || input.repeat_op.as_ref().is_some_and(|c| c.editing)
+        || input.slice_op.as_ref().is_some_and(|c| c.editing)
+        || input.sketch_offset.as_ref().is_some_and(|c| c.editing);
+    Some(match input.tool {
+        Tool::Select => return None,
+        Tool::Rectangle => "Rectangle",
+        Tool::Line => "Line",
+        Tool::Circle => "Circle",
+        Tool::ConstructionPlane => "Construction plane",
+        Tool::Sketch => "Sketch",
+        Tool::Dimension => "Dimension",
+        Tool::Constraint => "Constraint",
+        Tool::Extrude => "Extrude",
+        Tool::Chamfer => "Chamfer",
+        Tool::Fillet => "Fillet",
+        Tool::Offset => {
+            if editing {
+                "Edit offset"
+            } else {
+                "Offset"
+            }
+        }
+        Tool::Project => "Project",
+        Tool::Loft => "Loft",
+        Tool::Revolve => "Revolve",
+        Tool::Sweep => "Sweep",
+        Tool::Combine => {
+            if editing {
+                "Edit boolean operation"
+            } else {
+                "Combine"
+            }
+        }
+        Tool::Move => {
+            if editing {
+                "Edit move"
+            } else {
+                "Move"
+            }
+        }
+        Tool::Mirror => {
+            if editing {
+                "Edit mirror"
+            } else {
+                "Mirror"
+            }
+        }
+        Tool::Repeat => match (input.in_sketch, editing) {
+            (true, _) => "Repeat (in sketch)",
+            (false, true) => "Edit repeat",
+            (false, false) => "Linear repeat",
+        },
+        Tool::Slice => match (input.in_sketch, editing) {
+            (true, true) => "Edit slice",
+            (true, false) => "Slice (in sketch)",
+            (false, true) => "Edit slice",
+            (false, false) => "Slice",
+        },
+        Tool::Text => "Text",
+        Tool::DrawingAdd | Tool::DrawingAlign => return None,
+    })
+}
+
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
+    let tool_title = tool_context_title(input);
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
     let snapping =
         (input.in_sketch && tool_uses_snapping(input.tool)).then_some(input.snapping_enabled);
@@ -1291,6 +1372,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
 
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
+            tool_title,
             name,
             curve_mode: None,
             rect_anchor: input.rect_anchor,
@@ -1344,6 +1426,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     if let Some(construction) = input.draw_line_construction {
         return ContextPaneContent {
+            tool_title,
             name,
             curve_mode: input.draw_line_curve_mode,
             rect_anchor: input.rect_anchor,
@@ -1397,6 +1480,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     if let Some(construction) = input.draw_circle_construction {
         return ContextPaneContent {
+            tool_title,
             name,
             curve_mode: None,
             rect_anchor: None,
@@ -1453,6 +1537,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let constraints = (input.tool == Tool::Constraint)
         .then(|| constraint_pane_rows(input.selection));
     ContextPaneContent {
+        tool_title,
         name,
         curve_mode: None,
         rect_anchor: input.rect_anchor,
@@ -1998,6 +2083,14 @@ pub fn show_pane(
     // Keep children from widening the side panel via egui's persisted PanelState.
     ui.set_width(ui.available_width());
 
+    // Every tool's context section is headed by the tool's title at the very top of the pane,
+    // above its pickers and controls (#608). The per-tool blocks below no longer draw their own
+    // section labels — this single title covers them all.
+    if let Some(title) = content.tool_title {
+        any_control = true;
+        section_label(ui, title);
+    }
+
     // The element picker is the primary control for the Select tool, so it renders first (#246).
     // Pickers render as label-left / picker-right rows (#371), like every other field.
     if let Some(picker) = &content.selection_picker {
@@ -2296,7 +2389,6 @@ pub fn show_pane(
     if let Some(control) = &content.revolve {
         any_control = true;
         ui.separator();
-        section_label(ui, "Revolve");
 
         // Face element picker (#261): the picked profile faces, click one's ✕ to drop it. Faces
         // are still added by clicking them in the viewport.
@@ -2387,7 +2479,6 @@ pub fn show_pane(
     if let Some(control) = &content.sweep {
         any_control = true;
         ui.separator();
-        section_label(ui, "Sweep");
 
         // Face element picker: the picked profile faces, click one's ✕ to drop it. Faces
         // are still added by clicking them in the viewport.
@@ -2474,7 +2565,6 @@ pub fn show_pane(
     if let Some(control) = &content.loft_body {
         any_control = true;
         ui.separator();
-        section_label(ui, "Loft");
         // The same segmented icon group as Revolve/Sweep (#479), under a shared "Output" label.
         let choice = control.body_choice;
         labeled_row(ui, "Output", |ui| {
@@ -2512,7 +2602,6 @@ pub fn show_pane(
     if let Some(control) = &content.plane_tool {
         any_control = true;
         ui.separator();
-        section_label(ui, "Construction plane");
 
         // The picked anchor set — face, edge, vertex, or line+point — with ✕ to clear (#474/#483).
         labeled_row_top(ui, "Anchor", |ui| {
@@ -2556,11 +2645,8 @@ pub fn show_pane(
     if let Some(control) = &content.boolean_op {
         any_control = true;
         // No divider between the Bodies picker above and this section — the pickers, the mode
-        // row, and the Do button read as one contiguous Combine block (#606).
-        if control.editing {
-            ui.separator();
-            section_label(ui, "Edit boolean operation");
-        }
+        // row, and the Do button read as one contiguous Combine block (#606). The tool title
+        // (#608) is drawn once at the top of the pane.
         // A segmented icon group (#267): two-circle boolean icons with kept regions solid and
         // removed regions faint red — in the right column under a "Mode" label (#606).
         let kind = control.kind;
@@ -2624,7 +2710,6 @@ pub fn show_pane(
     if let Some(control) = &content.move_op {
         any_control = true;
         ui.separator();
-        section_label(ui, if control.editing { "Edit move" } else { "Move" });
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<MoveEdit> = None;
         {
@@ -2740,7 +2825,6 @@ pub fn show_pane(
     if let Some(control) = &content.repeat_op {
         any_control = true;
         ui.separator();
-        section_label(ui, if control.editing { "Edit repeat" } else { "Linear repeat" });
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         // Construction-plane targets (#221) are picked via the Elements pane / viewport, like the
         // Move tool's planes — surfaced here as a count so the picked set is visible.
@@ -2966,7 +3050,6 @@ pub fn show_pane(
         use crate::model::RepeatVar;
         any_control = true;
         ui.separator();
-        section_label(ui, "Repeat (in sketch)");
         ui.label(
             egui::RichText::new(format!(
                 "{} entities · direction: {} (Shift+click an edge)",
@@ -3069,7 +3152,6 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_offset {
         any_control = true;
         ui.separator();
-        section_label(ui, if control.editing { "Edit offset" } else { "Offset" });
         // Element picker of lines/circles in the offset set (#493).
         let mut picker = ElementPicker::new(
             ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
@@ -3147,7 +3229,6 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_mirror {
         any_control = true;
         ui.separator();
-        section_label(ui, if control.editing { "Edit mirror" } else { "Mirror" });
         // Primary: the mirror line, as a single-line element picker (#534). Removing it lets
         // the next viewport click pick a new mirror line.
         let mut line_picker =
@@ -3235,7 +3316,6 @@ pub fn show_pane(
     if let Some(control) = &content.slice_op {
         any_control = true;
         ui.separator();
-        section_label(ui, if control.editing { "Edit slice" } else { "Slice" });
         let mut pending: Option<SliceEdit> = None;
         // Two element pickers; the focused one is the side the next viewport click lands on
         // (clicking a picker makes it active, replacing the old Bodies/Cutters toggle).
@@ -3293,7 +3373,6 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_slice {
         any_control = true;
         ui.separator();
-        section_label(ui, if control.editing { "Edit slice" } else { "Slice (in sketch)" });
         let mut pending: Option<SketchSliceEdit> = None;
         labeled_row_top(ui, "Targets", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
@@ -4944,6 +5023,7 @@ mod tests {
         assert_eq!(
             context_pane_content(&input(&doc, &SceneSelection::default())),
             ContextPaneContent {
+                tool_title: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -5063,6 +5143,7 @@ mod tests {
         assert_eq!(
             content,
             ContextPaneContent {
+                tool_title: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -5196,6 +5277,7 @@ mod tests {
         assert_eq!(
             context_pane_content(&input(&doc, &sel)),
             ContextPaneContent {
+                tool_title: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -5440,6 +5522,7 @@ mod tests {
         assert_eq!(
             content,
             ContextPaneContent {
+                tool_title: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
