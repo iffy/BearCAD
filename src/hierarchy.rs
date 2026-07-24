@@ -3100,9 +3100,9 @@ pub fn show_pane(
     });
     ui.separator();
 
-    // Timeline rollback status (#524/#545): when rolled back, show the marker and a Clear button
-    // to roll forward. Setting a rollback point is done per-element from the row's right-click
-    // "Rollback" submenu (#545), not a header button.
+    // Timeline rollback status (#524/#545): when rolled back, show the marker and a Done button
+    // (#619) to roll forward. Setting a rollback point is done per-element from the row's
+    // right-click "Rollback" submenu (#545), not a header button.
     if let Some(marker) = rollback_marker {
         ui.horizontal(|ui| {
             let noun = if marker.inclusive { "just before" } else { "" };
@@ -3115,7 +3115,7 @@ pub fn show_pane(
                 .size(11.5),
             );
             if ui
-                .small_button("Clear")
+                .small_button("Done")
                 .on_hover_text("Roll forward — re-enable everything after this point")
                 .clicked()
             {

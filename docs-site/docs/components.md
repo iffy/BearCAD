@@ -55,7 +55,7 @@ Right-click any element in the Elements pane and open the **Rollback** submenu:
 Hidden elements are suppressed in the viewport and faded in the pane, without touching your
 own show/hide toggles. Independent branches stay put, so this follows the element graph
 rather than the order things were created. While rolled back, a status line at the top of
-the pane shows where you are; click **Clear** to roll forward again.
+the pane shows where you are; click **Done** to roll forward again.
 
 ## Scripting
 

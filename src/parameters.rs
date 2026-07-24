@@ -1416,13 +1416,6 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                 .color(egui::Color32::from_rgb(255, 140, 100))
                 .size(12.0),
         );
-    } else if app.doc.parameters.is_empty() {
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("Type name and value (e.g. A and 10mm or 45deg), then press Enter or +")
-                .color(egui::Color32::from_gray(140))
-                .size(12.0),
-        );
     }
 }
 
