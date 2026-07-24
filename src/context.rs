@@ -2386,6 +2386,33 @@ pub fn show_pane(
         });
     }
 
+    // Legacy row-list element picker (#loft Sections, Chamfer/Fillet Edges): render right after
+    // the tool-owned pickers so the picked set is the first thing in the tool's section — e.g.
+    // the Loft tool's "Sections" picker sits above its Output/Do controls (#609).
+    if let Some(picker) = &content.edge_picker {
+        any_control = true;
+        ui.separator();
+        labeled_row_top(ui, picker.heading, |ui| {
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            // The active tool's picker is focused (its viewport clicks feed this set).
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                picker.heading,
+                true,
+                false,
+                picker.icon,
+                &picker.rows,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => on_edge_picker_edit(Some(i)),
+                    crate::element_picker::PickerEvent::Clear => on_edge_picker_edit(None),
+                }
+            }
+        });
+        });
+    }
+
     if let Some(control) = &content.revolve {
         any_control = true;
         ui.separator();
@@ -3898,30 +3925,6 @@ pub fn show_pane(
             {
                 on_calibrate_image(control, pane_state.calibrate_length_draft.clone());
             }
-        });
-    }
-
-    if let Some(picker) = &content.edge_picker {
-        any_control = true;
-        ui.separator();
-        labeled_row_top(ui, picker.heading, |ui| {
-        ui.add_enabled_ui(controls_enabled, |ui| {
-            // The active tool's picker is focused (its viewport clicks feed this set).
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                picker.heading,
-                true,
-                false,
-                picker.icon,
-                &picker.rows,
-            ) {
-                match event {
-                    crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(i) => on_edge_picker_edit(Some(i)),
-                    crate::element_picker::PickerEvent::Clear => on_edge_picker_edit(None),
-                }
-            }
-        });
         });
     }
 
