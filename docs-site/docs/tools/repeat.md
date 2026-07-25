@@ -96,6 +96,13 @@ away. From scripts:
 bearcad.repeat_sketches{ sketches = {0}, axis = "z", mode = "count_gap", count = 3, spacing = 10 }
 ```
 
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Repeat tool's Context pane, each field explained](/img/screenshots/pane-repeat.png)
+
 ## Scripting
 
 ```lua

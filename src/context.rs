@@ -2400,6 +2400,48 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Repeat), "Bodies") => Some(
+            "The bodies to copy along the axis. Click one to add it, click it again to \
+             drop it.",
+        ),
+        (Some(Tool::Repeat), "Planes") => Some(
+            "How many construction planes ride along as offset copies.",
+        ),
+        (Some(Tool::Repeat), "Sketches") => Some(
+            "How many sketches ride along as offset copies.",
+        ),
+        (Some(Tool::Repeat), "Cuts") => Some(
+            "How many cut operations are replayed at each step — a row of holes from one.",
+        ),
+        (Some(Tool::Repeat), "Axis") => Some(
+            "The direction the pattern runs — a straight edge, a sketch line, or a \
+             global axis.",
+        ),
+        (Some(Tool::Repeat), "Count") => Some(
+            "How many copies. The green lock marks the value computed from the other two.",
+        ),
+        (Some(Tool::Repeat), "Gap") => Some(
+            "Clear space between one copy's end and the next one's start. The icon \
+             switches it to Offset (start-to-start).",
+        ),
+        (Some(Tool::Repeat), "Offset") => Some(
+            "Start-to-start spacing between copies. The icon switches it back to Gap.",
+        ),
+        (Some(Tool::Repeat), "Distance") => Some(
+            "How far the whole pattern runs. The icon toggles whether the last copy \
+             starts or ends there.",
+        ),
+        (Some(Tool::Repeat), "Distance to") => Some(
+            "A face, plane, or corner the pattern runs out to instead of a typed \
+             distance — the copies follow it if it moves.",
+        ),
+        (Some(Tool::Repeat), "Entities") => Some(
+            "How many sketch entities the in-sketch repeat copies.",
+        ),
+        (Some(Tool::Repeat), "Direction") => Some(
+            "The direction the copies run — the sketch's U axis, or an edge you \
+             Shift+click.",
+        ),
         (Some(Tool::Mirror), "Mirror plane") => Some(
             "The plane the reflection flips across — a construction plane or a flat \
              body face.",
@@ -2487,11 +2529,6 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "How many of the two calibration points are placed. Click the image over a \
              feature of known size, once at each end.",
         ),
-        "Direction" => Some(
-            "The axis the copies run along — the sketch's U axis, or an edge you \
-             Shift+click.",
-        ),
-        "Entities" => Some("How many sketch entities the repeat copies."),
         "Link" => Some(
             "Whether this part follows its source file: Dynamic picks up the file's \
              saves; Static keeps the copy as-is until you update it.",
@@ -3787,7 +3824,7 @@ pub fn show_pane(
                                toggle: Option<(crate::icons::IconId, RepeatEdit)>,
                                make: &dyn Fn(String) -> RepeatEdit| {
                 let computed = control.computed_var == var;
-                ui.horizontal(|ui| {
+                let row = ui.horizontal(|ui| {
                     // Icon + label share the fixed label column (#371) so the inputs align.
                     ui.allocate_ui_with_layout(
                         egui::vec2(FIELD_LABEL_W, 18.0),
@@ -3888,6 +3925,7 @@ pub fn show_pane(
                         pending = Some(RepeatEdit::SetComputed(var));
                     }
                 });
+                note_help(ui, label, row.response.rect);
             };
             var_row(ui, RepeatVar::Count, "Count", &control.count, None, &RepeatEdit::Count);
             let gap_icon = if control.gap_is_offset {
