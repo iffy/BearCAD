@@ -48,3 +48,10 @@ geometry:
   make the line run along — or square to — that axis. This is how you make a line "horizontal"
   or "vertical": parallel to the X or Y axis. It works the same on any sketch plane, at any
   angle, because it refers to the sketch's own axes rather than the screen.
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Constraint tool's Context pane, each field explained](/img/screenshots/pane-constraint.png)

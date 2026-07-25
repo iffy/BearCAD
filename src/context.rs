@@ -2400,6 +2400,14 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Constraint), "Selection") => Some(
+            "The geometry the constraint applies to — click lines, points, or edges in \
+             the viewport; Shift+click adds more.",
+        ),
+        (Some(Tool::Constraint), "Constraints") => Some(
+            "The relationships the current selection can take — hover a button for its \
+             name, and a greyed one says what it still needs. Clicking applies it.",
+        ),
         (Some(Tool::Dimension), "Selection") => Some(
             "What to measure: one edge for its length, two for the distance or angle \
              between them, two corners for their distance.",
@@ -3069,7 +3077,12 @@ pub fn show_pane(
 
     if let Some(rows) = &content.constraints {
         any_control = true;
-        section_label(ui, "Constraints");
+        let header = ui.label(
+            egui::RichText::new("Constraints")
+                .color(egui::Color32::from_gray(130))
+                .size(11.5),
+        );
+        note_help(ui, "Constraints", header.rect);
         for row in rows {
             ui.horizontal(|ui| {
                 let enabled = controls_enabled && row.enabled;
