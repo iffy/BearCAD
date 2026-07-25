@@ -1440,6 +1440,13 @@ pub enum Action {
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
     /// knobs an importing file is offered first; advisory only.
     SetParameterPrimary { index: usize, primary: bool },
+    /// Override (or with `None`, clear back to the unit's own value) one parameter of one
+    /// unit **instance** (#728). Never touches the source file or other instances.
+    SetUnitParameterOverride {
+        instance: usize,
+        name: String,
+        expression: Option<String>,
+    },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -7311,6 +7318,43 @@ impl AppState {
                     param.name,
                     if primary { "primary" } else { "secondary" }
                 );
+                ActionResult::Ok
+            }
+            Action::SetUnitParameterOverride { instance, name, expression } => {
+                let Some(inst) = self
+                    .doc
+                    .unit_instances
+                    .get(instance)
+                    .filter(|i| !i.deleted)
+                else {
+                    self.status = format!("Unit instance {instance} not found");
+                    return ActionResult::Err(self.status.clone());
+                };
+                let unit_param_exists = self
+                    .doc
+                    .units
+                    .get(inst.unit)
+                    .is_some_and(|u| u.document.parameters.iter().any(|p| !p.deleted && p.name == name));
+                if !unit_param_exists {
+                    self.status = format!("The unit has no parameter named '{name}'");
+                    return ActionResult::Err(self.status.clone());
+                }
+                let overrides = &mut self.doc.unit_instances[instance].parameter_overrides;
+                match expression {
+                    Some(expression) => {
+                        match overrides.iter_mut().find(|(n, _)| *n == name) {
+                            Some(entry) => entry.1 = expression,
+                            None => overrides.push((name.clone(), expression)),
+                        }
+                        self.status = format!("Overrode {name} for this instance");
+                    }
+                    None => {
+                        overrides.retain(|(n, _)| *n != name);
+                        self.status = format!("{name} back to the unit's own value");
+                    }
+                }
+                crate::parameters::recompute_document_geometry(&mut self.doc).ok();
+                self.refresh_document_health();
                 ActionResult::Ok
             }
             Action::AddParameter { name, expression } => {
@@ -15544,6 +15588,67 @@ mod tests {
             (volume(&cut_after) - before).abs() > 1e-3,
             "the cut result follows the replaced embedded geometry"
         );
+    }
+
+    /// #728: an override changes one instance only; clearing it restores the unit's own
+    /// value; the pane's row model hides secondary parameters until asked.
+    #[test]
+    fn unit_parameter_overrides_are_per_instance_and_revertable() {
+        let unit_path = write_solid_unit_file("bearcad_unit_override_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_override_b.bearcad").to_string_lossy().to_string(),
+        );
+        for _ in 0..2 {
+            state.apply(Action::ImportUnit {
+                path: unit_path.to_string_lossy().to_string(),
+                link: None,
+                name: None,
+            });
+        }
+        let _ = std::fs::remove_file(&unit_path);
+        // Mark `width` primary in the embedded copy, and add a secondary internal.
+        state.doc.units[0].document.parameters[0].primary = true;
+        state.doc.units[0].document.parameters.push(crate::model::Parameter {
+            name: "internal".to_string(),
+            expression: "width * 2".to_string(),
+            deleted: false,
+            primary: false,
+            source: None,
+        });
+
+        let r = state.apply(Action::SetUnitParameterOverride {
+            instance: 0,
+            name: "width".to_string(),
+            expression: Some("25".to_string()),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        let height = |doc: &crate::model::Document, instance: usize| {
+            let eval = crate::units::evaluate_instance(doc, instance).unwrap();
+            let (min, max) = eval.meshes[0].bounds().unwrap();
+            max.z - min.z
+        };
+        assert!((height(&state.doc, 0) - 25.0).abs() < 1e-2, "instance 0 follows its override");
+        assert!((height(&state.doc, 1) - 10.0).abs() < 1e-2, "instance 1 is untouched");
+
+        // The pane's rows: overridden value shows, secondary hidden until asked.
+        let rows = crate::parameters::unit_parameter_rows(&state.doc, 0, false);
+        assert_eq!(rows.len(), 1, "only the primary knob shows by default");
+        assert_eq!(rows[0].name, "width");
+        assert!(rows[0].overridden);
+        assert_eq!(rows[0].expression, "25");
+        let all_rows = crate::parameters::unit_parameter_rows(&state.doc, 0, true);
+        assert_eq!(all_rows.len(), 2, "internals appear when asked");
+        assert!(all_rows.iter().any(|r| r.name == "internal" && !r.primary));
+
+        // Clearing the override restores the unit's own value.
+        state.apply(Action::SetUnitParameterOverride {
+            instance: 0,
+            name: "width".to_string(),
+            expression: None,
+        });
+        assert!((height(&state.doc, 0) - 10.0).abs() < 1e-2, "back to the unit's own value");
+        assert!(state.doc.unit_instances[0].parameter_overrides.is_empty());
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it

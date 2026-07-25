@@ -270,6 +270,13 @@ pub struct ParametersPaneState {
     /// Name of the parameter whose row the pointer is over, mirrored each frame (#620):
     /// the viewport highlights everything that parameter drives in green.
     pub hovered_name: Option<String>,
+    /// Show the selected unit's secondary parameters too (#728). Ephemeral, off by
+    /// default: a unit leads with its primary knobs.
+    pub show_unit_secondary: bool,
+    /// The unit parameter (by name) whose value cell is being edited (#728).
+    pub unit_editing: Option<String>,
+    pub unit_draft: String,
+    pub unit_editing_focus: bool,
 }
 
 /// Whether the new-parameter row has enough input to attempt a commit.
@@ -1209,6 +1216,164 @@ pub fn parameter_edit_enter_pressed(
     enter_pressed && (has_focus || lost_focus)
 }
 
+/// One row of the selected unit's parameter list (#728).
+pub struct UnitParamRow {
+    pub name: String,
+    /// The value this instance evaluates with: its override when present, else the
+    /// unit's own expression.
+    pub expression: String,
+    pub overridden: bool,
+    pub primary: bool,
+}
+
+/// The selected unit instance's parameter rows (#728): the unit's primary parameters
+/// first; its secondary ones only when `show_secondary`.
+pub fn unit_parameter_rows(
+    doc: &Document,
+    instance: usize,
+    show_secondary: bool,
+) -> Vec<UnitParamRow> {
+    let Some(inst) = doc.unit_instances.get(instance).filter(|i| !i.deleted) else {
+        return Vec::new();
+    };
+    let Some(unit) = doc.units.get(inst.unit) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<UnitParamRow> = unit
+        .document
+        .parameters
+        .iter()
+        .filter(|p| !p.deleted && (p.primary || show_secondary))
+        .map(|p| {
+            let over = inst.parameter_overrides.iter().find(|(n, _)| *n == p.name);
+            UnitParamRow {
+                name: p.name.clone(),
+                expression: over
+                    .map(|(_, e)| e.clone())
+                    .unwrap_or_else(|| p.expression.clone()),
+                overridden: over.is_some(),
+                primary: p.primary,
+            }
+        })
+        .collect();
+    rows.sort_by_key(|r| !r.primary);
+    rows
+}
+
+/// The selected unit's parameters at the top of the Parameters pane (#728): edits write
+/// that one instance's overrides — never the source file, never other instances.
+fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
+    use egui::TextEdit;
+    let Some(crate::hierarchy::SceneElement::UnitInstance(instance)) =
+        app.scene_selection.single()
+    else {
+        return;
+    };
+    if app.doc.unit_instances.get(instance).is_none_or(|i| i.deleted) {
+        return;
+    }
+    let heading = crate::names::scene_element_label(
+        &app.doc,
+        &crate::hierarchy::SceneElement::UnitInstance(instance),
+    );
+    let head = ui.label(RichText::new(heading).strong());
+    crate::context::note_help_rect(ui, "Unit parameters", head.rect);
+
+    let show_secondary = app.parameters_pane.show_unit_secondary;
+    let rows = unit_parameter_rows(&app.doc, instance, show_secondary);
+    let enter = ui.input(|i| i.key_pressed(Key::Enter));
+    let mut set_override: Option<(String, Option<String>)> = None;
+    egui::Grid::new("unit_parameters_table")
+        .num_columns(3)
+        .spacing([8.0, 4.0])
+        .min_col_width(72.0)
+        .show(ui, |ui| {
+            for row in &rows {
+                let name_cell = ui.label(&row.name);
+                crate::context::note_help_rect(ui, "Unit parameter", name_cell.rect);
+                let editing =
+                    app.parameters_pane.unit_editing.as_deref() == Some(row.name.as_str());
+                if editing {
+                    let resp = ui.add(
+                        TextEdit::singleline(&mut app.parameters_pane.unit_draft)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if app.parameters_pane.unit_editing_focus {
+                        resp.request_focus();
+                        app.parameters_pane.unit_editing_focus = false;
+                    }
+                    if parameter_edit_enter_pressed(enter, resp.has_focus(), resp.lost_focus()) {
+                        let draft = app.parameters_pane.unit_draft.trim().to_string();
+                        if !draft.is_empty() {
+                            set_override = Some((row.name.clone(), Some(draft)));
+                        }
+                        app.parameters_pane.unit_editing = None;
+                    } else if resp.lost_focus() {
+                        app.parameters_pane.unit_editing = None;
+                    }
+                } else {
+                    // An overridden value reads gold — this instance's own number, not
+                    // the unit's.
+                    let text = if row.overridden {
+                        RichText::new(format_parameter_value_display(&app.doc, &row.expression))
+                            .color(egui::Color32::from_rgb(255, 210, 90))
+                    } else {
+                        RichText::new(format_parameter_value_display(&app.doc, &row.expression))
+                    };
+                    let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        app.parameters_pane.unit_editing = Some(row.name.clone());
+                        app.parameters_pane.unit_draft = row.expression.clone();
+                        app.parameters_pane.unit_editing_focus = true;
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if row.overridden {
+                        let revert = icon_button(
+                            ui,
+                            crate::icons::IconId::Close,
+                            "Back to the unit's own value",
+                        );
+                        crate::context::note_help_rect(ui, "Override", revert.rect);
+                        if revert.clicked() {
+                            set_override = Some((row.name.clone(), None));
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    let toggle = ui.horizontal(|ui| {
+        if crate::icons::icon_button_hover_gold(
+            ui,
+            crate::icons::icon_for_visibility(show_secondary),
+            if show_secondary {
+                "Hide the unit's secondary parameters"
+            } else {
+                "Show the unit's secondary parameters"
+            },
+        )
+        .clicked()
+        {
+            app.parameters_pane.show_unit_secondary = !show_secondary;
+        }
+        ui.label(RichText::new("Internals").weak().size(11.0));
+    });
+    crate::context::note_help_rect(ui, "Internals", toggle.response.rect);
+    ui.separator();
+    ui.add_space(2.0);
+
+    if let Some((name, expression)) = set_override {
+        apply_parameter_action(
+            app,
+            Action::SetUnitParameterOverride { instance, name, expression },
+        );
+    }
+}
+
 pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     use crate::expression_input::ParameterExpressionContext;
     use egui::{Grid, ScrollArea, TextEdit};
@@ -1226,6 +1391,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     let mut toggle_primary: Option<(usize, bool)> = None;
 
     ScrollArea::vertical().show(ui, |ui| {
+        // Selected unit instance (#728): its parameters lead the pane, unmistakably its
+        // own section; the document's parameters follow below.
+        show_unit_parameters_section(ui, app);
         Grid::new("parameters_table")
             .num_columns(3)
             .spacing([8.0, 4.0])

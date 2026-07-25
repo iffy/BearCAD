@@ -22,6 +22,19 @@ ones are internals. Nothing is blocked either way. A new parameter starts primar
 its value is a plain number and secondary when it's an expression; the toggle is yours
 after that.
 
+## An imported unit's parameters
+
+Select a [unit instance](/docs/files#importing-bearcad-files) and its parameters lead the
+pane under the instance's name — primary knobs first, with an **Internals** eye that
+reveals the secondary ones. Click a value to type a new one: the edit is an **override on
+that one instance** — the part's file and its other instances never change. Overridden
+values read gold; the **✕** beside one goes back to the part's own value.
+
+```lua
+bearcad.unit_override{ instance = 0, name = "width", value = "20" }
+bearcad.unit_override{ instance = 0, name = "width" }   -- back to the part's value
+```
+
 ## Expressions
 
 **Every value input accepts an expression**, not just a number:

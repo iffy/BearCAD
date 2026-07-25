@@ -572,6 +572,12 @@ pub enum Instruction {
     SetParameterExpression { index: usize, expression: String },
     /// Flip a parameter's primary flag (#727).
     SetParameterPrimary { index: usize, primary: bool },
+    /// Override (or clear) one unit instance's parameter (#728).
+    SetUnitParameterOverride {
+        instance: usize,
+        name: String,
+        expression: Option<String>,
+    },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1423,6 +1429,16 @@ impl Instruction {
             Instruction::SetParameterPrimary { index, primary } => {
                 format!("bearcad.parameter(\"primary\", {index}, {primary})")
             }
+            Instruction::SetUnitParameterOverride { instance, name, expression } => {
+                match expression {
+                    Some(expression) => format!(
+                        "bearcad.unit_override{{ instance = {instance}, name = {name:?}, value = {expression:?} }}"
+                    ),
+                    None => format!(
+                        "bearcad.unit_override{{ instance = {instance}, name = {name:?} }}"
+                    ),
+                }
+            }
             Instruction::DeleteParameter { index } => {
                 format!("bearcad.parameter(\"delete\", {index})")
             }
@@ -2048,6 +2064,13 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::SetParameterPrimary { index, primary } => {
             Some(Instruction::SetParameterPrimary { index: *index, primary: *primary })
+        }
+        Action::SetUnitParameterOverride { instance, name, expression } => {
+            Some(Instruction::SetUnitParameterOverride {
+                instance: *instance,
+                name: name.clone(),
+                expression: expression.clone(),
+            })
         }
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
@@ -4914,6 +4937,11 @@ impl ScriptRunner {
             }
             Instruction::SetParameterPrimary { index, primary } => {
                 let r = state.apply(Action::SetParameterPrimary { index, primary });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SetUnitParameterOverride { instance, name, expression } => {
+                let r = state.apply(Action::SetUnitParameterOverride { instance, name, expression });
                 self.record_action_error(r);
                 StepResult::Continue
             }

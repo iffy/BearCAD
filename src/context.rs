@@ -2348,6 +2348,22 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
+        "Unit parameters" => Some(
+            "The selected imported part's own knobs. Editing a value here changes this \
+             one instance — never the part's file, never its other instances.",
+        ),
+        "Unit parameter" => Some(
+            "One of the imported part's values. Click the number to type a new one for \
+             this instance.",
+        ),
+        "Override" => Some(
+            "This value is overridden for this instance (it reads gold). The ✕ goes back \
+             to the part's own value.",
+        ),
+        "Internals" => Some(
+            "The part's secondary parameters — internals its author didn't put at the \
+             front door. The eye shows or hides them.",
+        ),
         "Primary" => Some(
             "Whether this parameter is a knob for whoever imports this file: eye open — \
              offered first; eye closed — an internal value. Nothing is blocked either way.",

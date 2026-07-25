@@ -171,6 +171,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
             Some(SceneElement::SketchVertexTreatmentOp(index))
         }
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
+        "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
         _ => None,
     }
 }
@@ -1215,6 +1216,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::ImportUnit { path, link, name }) }
+        })?,
+    )?;
+
+    // #728: override one unit instance's parameter (omit `value` to clear back to the
+    // unit's own). `bearcad.unit_override{ instance = 0, name = "width", value = "20" }`.
+    api.set(
+        "unit_override",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "unit_override", &["instance", "name", "value"])?;
+            let instance: usize = opts.get("instance")?;
+            let name: String = opts.get("name")?;
+            let expression: Option<String> = opts.get("value")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetUnitParameterOverride { instance, name, expression }) }
         })?,
     )?;
 

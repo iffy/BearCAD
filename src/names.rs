@@ -103,6 +103,15 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Extrusion(index));
         }
     }
+    // Imported unit instances (#728): findable/selectable by their instance name.
+    for (index, instance) in doc.unit_instances.iter().enumerate() {
+        if instance.deleted {
+            continue;
+        }
+        if name_matches(instance.name.as_deref(), query) {
+            return Some(SceneElement::UnitInstance(index));
+        }
+    }
     None
 }
 

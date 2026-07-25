@@ -1,0 +1,1 @@
+Selecting an imported unit puts its parameters at the top of the Parameters pane: primary knobs first, internals behind an eye toggle, edits override that one instance with a gold marker and one-click revert

@@ -2346,6 +2346,16 @@ unit body upgrades to `ParameterSource::UnitEdgeLength { instance, face, edge }`
 follows override changes; unit geometry without an analytic face keeps the quantized key
 (STL parity).
 
+**Instance parameters in the pane (#728):** selecting a unit instance puts **its**
+parameters at the top of the Parameters pane, headed by the instance name: the unit's
+primary parameters first, secondary ones behind an "Internals" eye toggle (off by
+default, ephemeral), the document's own parameters unmistakably below a separator. An
+edit writes that instance's `parameter_overrides` (`Action::SetUnitParameterOverride`,
+`bearcad.unit_override{ instance =, name =, value = }`; omitting `value` clears) — never
+the source file, never other instances. Overridden values render gold with a ✕ back to
+the unit's own value; help-mode text is keyed on "Unit parameters"/"Unit parameter"/
+"Override"/"Internals". Instances are also findable/selectable by name.
+
 **Cut and combine (#726):** a unit builds a real kernel solid
 (`occt_unit_instance_shape`: the inner rebuilt document's bodies' shapes fused and
 placed), so it participates in body operations. A cutting extrude on a unit face lands on
