@@ -2400,6 +2400,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Sketch), "Selection") => Some(
+            "The face the new sketch opens on — a construction plane, a flat body face, \
+             or a unit's face. Click it in the viewport.",
+        ),
         (Some(Tool::Offset), "Entities") => Some(
             "The lines and circles to copy at a distance. Click one to add it, click it \
              again to drop it.",
