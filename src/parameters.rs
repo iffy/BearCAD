@@ -601,6 +601,7 @@ pub fn add_computed_parameter_from_line_length(
         name,
         expression: format_length_display_in(length, unit),
         deleted: false,
+            primary: false,
         source: Some(ParameterSource::LineLength(line_index)),
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -715,6 +716,7 @@ pub fn add_derived_parameter(
         name,
         expression,
         deleted: false,
+            primary: false,
         source: Some(source),
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -1114,6 +1116,16 @@ pub fn try_commit_inline_parameter_definition(
     Ok(Some(InlineParameterCommit::Created(name)))
 }
 
+/// The `primary` flag a **newly created** parameter starts with (#727): primary when the
+/// expression is a plain self-contained value (a bare number, with or without a unit — a
+/// knob someone is meant to turn), secondary when it references anything else (derived,
+/// usually internal). Computed once at creation; re-computing on later edits would fight
+/// the user's own toggle.
+pub fn new_parameter_primary_default(expression: &str) -> bool {
+    crate::value::eval_length_mm(expression).is_some()
+        || crate::value::eval_angle_rad(expression).is_some()
+}
+
 pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Result<usize, String> {
     let name = name.trim().to_string();
     let expression = expression.trim().to_string();
@@ -1122,6 +1134,7 @@ pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Re
     let index = doc.parameters.len();
     doc.parameters.push(Parameter {
         name,
+        primary: new_parameter_primary_default(&expression),
         expression,
         deleted: false,
         source: None,
@@ -1209,6 +1222,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     // Row-hover tracking (#620): re-derived every frame; queued here (like `delete_index`)
     // so the row loop keeps its borrow of `app`.
     let mut hovered_name: Option<String> = None;
+    // The eyeball toggle's flip (#727), applied after the grid like the delete.
+    let mut toggle_primary: Option<(usize, bool)> = None;
 
     ScrollArea::vertical().show(ui, |ui| {
         Grid::new("parameters_table")
@@ -1383,6 +1398,24 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                     });
                     let extras_cell = ui.horizontal(|ui| {
+                        // Primary/secondary eyeball (#727): eye open = primary (a knob an
+                        // importing file is offered first), eye closed = secondary
+                        // (internal). Advisory only. Queued like the delete below so the
+                        // loop keeps its borrow of `app`.
+                        let primary = app.doc.parameters[index].primary;
+                        let eye = crate::icons::icon_button_hover_gold(
+                            ui,
+                            crate::icons::icon_for_visibility(primary),
+                            if primary {
+                                "Primary — offered first when this file is imported"
+                            } else {
+                                "Secondary — an internal value"
+                            },
+                        );
+                        crate::context::note_help_rect(ui, "Primary", eye.rect);
+                        if eye.clicked() {
+                            toggle_primary = Some((index, !primary));
+                        }
                         // Delete button (#270): a muted-red ✕ that removes the parameter.
                         let remove = ui.add(
                             egui::ImageButton::new(crate::icons::sized_texture(
@@ -1526,6 +1559,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     if let Some(index) = delete_index {
         apply_parameter_action(app, Action::DeleteParameter { index });
     }
+    if let Some((index, primary)) = toggle_primary {
+        apply_parameter_action(app, Action::SetParameterPrimary { index, primary });
+    }
     app.parameters_pane.hovered_name = hovered_name;
 
     // Deriving a parameter from the selection lives in the Dimension tool's context-pane
@@ -1554,6 +1590,63 @@ mod tests {
         let mut doc = Document::default();
         add_parameter(&mut doc, "A".to_string(), "5mm".to_string()).unwrap();
         doc
+    }
+
+    /// #727: a new parameter is primary when its expression is a plain self-contained
+    /// value, secondary when it references anything; derived parameters are secondary.
+    #[test]
+    fn new_parameters_default_primary_from_their_expression() {
+        let mut doc = Document::default();
+        let plain = add_parameter(&mut doc, "width".to_string(), "10".to_string()).unwrap();
+        let with_unit = add_parameter(&mut doc, "gap".to_string(), "2.5mm".to_string()).unwrap();
+        let angle = add_parameter(&mut doc, "tilt".to_string(), "45deg".to_string()).unwrap();
+        let derived = add_parameter(&mut doc, "half".to_string(), "width / 2".to_string()).unwrap();
+        assert!(doc.parameters[plain].primary, "a bare number is a knob");
+        assert!(doc.parameters[with_unit].primary, "a number with a unit is a knob");
+        assert!(doc.parameters[angle].primary, "an angle literal is a knob");
+        assert!(
+            !doc.parameters[derived].primary,
+            "an expression referencing another parameter is internal"
+        );
+    }
+
+    /// #727: the flag round-trips through save/load; a document saved without the field
+    /// (an existing file) loads secondary; the toggle action flips it.
+    #[test]
+    fn primary_flag_round_trips_and_defaults_secondary() {
+        let mut state = AppState::default();
+        state.apply(crate::actions::Action::AddParameter {
+            name: "width".to_string(),
+            expression: "10".to_string(),
+        });
+        assert!(state.doc.parameters[0].primary);
+        let r = state.apply(crate::actions::Action::SetParameterPrimary {
+            index: 0,
+            primary: false,
+        });
+        assert_eq!(r, crate::actions::ActionResult::Ok);
+        assert!(!state.doc.parameters[0].primary, "the toggle flips it");
+        state.apply(crate::actions::Action::SetParameterPrimary { index: 0, primary: true });
+
+        let path = std::env::temp_dir().join("bearcad_primary_roundtrip.bearcad");
+        let _ = std::fs::remove_file(&path);
+        crate::storage::save(&path.to_string_lossy(), &state.doc).unwrap();
+        let loaded = crate::storage::open(&path.to_string_lossy()).unwrap();
+        assert!(loaded.parameters[0].primary, "the flag round-trips");
+        let _ = std::fs::remove_file(&path);
+
+        // An existing document whose JSON has no `primary` field loads secondary.
+        let mut value = serde_json::to_value(&state.doc).unwrap();
+        value["parameters"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("primary");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let legacy = crate::storage::from_json_bytes(&bytes).unwrap();
+        assert!(
+            !legacy.parameters[0].primary,
+            "existing parameters load secondary — the front door is chosen deliberately"
+        );
     }
 
     /// #647: a body's feature edge measures its length and two mesh corners measure the

@@ -341,6 +341,7 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
@@ -410,6 +411,7 @@ mod tests {
             name: "own".to_string(),
             expression: "1".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         let _ = evaluate_instance(&doc, 0).unwrap();
@@ -491,6 +493,7 @@ mod tests {
             name: "gap".to_string(),
             expression: "7".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         doc.unit_instances[0].placement = crate::model::UnitPlacement {

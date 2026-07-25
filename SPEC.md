@@ -1792,6 +1792,13 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - A parameter has: name, expression (text), evaluated value, unit, and optional
   description.
 - Parameter changes are DAG nodes (§4.1).
+- **Primary/secondary (#727):** `Parameter.primary` marks a file's front-door knobs — what
+  someone importing the file is expected to change (secondary = internals; advisory only,
+  nothing blocked). Toggled by the pane's per-row eyeball (open = primary; hover-gold icon
+  button, help-mode text keyed on "Primary"), scripted as `bearcad.parameter("primary", i,
+  bool)`. Defaults: existing documents load **secondary** (`serde(default)`); a **new**
+  parameter is primary iff its expression is a plain self-contained value
+  (`new_parameter_primary_default`), computed once at creation and never on later edits.
 - When a parameter's name or value field is focused in the Parameters pane, the Elements
   pane highlights every element that uses that parameter (the dimensions referencing it and
   the geometry they drive), dimming the rest.

@@ -15,6 +15,13 @@ Elements pane highlights everything that uses that parameter — and hovering a 
 focusing its fields) also **glows those users green in the 3D view**: the dimensions
 referencing it, the geometry they drive, and any body whose extrude distance uses it.
 
+Each row's **eyeball** marks the parameter **primary** (eye open) or **secondary**
+(closed). Primary parameters are the knobs someone
+[importing this file](/docs/files#importing-bearcad-files) is meant to change; secondary
+ones are internals. Nothing is blocked either way. A new parameter starts primary when
+its value is a plain number and secondary when it's an expression; the toggle is yours
+after that.
+
 ## Expressions
 
 **Every value input accepts an expression**, not just a number:
@@ -85,6 +92,7 @@ exactly one **sketch** selected it becomes **Sketch units** — a per-sketch ove
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")     -- edit parameter 0's expression
 bearcad.parameter("name", 0, "Len")
+bearcad.parameter("primary", 0, true)        -- eye open / closed
 bearcad.parameter("delete", 0)
 assert(bearcad.parameter("get", "A") == 5)   -- evaluated (mm / radians)
 bearcad.parameter("get_expression", "A")     -- "5mm", as typed

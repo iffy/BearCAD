@@ -5647,6 +5647,7 @@ mod tests {
             name: "gap".to_string(),
             expression: "10".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         doc.move_ops.push(MoveOperation {

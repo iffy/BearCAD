@@ -2238,6 +2238,7 @@ label_hidden: false,
             name: "w".to_string(),
             expression: "40mm".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         doc.drawings[0].views[0].label_text = Some("Width {w}".to_string());

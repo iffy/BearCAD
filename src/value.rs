@@ -1407,6 +1407,7 @@ mod tests {
             name: "A".to_string(),
             expression: "10mm".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         assert!(shows_computed_length_in_doc("A", &doc));
@@ -1472,12 +1473,14 @@ mod tests {
             name: "width".to_string(),
             expression: "10mm".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         doc.parameters.push(crate::model::Parameter {
             name: "corner".to_string(),
             expression: "45deg".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         assert_eq!(
@@ -1503,6 +1506,7 @@ mod tests {
             name: "foo".to_string(),
             expression: "20mm".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         assert_eq!(interpolate_text("Dim: {foo}", &doc), "Dim: 20.0 mm");
@@ -1528,6 +1532,7 @@ mod tests {
             name: "foo".to_string(),
             expression: "3in".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         doc.default_length_unit = LengthUnit::In;

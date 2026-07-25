@@ -1437,6 +1437,9 @@ pub enum Action {
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
     AddParameter { name: String, expression: String },
+    /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
+    /// knobs an importing file is offered first; advisory only.
+    SetParameterPrimary { index: usize, primary: bool },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -7290,6 +7293,24 @@ impl AppState {
             Action::SetElementsViewMode { mode } => {
                 self.hierarchy_view_mode = mode;
                 self.status = format!("Elements view: {}", mode.script_name());
+                ActionResult::Ok
+            }
+            Action::SetParameterPrimary { index, primary } => {
+                let Some(param) = self
+                    .doc
+                    .parameters
+                    .get_mut(index)
+                    .filter(|p| !p.deleted)
+                else {
+                    self.status = format!("Parameter {index} not found");
+                    return ActionResult::Err(self.status.clone());
+                };
+                param.primary = primary;
+                self.status = format!(
+                    "{} is now {}",
+                    param.name,
+                    if primary { "primary" } else { "secondary" }
+                );
                 ActionResult::Ok
             }
             Action::AddParameter { name, expression } => {
@@ -15004,6 +15025,7 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         let path = std::env::temp_dir().join(name);
@@ -15178,6 +15200,7 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
@@ -21432,6 +21455,7 @@ mod tests {
             name: "bad".to_string(),
             expression: "1mm / 0".to_string(),
             deleted: false,
+            primary: false,
             source: None,
         });
         state.doc.shape_order.push(ShapeKind::Parameter);

@@ -570,6 +570,8 @@ pub enum Instruction {
     },
     SetParameterName { index: usize, name: String },
     SetParameterExpression { index: usize, expression: String },
+    /// Flip a parameter's primary flag (#727).
+    SetParameterPrimary { index: usize, primary: bool },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1418,6 +1420,9 @@ impl Instruction {
             Instruction::SetParameterExpression { index, expression } => {
                 format!("bearcad.parameter(\"value\", {index}, {expression:?})")
             }
+            Instruction::SetParameterPrimary { index, primary } => {
+                format!("bearcad.parameter(\"primary\", {index}, {primary})")
+            }
             Instruction::DeleteParameter { index } => {
                 format!("bearcad.parameter(\"delete\", {index})")
             }
@@ -2040,6 +2045,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 line_index: *line_index,
                 name: name.clone(),
             })
+        }
+        Action::SetParameterPrimary { index, primary } => {
+            Some(Instruction::SetParameterPrimary { index: *index, primary: *primary })
         }
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
@@ -4902,6 +4910,11 @@ impl ScriptRunner {
             }
             Instruction::SetParameterExpression { index, expression } => {
                 state.apply(Action::CommitParameterExpression { index, expression });
+                StepResult::Continue
+            }
+            Instruction::SetParameterPrimary { index, primary } => {
+                let r = state.apply(Action::SetParameterPrimary { index, primary });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::DeleteParameter { index } => {

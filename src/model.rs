@@ -155,6 +155,14 @@ pub struct Parameter {
     pub expression: String,
     #[serde(default)]
     pub deleted: bool,
+    /// Primary parameters (#727) are a file's front door: the knobs someone importing
+    /// this document is expected to change; secondary ones are internals. Advisory only —
+    /// nothing is blocked either way. Existing documents load secondary (`default`); a
+    /// newly created parameter is primary when its expression is a plain self-contained
+    /// value and secondary when it references anything — computed once at creation
+    /// (see `new_parameter_primary_default`), never recomputed on edit.
+    #[serde(default)]
+    pub primary: bool,
     /// When set, [`expression`] is synced from geometry and the value is read-only.
     #[serde(default)]
     pub source: Option<ParameterSource>,

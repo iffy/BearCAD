@@ -8823,6 +8823,12 @@ impl eframe::App for App {
         // Drawings (#378), where editing a parameter rebuilds the model and the open drawing's
         // views update live.
         if self.state.panes.is_visible(Pane::Parameters) {
+            // Help mode (#672/#727): the Parameters pane's own collect-and-draw cycle;
+            // it finishes (drawn inside the shell via `with_help_notes`) before the
+            // Context pane starts its own for the frame.
+            if self.state.help_mode {
+                context::begin_help_notes(ctx, None);
+            }
             if !show_pane_shell(ctx, "parameters", "Parameters", true, 240.0, None, |ui| {
                 parameters::show_pane(ui, &mut self.state);
             }) {
@@ -11106,7 +11112,9 @@ fn show_pane_shell(
 /// The rect a captured pane shot should cover: the pane, plus its help-mode notes where it
 /// has any. Only the Context pane carries notes (#672); every other pane returns its own rect.
 fn with_help_notes(ctx: &egui::Context, id: &'static str, rect: egui::Rect) -> egui::Rect {
-    if id != "context" {
+    // The Context pane (#672) and the Parameters pane (#727) carry help notes; every
+    // other pane returns its own rect.
+    if id != "context" && id != "parameters" {
         return rect;
     }
     match context::draw_help_notes(ctx, rect) {

@@ -2571,6 +2571,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     Ok(Value::Nil)
                 }
+                "primary" => {
+                    let index = match args.get(1) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        Some(Value::Number(n)) => n.round() as usize,
+                        _ => return Err(mlua::Error::external("parameter primary requires index")),
+                    };
+                    let primary = match args.get(2) {
+                        Some(Value::Boolean(b)) => *b,
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter primary requires true/false",
+                            ))
+                        }
+                    };
+                    unsafe {
+                        tick.exec(Instruction::SetParameterPrimary { index, primary })?;
+                    }
+                    Ok(Value::Nil)
+                }
                 other => Err(mlua::Error::external(format!(
                     "unknown parameter action '{other}'"
                 ))),

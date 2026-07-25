@@ -2116,6 +2116,12 @@ pub fn end_help_notes(ctx: &egui::Context) {
     ctx.data_mut(|d| d.remove::<HelpNotes>(help_notes_id()));
 }
 
+/// [`note_help`] for rows outside this module (#727): the Parameters pane's controls
+/// participate in help mode with an explicit label + rect.
+pub(crate) fn note_help_rect(ui: &egui::Ui, label: &str, rect: egui::Rect) {
+    note_help(ui, label, rect);
+}
+
 /// Record a row's rect against its help text, if help mode is on and this row has any.
 fn note_help(ui: &egui::Ui, label: &str, rect: egui::Rect) {
     let ctx = ui.ctx();
@@ -2342,6 +2348,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
+        "Primary" => Some(
+            "Whether this parameter is a knob for whoever imports this file: eye open — \
+             offered first; eye closed — an internal value. Nothing is blocked either way.",
+        ),
         "Library directory" => Some(
             "Where your reusable parts live. A document can import a file under this folder \
              by name, so the import is found again on any machine whose library holds the \
