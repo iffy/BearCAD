@@ -2400,6 +2400,17 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Dimension), "Selection") => Some(
+            "What to measure: one edge for its length, two for the distance or angle \
+             between them, two corners for their distance.",
+        ),
+        (Some(Tool::Dimension), "Parameter name") => Some(
+            "The name the measurement is saved under — a read-only parameter that \
+             follows the geometry.",
+        ),
+        (Some(Tool::Dimension), "Value") => Some(
+            "What the current selection measures, live.",
+        ),
         (Some(Tool::Line), "Curve") => Some(
             "Draws a curved (bezier) line instead of a straight one — Cmd/Ctrl+B \
              switches mid-draw too.",

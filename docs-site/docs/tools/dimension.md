@@ -39,3 +39,10 @@ with a **Parameter name** box prefilled with a sensible name, ready to edit. Pre
 blue **Derive parameter** button (or **Enter**): the measurement is recorded as a
 [derived parameter](/docs/parameters#derived-parameters). It lands in the Parameters pane,
 re-measures as the geometry changes, and works in any expression.
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Dimension tool's Context pane, each field explained](/img/screenshots/pane-dimension.png)
