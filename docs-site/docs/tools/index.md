@@ -23,6 +23,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/chamfer.svg")} width="22" /> | [Chamfer](/docs/tools/chamfer) | `K` | Cut a corner or edge flat. |
 | <img src={useBaseUrl("/img/icons/offset.svg")} width="22" /> | [Offset](/docs/tools/offset) | — | Parallel copies of sketch edges a constant distance away. |
 | <img src={useBaseUrl("/img/icons/text.svg")} width="22" /> | [Text](/docs/tools/text) | `T` | Place editable lettering in a sketch. |
+| <img src={useBaseUrl("/img/icons/project.svg")} width="22" /> | [Project](/docs/tools/project) | — | In a sketch: pull outside edges in as references (or select and press `Y`). |
 | <img src={useBaseUrl("/img/icons/plane.svg")} width="22" /> | [Construction Plane](/docs/tools/construction-plane) | — | Add a flat reference plane to sketch on. |
 | <img src={useBaseUrl("/img/icons/extrude.svg")} width="22" /> | [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |
 | <img src={useBaseUrl("/img/icons/loft.svg")} width="22" /> | [Loft](/docs/tools/loft) | — | Blend a solid through two or more cross-section profiles. |

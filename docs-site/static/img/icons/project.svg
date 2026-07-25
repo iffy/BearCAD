@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Old-school film projector: a reel on top, a body, a lens, and a light beam (#593). -->
+  <!-- Film reel with a hub. -->
+  <circle cx="12" cy="8" r="4.5" />
+  <circle cx="12" cy="8" r="1" />
+  <!-- Projector body. -->
+  <rect x="4" y="15" width="16" height="10" rx="1.5" />
+  <!-- Lens barrel. -->
+  <rect x="20" y="18" width="3" height="4" />
+  <!-- Light beam. -->
+  <line x1="23" y1="17.5" x2="29" y2="14" />
+  <line x1="23" y1="22.5" x2="29" y2="26" />
+</svg>
