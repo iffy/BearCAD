@@ -72,6 +72,8 @@ pub enum PaletteCommandId {
     ZoomToFit,
     ProjectSelection,
     ShowShortcuts,
+    ShowHelpMode,
+    HideHelpMode,
 }
 
 /// What happens when a palette entry is chosen.
@@ -205,6 +207,12 @@ impl PaletteCommand {
                 pane: Pane::Context,
                 visible: false,
             }),
+            PaletteCommandId::ShowHelpMode => {
+                PaletteOutcome::Action(Action::SetHelpMode(Some(true)))
+            }
+            PaletteCommandId::HideHelpMode => {
+                PaletteOutcome::Action(Action::SetHelpMode(Some(false)))
+            }
             PaletteCommandId::ShowPaneViewCube => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::ViewCube,
                 visible: true,
@@ -324,6 +332,24 @@ pub fn commands_for_state(state: &AppState) -> Vec<PaletteCommand> {
             ),
         );
     }
+
+    // Help mode (#672): whichever way it isn't, so the palette offers the change.
+    push(
+        &mut out,
+        if state.help_mode {
+            PaletteCommand::new(
+                PaletteCommandId::HideHelpMode,
+                "Turn Off Help Mode",
+                "help mode off hide explain notes tooltips context pane",
+            )
+        } else {
+            PaletteCommand::new(
+                PaletteCommandId::ShowHelpMode,
+                "Turn On Help Mode",
+                "help mode on show explain notes tooltips context pane what is this",
+            )
+        },
+    );
 
     for &(pane, show, hide) in PANE_COMMANDS {
         if state.panes.is_visible(pane) {

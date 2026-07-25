@@ -2085,6 +2085,244 @@ fn section_label(ui: &mut egui::Ui, text: impl Into<String>) {
 /// right column — so inputs line up down the whole pane.
 const FIELD_LABEL_W: f32 = 78.0;
 
+// --- Help mode (#672) --------------------------------------------------------------------
+//
+// With help mode on, every row of the pane grows a floating note beside it saying what that
+// control wants. The notes are collected as the pane lays itself out — each row helper
+// records its own rect — and drawn in one pass afterwards, so they can be spaced apart
+// without overlapping each other.
+//
+// The collector rides in egui's per-frame data rather than being threaded through
+// `show_pane`'s (already enormous) parameter list and every row call site.
+
+#[derive(Clone, Default)]
+struct HelpNotes {
+    tool: Option<Tool>,
+    entries: Vec<(egui::Rect, &'static str)>,
+}
+
+fn help_notes_id() -> egui::Id {
+    egui::Id::new("context_help_notes")
+}
+
+/// Start collecting help notes for this frame's pane. Call before laying the pane out; a
+/// missing collector is what tells the row helpers help mode is off.
+pub fn begin_help_notes(ctx: &egui::Context, tool: Option<Tool>) {
+    ctx.data_mut(|d| d.insert_temp(help_notes_id(), HelpNotes { tool, entries: Vec::new() }));
+}
+
+/// Stop collecting (help mode off, or the pane is done).
+pub fn end_help_notes(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<HelpNotes>(help_notes_id()));
+}
+
+/// Record a row's rect against its help text, if help mode is on and this row has any.
+fn note_help(ui: &egui::Ui, label: &str, rect: egui::Rect) {
+    let ctx = ui.ctx();
+    let Some(mut notes) = ctx.data(|d| d.get_temp::<HelpNotes>(help_notes_id())) else {
+        return;
+    };
+    let Some(text) = row_help(notes.tool, label) else {
+        return;
+    };
+    notes.entries.push((rect, text));
+    ctx.data_mut(|d| d.insert_temp(help_notes_id(), notes));
+}
+
+/// Draw the notes collected this frame beside `pane_rect`, returning the rectangle they
+/// cover (so a scripted pane capture can widen to include them).
+///
+/// Notes sit to the pane's left — the pane lives against the window's right edge — each
+/// aimed at its own row by a leader line. Where two would overlap, the lower one slides
+/// down, so a dense pane fans its notes out rather than stacking them on top of each other.
+pub fn draw_help_notes(ctx: &egui::Context, pane_rect: egui::Rect) -> Option<egui::Rect> {
+    let notes = ctx.data(|d| d.get_temp::<HelpNotes>(help_notes_id()))?;
+    if notes.entries.is_empty() {
+        return None;
+    }
+
+    const WIDTH: f32 = 230.0;
+    const GAP: f32 = 14.0; // between a note and the pane
+    const SPACING: f32 = 6.0; // between stacked notes
+    let right = pane_rect.left() - GAP;
+    let left = right - WIDTH;
+
+    // Lay every note's text out first: the placement pass needs all the heights.
+    let galleys: Vec<_> = notes
+        .entries
+        .iter()
+        .map(|(_, text)| {
+            ctx.fonts(|fonts| {
+                fonts.layout(
+                    text.to_string(),
+                    egui::FontId::proportional(11.5),
+                    egui::Color32::from_gray(225),
+                    WIDTH - 16.0,
+                )
+            })
+        })
+        .collect();
+
+    // Each note wants to sit level with its row; where that would overlap the one above, it
+    // slides down. That alone walks the whole column downwards, so the finished stack is then
+    // lifted back to sit within the window — and centred on its rows if it is taller than they
+    // are.
+    let mut tops = Vec::with_capacity(galleys.len());
+    let mut lowest = f32::NEG_INFINITY;
+    for ((row, _), galley) in notes.entries.iter().zip(&galleys) {
+        let height = galley.size().y + 12.0;
+        let top = (row.center().y - height / 2.0).max(lowest + SPACING);
+        lowest = top + height;
+        tops.push(top);
+    }
+    let screen = ctx.screen_rect();
+    let overflow = lowest - (screen.bottom() - 8.0);
+    if overflow > 0.0 {
+        let headroom = tops[0] - (screen.top() + 8.0);
+        let lift = overflow.min(headroom.max(0.0));
+        for top in &mut tops {
+            *top -= lift;
+        }
+    }
+
+    let mut bounds: Option<egui::Rect> = None;
+    for (i, ((row, _), galley)) in notes.entries.iter().zip(galleys).enumerate() {
+        let height = galley.size().y + 12.0;
+        let note =
+            egui::Rect::from_min_size(egui::pos2(left, tops[i]), egui::vec2(WIDTH, height));
+
+        egui::Area::new(egui::Id::new(("context_help_note", i)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(note.min)
+            .interactable(false)
+            .show(ctx, |ui| {
+                let painter = ui.painter();
+                painter.rect_filled(note, 4.0, egui::Color32::from_black_alpha(230));
+                painter.rect_stroke(
+                    note,
+                    4.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(90)),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(note.min + egui::vec2(8.0, 6.0), galley, egui::Color32::WHITE);
+                // A leader from the note to the row it explains.
+                painter.line_segment(
+                    [
+                        egui::pos2(note.right(), note.center().y),
+                        egui::pos2(row.left(), row.center().y),
+                    ],
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(110)),
+                );
+                ui.allocate_space(note.size());
+            });
+
+        bounds = Some(bounds.map_or(note, |b: egui::Rect| b.union(note)));
+    }
+    bounds
+}
+
+/// What a pane row means, keyed by the tool it belongs to and the row's label.
+///
+/// Rows that mean the same thing under every tool (the document's default units, an
+/// element's name) are matched on the label alone, after the per-tool lookup misses.
+fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
+    let per_tool = match (tool, label) {
+        (Some(Tool::Move), "Bodies") => {
+            Some("The bodies that will move. Click one to add it, click it again to drop it.")
+        }
+        (Some(Tool::Move), "Translate") => Some(
+            "How you say where the bodies go: Snap lands a point on a point, Free takes X/Y/Z \
+             amounts. M switches between them.",
+        ),
+        (Some(Tool::Move), "Start point A") => Some(
+            "The corner or edge midpoint on a moving body that you are aiming with. In Free \
+             mode it is where the drag arrows sit.",
+        ),
+        (Some(Tool::Move), "End point A") => Some(
+            "Where start point A lands — a corner or edge midpoint on something that isn't \
+             moving.",
+        ),
+        (Some(Tool::Move), "Start point B") => Some(
+            "Optional. A second point on a moving body, to turn the bodies as well as slide \
+             them.",
+        ),
+        (Some(Tool::Move), "End point B") => Some(
+            "Optional. Where start point B swings to, about end point A. Only the spots it can \
+             actually reach are offered.",
+        ),
+        (Some(Tool::Move), "X") => Some(
+            "How far along X, as an expression — 25, gap * 2, 10mm — so the move stays \
+             parametric.",
+        ),
+        (Some(Tool::Move), "Y") => Some("How far along Y."),
+        (Some(Tool::Move), "Z") => Some("How far along Z."),
+
+        (Some(Tool::Extrude), "Faces") => Some(
+            "The sketch or solid faces being pulled. Click a face to add it, click it again to \
+             drop it.",
+        ),
+        (Some(Tool::Extrude), "Distance") => Some(
+            "How deep, as an expression. Mirrors the drag handle in the 3D view — moving \
+             either updates the other.",
+        ),
+        (Some(Tool::Extrude), "Up to") => Some(
+            "A plane, face, or vertex to stop at instead of a fixed depth; the extrusion then \
+             follows it if it moves. Setting one clears Distance.",
+        ),
+        (Some(Tool::Extrude), "Output") => Some(
+            "Whether this becomes a new body, fuses into the body it grows from, or cuts into \
+             it.",
+        ),
+        (Some(Tool::Extrude), "Symmetric") => {
+            Some("Grows the same depth either side of the sketch plane instead of one way.")
+        }
+
+        (Some(Tool::Chamfer), "Selection") => Some(
+            "The sketch corners to cut flat. Click a corner where two lines meet; the cut \
+             distance is typed in the 3D view.",
+        ),
+        (Some(Tool::Chamfer), "Edges") => Some(
+            "The body edges to cut flat, one row each. Shift+click for several; the cut \
+             distance is typed in the 3D view.",
+        ),
+        (Some(Tool::Fillet), "Selection") => Some(
+            "The sketch corners to round. Click a corner where two lines meet; the radius is \
+             typed in the 3D view.",
+        ),
+        (Some(Tool::Fillet), "Edges") => Some(
+            "The body edges to round, one row each. Shift+click for several; the radius is \
+             typed in the 3D view.",
+        ),
+
+        (Some(Tool::Combine), "Bodies") => {
+            Some("The bodies to fuse into one. Click a body to add it, click it again to drop it.")
+        }
+        (Some(Tool::Combine), "Mode") => Some(
+            "Which boolean to perform: combine, cut, intersect, or difference. The pickers \
+             below follow — a two-sided operation asks for side A and side B.",
+        ),
+        (Some(Tool::Combine), "Side A") => {
+            Some("The bodies kept. For a cut, the one being carved into.")
+        }
+        (Some(Tool::Combine), "Side B") => {
+            Some("The bodies applied to side A. For a cut, the ones carved away.")
+        }
+        (Some(Tool::Combine), "Keep B") => Some(
+            "Leaves the side B bodies as real bodies afterwards; by default every input \
+             becomes a shadow body.",
+        ),
+        _ => None,
+    };
+    per_tool.or_else(|| match label {
+        "Length" => Some("The length unit a value you type is read in when you don't write one."),
+        "Angle" => Some("The angle unit a value you type is read in when you don't write one."),
+        "Snapping" => {
+            Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
+        }
+        _ => None,
+    })
+}
+
 /// A two-column field row (#371): `label` in the fixed-width left column (vertically centred
 /// against the input), the input(s) from `add_input` in the aligned right column.
 fn labeled_row<R>(
@@ -2093,7 +2331,8 @@ fn labeled_row<R>(
     add_input: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let label = label.into();
-    ui.horizontal(|ui| {
+    let help_key = label.text().to_string();
+    let out = ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(FIELD_LABEL_W, 18.0),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -2107,8 +2346,9 @@ fn labeled_row<R>(
             },
         );
         add_input(ui)
-    })
-    .inner
+    });
+    note_help(ui, &help_key, out.response.rect);
+    out.inner
 }
 
 /// A two-column **checkbox row** (#588): `label` (with an optional keyboard-shortcut hint) in the
@@ -2121,7 +2361,7 @@ fn checkbox_row(
     shortcut: Option<crate::shortcuts::ShortcutHint>,
 ) -> bool {
     let mut changed = false;
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         // Left column: the clickable label.
         let resp = ui
             .allocate_ui_with_layout(
@@ -2150,6 +2390,7 @@ fn checkbox_row(
             ));
         }
     });
+    note_help(ui, label, row.response.rect);
     changed
 }
 
@@ -2189,7 +2430,8 @@ fn labeled_row_top<R>(
     add_input: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let label = label.into();
-    ui.horizontal_top(|ui| {
+    let help_key = label.text().to_string();
+    let out = ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(FIELD_LABEL_W, 26.0),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -2202,9 +2444,9 @@ fn labeled_row_top<R>(
             },
         );
         ui.vertical(add_input)
-    })
-    .inner
-    .inner
+    });
+    note_help(ui, &help_key, out.response.rect);
+    out.inner.inner
 }
 
 /// One row of the extrude "into" picker (#32/#35): the mode's icon followed by a radio button.
@@ -5508,6 +5750,31 @@ mod tests {
             cut[1].picker.selected_color(crate::theme::FOCUS_ACCENT),
             crate::theme::CUT_ACCENT
         );
+    }
+
+    #[test]
+    fn help_text_is_keyed_by_tool_so_a_shared_label_reads_correctly() {
+        // "Bodies" means different things to Move and to Combine.
+        let move_bodies = row_help(Some(Tool::Move), "Bodies").unwrap();
+        let combine_bodies = row_help(Some(Tool::Combine), "Bodies").unwrap();
+        assert_ne!(move_bodies, combine_bodies);
+        assert!(move_bodies.contains("move"), "{move_bodies}");
+        assert!(combine_bodies.contains("fuse"), "{combine_bodies}");
+    }
+
+    #[test]
+    fn help_text_falls_back_to_rows_that_mean_the_same_everywhere() {
+        // The default-units rows belong to no tool in particular.
+        for tool in [None, Some(Tool::Chamfer), Some(Tool::Move)] {
+            assert!(row_help(tool, "Length").is_some());
+            assert!(row_help(tool, "Angle").is_some());
+        }
+    }
+
+    #[test]
+    fn rows_without_help_text_get_no_note() {
+        assert_eq!(row_help(Some(Tool::Move), "Nonexistent row"), None);
+        assert_eq!(row_help(None, "Bodies"), None);
     }
 
     #[test]

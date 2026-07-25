@@ -2521,13 +2521,11 @@ missing. The Website CI job (`.github/workflows/docs.yml`) regenerates them on L
 the deployed site. This reuses §9.3's determinism guarantees (fixed view, no animation waits).
 
 **Annotated pane pictures (#672).** Every tool's documentation page shows its Context pane —
-one shot per mode where the tool has modes — with a numbered marker on each control and a
-matching numbered description beside it. The shots come from `docs-site/screenshots/pane-*.lua`
-capturing `bearcad.ui.screenshot(path, "context")`; a scene that yields several shots writes
-them as `<script-name>-<variant>.png`. The markers are placed by the `PaneCallouts` component
-(`docs-site/src/components/`) as percentages of the image, so the descriptions stay real text
-rather than pixels; `scripts/pane-callout-rows.py` reads the row positions off a captured PNG
-(and can draw a preview to check them).
+one shot per mode where the tool has modes — captured with **help mode** on, so each control
+is explained beside it. The shots come from `docs-site/screenshots/pane-*.lua`, which turn help
+mode on with `bearcad.ui.help(true)` and capture `bearcad.ui.screenshot(path, "context")`; a
+scene that yields several shots writes them as `<script-name>-<variant>.png`. Because the
+explanations are the app's own help text, a page cannot drift from the pane it documents.
 
 Framing is part of that determinism: `gen-doc-screenshots.sh` pins `BEARCAD_WINDOW` (default
 `1600x900`, overridable) instead of letting the window maximize, and sizes the `xvfb` screen to
@@ -3161,6 +3159,23 @@ confirmed straight from the context pane before any preview tick ran — still g
 view out to fit, and an undo that shrinks the model well inside glides back in.
 Committed geometry always counts as deliberately sized; growth/shrinkage is tracked via
 a separate document-bounds diagonal so panning away never snaps the camera back.
+
+### 11.x Help mode (#672)
+
+**Directive:** A beginner should be able to ask the app what a control is for, without leaving
+it.
+
+- Help mode is a toggle, off by default, reached from the command palette (*Turn On Help Mode*
+  / *Turn Off Help Mode*) and from scripts as `bearcad.ui.help([on])` (no argument toggles).
+  It is session state, never persisted.
+- With it on, every row of the Context pane that has help text grows a floating note beside
+  the pane — outside it, so the pane itself stays controls and values only (§the context pane's
+  no-prose rule) — joined to its row by a leader line. Notes that would overlap slide apart.
+- The help text is per (tool, row label), so the same label reads correctly under different
+  tools ("Bodies" means one thing to Move and another to Combine). Rows that mean the same
+  thing everywhere (default units, snapping) are matched on the label alone.
+- A scripted Context-pane capture widens to include the notes, which is how the documentation's
+  annotated pane pictures are made (§9.3).
 
 ### 11.y Keyboard Shortcuts window (#434)
 

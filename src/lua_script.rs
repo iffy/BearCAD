@@ -2663,6 +2663,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "help",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::HelpMode { on }) }
+        })?,
+    )?;
+
+    api.set(
+        "tool_mode",
+        lua.create_function(|lua, mode: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetToolMode(mode)) }
+        })?,
+    )?;
+
+    api.set(
         "move_ground",
         lua.create_function(|lua, (x, y): (f32, f32)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -4231,7 +4247,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "focus_name", "focus_dim", "pane", "palette",
+            "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom",

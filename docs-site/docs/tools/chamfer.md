@@ -4,7 +4,6 @@ title: Chamfer
 ---
 
 import useBaseUrl from '@docusaurus/useBaseUrl';
-import PaneCallouts from '@site/src/components/PaneCallouts';
 
 # <img src={useBaseUrl("/img/icons/chamfer.svg")} width="30" /> Chamfer
 
@@ -27,25 +26,14 @@ it off flat. Everything else works the same way —
 The pane collects what to cut; the cut distance itself is typed (or dragged) in the 3D view
 once something is picked.
 
-<PaneCallouts
-  src="/img/screenshots/pane-chamfer-sketch.png"
-  alt="The Chamfer tool's Context pane inside a sketch"
-  title="In a sketch"
-  items={[
-    {x: 37, y: 73, label: 'Selection', children: <>The sketch corners to cut. Click a corner where two lines meet to add it, click it again to drop it.</>},
-  ]}
-/>
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
 
-<PaneCallouts
-  src="/img/screenshots/pane-chamfer-body.png"
-  alt="The Chamfer tool's Context pane on a solid"
-  title="On a solid"
-  items={[
-    {x: 37, y: 47, label: 'Edges', children: <>The body edges to cut, one row per edge. Click an edge to add it, Shift+click for several.</>},
-    {x: 37, y: 73, label: 'Length', children: <>The length unit the distance you type is read in, when you don't write one.</>},
-    {x: 37, y: 86, label: 'Angle', children: <>The angle unit, likewise. Both are the document's defaults, shown whenever nothing is selected.</>},
-  ]}
-/>
+![The Chamfer tool's Context pane inside a sketch, each field explained](/img/screenshots/pane-chamfer-sketch.png)
+
+Outside a sketch it collects body edges instead:
+
+![The Chamfer tool's Context pane on a solid, each field explained](/img/screenshots/pane-chamfer-body.png)
 
 **Countersinking screw holes** is a chamfer too: click the rim of a drilled hole, set the
 distance, **Enter** — the rim is cut into a cone, ready for a flat-head screw. The

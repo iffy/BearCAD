@@ -599,6 +599,11 @@ pub enum Instruction {
         value: f32,
         relative: bool,
     },
+    /// Put the active tool into one of its modes (#672) — the Context pane's mode row,
+    /// which scripted pointer input can't reach (#130).
+    SetToolMode(String),
+    /// Help mode (#672): `None` toggles. Documentation captures turn it on.
+    HelpMode { on: Option<bool> },
 
     // Sequencing
     WaitMs(u64),
@@ -1423,6 +1428,11 @@ impl Instruction {
             Instruction::Screenshot { path, region } => match region {
                 ScreenshotRegion::Viewport => format!("bearcad.ui.screenshot({path:?})"),
                 other => format!("bearcad.ui.screenshot({path:?}, {:?})", other.script_name()),
+            },
+            Instruction::SetToolMode(mode) => format!("bearcad.ui.tool_mode({mode:?})"),
+            Instruction::HelpMode { on } => match on {
+                Some(on) => format!("bearcad.ui.help({on})"),
+                None => "bearcad.ui.help()".to_string(),
             },
             Instruction::SetGizmo { name, value, relative } => {
                 if *relative {
@@ -4999,6 +5009,16 @@ impl ScriptRunner {
                 self.screenshot_pending = Some(ScreenshotRequest { path, crop });
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 StepResult::Wait
+            }
+            Instruction::HelpMode { on } => {
+                state.apply(crate::actions::Action::SetHelpMode(on));
+                StepResult::Continue
+            }
+            Instruction::SetToolMode(mode) => {
+                if let Err(err) = crate::actions::set_tool_mode(state, &mode) {
+                    self.record_action_error(crate::actions::ActionResult::Err(err));
+                }
+                StepResult::Continue
             }
             Instruction::SetGizmo { name, value, relative } => {
                 let target = if relative {

@@ -4,7 +4,6 @@ title: Extrude
 ---
 
 import useBaseUrl from '@docusaurus/useBaseUrl';
-import PaneCallouts from '@site/src/components/PaneCallouts';
 
 # <img src={useBaseUrl("/img/icons/extrude.svg")} width="30" /> Extrude
 
@@ -36,18 +35,10 @@ adjusting the distance or target first.
 
 ## The Context pane
 
-<PaneCallouts
-  src="/img/screenshots/pane-extrude.png"
-  alt="The Extrude tool's Context pane with a sketch face picked"
-  items={[
-    {x: 37, y: 29, label: 'Faces', children: <>The sketch faces or solid faces being pulled. Click a face to add it, click it again to drop it.</>},
-    {x: 37, y: 42, label: 'Distance', children: <>How deep, as an expression — <code>20</code>, <code>plate * 2</code>, <code>0.5in</code>. Mirrors the drag handle in the 3D view.</>},
-    {x: 37, y: 54, label: 'Up to', children: <>A plane, face, or vertex to stop at instead of a fixed depth. Setting one clears Distance; clearing it goes back to a distance.</>},
-    {x: 37, y: 67, label: 'Output', children: <>New body, add to the body it grows from, or cut into it.</>},
-    {x: 37, y: 77, label: 'Symmetric', children: <>Grows the same depth either side of the sketch plane instead of one way.</>},
-    {x: 37, y: 89, label: 'Extrude', children: <>Commits it. <strong>Enter</strong> does the same.</>},
-  ]}
-/>
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Extrude tool's Context pane with a face picked, each field explained](/img/screenshots/pane-extrude.png)
 
 ## Extrude up to something
 

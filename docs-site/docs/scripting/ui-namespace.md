@@ -76,6 +76,26 @@ bearcad.ui.wait(5)        -- wait 5 UI frames
 bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
 ```
 
+## Help mode
+
+```lua
+bearcad.ui.help(true)    -- explain every Context-pane control
+bearcad.ui.help(false)
+bearcad.ui.help()        -- toggle
+```
+
+With help mode on, each row of the Context pane gets a floating note beside it saying what
+it wants. A pane screenshot widens to include the notes, which is how the annotated pane
+pictures in the tool pages are made.
+
+```lua
+bearcad.ui.tool_mode("free")   -- put the active tool in one of its modes
+```
+
+`tool_mode` names the mode a tool's Context pane offers — `"snap"`/`"free"` for Move,
+`"combine"`/`"cut"`/`"intersect"`/`"difference"` for Combine — reaching mode rows that a
+scripted click cannot.
+
 ## Screenshots
 
 ```lua

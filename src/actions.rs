@@ -606,6 +606,23 @@ impl Default for CreatingBoolean {
     }
 }
 
+impl CreatingBoolean {
+    /// Switch which boolean this will perform. Combine has a single picker, so anything
+    /// already on side B folds into A rather than being stranded in a picker that is no
+    /// longer shown.
+    pub fn set_kind(&mut self, kind: crate::model::BooleanOpKind) {
+        self.kind = kind;
+        if kind == crate::model::BooleanOpKind::Combine {
+            for bi in std::mem::take(&mut self.b) {
+                if !self.a.contains(&bi) {
+                    self.a.push(bi);
+                }
+            }
+            self.picking_b = false;
+        }
+    }
+}
+
 /// In-progress linear repeat (Repeat tool): the picked bodies, axis, spacing mode, and
 /// the count/spacing/length expressions.
 #[derive(Clone, Debug, PartialEq)]
@@ -1408,6 +1425,9 @@ pub enum Action {
     SetElementsViewMode { mode: crate::hierarchy::HierarchyViewMode },
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
+    /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
+    /// controls each grow a floating note explaining what they want.
+    SetHelpMode(Option<bool>),
     AddParameter { name: String, expression: String },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
@@ -2473,6 +2493,12 @@ pub struct AppState {
     /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
     /// inside) the viewport re-frames the camera with a short animation. UI-only state.
     pub auto_zoom: bool,
+    /// Help mode (#672): every control in the Context pane gets a floating note beside it
+    /// saying what it wants. Off by default — the pane itself stays controls and values only
+    /// — and never persisted. The documentation's pane pictures are captured with it on, so
+    /// the explanations live next to the controls they describe rather than in a separate
+    /// page that can drift.
+    pub help_mode: bool,
     /// Name typed for the next 3D-derived parameter (Dimension tool, #618); cleared on commit.
     pub dimension_param_name: String,
     /// The last auto-prefilled derived-parameter name (#629): while the field still holds
@@ -2643,6 +2669,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             auto_zoom: false,
+            help_mode: false,
             dimension_param_name: String::new(),
             dimension_param_auto: String::new(),
             active_component: None,
@@ -6930,6 +6957,15 @@ impl AppState {
                     }
                     None => ActionResult::Err("Nothing to zoom to".to_string()),
                 }
+            }
+            Action::SetHelpMode(on) => {
+                self.help_mode = on.unwrap_or(!self.help_mode);
+                self.status = if self.help_mode {
+                    "Help mode on".to_string()
+                } else {
+                    "Help mode off".to_string()
+                };
+                ActionResult::Ok
             }
             Action::SetGroundDisplay(mode) => {
                 self.cam.set_ground_display(mode);
@@ -13343,6 +13379,36 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     gizmos
 }
 
+/// Put the active tool into one of its modes by name (#672), the scripted equivalent of
+/// clicking the Context pane's mode row.
+///
+/// Scripted pointer input doesn't reach egui widgets (#130), so a pane's mode buttons are
+/// out of a script's reach; documentation captures and tests need a way in. The mode names
+/// are the ones each mode enum's `from_name` accepts.
+pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
+    match state.tool {
+        Tool::Combine => {
+            let kind = crate::model::BooleanOpKind::from_name(name)
+                .ok_or_else(|| format!("unknown Combine mode '{name}'"))?;
+            let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
+            cb.set_kind(kind);
+            Ok(())
+        }
+        Tool::Move => {
+            let mode = crate::model::MoveTranslateMode::from_name(name)
+                .ok_or_else(|| format!("unknown Move mode '{name}'"))?;
+            match state.creating_move.as_mut() {
+                Some(cm) => {
+                    cm.translate_mode = mode;
+                    Ok(())
+                }
+                None => Err("the Move tool has nothing in progress to set a mode on".to_string()),
+            }
+        }
+        other => Err(format!("the {other:?} tool has no modes")),
+    }
+}
+
 /// The current scalar of a named gizmo, if that gizmo is available (#214).
 pub fn gizmo_value(state: &AppState, name: &str) -> Option<f32> {
     available_gizmos(state)
@@ -13451,6 +13517,62 @@ mod tests {
     /// from the pane regardless of the viewport's sub-element picking.
     /// #429: creating a component selects and activates it; elements created while a
     /// component is active are filed into it automatically.
+    #[test]
+    fn help_mode_toggles_and_sets_explicitly() {
+        let mut state = AppState::default();
+        assert!(!state.help_mode, "help mode is off by default");
+
+        state.apply(Action::SetHelpMode(None));
+        assert!(state.help_mode);
+        assert_eq!(state.status, "Help mode on");
+
+        state.apply(Action::SetHelpMode(None));
+        assert!(!state.help_mode);
+
+        state.apply(Action::SetHelpMode(Some(true)));
+        state.apply(Action::SetHelpMode(Some(true)));
+        assert!(state.help_mode, "setting it on twice leaves it on");
+    }
+
+    #[test]
+    fn set_tool_mode_switches_the_active_tool_and_rejects_the_rest() {
+        use crate::model::{BooleanOpKind, MoveTranslateMode};
+        let mut state = AppState::default();
+
+        // Combine: the mode row, reachable without clicking it.
+        state.tool = Tool::Combine;
+        assert!(set_tool_mode(&mut state, "cut").is_ok());
+        assert_eq!(state.creating_boolean.as_ref().unwrap().kind, BooleanOpKind::Cut);
+        assert!(set_tool_mode(&mut state, "intersect").is_ok());
+        assert_eq!(state.creating_boolean.as_ref().unwrap().kind, BooleanOpKind::Intersect);
+        assert!(set_tool_mode(&mut state, "nonsense").is_err());
+
+        // Switching back to Combine folds side B into side A, as the pane's row does.
+        let cb = state.creating_boolean.as_mut().unwrap();
+        cb.a = vec![0];
+        cb.b = vec![1];
+        cb.picking_b = true;
+        set_tool_mode(&mut state, "combine").unwrap();
+        let cb = state.creating_boolean.as_ref().unwrap();
+        assert_eq!(cb.a, vec![0, 1]);
+        assert!(cb.b.is_empty());
+        assert!(!cb.picking_b);
+
+        // Move: only while something is in progress.
+        state.tool = Tool::Move;
+        assert!(set_tool_mode(&mut state, "free").is_err(), "nothing in progress to set");
+        state.creating_move = Some(CreatingMove::default());
+        assert!(set_tool_mode(&mut state, "free").is_ok());
+        assert_eq!(
+            state.creating_move.as_ref().unwrap().translate_mode,
+            MoveTranslateMode::Free
+        );
+
+        // A tool with no modes says so.
+        state.tool = Tool::Circle;
+        assert!(set_tool_mode(&mut state, "free").is_err());
+    }
+
     #[test]
     fn active_component_receives_new_elements() {
         use crate::hierarchy::SceneElement;

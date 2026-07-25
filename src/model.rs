@@ -1602,6 +1602,16 @@ pub enum MoveTranslateMode {
     Free,
 }
 
+impl MoveTranslateMode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "snap" | "points" => Some(Self::Snap),
+            "free" | "components" | "xyz" => Some(Self::Free),
+            _ => None,
+        }
+    }
+}
+
 /// A point on a body's mesh that a Move snaps from or onto (#649/#650): either a corner or
 /// the midpoint of a feature edge. Keyed exactly like [`crate::hierarchy::SceneElement::
 /// BodyVertex`]/`BodyEdge` — the body plus quantized world points — and resolved against the

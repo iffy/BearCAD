@@ -9506,6 +9506,13 @@ impl eframe::App for App {
             let mut slice_edit_begin: Option<usize> = None;
             let mut revolve_edit_begin: Option<usize> = None;
             let mut sweep_edit_begin: Option<usize> = None;
+            // Help mode (#672): the row helpers collect a note per control as the pane lays
+            // itself out, and the notes are drawn beside it once its rect is known.
+            if self.state.help_mode {
+                context::begin_help_notes(ctx, Some(self.state.tool));
+            } else {
+                context::end_help_notes(ctx);
+            }
             let pane_kept_open = show_pane_shell(ctx, "context", "Context", true, 200.0, Some(280.0), |ui| {
                     context::show_pane(
                         ui,
@@ -9744,19 +9751,7 @@ impl eframe::App for App {
                             .creating_boolean
                             .get_or_insert_with(actions::CreatingBoolean::default);
                         match edit {
-                            context::BooleanEdit::Kind(kind) => {
-                                cb.kind = kind;
-                                if kind == model::BooleanOpKind::Combine {
-                                    // Combine has a single picker: fold B into A.
-                                    let b = std::mem::take(&mut cb.b);
-                                    for bi in b {
-                                        if !cb.a.contains(&bi) {
-                                            cb.a.push(bi);
-                                        }
-                                    }
-                                    cb.picking_b = false;
-                                }
-                            }
+                            context::BooleanEdit::Kind(kind) => cb.set_kind(kind),
                             context::BooleanEdit::KeepB(v) => cb.keep_b = v,
                             context::BooleanEdit::Commit => unreachable!(),
                         }
@@ -10962,8 +10957,21 @@ fn show_pane_shell(
             add_contents(ui);
             content_bottom = Some(ui.cursor().min.y);
         });
-        remember_pane_rect(ctx, id, Some(trim_to_content(response.response.rect, content_bottom)));
+        let rect = trim_to_content(response.response.rect, content_bottom);
+        remember_pane_rect(ctx, id, Some(with_help_notes(ctx, id, rect)));
         true
+    }
+}
+
+/// The rect a captured pane shot should cover: the pane, plus its help-mode notes where it
+/// has any. Only the Context pane carries notes (#672); every other pane returns its own rect.
+fn with_help_notes(ctx: &egui::Context, id: &'static str, rect: egui::Rect) -> egui::Rect {
+    if id != "context" {
+        return rect;
+    }
+    match context::draw_help_notes(ctx, rect) {
+        Some(notes) => rect.union(notes),
+        None => rect,
     }
 }
 
