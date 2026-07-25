@@ -2317,6 +2317,14 @@ transform. Ten instances of one part cost one embedded copy plus ten override li
 the importing file opens and rebuilds with the source file absent. Load refuses import
 cycles (matched on resolved source path) and nesting deeper than `MAX_UNIT_DEPTH`.
 
+**Evaluation (#722, `src/units.rs`):** an instance evaluates by rebuilding the embedded
+document with its overrides applied and meshing its live bodies, memoized by **(unit,
+override set)** under a fingerprint of `Document.units` alone — identical instances share
+one evaluation, and the importing document's own edits never re-evaluate. Placement
+expressions (`tx`/`ty`/`tz`, axis+angle) evaluate in the importing document; the viewport
+draws each instance's placed meshes. A unit that fails to rebuild reports per-instance on
+`DocumentHealth::unit_instances` (and builds what it can) instead of breaking the document.
+
 ---
 
 ## 8. Scripting (Lua API)

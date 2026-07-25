@@ -91,6 +91,9 @@ pub struct DocumentHealth {
     pub parameter_snapshots: HashMap<usize, ElementSnapshot>,
     pub element_reasons: HashMap<SceneElement, String>,
     pub parameter_reasons: HashMap<usize, String>,
+    /// Unit instances whose evaluation failed (#722): instance index → reason. The rest
+    /// of the document stays healthy and usable around them.
+    pub unit_instances: HashMap<usize, String>,
 }
 
 impl DocumentHealth {
@@ -285,7 +288,24 @@ pub fn recompute_document_health(doc: &Document) -> DocumentHealth {
     let mut health = DocumentHealth::default();
     mark_invalid_constraints_and_unstable_geometry(doc, &mut health);
     mark_invalid_parameters(doc, &mut health);
+    mark_broken_unit_instances(doc, &mut health);
     health
+}
+
+/// A unit whose embedded document fails to rebuild must not take the importing document
+/// down (#722): its instances get a reason here and everything else stays usable. Cheap
+/// on the every-action path — evaluation is memoized per (unit, override set).
+fn mark_broken_unit_instances(doc: &Document, health: &mut DocumentHealth) {
+    for index in 0..doc.unit_instances.len() {
+        if doc.unit_instances[index].deleted {
+            continue;
+        }
+        if let Some(eval) = crate::units::evaluate_instance(doc, index) {
+            if let Some(reason) = &eval.error {
+                health.unit_instances.insert(index, reason.clone());
+            }
+        }
+    }
 }
 
 fn geometry_elements_for_line(line: &ConstraintLine) -> Vec<SceneElement> {

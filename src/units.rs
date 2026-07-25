@@ -1,0 +1,361 @@
+//! Unit-instance evaluation (#722): an embedded unit document plus an instance's
+//! parameter overrides, rebuilt into solid meshes the importing document can draw, snap
+//! to, and reference.
+//!
+//! Evaluation is memoized by **(unit, override set)** — two instances of the same part
+//! with identical overrides (the common repeated-part case) evaluate once. The memo is
+//! guarded by a fingerprint of `Document.units` alone, so an override edit (new key) or
+//! a sync that replaces an embedded copy (new fingerprint) re-evaluates, while edits to
+//! the importing document's own geometry never do.
+
+use crate::extrude::SolidMesh;
+use crate::model::{Document, ImportedUnit};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+/// The unit-local result of evaluating one (unit, override set) (#722).
+pub struct UnitEvaluation {
+    /// One mesh per live body of the rebuilt embedded document, in the unit's own
+    /// coordinates — place them with [`instance_transform`].
+    pub meshes: Vec<SolidMesh>,
+    /// Why the rebuild failed, if it did. A broken unit must not take the importing
+    /// document down: the meshes hold whatever still built, and document health reports
+    /// the instance unhealthy with this reason.
+    pub error: Option<String>,
+}
+
+/// Overrides sorted by parameter name: the cache key must not care what order the
+/// instance happens to store them in.
+type CacheKey = (usize, Vec<(String, String)>);
+
+thread_local! {
+    /// Per-thread memo: `(fingerprint of Document.units, (unit, overrides) → evaluation)`.
+    static UNIT_EVAL_CACHE: RefCell<(u64, HashMap<CacheKey, Rc<UnitEvaluation>>)> =
+        RefCell::new((0, HashMap::new()));
+
+    /// How many uncached evaluations have run on this thread (test hook: identical
+    /// instances must share one).
+    #[cfg(test)]
+    pub static EVAL_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Fingerprint of the units themselves (their sources and embedded documents), streamed
+/// through a hasher like [`crate::extrude`]'s document mesh fingerprint. Only unit
+/// changes move it — the importing document's own edits leave the memo untouched (#722).
+fn units_fingerprint(doc: &Document) -> u64 {
+    use std::hash::Hasher;
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(std::collections::hash_map::DefaultHasher::new());
+    serde_json::to_writer(&mut writer, &doc.units).ok();
+    writer.0.finish()
+}
+
+/// Evaluate the unit behind `instance`, memoized. `None` for a missing/deleted instance
+/// or a dangling unit index.
+pub fn evaluate_instance(doc: &Document, instance: usize) -> Option<Rc<UnitEvaluation>> {
+    let inst = doc.unit_instances.get(instance)?;
+    if inst.deleted {
+        return None;
+    }
+    let unit = doc.units.get(inst.unit)?;
+    let mut overrides = inst.parameter_overrides.clone();
+    overrides.sort();
+    let key = (inst.unit, overrides);
+    let fingerprint = units_fingerprint(doc);
+    UNIT_EVAL_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            *cache = (fingerprint, HashMap::new());
+        }
+        if let Some(hit) = cache.1.get(&key) {
+            return Some(hit.clone());
+        }
+        let eval = Rc::new(evaluate_uncached(unit, &inst.parameter_overrides));
+        cache.1.insert(key, eval.clone());
+        Some(eval)
+    })
+}
+
+/// Rebuild the embedded document with `overrides` applied and mesh its live bodies.
+/// Never panics out: a rebuild that blows up becomes an errored evaluation.
+fn evaluate_uncached(unit: &ImportedUnit, overrides: &[(String, String)]) -> UnitEvaluation {
+    #[cfg(test)]
+    EVAL_COUNT.with(|count| count.set(count.get() + 1));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut scratch = unit.document.clone();
+        let mut error = None;
+        for (name, expression) in overrides {
+            match scratch
+                .parameters
+                .iter_mut()
+                .find(|p| !p.deleted && p.name == *name)
+            {
+                Some(parameter) => parameter.expression = expression.clone(),
+                None => {
+                    error = Some(format!("no parameter named '{name}' in the unit"));
+                }
+            }
+        }
+        if let Err(e) = crate::parameters::recompute_document_geometry(&mut scratch) {
+            error = Some(e);
+        }
+        // Uncached meshing on purpose: the shared body-mesh memo is keyed by the *live*
+        // document's fingerprint, and meshing a scratch document through it would evict
+        // the importing document's own meshes every frame.
+        let meshes = (0..scratch.bodies.len())
+            .filter(|&bi| !scratch.bodies[bi].deleted)
+            .filter_map(|bi| crate::extrude::body_solid_mesh_uncached_pub(&scratch, bi))
+            .filter(|mesh| !mesh.is_empty())
+            .collect();
+        UnitEvaluation { meshes, error }
+    }));
+    result.unwrap_or_else(|_| UnitEvaluation {
+        meshes: Vec::new(),
+        error: Some("the unit's document failed to rebuild".to_string()),
+    })
+}
+
+/// An instance's placement as a world transform (#722): rotation about its axis through
+/// the unit origin, then translation. Placement expressions evaluate in the **importing**
+/// document, so `height / 2` follows the importing document's parameters.
+pub fn instance_transform(doc: &Document, instance: usize) -> glam::Mat4 {
+    let Some(inst) = doc.unit_instances.get(instance) else {
+        return glam::Mat4::IDENTITY;
+    };
+    let placement = &inst.placement;
+    let length = |expr: &str| {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            0.0
+        } else {
+            crate::value::eval_length_mm_in_doc(expr, doc).unwrap_or(0.0)
+        }
+    };
+    let translation = glam::vec3(
+        length(&placement.tx),
+        length(&placement.ty),
+        length(&placement.tz),
+    );
+    let axis = glam::Vec3::from(placement.axis);
+    let angle = {
+        let expr = placement.angle.trim();
+        if expr.is_empty() {
+            0.0
+        } else {
+            crate::value::eval_angle_rad_in_doc(expr, doc).unwrap_or(0.0)
+        }
+    };
+    let rotation = if axis.length_squared() > 1e-12 && angle != 0.0 {
+        glam::Mat4::from_axis_angle(axis.normalize(), angle)
+    } else {
+        glam::Mat4::IDENTITY
+    };
+    glam::Mat4::from_translation(translation) * rotation
+}
+
+/// `instance`'s evaluated meshes placed by its transform, ready for the scene (#722).
+/// Empty when the instance is deleted, dangling, or its unit failed to build.
+pub fn placed_instance_meshes(doc: &Document, instance: usize) -> Vec<SolidMesh> {
+    let Some(eval) = evaluate_instance(doc, instance) else {
+        return Vec::new();
+    };
+    let transform = instance_transform(doc, instance);
+    eval.meshes
+        .iter()
+        .map(|solid| SolidMesh {
+            triangles: solid
+                .triangles
+                .iter()
+                .map(|tri| tri.map(|v| transform.transform_point3(v)))
+                .collect(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ImportedUnit, LinkMode, UnitInstance, UnitPlacement, UnitSource};
+
+    /// A unit whose document extrudes a 10×10 square to a parametric `width` height, so
+    /// an override visibly changes the built box.
+    fn boxy_unit_doc() -> Document {
+        let mut doc = Document::default();
+        doc.parameters.push(crate::model::Parameter {
+            name: "width".to_string(),
+            expression: "10".to_string(),
+            deleted: false,
+            source: None,
+        });
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            distance: 10.0,
+            target: None,
+            expression: "width".to_string(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc
+    }
+
+    fn doc_with_unit_and_instances(overrides: Vec<Vec<(String, String)>>) -> Document {
+        let mut doc = Document::default();
+        doc.units.push(ImportedUnit {
+            source: UnitSource::RelativePath("a.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: boxy_unit_doc(),
+            source_mtime: None,
+            source_hash: None,
+        });
+        for parameter_overrides in overrides {
+            doc.unit_instances.push(UnitInstance {
+                unit: 0,
+                name: None,
+                parameter_overrides,
+                placement: UnitPlacement::default(),
+                deleted: false,
+            });
+        }
+        doc
+    }
+
+    fn eval_count() -> usize {
+        EVAL_COUNT.with(|c| c.get())
+    }
+
+    /// #722: two instances with identical overrides share a single evaluation, and the
+    /// importing document's own edits don't re-evaluate anything.
+    #[test]
+    fn identical_instances_share_one_evaluation() {
+        let mut doc = doc_with_unit_and_instances(vec![
+            vec![("width".to_string(), "20".to_string())],
+            vec![("width".to_string(), "20".to_string())],
+        ]);
+        let start = eval_count();
+        let a = evaluate_instance(&doc, 0).expect("instance 0 evaluates");
+        let b = evaluate_instance(&doc, 1).expect("instance 1 evaluates");
+        assert_eq!(eval_count(), start + 1, "one uncached evaluation for both");
+        assert!(Rc::ptr_eq(&a, &b), "both instances share the memoized result");
+        assert!(a.error.is_none(), "error: {:?}", a.error);
+
+        // An edit to the importing document's own content leaves the memo warm.
+        doc.parameters.push(crate::model::Parameter {
+            name: "own".to_string(),
+            expression: "1".to_string(),
+            deleted: false,
+            source: None,
+        });
+        let _ = evaluate_instance(&doc, 0).unwrap();
+        assert_eq!(eval_count(), start + 1, "B's unrelated edit re-evaluates nothing");
+    }
+
+    /// #722: changing one instance's override re-evaluates that instance only.
+    #[test]
+    fn changing_one_override_leaves_the_others_cached() {
+        let mut doc = doc_with_unit_and_instances(vec![
+            vec![("width".to_string(), "20".to_string())],
+            vec![("width".to_string(), "30".to_string())],
+        ]);
+        let a = evaluate_instance(&doc, 0).unwrap();
+        let b = evaluate_instance(&doc, 1).unwrap();
+        assert!(!Rc::ptr_eq(&a, &b), "different overrides evaluate separately");
+
+        doc.unit_instances[1].parameter_overrides[0].1 = "40".to_string();
+        let start = eval_count();
+        let a_again = evaluate_instance(&doc, 0).unwrap();
+        let _b_again = evaluate_instance(&doc, 1).unwrap();
+        assert!(Rc::ptr_eq(&a, &a_again), "the untouched instance stays cached");
+        assert_eq!(eval_count(), start + 1, "only the edited instance re-evaluates");
+    }
+
+    /// #722: overrides actually drive the rebuilt geometry.
+    #[test]
+    fn overrides_change_the_evaluated_geometry() {
+        let doc = doc_with_unit_and_instances(vec![
+            Vec::new(),
+            vec![("width".to_string(), "20".to_string())],
+        ]);
+        let base = evaluate_instance(&doc, 0).unwrap();
+        let wide = evaluate_instance(&doc, 1).unwrap();
+        let height = |eval: &UnitEvaluation| {
+            let (min, max) = eval.meshes[0].bounds().unwrap();
+            max.z - min.z
+        };
+        assert_eq!(base.meshes.len(), 1, "error: {:?}", base.error);
+        assert!((height(&base) - 10.0).abs() < 1e-3, "default width 10");
+        assert!((height(&wide) - 20.0).abs() < 1e-3, "overridden width 20");
+    }
+
+    /// #722: a unit that fails to rebuild reports the failure instead of panicking, and
+    /// the rest of the document stays usable.
+    #[test]
+    fn a_broken_unit_reports_unhealthy_rather_than_panicking() {
+        let mut doc = doc_with_unit_and_instances(vec![vec![(
+            "nope".to_string(),
+            "5".to_string(),
+        )]]);
+        let eval = evaluate_instance(&doc, 0).expect("still evaluates");
+        assert!(eval.error.is_some(), "the bad override is reported");
+
+        // Document health carries the reason for the instance (#722).
+        let health = crate::document_health::recompute_document_health(&doc);
+        assert!(
+            health.unit_instances.get(&0).is_some(),
+            "instance 0 reports unhealthy"
+        );
+
+        // A healthy instance beside it still evaluates cleanly.
+        doc.unit_instances.push(crate::model::UnitInstance {
+            unit: 0,
+            name: None,
+            parameter_overrides: Vec::new(),
+            placement: UnitPlacement::default(),
+            deleted: false,
+        });
+        let ok = evaluate_instance(&doc, 1).unwrap();
+        assert!(ok.error.is_none() && !ok.meshes.is_empty());
+    }
+
+    /// #722: placement expressions evaluate in the importing document and move the unit.
+    #[test]
+    fn instance_transform_follows_the_importing_documents_parameters() {
+        let mut doc = doc_with_unit_and_instances(vec![Vec::new()]);
+        doc.parameters.push(crate::model::Parameter {
+            name: "gap".to_string(),
+            expression: "7".to_string(),
+            deleted: false,
+            source: None,
+        });
+        doc.unit_instances[0].placement = crate::model::UnitPlacement {
+            tx: "gap * 2".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: [0.0, 0.0, 1.0],
+            angle: "90".to_string(),
+        };
+        let transform = instance_transform(&doc, 0);
+        let moved = transform.transform_point3(glam::vec3(1.0, 0.0, 0.0));
+        assert!((moved - glam::vec3(14.0, 1.0, 0.0)).length() < 1e-4, "{moved:?}");
+    }
+}

@@ -50,6 +50,7 @@ mod polygon_boolean;
 mod model;
 mod offset;
 mod tutorial;
+mod units;
 mod touch;
 mod menu_command;
 #[cfg(not(target_arch = "wasm32"))]

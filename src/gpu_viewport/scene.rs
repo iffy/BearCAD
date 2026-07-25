@@ -871,6 +871,52 @@ impl ViewportScene {
                 }
             }
         }
+        // Imported unit instances (#722): each live instance's evaluated meshes (memoized
+        // per unit + override set), placed by its transform. A broken unit contributes
+        // whatever still built; document health carries the reason.
+        for index in 0..input.doc.unit_instances.len() {
+            if input.doc.unit_instances[index].deleted {
+                continue;
+            }
+            let fill = if input.sketch_session.is_some() {
+                scale_color(SOLID_FILL, SKETCH_MODE_BODY_DIM)
+            } else {
+                SOLID_FILL
+            };
+            for solid in crate::units::placed_instance_meshes(input.doc, index) {
+                match input.cam.shading_mode() {
+                    crate::camera::ShadingMode::Solid => {
+                        mesh.push_solid(&solid, fill, input.cam, None);
+                    }
+                    crate::camera::ShadingMode::TransparentSolid => {
+                        mesh.push_solid_translucent(&solid, fill, TRANSPARENT_SOLID_OPACITY);
+                    }
+                    crate::camera::ShadingMode::Wireframe => {
+                        mesh.push_solid_wireframe(
+                            &solid,
+                            WIREFRAME_LINE_COLOR,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    }
+                    crate::camera::ShadingMode::SolidWireframe => {
+                        mesh.push_solid(&solid, fill, input.cam, None);
+                        mesh.push_solid_wireframe(
+                            &solid,
+                            WIREFRAME_LINE_COLOR,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    }
+                    crate::camera::ShadingMode::Realistic => {
+                        mesh.push_solid_realistic(&solid, fill, input.cam, None);
+                    }
+                }
+            }
+        }
+
         // Live preview of the in-progress extrusion (semi-transparent until committed). A cut
         // (#142) previews the whole cut *result* solid — the target body with this extrusion
         // subtracted — in place of the additive block, so it looks like the finished cut.
