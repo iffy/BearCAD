@@ -2400,6 +2400,14 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (_, "Calibrate scale") => Some(
+            "Sets the image's real-world size: click two points over a feature of known \
+             size, then type its length.",
+        ),
+        (_, "Real length") => Some(
+            "How long the marked span really is. Apply rescales the whole image so \
+             that span measures this.",
+        ),
         (Some(Tool::Text), "Text") => Some(
             "What the text says. {curly braces} interpolate an expression — {w * 2} — \
              and re-render when parameters change.",
@@ -4869,7 +4877,9 @@ pub fn show_pane(
     if let Some(image) = content.calibrate_start {
         any_control = true;
         ui.separator();
-        if ui.button("Calibrate scale").clicked() {
+        let resp = ui.button("Calibrate scale");
+        note_help(ui, "Calibrate scale", resp.rect);
+        if resp.clicked() {
             on_calibrate_start(image);
         }
     }
@@ -4889,7 +4899,7 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, "Calibrate scale");
-        labeled_row(ui, "Length", |ui| {
+        labeled_row(ui, "Real length", |ui| {
             let mut draft = pane_state.calibrate_length_draft.clone();
             crate::expression_input::ValueInput::new(
                 "calibrate_length",

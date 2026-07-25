@@ -172,6 +172,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         }
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
+        "image" | "tracing_image" => Some(SceneElement::Image(index)),
         _ => None,
     }
 }
