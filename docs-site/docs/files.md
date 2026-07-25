@@ -58,6 +58,15 @@ element (deleting removes just that instance). The row's triangle expands a read
 inside; everything in a unit is edited in its source file, not here. The node graph shows
 an instance as a single node — enable **Unit contents** in the pane filter to see inside.
 
+Read-only doesn't mean inert: a unit's geometry is a full **target**, drawn in its own
+warmer tone so it reads as not-yours-to-edit.
+
+- Its corners and edge midpoints fill Move's start/end point pickers, and its faces,
+  edges, and vertices fill any tool's picker.
+- Measure to it: select a unit edge (or corner pair) and add a dimension parameter as
+  usual. A dimension to a unit edge follows the unit when an instance parameter changes.
+- Exports include unit geometry, so an assembly prints whole.
+
 ```lua
 bearcad.import_unit("bracket.bearcad")
 bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }

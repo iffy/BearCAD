@@ -389,6 +389,10 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
             },
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
+        ParameterSource::UnitEdgeLength { instance, .. } => Some(format!(
+            "Driven by an edge of unit instance {instance}{}",
+            gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
+        )),
     }
 }
 
@@ -434,6 +438,12 @@ pub fn derived_source_value(doc: &Document, source: &ParameterSource) -> Option<
             let pa = body_vertex_world_position(doc, *body_a, *a)?;
             let pb = body_vertex_world_position(doc, *body_b, *b)?;
             Some(((pb - pa).length(), false))
+        }
+        // Analytic unit edge (#724): re-resolves against the instance's current rebuild,
+        // so the value follows the unit's parameter overrides.
+        ParameterSource::UnitEdgeLength { instance, face, edge } => {
+            let (p, q) = crate::units::unit_edge_world_segment(doc, *instance, face, *edge)?;
+            Some(((q - p).length(), false))
         }
     }
 }
@@ -513,6 +523,9 @@ pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) 
         }
         ParameterSource::BodyVertexDistance { body_a, .. } => {
             unique_parameter_name(doc, &format!("body{body_a}_corner_distance"))
+        }
+        ParameterSource::UnitEdgeLength { instance, .. } => {
+            unique_parameter_name(doc, &format!("unit{instance}_edge_length"))
         }
     }
 }
@@ -633,6 +646,22 @@ pub fn derived_source_from_selection(
         // Body geometry measures like sketch geometry does (#647): one feature edge gives its
         // length, two mesh corners give the distance between them.
         [SceneElement::BodyEdge { body, a, b }] => {
+            // An edge picked on a unit's materialized body (#724) upgrades to its analytic
+            // identity when one exists, so the dimension survives override changes; unit
+            // geometry with no analytic face keeps the quantized key (STL-import parity).
+            if let Some(crate::model::BodySource::UnitInstance(instance)) =
+                doc.bodies.get(*body).map(|bd| &bd.source)
+            {
+                let (wa, wb) = (
+                    crate::hierarchy::dequantize_body_point(*a),
+                    crate::hierarchy::dequantize_body_point(*b),
+                );
+                if let Some((face, edge)) = crate::units::analytic_unit_edge(doc, *instance, wa, wb)
+                {
+                    let source = ParameterSource::UnitEdgeLength { instance: *instance, face, edge };
+                    return derived_source_value(doc, &source).map(|_| source);
+                }
+            }
             let source = ParameterSource::BodyEdgeLength { body: *body, a: *a, b: *b };
             derived_source_value(doc, &source).map(|_| source)
         }
@@ -714,6 +743,9 @@ pub fn derived_source_elements(
             SceneElement::BodyVertex { body: *body_a, p: *a },
             SceneElement::BodyVertex { body: *body_b, p: *b },
         ],
+        ParameterSource::UnitEdgeLength { instance, .. } => {
+            vec![SceneElement::UnitInstance(*instance)]
+        }
     }
 }
 

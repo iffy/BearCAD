@@ -1494,7 +1494,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "derive_parameter",
-                &["kind", "a", "b", "body", "body_b", "name"],
+                &["kind", "a", "b", "body", "body_b", "name", "instance", "face", "edge"],
             )?;
             let kind: String = opts.get("kind")?;
             let mm_point = |key: &str| -> mlua::Result<[i32; 3]> {
@@ -1528,6 +1528,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         a: mm_point("a")?,
                         body_b: opts.get::<Option<usize>>("body_b")?.unwrap_or(body_a),
                         b: mm_point("b")?,
+                    }
+                }
+                // Analytic unit edge (#724): `face` is the FaceId's JSON encoding (the
+                // same spelling session export writes).
+                "unit_edge_length" => {
+                    let face_json: String = opts.get("face")?;
+                    let face = serde_json::from_str(&face_json).map_err(|e| {
+                        mlua::Error::external(format!("bad unit edge face: {e}"))
+                    })?;
+                    PS::UnitEdgeLength {
+                        instance: opts.get("instance")?,
+                        face,
+                        edge: opts.get("edge")?,
                     }
                 }
                 other => {

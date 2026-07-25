@@ -2734,6 +2734,10 @@ fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.revolutions,
             &doc.sweeps,
             &doc.lofts,
+            // Imported units (#724): an override/placement edit or a sync that replaces an
+            // embedded copy must invalidate the materialized unit bodies' cached meshes.
+            &doc.units,
+            &doc.unit_instances,
         ),
     )
     .ok();
@@ -2792,6 +2796,17 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         return (!imported.triangles.is_empty()).then(|| SolidMesh {
             triangles: imported.triangles.clone(),
         });
+    }
+
+    // An imported unit's materialized body (#724): its instance's evaluated meshes,
+    // placed, merged into one solid so all body machinery (snap points, edge dimensions,
+    // face picks, export) sees ordinary triangles.
+    if let crate::model::BodySource::UnitInstance(instance) = body.source {
+        let triangles: Vec<[Vec3; 3]> = crate::units::placed_instance_meshes(doc, instance)
+            .into_iter()
+            .flat_map(|m| m.triangles)
+            .collect();
+        return (!triangles.is_empty()).then_some(SolidMesh { triangles });
     }
 
     if let crate::model::BodySource::Repeated { op, target, instance } = body.source {

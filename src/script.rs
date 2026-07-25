@@ -1392,6 +1392,12 @@ impl Instruction {
                         mm_point_lua(*a),
                         mm_point_lua(*b)
                     ),
+                    // Analytic unit edge (#724): the face has no flat Lua spelling, so it
+                    // rides as its JSON encoding; the parser feeds it back through serde.
+                    PS::UnitEdgeLength { instance, face, edge } => format!(
+                        "kind = \"unit_edge_length\", instance = {instance}, face = {:?}, edge = {edge}",
+                        serde_json::to_string(face).unwrap_or_default()
+                    ),
                 };
                 match name {
                     Some(name) => {

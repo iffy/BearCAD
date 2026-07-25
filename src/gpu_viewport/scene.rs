@@ -109,6 +109,10 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
+/// Base fill for an imported unit's materialized body (#724): a warmer tone than
+/// [`SOLID_FILL`], so pointing at read-only unit geometry is visibly different from
+/// pointing at the document's own bodies.
+pub const UNIT_SOLID_FILL: Color32 = Color32::from_rgb(178, 162, 144);
 /// Green glow for the dimensions/geometry driven by the parameter hovered or focused in
 /// the Parameters pane (#620).
 pub const PARAMETER_HIGHLIGHT: Color32 = Color32::from_rgb(90, 220, 130);
@@ -738,11 +742,18 @@ impl ViewportScene {
         let body_meshes: Vec<Option<crate::extrude::SolidMesh>> = (0..input.doc.bodies.len())
             .map(|bi| {
                 let body = &input.doc.bodies[bi];
-                let visible = !body.deleted
+                let mut visible = !body.deleted
                     && input
                         .element_visibility
                         .effective_visible(input.doc, SceneElement::Body(bi))
                     && (!body.shadow || shadow_shown(bi));
+                // A unit's materialized body follows its instance row's eye toggle (#724).
+                if let crate::model::BodySource::UnitInstance(instance) = body.source {
+                    visible = visible
+                        && input
+                            .element_visibility
+                            .effective_visible(input.doc, SceneElement::UnitInstance(instance));
+                }
                 if visible {
                     crate::extrude::body_solid_mesh(input.doc, bi)
                 } else {
@@ -804,18 +815,33 @@ impl ViewportScene {
             }
             // Selection and hover recolor the body itself (#455): the fill in shaded
             // modes, the lines in wireframe — no outline aura.
-            let hovered = matches!(
-                &input.hover_highlight,
-                Some(ViewportHoverHighlight::Element(SceneElement::Body(h))) if *h == bi
-            );
-            let fill = if input.selection.is_selected(SceneElement::Body(bi)) {
+            // A unit's materialized body (#724) reads as the instance row: selection and
+            // hover key off the instance, and its base fill is its own hue so it stays
+            // visibly "not yours to edit" next to the document's own bodies.
+            let unit_instance = match body.source {
+                crate::model::BodySource::UnitInstance(i) => Some(i),
+                _ => None,
+            };
+            let hovered = match &input.hover_highlight {
+                Some(ViewportHoverHighlight::Element(SceneElement::Body(h))) => *h == bi,
+                Some(ViewportHoverHighlight::Element(SceneElement::UnitInstance(h))) => {
+                    unit_instance == Some(*h)
+                }
+                _ => false,
+            };
+            let selected = input.selection.is_selected(SceneElement::Body(bi))
+                || unit_instance
+                    .is_some_and(|i| input.selection.is_selected(SceneElement::UnitInstance(i)));
+            let fill = if selected {
                 SOLID_FILL_SELECTED
             } else if hovered {
                 SOLID_FILL_HOVERED
+            } else if unit_instance.is_some() {
+                UNIT_SOLID_FILL
             } else {
                 SOLID_FILL
             };
-            let line_color = if input.selection.is_selected(SceneElement::Body(bi)) {
+            let line_color = if selected {
                 BODY_SILHOUETTE_COLOR
             } else if hovered {
                 SOLID_FILL_HOVERED
@@ -871,63 +897,10 @@ impl ViewportScene {
                 }
             }
         }
-        // Imported unit instances (#722): each live instance's evaluated meshes (memoized
-        // per unit + override set), placed by its transform. A broken unit contributes
-        // whatever still built; document health carries the reason.
-        for index in 0..input.doc.unit_instances.len() {
-            if input.doc.unit_instances[index].deleted
-                || !input
-                    .element_visibility
-                    .effective_visible(input.doc, SceneElement::UnitInstance(index))
-            {
-                continue;
-            }
-            let base_fill = if input
-                .selection
-                .is_selected(SceneElement::UnitInstance(index))
-            {
-                SOLID_FILL_SELECTED
-            } else {
-                SOLID_FILL
-            };
-            let fill = if input.sketch_session.is_some() {
-                scale_color(base_fill, SKETCH_MODE_BODY_DIM)
-            } else {
-                base_fill
-            };
-            for solid in crate::units::placed_instance_meshes(input.doc, index) {
-                match input.cam.shading_mode() {
-                    crate::camera::ShadingMode::Solid => {
-                        mesh.push_solid(&solid, fill, input.cam, None);
-                    }
-                    crate::camera::ShadingMode::TransparentSolid => {
-                        mesh.push_solid_translucent(&solid, fill, TRANSPARENT_SOLID_OPACITY);
-                    }
-                    crate::camera::ShadingMode::Wireframe => {
-                        mesh.push_solid_wireframe(
-                            &solid,
-                            WIREFRAME_LINE_COLOR,
-                            input.cam,
-                            input.viewport,
-                            &vp,
-                        );
-                    }
-                    crate::camera::ShadingMode::SolidWireframe => {
-                        mesh.push_solid(&solid, fill, input.cam, None);
-                        mesh.push_solid_wireframe(
-                            &solid,
-                            WIREFRAME_LINE_COLOR,
-                            input.cam,
-                            input.viewport,
-                            &vp,
-                        );
-                    }
-                    crate::camera::ShadingMode::Realistic => {
-                        mesh.push_solid_realistic(&solid, fill, input.cam, None);
-                    }
-                }
-            }
-        }
+        // Imported unit instances (#722/#724) render through the ordinary body loop above:
+        // each instance materializes as a derived body (`BodySource::UnitInstance`), so
+        // shading modes, selection, hover, and picking all treat it as a body — keyed to
+        // the instance row and tinted UNIT_SOLID_FILL to read as read-only.
 
         // Live preview of the in-progress extrusion (semi-transparent until committed). A cut
         // (#142) previews the whole cut *result* solid — the target body with this extrusion

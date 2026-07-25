@@ -2325,6 +2325,20 @@ expressions (`tx`/`ty`/`tz`, axis+angle) evaluate in the importing document; the
 draws each instance's placed meshes. A unit that fails to rebuild reports per-instance on
 `DocumentHealth::unit_instances` (and builds what it can) instead of breaking the document.
 
+**Snappable and referenceable (#724):** each live instance materializes as a **derived
+body** (`BodySource::UnitInstance`, kept in sync by `units::sync_unit_bodies` on the
+every-mutation seam; its mesh is the placed evaluation, and `document_mesh_fingerprint`
+includes units so override/placement edits invalidate it). Everything body-shaped then
+works unchanged: Move's snap-point pickers, `BodyVertex`/`BodyEdge`/`BodyFace` selection,
+face pickers, STL/STEP export. The body renders in its own warmer fill (`UNIT_SOLID_FILL`)
+so unit geometry visibly isn't the document's own; whole-body viewport clicks select the
+**instance** row, and the body has no pane row of its own. Dimensions: an edge picked on a
+unit body upgrades to `ParameterSource::UnitEdgeLength { instance, face, edge }` — an
+**analytic** identity resolved against the retained rebuilt embedded document
+(`UnitEvaluation::document`) — so unlike quantized keys it re-resolves and the dimension
+follows override changes; unit geometry without an analytic face keeps the quantized key
+(STL parity).
+
 **Elements pane (#723):** an instance is **one selectable row** (`SceneElement::
 UnitInstance`): rename, hide, select, and delete work like any element; deleting
 tombstones the instance and the **embedded copy stays** (unit indices remain stable, and

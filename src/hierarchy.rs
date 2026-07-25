@@ -1527,6 +1527,9 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Revolve(_)
                     // A swept body nests under its Sweep node, not the root.
                     | crate::model::BodySource::Sweep(_)
+                    // A unit's materialized body has no row of its own (#724): the
+                    // instance row (#723) stands for it.
+                    | crate::model::BodySource::UnitInstance(_)
             )
         {
             roots.push(HierarchyEntry {
@@ -2294,6 +2297,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                     doc.component_of(CM::EdgeTreatmentOp, *op)
                 }
                 BodySource::Solid { .. } => None,
+                BodySource::UnitInstance(_) => None,
             }
         }),
         SceneElement::Image(i) => doc

@@ -19,6 +19,10 @@ pub struct UnitEvaluation {
     /// One mesh per live body of the rebuilt embedded document, in the unit's own
     /// coordinates — place them with [`instance_transform`].
     pub meshes: Vec<SolidMesh>,
+    /// The rebuilt embedded document itself (overrides applied, geometry recomputed):
+    /// the analytic structure behind the meshes, which unit references (#724) resolve
+    /// against so they survive override changes the way `FaceId`-based references do.
+    pub document: Document,
     /// Why the rebuild failed, if it did. A broken unit must not take the importing
     /// document down: the meshes hold whatever still built, and document health reports
     /// the instance unhealthy with this reason.
@@ -117,10 +121,11 @@ fn evaluate_uncached(unit: &ImportedUnit, overrides: &[(String, String)]) -> Uni
             .filter_map(|bi| crate::extrude::body_solid_mesh_uncached_pub(&scratch, bi))
             .filter(|mesh| !mesh.is_empty())
             .collect();
-        UnitEvaluation { meshes, error }
+        UnitEvaluation { meshes, document: scratch, error }
     }));
     result.unwrap_or_else(|_| UnitEvaluation {
         meshes: Vec::new(),
+        document: Document::default(),
         error: Some("the unit's document failed to rebuild".to_string()),
     })
 }
@@ -163,6 +168,37 @@ pub fn instance_transform(doc: &Document, instance: usize) -> glam::Mat4 {
     glam::Mat4::from_translation(translation) * rotation
 }
 
+/// Keep one live derived body per live unit instance (#724): a
+/// [`crate::model::BodySource::UnitInstance`] body is what makes the unit's geometry
+/// snappable and referenceable exactly like the document's own — Move's point pickers,
+/// body-edge dimensions (#647), face pickers, and export all see an ordinary body. Runs
+/// on the same every-mutation seam as document health; deleting an instance tombstones
+/// its body here on the next pass.
+pub fn sync_unit_bodies(doc: &mut Document) {
+    use crate::model::BodySource;
+    let body_for = |doc: &Document, instance: usize| {
+        doc.bodies
+            .iter()
+            .position(|b| matches!(b.source, BodySource::UnitInstance(i) if i == instance))
+    };
+    for instance in 0..doc.unit_instances.len() {
+        let alive = !doc.unit_instances[instance].deleted;
+        match body_for(doc, instance) {
+            Some(bi) => doc.bodies[bi].deleted = !alive,
+            None if alive => {
+                doc.bodies.push(crate::model::Body {
+                    source: BodySource::UnitInstance(instance),
+                    name: None,
+                    deleted: false,
+                    shadow: false,
+                });
+                doc.shape_order.push(crate::model::ShapeKind::Body);
+            }
+            None => {}
+        }
+    }
+}
+
 /// `instance`'s evaluated meshes placed by its transform, ready for the scene (#722).
 /// Empty when the instance is deleted, dangling, or its unit failed to build.
 pub fn placed_instance_meshes(doc: &Document, instance: usize) -> Vec<SolidMesh> {
@@ -180,6 +216,89 @@ pub fn placed_instance_meshes(doc: &Document, instance: usize) -> Vec<SolidMesh>
                 .collect(),
         })
         .collect()
+}
+
+/// Every analytic face of a unit's rebuilt document (#724): the caps and flat sides of
+/// its live extrusions — the faces [`crate::extrude::face_boundary_loop_world`] resolves.
+fn inner_face_ids(inner: &Document) -> Vec<crate::model::FaceId> {
+    use crate::model::{ExtrudeFace, FaceId};
+    let mut faces = Vec::new();
+    for (ei, extrusion) in inner.extrusions.iter().enumerate() {
+        if extrusion.deleted {
+            continue;
+        }
+        for profile in &extrusion.faces {
+            for top in [false, true] {
+                faces.push(FaceId::ExtrudeCap { extrusion: ei, profile: profile.clone(), top });
+            }
+            if let ExtrudeFace::Polygon(lines) = profile {
+                for edge in 0..lines.len() as u8 {
+                    faces.push(FaceId::ExtrudeSide {
+                        extrusion: ei,
+                        profile: profile.clone(),
+                        edge,
+                    });
+                }
+            }
+        }
+    }
+    faces
+}
+
+/// Find the analytic identity of a unit body's feature edge (#724): the world segment
+/// `a`–`b` mapped back into the unit and matched against its rebuilt document's face
+/// boundary loops, returning `(face, edge ordinal)`. Analytic identities survive
+/// override changes (the loop re-resolves after a rebuild), where the mesh's quantized
+/// keys would go stale. `None` for geometry with no analytic face (e.g. a mesh import
+/// inside the unit) — callers fall back to the quantized identity.
+pub fn analytic_unit_edge(
+    doc: &Document,
+    instance: usize,
+    a: glam::Vec3,
+    b: glam::Vec3,
+) -> Option<(crate::model::FaceId, usize)> {
+    let eval = evaluate_instance(doc, instance)?;
+    let inverse = instance_transform(doc, instance).inverse();
+    let (a, b) = (inverse.transform_point3(a), inverse.transform_point3(b));
+    const TOL: f32 = 0.05; // forgives the 0.01 mm pick quantization
+    for face in inner_face_ids(&eval.document) {
+        let Some(loop_world) = crate::extrude::face_boundary_loop_world(&eval.document, &face)
+        else {
+            continue;
+        };
+        let n = loop_world.len();
+        for edge in 0..n {
+            let (p, q) = (loop_world[edge], loop_world[(edge + 1) % n]);
+            let matches = ((p - a).length() < TOL && (q - b).length() < TOL)
+                || ((p - b).length() < TOL && (q - a).length() < TOL);
+            if matches {
+                return Some((face, edge));
+            }
+        }
+    }
+    None
+}
+
+/// The live world endpoints of an analytic unit edge (#724): the `(face, edge)` from
+/// [`analytic_unit_edge`], resolved against the instance's current rebuild and placed by
+/// its transform. `None` once the face or edge no longer exists.
+pub fn unit_edge_world_segment(
+    doc: &Document,
+    instance: usize,
+    face: &crate::model::FaceId,
+    edge: usize,
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    let eval = evaluate_instance(doc, instance)?;
+    let loop_world = crate::extrude::face_boundary_loop_world(&eval.document, face)?;
+    let n = loop_world.len();
+    if n < 2 || edge >= n {
+        return None;
+    }
+    let transform = instance_transform(doc, instance);
+    Some((
+        transform.transform_point3(loop_world[edge]),
+        transform.transform_point3(loop_world[(edge + 1) % n]),
+    ))
 }
 
 #[cfg(test)]

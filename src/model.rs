@@ -127,6 +127,16 @@ pub enum ParameterSource {
         body_b: usize,
         b: [i32; 3],
     },
+    /// Length of an **imported unit's feature edge** (#724), stored analytically: the
+    /// instance plus the `(face, edge ordinal)` in the unit's own document. Unlike the
+    /// quantized [`Self::BodyEdgeLength`] key, this re-resolves after the instance's
+    /// parameter overrides change — the boundary loop is recomputed from the rebuilt
+    /// embedded document, so the dimension follows the unit.
+    UnitEdgeLength {
+        instance: usize,
+        face: FaceId,
+        edge: usize,
+    },
 }
 
 /// A named length or angle parameter (expression stored verbatim, evaluated on demand).
@@ -1198,6 +1208,14 @@ pub enum BodySource {
         #[serde(default)]
         cut: Vec<usize>,
     },
+    /// The materialized geometry of one imported-unit instance (#724): indexes
+    /// `Document::unit_instances`. Derived data kept in sync by `units::sync_unit_bodies`
+    /// (one live body per live instance); its mesh is the instance's evaluated, placed
+    /// unit geometry. Having units be real bodies is what makes them snappable and
+    /// referenceable exactly like the document's own geometry — Move's point pickers,
+    /// body-edge dimensions (#647), face pickers, and export all just see a body. It has
+    /// no Elements-pane row of its own: the instance row (#723) stands for it.
+    UnitInstance(usize),
 }
 
 impl BodySource {
@@ -1219,7 +1237,8 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::EdgeTreated { .. } => &[],
+            | Self::EdgeTreated { .. }
+            | Self::UnitInstance(_) => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -1239,7 +1258,8 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::EdgeTreated { .. } => &[],
+            | Self::EdgeTreated { .. }
+            | Self::UnitInstance(_) => &[],
         }
     }
 
@@ -1257,7 +1277,8 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::EdgeTreated { .. } => None,
+            | Self::EdgeTreated { .. }
+            | Self::UnitInstance(_) => None,
         }
     }
 
@@ -1285,7 +1306,8 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::EdgeTreated { .. } => {}
+            | Self::EdgeTreated { .. }
+            | Self::UnitInstance(_) => {}
         }
     }
 
@@ -1316,7 +1338,8 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::EdgeTreated { .. } => {}
+            | Self::EdgeTreated { .. }
+            | Self::UnitInstance(_) => {}
         }
     }
 
@@ -1353,7 +1376,8 @@ impl BodySource {
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. }
-            | Self::EdgeTreated { .. } => {}
+            | Self::EdgeTreated { .. }
+            | Self::UnitInstance(_) => {}
         }
     }
 }

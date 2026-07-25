@@ -33,6 +33,7 @@ pub(crate) fn fixup_loaded_document(doc: &mut Document) -> Result<()> {
     // Depth cap + structural cycle check on imported units (#719). Native `open` re-runs
     // this with the file's real path, which also catches cycles across relative sources.
     crate::model::validate_units(doc, None)?;
+    crate::units::sync_unit_bodies(doc);
     ensure_construction_plane_indices(doc);
     crate::constraints::migrate_legacy_dimensions(doc);
     migrate_text_pins(doc);

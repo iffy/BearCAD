@@ -2960,6 +2960,9 @@ impl AppState {
     }
 
     pub fn refresh_document_health(&mut self) {
+        // Materialized unit bodies (#724) ride the same every-mutation seam: one live
+        // derived body per live instance before anything below reads the body list.
+        crate::units::sync_unit_bodies(&mut self.doc);
         self.document_health = recompute_document_health(&self.doc);
         // #103 part 2: this is the one seam every document mutation already goes through
         // (commits, open, undo, imports — never per-frame drags), so the "kernel fallback is
@@ -10700,6 +10703,19 @@ label_hidden: false,
                 }
             }
             Action::ClickSceneElement { element, additive } => {
+                // A unit's materialized body (#724) reads as its instance: a whole-body
+                // click selects the instance row (the body has no identity of its own in
+                // the UI). Sub-element picks (BodyVertex/Edge/Face) stay as-is — those are
+                // the snappable references the tools consume.
+                let element = match &element {
+                    SceneElement::Body(bi) => match self.doc.bodies.get(*bi).map(|b| &b.source) {
+                        Some(crate::model::BodySource::UnitInstance(i)) => {
+                            SceneElement::UnitInstance(*i)
+                        }
+                        _ => element,
+                    },
+                    _ => element,
+                };
                 // A body clicked while a body-gathering tool is active feeds that tool's set
                 // (#218) — the Elements pane picks bodies regardless of viewport sub-element
                 // picking — rather than touching the persistent selection. A line clicked while
@@ -15007,6 +15023,153 @@ mod tests {
         assert_eq!(loaded.units[0].document.parameters[0].name, "width");
 
         let _ = std::fs::remove_dir_all(&elsewhere_dir);
+    }
+
+    /// A unit file whose document extrudes a 10×10 square to a parametric `width` height
+    /// (#724), so overrides visibly move its geometry.
+    fn write_solid_unit_file(name: &str) -> std::path::PathBuf {
+        let mut doc = crate::model::Document::default();
+        doc.parameters.push(crate::model::Parameter {
+            name: "width".to_string(),
+            expression: "10".to_string(),
+            deleted: false,
+            source: None,
+        });
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            distance: 10.0,
+            target: None,
+            expression: "width".to_string(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        crate::storage::save(&path.to_string_lossy(), &doc).unwrap();
+        path
+    }
+
+    /// Import a solid unit into a fresh state anchored in the temp dir; returns the state
+    /// and the materialized unit body's index (#724).
+    fn state_with_solid_unit(file: &str, anchor: &str) -> (AppState, usize) {
+        let unit_path = write_solid_unit_file(file);
+        let mut state = AppState::default();
+        state.path = Some(std::env::temp_dir().join(anchor).to_string_lossy().to_string());
+        let r = state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        let _ = std::fs::remove_file(&unit_path);
+        let body = state
+            .doc
+            .bodies
+            .iter()
+            .position(|b| matches!(b.source, crate::model::BodySource::UnitInstance(0)))
+            .expect("the instance materialized as a body");
+        (state, body)
+    }
+
+    /// #724: a unit's corners are Move snap points, exactly like a body's — the same
+    /// quantized-key `MovePointRef` resolves against the materialized body's mesh.
+    #[test]
+    fn move_snaps_onto_a_unit_vertex() {
+        let (state, body) = state_with_solid_unit(
+            "bearcad_unit_snap_a.bearcad",
+            "bearcad_unit_snap_b.bearcad",
+        );
+        let corner = glam::Vec3::new(10.0, 10.0, 10.0);
+        let key = crate::hierarchy::quantize_body_point(corner);
+        let resolved = crate::extrude::move_point_world(
+            &state.doc,
+            &crate::model::MovePointRef::Vertex { body, p: key },
+        )
+        .expect("the unit corner resolves as a Move snap point");
+        assert!((resolved - corner).length() < 1e-2, "{resolved:?}");
+    }
+
+    /// #724: a dimension to a unit edge is stored analytically, so it re-resolves — and
+    /// its value updates — when the instance's parameter overrides change.
+    #[test]
+    fn dimension_to_a_unit_edge_follows_overrides() {
+        let (mut state, body) = state_with_solid_unit(
+            "bearcad_unit_dim_a.bearcad",
+            "bearcad_unit_dim_b.bearcad",
+        );
+        // Select a vertical edge (its length is the parametric extrusion height).
+        let (a, b) = (
+            crate::hierarchy::quantize_body_point(glam::Vec3::new(10.0, 10.0, 0.0)),
+            crate::hierarchy::quantize_body_point(glam::Vec3::new(10.0, 10.0, 10.0)),
+        );
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::BodyEdge { body, a, b },
+            additive: false,
+        });
+        let source = crate::parameters::derived_source_from_selection(&state.doc, &state.scene_selection)
+            .expect("the unit edge measures");
+        assert!(
+            matches!(source, crate::model::ParameterSource::UnitEdgeLength { .. }),
+            "the unit edge upgrades to its analytic identity: {source:?}"
+        );
+        let pi = crate::parameters::add_derived_parameter(&mut state.doc, source, None).unwrap();
+        let value = |doc: &crate::model::Document, pi: usize| {
+            crate::value::eval_length_mm_in_doc(&doc.parameters[pi].expression, doc).unwrap()
+        };
+        assert!((value(&state.doc, pi) - 10.0).abs() < 1e-2);
+
+        // Overriding the unit's width re-resolves the same analytic edge at its new length.
+        state.doc.unit_instances[0].parameter_overrides =
+            vec![("width".to_string(), "25".to_string())];
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        assert!(
+            (value(&state.doc, pi) - 25.0).abs() < 1e-2,
+            "the dimension follows the override: {}",
+            state.doc.parameters[pi].expression
+        );
+    }
+
+    /// #724: a unit's flat face is an ordinary pickable body face — `ElementKind::of`
+    /// classifies it as a face, so any face picker accepts it.
+    #[test]
+    fn a_picker_accepts_a_unit_face() {
+        let (state, body) = state_with_solid_unit(
+            "bearcad_unit_face_a.bearcad",
+            "bearcad_unit_face_b.bearcad",
+        );
+        let solid = crate::extrude::body_solid_mesh(&state.doc, body).expect("unit body meshes");
+        let faces = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid);
+        assert!(!faces.is_empty(), "the unit body has pickable coplanar faces");
+        let tris = &faces[0];
+        let centroid = tris
+            .iter()
+            .flat_map(|t| t.iter())
+            .copied()
+            .fold(glam::Vec3::ZERO, |acc, p| acc + p)
+            / (tris.len() * 3) as f32;
+        let normal = (tris[0][1] - tris[0][0]).cross(tris[0][2] - tris[0][0]).normalize();
+        let element = SceneElement::BodyFace {
+            body,
+            centroid: crate::hierarchy::quantize_body_point(centroid),
+            normal: crate::hierarchy::quantize_body_point(normal),
+        };
+        assert_eq!(
+            crate::element_picker::ElementKind::of(&element),
+            crate::element_picker::ElementKind::Face,
+            "face pickers accept the unit face"
+        );
+        assert!(crate::document_lifecycle::element_alive(&state.doc, element));
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it
