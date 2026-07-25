@@ -2339,6 +2339,19 @@ unit body upgrades to `ParameterSource::UnitEdgeLength { instance, face, edge }`
 follows override changes; unit geometry without an analytic face keeps the quantized key
 (STL parity).
 
+**Cut and combine (#726):** a unit builds a real kernel solid
+(`occt_unit_instance_shape`: the inner rebuilt document's bodies' shapes fused and
+placed), so it participates in body operations. A cutting extrude on a unit face lands on
+`BodySource::UnitCut { instance, cut }` — the importing document's **own** output body;
+the unit is never mutated (merge into a unit is refused → new body, with a status saying
+why). Combine takes unit bodies on either side through the ordinary boolean path.
+**Design decision:** a consumed unit body is never used up — it may feed several
+operations at once (the consumed-body validation exempts it); consumption only sets its
+`shadow` flag (ghosted-in-viewport presentation), recomputed by `sync_unit_bodies` every
+pass so deleting the consuming op un-ghosts it. A re-sync that replaces the embedded copy
+re-runs these ops against the new geometry (they resolve through the evaluation), and
+ops whose referenced geometry is gone report unhealthy through the existing machinery.
+
 **Sketch on a unit face (#725):** `FaceId::UnitFace { instance, face }` hosts a sketch on
 a unit's flat face — the inner analytic face resolved against the instance's rebuilt
 embedded document and placed by its transform (frame `None` → the sketch reports

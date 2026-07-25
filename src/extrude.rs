@@ -504,10 +504,19 @@ fn occt_body_shape_from_indices(
     add_indices: &[usize],
     cut_indices: &[usize],
 ) -> Option<crate::kernel::Shape> {
+    let solid = occt_fused_extrusions(doc, add_indices)??;
+    occt_subtract_cut_extrusions(doc, solid, cut_indices)
+}
+
+/// Subtract each cut extrusion's solid from `solid` (#35/#726). A cut that isn't
+/// kernel-representable aborts to the fallback (returns `None`); a cut contributing no
+/// geometry is a no-op. Shared by extrusion-backed bodies and unit-cut bodies.
+fn occt_subtract_cut_extrusions(
+    doc: &Document,
+    mut solid: crate::kernel::Shape,
+    cut_indices: &[usize],
+) -> Option<crate::kernel::Shape> {
     use crate::kernel::BoolOp;
-    let mut solid = occt_fused_extrusions(doc, add_indices)??;
-    // Subtract each cut extrusion's solid. A cut that isn't kernel-representable aborts to the
-    // fallback (returns None); a cut contributing no geometry is a no-op.
     for &ei in cut_indices {
         let extrusion = doc.extrusions.get(ei)?;
         if extrusion.deleted {
@@ -577,6 +586,29 @@ fn occt_body_shape_from_indices(
     Some(solid)
 }
 
+/// A unit instance's kernel solid (#726): every live body of the rebuilt embedded
+/// document built through the kernel, fused, and placed by the instance's transform.
+/// `None` when any inner body isn't kernel-representable — callers fall back to the
+/// mesh path (where a cut then can't apply and the fallback warning surfaces, like any
+/// non-kernel body).
+pub fn occt_unit_instance_shape(doc: &Document, instance: usize) -> Option<crate::kernel::Shape> {
+    let eval = crate::units::evaluate_instance(doc, instance)?;
+    let inner = &eval.document;
+    let mut solid: Option<crate::kernel::Shape> = None;
+    for bi in 0..inner.bodies.len() {
+        if inner.bodies[bi].deleted {
+            continue;
+        }
+        let shape = occt_body_shape(inner, bi)?;
+        solid = Some(match solid {
+            Some(fused) => fused.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
+            None => shape,
+        });
+    }
+    let m = crate::units::instance_transform(doc, instance);
+    solid?.transformed(&mat4_to_rows_3x4(&m))
+}
+
 /// The body's real OCCT BREP solid (adds fused, cuts subtracted), *before* tessellation —
 /// used by STEP export (#65) to write genuine BREP rather than tessellated triangles. `None`
 /// for a deleted/missing body, an imported-mesh body (no kernel solid), or a body whose
@@ -613,6 +645,15 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         }
         crate::model::BodySource::EdgeTreated { op, target } => {
             return occt_edge_treated_output_shape(doc, op, target);
+        }
+        // A unit instance's fused, placed kernel solid (#726).
+        crate::model::BodySource::UnitInstance(instance) => {
+            occt_unit_instance_shape(doc, instance)?
+        }
+        // A unit with extrusions cut out of it in the importing document (#726).
+        crate::model::BodySource::UnitCut { instance, ref cut } => {
+            let solid = occt_unit_instance_shape(doc, instance)?;
+            occt_subtract_cut_extrusions(doc, solid, cut)?
         }
         _ => occt_body_shape_from_indices(
             doc,
@@ -2802,6 +2843,22 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     // placed, merged into one solid so all body machinery (snap points, edge dimensions,
     // face picks, export) sees ordinary triangles.
     if let crate::model::BodySource::UnitInstance(instance) = body.source {
+        let triangles: Vec<[Vec3; 3]> = crate::units::placed_instance_meshes(doc, instance)
+            .into_iter()
+            .flat_map(|m| m.triangles)
+            .collect();
+        return (!triangles.is_empty()).then_some(SolidMesh { triangles });
+    }
+    // A unit with cuts (#726): kernel-only — subtract the tools from the unit's fused
+    // solid. When the kernel can't build it, fall back to the intact placed unit mesh
+    // (the cut is dropped and `kernel_fallback_cut_warning` says so, like any body).
+    if let crate::model::BodySource::UnitCut { instance, .. } = body.source {
+        if let Some(shape) = occt_body_shape(doc, body_index) {
+            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+            if !tris.is_empty() {
+                return Some(SolidMesh { triangles: tris });
+            }
+        }
         let triangles: Vec<[Vec3; 3]> = crate::units::placed_instance_meshes(doc, instance)
             .into_iter()
             .flat_map(|m| m.triangles)

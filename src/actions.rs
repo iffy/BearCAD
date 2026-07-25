@@ -3015,6 +3015,30 @@ impl AppState {
                 body.source.remove_extrusion(ei);
             }
         }
+        // Cutting an imported unit (#726): the read-only unit is never mutated — the cut
+        // lands on (or creates) the importing document's own UnitCut output body, and
+        // the unit's materialized body shadows as the consumed input. Merging into a
+        // unit is refused the same way (it would edit the unit): it becomes a new body.
+        if let ExtrudeBodyMode::Cut(bi) | ExtrudeBodyMode::MergeInto(bi) = mode {
+            if let Some(crate::model::BodySource::UnitInstance(instance)) =
+                self.doc.bodies.get(bi).map(|b| b.source.clone())
+            {
+                if matches!(mode, ExtrudeBodyMode::Cut(_)) {
+                    self.cut_into_unit(instance, ei);
+                } else {
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::single(ei),
+                        name: None,
+                        deleted: false,
+                        shadow: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Body);
+                    self.status =
+                        "Units are read-only — joined as a new body instead".to_string();
+                }
+                return;
+            }
+        }
         match mode {
             ExtrudeBodyMode::NewBody => {
                 self.doc.bodies.push(crate::model::Body {
@@ -3120,15 +3144,56 @@ impl AppState {
         );
     }
 
+    /// Register cut extrusion `ei` against unit `instance` (#726): appended to the
+    /// existing live `UnitCut` output body, or a fresh one. Returns the output body.
+    fn cut_into_unit(&mut self, instance: usize, ei: usize) -> usize {
+        let existing = self.doc.bodies.iter().position(|b| {
+            !b.deleted
+                && matches!(b.source,
+                    crate::model::BodySource::UnitCut { instance: i, .. } if i == instance)
+        });
+        match existing {
+            Some(ci) => {
+                self.doc.bodies[ci].source.append_cut_extrusion(ei);
+                ci
+            }
+            None => {
+                self.doc.bodies.push(crate::model::Body {
+                    source: crate::model::BodySource::UnitCut { instance, cut: vec![ei] },
+                    name: None,
+                    deleted: false,
+                    shadow: false,
+                });
+                self.doc.shape_order.push(ShapeKind::Body);
+                self.doc.bodies.len() - 1
+            }
+        }
+    }
+
     fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> usize {
         match mode {
             ExtrudeBodyMode::MergeInto(bi) => {
-                if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
+                // Merging into a read-only unit is refused (#726): fall through to a new
+                // body instead of editing the unit.
+                if let Some(body) = self
+                    .doc
+                    .bodies
+                    .get_mut(bi)
+                    .filter(|b| !b.deleted && !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
+                {
                     body.source.append_extrusion(ei);
                     return bi;
                 }
             }
             ExtrudeBodyMode::Cut(bi) => {
+                // Cutting a unit (#726) never mutates it: the cut lands on (or creates)
+                // the document's own UnitCut output body; the intact unit body shadows
+                // as the consumed input on the next sync pass.
+                if let Some(crate::model::BodySource::UnitInstance(instance)) =
+                    self.doc.bodies.get(bi).map(|b| b.source.clone())
+                {
+                    return self.cut_into_unit(instance, ei);
+                }
                 if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
                     body.source.append_cut_extrusion(ei);
                     return bi;
@@ -4362,6 +4427,15 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<usize> {
     let face = doc.sketch_face(sketch)?;
     let extrusion = match face {
         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => extrusion,
+        // A sketch on a unit's face (#726) offers the unit's materialized body, so an
+        // extrusion drawn there can **cut** into the unit (merging stays refused — the
+        // unit is read-only; see `apply_extrude_body_mode`).
+        FaceId::UnitFace { instance, .. } => {
+            return doc.bodies.iter().position(|b| {
+                !b.deleted
+                    && matches!(b.source, crate::model::BodySource::UnitInstance(i) if i == instance)
+            });
+        }
         _ => return None,
     };
     crate::model::body_index_for_extrusion(doc, extrusion)
@@ -4535,7 +4609,10 @@ fn validate_boolean_inputs(
         let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
             return Err(format!("Body {bi} not found"));
         };
-        if body.shadow && !editing_inputs.contains(&bi) {
+        // A read-only unit's body may feed several operations (#726): consumption
+        // shadows it for presentation but never uses it up.
+        let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
+        if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
             return Err(format!("Body {bi} is already consumed by another operation"));
         }
         if let crate::model::BodySource::Boolean { op, .. } = body.source {
@@ -4573,7 +4650,10 @@ fn validate_move_inputs(
         let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
             return Err(format!("Body {bi} not found"));
         };
-        if body.shadow && !editing_inputs.contains(&bi) {
+        // A read-only unit's body may feed several operations (#726): consumption
+        // shadows it for presentation but never uses it up.
+        let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
+        if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
             return Err(format!("Body {bi} is already consumed by another operation"));
         }
         if let crate::model::BodySource::Moved { op, .. } = body.source {
@@ -4840,7 +4920,10 @@ fn validate_slice_inputs(
         let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
             return Err(format!("Body {bi} not found"));
         };
-        if body.shadow && !editing_inputs.contains(&bi) {
+        // A read-only unit's body may feed several operations (#726): consumption
+        // shadows it for presentation but never uses it up.
+        let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
+        if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
             return Err(format!("Body {bi} is already consumed by another operation"));
         }
         if let crate::model::BodySource::Sliced { op, .. } = body.source {
@@ -10746,15 +10829,18 @@ label_hidden: false,
             Action::ClickSceneElement { element, additive } => {
                 // A unit's materialized body (#724) reads as its instance: a whole-body
                 // click selects the instance row (the body has no identity of its own in
-                // the UI). Sub-element picks (BodyVertex/Edge/Face) stay as-is — those are
-                // the snappable references the tools consume.
+                // the UI). Sub-element picks (BodyVertex/Edge/Face) stay as-is, and while
+                // a body-gathering tool (Combine, Slice, …) is active the raw body index
+                // passes through so the unit can be picked into the tool's set (#726).
                 let element = match &element {
-                    SceneElement::Body(bi) => match self.doc.bodies.get(*bi).map(|b| &b.source) {
-                        Some(crate::model::BodySource::UnitInstance(i)) => {
-                            SceneElement::UnitInstance(*i)
+                    SceneElement::Body(bi) if !body_gathering_tool_active(self) => {
+                        match self.doc.bodies.get(*bi).map(|b| &b.source) {
+                            Some(crate::model::BodySource::UnitInstance(i)) => {
+                                SceneElement::UnitInstance(*i)
+                            }
+                            _ => element,
                         }
-                        _ => element,
-                    },
+                    }
                     _ => element,
                 };
                 // A body clicked while a body-gathering tool is active feeds that tool's set
@@ -13428,6 +13514,24 @@ fn move_status(bodies: usize, planes: usize, images: usize) -> String {
 /// targets, Combine's active side, or a Revolve Cut's bodies — regardless of the viewport's
 /// sub-element picking. Returns whether a tool consumed the click (so it shouldn't also change
 /// the persistent selection). Shadow/deleted bodies aren't usable targets.
+/// Whether the active tool gathers whole bodies from clicks (#218/#726) — the states in
+/// which a unit's materialized body must pass through as a raw body index (so Combine,
+/// Slice, Move, Repeat, and cut pickers can take it) instead of reading as its instance.
+pub fn body_gathering_tool_active(state: &AppState) -> bool {
+    match state.tool {
+        Tool::Move | Tool::Repeat | Tool::Slice | Tool::Combine => true,
+        Tool::Revolve => state
+            .creating_revolve
+            .as_ref()
+            .is_some_and(|cr| cr.body_choice == RevolveBodyChoice::Cut),
+        Tool::Sweep => state
+            .creating_sweep
+            .as_ref()
+            .is_some_and(|cf| cf.body_choice == RevolveBodyChoice::Cut),
+        _ => false,
+    }
+}
+
 pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
     if state.doc.bodies.get(bi).is_none_or(|b| b.deleted || b.shadow) {
         return false;
@@ -15306,6 +15410,116 @@ mod tests {
                 .element_reason(SceneElement::Sketch(sketch))
                 .is_some(),
             "with a reason saying why"
+        );
+    }
+
+    /// #726: an extrusion with Output = Cut drawn on a unit's face cuts into the unit —
+    /// the result is the importing document's own body, the unit stays intact (its
+    /// materialized body just shadows as the consumed input), and a re-sync-style
+    /// replacement of the embedded copy re-runs the cut against the new geometry.
+    #[test]
+    fn cutting_extrude_targets_a_unit_and_survives_resync() {
+        let (mut state, unit_body) = state_with_solid_unit(
+            "bearcad_unit_cut_a.bearcad",
+            "bearcad_unit_cut_b.bearcad",
+        );
+        let face = unit_top_face(&state);
+        state.apply(Action::BeginSketch { face, viewport: None });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let hole = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 3.0, 3.0, 4.0, 4.0, [false; 4],
+        );
+        let r = state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(hole.to_vec())],
+            distance: -10.0,
+            body: ExtrudeBodyChoice::Cut,
+            target: None,
+            symmetric: false,
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+
+        let cut_body = state
+            .doc
+            .bodies
+            .iter()
+            .position(|b| {
+                !b.deleted
+                    && matches!(b.source, crate::model::BodySource::UnitCut { instance: 0, .. })
+            })
+            .expect("the cut lands on the document's own UnitCut body");
+        assert!(
+            state.doc.bodies[unit_body].shadow,
+            "the consumed unit body shadows; the unit itself is untouched"
+        );
+        assert_eq!(
+            state.doc.units[0].document.extrusions.len(),
+            1,
+            "the embedded copy still has only its own extrusion"
+        );
+        let volume = |mesh: &crate::extrude::SolidMesh| {
+            let (min, max) = mesh.bounds().unwrap();
+            (max - min).length()
+        };
+        let cut_mesh =
+            crate::extrude::body_solid_mesh(&state.doc, cut_body).expect("cut body meshes");
+        assert!(!cut_mesh.is_empty());
+        let before = volume(&cut_mesh);
+
+        // A boolean with the unit on side B (#726): the unit body feeds the op like any
+        // other body.
+        let plate_lines = {
+            state.apply(Action::BeginSketch {
+                face: crate::model::FaceId::ConstructionPlane(0),
+                viewport: None,
+            });
+            let s2 = state.sketch_session.unwrap().sketch;
+            let l = crate::construction::add_line_rectangle(
+                &mut state.doc, s2, -20.0, 0.0, 10.0, 10.0, [false; 4],
+            );
+            state.apply(Action::CreateExtrusion {
+                expression: None,
+                sketch: s2,
+                faces: vec![crate::model::ExtrudeFace::Polygon(l.to_vec())],
+                distance: 4.0,
+                body: ExtrudeBodyChoice::New,
+                target: None,
+                symmetric: false,
+            });
+            l
+        };
+        let _ = plate_lines;
+        let own_body = state
+            .doc
+            .bodies
+            .iter()
+            .position(|b| !b.deleted && !b.shadow && matches!(b.source, crate::model::BodySource::Extrusion(_)))
+            .expect("the plate body exists");
+        let rb = state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![own_body],
+            b: vec![unit_body],
+            keep_b: false,
+        });
+        assert_eq!(rb, ActionResult::Ok, "status: {}", state.status);
+        assert!(
+            !state.doc.boolean_ops.is_empty() && !state.doc.boolean_ops[0].deleted,
+            "the boolean took the unit as an input"
+        );
+
+        // Re-sync simulation (#732 will do this from disk): the embedded copy is replaced
+        // with new geometry; both operations re-run against it.
+        let mut taller = state.doc.units[0].document.clone();
+        taller.parameters[0].expression = "18".to_string();
+        crate::parameters::recompute_document_geometry(&mut taller).unwrap();
+        state.doc.units[0].document = taller;
+        state.refresh_document_health();
+        let cut_after =
+            crate::extrude::body_solid_mesh(&state.doc, cut_body).expect("cut re-runs");
+        assert!(
+            (volume(&cut_after) - before).abs() > 1e-3,
+            "the cut result follows the replaced embedded geometry"
         );
     }
 

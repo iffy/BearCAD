@@ -69,6 +69,11 @@ warmer tone so it reads as not-yours-to-edit.
   appears in the sketch as projected construction edges — dimension and constrain to
   them; they re-project when the unit's parameters change. If the face later disappears,
   the sketch reports unhealthy instead of landing somewhere wrong.
+- **Cut into it**: an extrusion drawn on a unit face with Output = **Cut** carves the
+  unit — the result is your document's own body; the unit file is never touched.
+- **Combine with it**: pick a unit into either side of any boolean. A unit can feed
+  several operations at once; while consumed it ghosts in the viewport like any
+  operation input.
 - Exports include unit geometry, so an assembly prints whole.
 
 ```lua

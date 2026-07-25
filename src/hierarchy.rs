@@ -2299,7 +2299,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                     doc.component_of(CM::EdgeTreatmentOp, *op)
                 }
                 BodySource::Solid { .. } => None,
-                BodySource::UnitInstance(_) => None,
+                BodySource::UnitInstance(_) | BodySource::UnitCut { .. } => None,
             }
         }),
         SceneElement::Image(i) => doc

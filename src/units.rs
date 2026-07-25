@@ -196,6 +196,19 @@ pub fn sync_unit_bodies(doc: &mut Document) {
             }
             None => {}
         }
+        // Consumed units shadow (#726): a live cut result or a boolean/move/slice input
+        // ghosts the intact unit body exactly like any consumed input — recomputed here
+        // every pass, so deleting the consuming op un-shadows it again. The unit itself
+        // is never mutated; shadowing is importing-document presentation state.
+        if let Some(bi) = body_for(doc, instance) {
+            let consumed_by_cut = doc.bodies.iter().any(|b| {
+                !b.deleted
+                    && matches!(b.source,
+                        BodySource::UnitCut { instance: i, ref cut } if i == instance && !cut.is_empty())
+            });
+            doc.bodies[bi].shadow = consumed_by_cut
+                || crate::model::body_shadowed_by_other_ops(doc, bi, None, None, None, None);
+        }
     }
 }
 

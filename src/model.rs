@@ -1233,6 +1233,11 @@ pub enum BodySource {
     /// body-edge dimensions (#647), face pickers, and export all just see a body. It has
     /// no Elements-pane row of its own: the instance row (#723) stands for it.
     UnitInstance(usize),
+    /// A unit instance's geometry with extrusions **cut** out of it in the importing
+    /// document (#726): the read-only unit is the input; this body is the importing
+    /// document's own result. The unit's materialized body shadows while consumed, the
+    /// way a boolean input does — but is never mutated.
+    UnitCut { instance: usize, cut: Vec<usize> },
 }
 
 impl BodySource {
@@ -1255,15 +1260,18 @@ impl BodySource {
             | Self::Repeated { .. }
             | Self::Sliced { .. }
             | Self::EdgeTreated { .. }
-            | Self::UnitInstance(_) => &[],
+            | Self::UnitInstance(_)
+            | Self::UnitCut { .. } => &[],
             Self::Imported(_) => &[],
         }
     }
 
-    /// Extrusions **subtracted** (cut) from the body (#35). Empty for every non-`Solid` form.
+    /// Extrusions **subtracted** (cut) from the body (#35). Empty for every non-`Solid`
+    /// form except a unit cut (#726).
     pub fn cut_extrusion_indices(&self) -> &[usize] {
         match self {
             Self::Solid { cut, .. } => cut.as_slice(),
+            Self::UnitCut { cut, .. } => cut.as_slice(),
             Self::Extrusion(_)
             | Self::Extrusions(_)
             | Self::Imported(_)
@@ -1295,7 +1303,8 @@ impl BodySource {
             | Self::Repeated { .. }
             | Self::Sliced { .. }
             | Self::EdgeTreated { .. }
-            | Self::UnitInstance(_) => None,
+            | Self::UnitInstance(_)
+            | Self::UnitCut { .. } => None,
         }
     }
 
@@ -1324,7 +1333,8 @@ impl BodySource {
             | Self::Repeated { .. }
             | Self::Sliced { .. }
             | Self::EdgeTreated { .. }
-            | Self::UnitInstance(_) => {}
+            | Self::UnitInstance(_)
+            | Self::UnitCut { .. } => {}
         }
     }
 
@@ -1345,6 +1355,8 @@ impl BodySource {
                 };
             }
             Self::Solid { cut, .. } => cut.push(extrusion),
+            // A unit-cut body takes further cuts (#726).
+            Self::UnitCut { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
             Self::Imported(_)
             | Self::Loft(_)
@@ -1382,6 +1394,11 @@ impl BodySource {
                         _ => Self::Extrusions(std::mem::take(add)),
                     };
                 }
+            }
+            // A unit cut keeps its form with an empty list (#726): it then reads as the
+            // intact unit; the sync pass re-shadows accordingly.
+            Self::UnitCut { cut, .. } => {
+                cut.retain(|&ei| ei != extrusion);
             }
             Self::Extrusion(_)
             | Self::Imported(_)
