@@ -2442,6 +2442,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::ConstructionPlane), "Tilt") => Some(
             "The tilt about the anchored axis, in degrees — for an edge or axis anchor.",
         ),
+        (Some(Tool::Select), "Selection") => Some(
+            "Everything currently selected, one row each — click things in the viewport \
+             or the Elements pane; a row's clear drops it.",
+        ),
         (Some(Tool::Constraint), "Selection") => Some(
             "The geometry the constraint applies to — click lines, points, or edges in \
              the viewport; Shift+click adds more.",

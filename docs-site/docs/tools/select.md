@@ -49,3 +49,10 @@ tool that gathers elements uses this same control.
 With nothing selected, the context pane holds the document's
 [**Default units**](/docs/parameters#display-units). **Delete** removes the selection;
 **N** jumps to the name field for renaming.
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Select tool's Context pane, each field explained](/img/screenshots/pane-select.png)
