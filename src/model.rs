@@ -46,6 +46,14 @@ pub enum FaceId {
         profile: ExtrudeFace,
         edge: u8,
     },
+    /// A flat face of an imported unit (#725): the instance plus the face's analytic
+    /// identity **in the unit's own document**. Resolved against the instance's rebuilt
+    /// embedded document and placed by its transform, so a sketch hosted here follows the
+    /// unit through override and placement changes.
+    UnitFace {
+        instance: usize,
+        face: Box<FaceId>,
+    },
 }
 
 impl Default for FaceId {
@@ -78,7 +86,8 @@ impl FaceId {
             | FaceId::Polygon(_)
             | FaceId::ConstructionPlane(_)
             | FaceId::RevolveCap { .. }
-            | FaceId::RevolveSide { .. } => None,
+            | FaceId::RevolveSide { .. }
+            | FaceId::UnitFace { .. } => None,
         }
     }
 
@@ -220,12 +229,20 @@ pub struct Line {
 /// by their quantized endpoints (the same geometry-keyed identity 3D selection uses, #156):
 /// there is no stable topological name for mesh edges, so if a rebuild moves the source the
 /// projection keeps its last resolved shape (a static fallback) rather than dangling.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ProjectionSource {
     BodyEdge {
         body: usize,
         a: [i32; 3],
         b: [i32; 3],
+    },
+    /// A boundary edge of an imported unit's analytic face (#725): unlike the quantized
+    /// [`Self::BodyEdge`] key, this re-resolves against the instance's rebuilt embedded
+    /// document, so the projection follows the unit's parameter overrides.
+    UnitEdge {
+        instance: usize,
+        face: FaceId,
+        edge: usize,
     },
 }
 

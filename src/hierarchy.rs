@@ -479,6 +479,8 @@ fn point_effective_visible(
 
 pub fn face_element(face: FaceId) -> SceneElement {
     match face {
+        // A sketch on a unit's face depends on the instance (#725).
+        FaceId::UnitFace { instance, .. } => SceneElement::UnitInstance(instance),
         FaceId::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         FaceId::Circle(i) => SceneElement::Circle(i),
         // A polygon face is just a closed loop of existing lines (#66); its visibility

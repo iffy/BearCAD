@@ -220,7 +220,7 @@ pub fn placed_instance_meshes(doc: &Document, instance: usize) -> Vec<SolidMesh>
 
 /// Every analytic face of a unit's rebuilt document (#724): the caps and flat sides of
 /// its live extrusions — the faces [`crate::extrude::face_boundary_loop_world`] resolves.
-fn inner_face_ids(inner: &Document) -> Vec<crate::model::FaceId> {
+pub fn inner_face_ids(inner: &Document) -> Vec<crate::model::FaceId> {
     use crate::model::{ExtrudeFace, FaceId};
     let mut faces = Vec::new();
     for (ei, extrusion) in inner.extrusions.iter().enumerate() {
@@ -299,6 +299,20 @@ pub fn unit_edge_world_segment(
         transform.transform_point3(loop_world[edge]),
         transform.transform_point3(loop_world[(edge + 1) % n]),
     ))
+}
+
+/// The world-space boundary polygon of a unit's analytic face (#725): the inner face's
+/// boundary loop, placed by the instance's transform. `None` once the instance, its
+/// rebuild, or the face is gone.
+pub fn unit_face_world_polygon(
+    doc: &Document,
+    instance: usize,
+    face: &crate::model::FaceId,
+) -> Option<Vec<glam::Vec3>> {
+    let eval = evaluate_instance(doc, instance)?;
+    let loop_world = crate::extrude::face_boundary_loop_world(&eval.document, face)?;
+    let transform = instance_transform(doc, instance);
+    Some(loop_world.into_iter().map(|p| transform.transform_point3(p)).collect())
 }
 
 #[cfg(test)]

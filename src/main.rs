@@ -13487,7 +13487,8 @@ fn pick_extrude_face(
         | FaceId::ExtrudeCap { .. }
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
-        | FaceId::RevolveSide { .. } => {
+        | FaceId::RevolveSide { .. }
+        | FaceId::UnitFace { .. } => {
             return None;
         }
     };
@@ -14781,6 +14782,12 @@ fn draw_face_highlight(
         } => {
             if let Some((poly, _, _)) = extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
             {
+                draw_polygon_face_highlight(painter, project, &poly, color);
+            }
+        }
+        // A unit's flat face (#725): its placed boundary polygon.
+        FaceId::UnitFace { instance, ref face } => {
+            if let Some(poly) = units::unit_face_world_polygon(doc, instance, face) {
                 draw_polygon_face_highlight(painter, project, &poly, color);
             }
         }

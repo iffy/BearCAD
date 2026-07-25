@@ -3822,6 +3822,10 @@ pub fn side_quad_world(
 /// extrusion body faces, and imported STL/STEP bodies have no `FaceId` of this shape at all.
 pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec3>> {
     match face {
+        // A unit's flat face (#725): the inner face's loop, placed by the instance.
+        FaceId::UnitFace { instance, face } => {
+            crate::units::unit_face_world_polygon(doc, *instance, face)
+        }
         FaceId::ExtrudeCap {
             extrusion,
             profile,

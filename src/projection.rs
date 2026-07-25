@@ -15,18 +15,23 @@ use glam::Vec3;
 /// Resolve a projection source to its current world-space segment, or `None` when the
 /// source geometry no longer exists (deleted body, or the keyed edge no longer matches
 /// after a rebuild).
-pub fn resolve_projection_source(doc: &Document, source: ProjectionSource) -> Option<(Vec3, Vec3)> {
+pub fn resolve_projection_source(doc: &Document, source: &ProjectionSource) -> Option<(Vec3, Vec3)> {
     match source {
         ProjectionSource::BodyEdge { body, a, b } => {
-            let mesh = crate::extrude::body_solid_mesh(doc, body)?;
+            let mesh = crate::extrude::body_solid_mesh(doc, *body)?;
             let q = crate::hierarchy::quantize_body_point;
             for (ea, eb) in crate::gpu_viewport::solid_mesh_unique_edges(&mesh) {
                 let (qa, qb) = (q(ea), q(eb));
-                if (qa == a && qb == b) || (qa == b && qb == a) {
+                if (qa == *a && qb == *b) || (qa == *b && qb == *a) {
                     return Some((ea, eb));
                 }
             }
             None
+        }
+        // A unit face's boundary edge (#725): analytic, so it re-resolves after the
+        // instance's overrides change instead of going stale like a quantized key.
+        ProjectionSource::UnitEdge { instance, face, edge } => {
+            crate::units::unit_edge_world_segment(doc, *instance, face, *edge)
         }
     }
 }
@@ -54,7 +59,7 @@ pub fn refresh_projections(doc: &mut Document) {
         .enumerate()
         .filter(|(_, line)| !line.deleted)
         .filter_map(|(li, line)| {
-            let source = line.projection?;
+            let source = line.projection.as_ref()?;
             let (wa, wb) = resolve_projection_source(doc, source)?;
             let a = project_world_point_into_sketch(doc, line.sketch, wa)?;
             let b = project_world_point_into_sketch(doc, line.sketch, wb)?;

@@ -1524,6 +1524,7 @@ fn face_kind_name(face: &FaceId) -> &'static str {
         FaceId::ExtrudeSide { .. } => "extrude_side",
         FaceId::RevolveCap { .. } => "revolve_cap",
         FaceId::RevolveSide { .. } => "revolve_side",
+        FaceId::UnitFace { .. } => "unit_face",
     }
 }
 

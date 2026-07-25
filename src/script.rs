@@ -2698,6 +2698,9 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         // Cap/side faces aren't yet addressable from the two-argument script form.
         FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", *extrusion),
         FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", *extrusion),
+        // A unit face isn't fully addressable from the two-argument form either (#725):
+        // the inner face rides only in session recordings via its instance.
+        FaceId::UnitFace { instance, .. } => ("unit_face", *instance),
         // A polygon's full line list isn't expressible as a single index; same limitation
         // as cap/side faces above (#66).
         FaceId::Polygon(lines) => ("polygon", *lines.first().unwrap_or(&0)),
@@ -2898,6 +2901,11 @@ fn face_id_lua_ref(face: &FaceId) -> String {
         FaceId::RevolveSide { revolution, profile, edge } => format!(
             "{{ kind = \"revolve_side\", revolution = {revolution}, {}, edge = {edge} }}",
             extrude_face_profile_lua_fields(profile)
+        ),
+        // The inner face rides as its JSON encoding (#725), like unit_edge_length's face.
+        FaceId::UnitFace { instance, face } => format!(
+            "{{ kind = \"unit_face\", instance = {instance}, face = {:?} }}",
+            serde_json::to_string(face.as_ref()).unwrap_or_default()
         ),
     }
 }

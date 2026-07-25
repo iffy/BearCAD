@@ -55,6 +55,23 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
                 normal: plane.normal,
             })
         }
+        // A unit's flat face (#725): the inner face's frame in the instance's rebuilt
+        // document, placed by its transform — `None` (→ unhealthy sketch) once the
+        // instance is deleted or a re-sync removed the face.
+        FaceId::UnitFace { instance, face } => {
+            if doc.unit_instances.get(instance).is_none_or(|i| i.deleted) {
+                return None;
+            }
+            let eval = crate::units::evaluate_instance(doc, instance)?;
+            let inner = sketch_frame(&eval.document, *face)?;
+            let m = crate::units::instance_transform(doc, instance);
+            Some(SketchFrame {
+                origin: m.transform_point3(inner.origin),
+                u_axis: m.transform_vector3(inner.u_axis).normalize_or_zero(),
+                v_axis: m.transform_vector3(inner.v_axis).normalize_or_zero(),
+                normal: m.transform_vector3(inner.normal).normalize_or_zero(),
+            })
+        }
         FaceId::Circle(i) => {
             let circle = doc.circles.get(i)?;
             let face = doc.sketch_face(circle.sketch)?;
@@ -610,6 +627,28 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
+        // A unit's flat face (#725): frame the face's placed boundary polygon.
+        FaceId::UnitFace { instance, ref face } => {
+            let poly = crate::units::unit_face_world_polygon(doc, instance, face)?;
+            let mut zoom: Option<SketchZoomBounds> = None;
+            for p in &poly {
+                let (u, v) = world_to_local(&frame, *p);
+                extend_sketch_bounds(&mut zoom, u, v, u, v);
+            }
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
+                zoom = Some(match zoom {
+                    Some(z) => SketchZoomBounds::union(z, children),
+                    None => children,
+                });
+            }
+            let zoom = zoom?;
+            let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
+            Some(SketchCameraTarget {
+                target,
+                face_normal,
+                zoom: Some(zoom),
+            })
+        }
         FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
             let poly = match face {
                 FaceId::RevolveCap {
@@ -681,6 +720,7 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         FaceId::RevolveSide {
             revolution, edge, ..
         } => format!("Revolution {revolution} side face {edge}"),
+        FaceId::UnitFace { instance, .. } => format!("Unit instance {instance} face"),
     }
 }
 
@@ -726,7 +766,8 @@ fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
         | FaceId::ExtrudeCap { .. }
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
-        | FaceId::RevolveSide { .. } => return None,
+        | FaceId::RevolveSide { .. }
+        | FaceId::UnitFace { .. } => return None,
     };
     doc.sketches.get(sketch).map(|s| s.face.clone())
 }
@@ -879,6 +920,32 @@ pub fn pick_sketch_face(
                     if !sketch_shadows(&best, &candidate, dist, doc) {
                         consider_face_pick(&mut best, candidate, dist, depth(c));
                     }
+                }
+            }
+        }
+    }
+
+    // Flat faces of imported units are sketchable (#725): each live instance's analytic
+    // inner faces, placed by its transform.
+    for instance in 0..doc.unit_instances.len() {
+        if doc.unit_instances[instance].deleted {
+            continue;
+        }
+        let Some(eval) = crate::units::evaluate_instance(doc, instance) else {
+            continue;
+        };
+        for inner_face in crate::units::inner_face_ids(&eval.document) {
+            let Some(poly) = crate::units::unit_face_world_polygon(doc, instance, &inner_face)
+            else {
+                continue;
+            };
+            if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                let candidate = FaceId::UnitFace {
+                    instance,
+                    face: Box::new(inner_face),
+                };
+                if !sketch_shadows(&best, &candidate, dist, doc) {
+                    consider_face_pick(&mut best, candidate, dist, depth(c));
                 }
             }
         }

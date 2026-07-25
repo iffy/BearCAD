@@ -65,6 +65,10 @@ warmer tone so it reads as not-yours-to-edit.
   edges, and vertices fill any tool's picker.
 - Measure to it: select a unit edge (or corner pair) and add a dimension parameter as
   usual. A dimension to a unit edge follows the unit when an instance parameter changes.
+- **Sketch on it**: pick a flat unit face with the Sketch tool. The face's own outline
+  appears in the sketch as projected construction edges — dimension and constrain to
+  them; they re-project when the unit's parameters change. If the face later disappears,
+  the sketch reports unhealthy instead of landing somewhere wrong.
 - Exports include unit geometry, so an assembly prints whole.
 
 ```lua

@@ -289,7 +289,30 @@ pub fn recompute_document_health(doc: &Document) -> DocumentHealth {
     mark_invalid_constraints_and_unstable_geometry(doc, &mut health);
     mark_invalid_parameters(doc, &mut health);
     mark_broken_unit_instances(doc, &mut health);
+    mark_orphaned_unit_face_sketches(doc, &mut health);
     health
+}
+
+/// A sketch hosted on an imported unit's face (#725) goes **invalid** when that face no
+/// longer resolves — the instance was deleted, or a re-sync removed the face — rather
+/// than silently landing somewhere wrong.
+fn mark_orphaned_unit_face_sketches(doc: &Document, health: &mut DocumentHealth) {
+    for (si, sketch) in doc.sketches.iter().enumerate() {
+        if sketch.deleted {
+            continue;
+        }
+        if !matches!(sketch.face, crate::model::FaceId::UnitFace { .. }) {
+            continue;
+        }
+        if crate::face::sketch_frame(doc, sketch.face.clone()).is_none() {
+            let element = SceneElement::Sketch(si);
+            health.elements.insert(element.clone(), HealthStatus::Invalid);
+            health.element_reasons.insert(
+                element,
+                "The imported-unit face this sketch sits on is gone".to_string(),
+            );
+        }
+    }
 }
 
 /// A unit whose embedded document fails to rebuild must not take the importing document

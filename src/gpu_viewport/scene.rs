@@ -2671,7 +2671,7 @@ impl<'a> SceneMesh<'a> {
                     self.push_triangle(lift(quad[0]), lift(quad[2]), lift(quad[3]), fill);
                 }
             }
-            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
+            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -2685,6 +2685,10 @@ impl<'a> SceneMesh<'a> {
                         edge,
                     } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
                         .map(|(poly, _, _)| poly),
+                    // A unit's flat face (#725): its placed boundary polygon.
+                    FaceId::UnitFace { instance, ref face } => {
+                        crate::units::unit_face_world_polygon(doc, instance, face)
+                    }
                     _ => None,
                 };
                 if let Some(poly) = poly {
@@ -2882,7 +2886,7 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
-            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
+            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -2896,6 +2900,10 @@ impl<'a> SceneMesh<'a> {
                         edge,
                     } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
                         .map(|(poly, _, _)| poly),
+                    // A unit's flat face (#725): its placed boundary polygon.
+                    FaceId::UnitFace { instance, ref face } => {
+                        crate::units::unit_face_world_polygon(doc, instance, face)
+                    }
                     _ => None,
                 };
                 if let Some(poly) = poly {

@@ -6208,7 +6208,48 @@ impl AppState {
                 if sketch_frame(&self.doc, face.clone()).is_none() {
                     return ActionResult::Err(format!("Unknown face {:?}", face));
                 }
-                let sketch = self.doc.add_sketch(face);
+                let sketch = self.doc.add_sketch(face.clone());
+                // Sketching on a unit's face (#725) projects that face's own boundary in
+                // as associative construction edges — the Project tool's treatment — so
+                // what's already there can be dimensioned and constrained to. The sources
+                // are analytic (face + edge ordinal), so an override change re-projects.
+                if let crate::model::FaceId::UnitFace { instance, face: inner } = &face {
+                    let edge_count = crate::units::unit_face_world_polygon(
+                        &self.doc,
+                        *instance,
+                        inner,
+                    )
+                    .map(|poly| poly.len())
+                    .unwrap_or(0);
+                    for edge in 0..edge_count {
+                        let source = crate::model::ProjectionSource::UnitEdge {
+                            instance: *instance,
+                            face: (**inner).clone(),
+                            edge,
+                        };
+                        let Some((wa, wb)) =
+                            crate::projection::resolve_projection_source(&self.doc, &source)
+                        else {
+                            continue;
+                        };
+                        let (Some(a), Some(b)) = (
+                            crate::projection::project_world_point_into_sketch(&self.doc, sketch, wa),
+                            crate::projection::project_world_point_into_sketch(&self.doc, sketch, wb),
+                        ) else {
+                            continue;
+                        };
+                        if ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() < 1e-3 {
+                            continue;
+                        }
+                        let mut line = crate::model::Line::from_local_endpoints(
+                            sketch, a.0, a.1, b.0, b.1,
+                        );
+                        line.construction = true;
+                        line.projection = Some(source);
+                        self.doc.lines.push(line);
+                        self.doc.shape_order.push(crate::model::ShapeKind::Line);
+                    }
+                }
                 self.enter_sketch(sketch, viewport, None)
             }
             Action::OpenSketch { sketch, viewport } => {
@@ -7087,7 +7128,7 @@ impl AppState {
                 let mut created = 0usize;
                 for source in sources {
                     let Some((wa, wb)) =
-                        crate::projection::resolve_projection_source(&self.doc, source)
+                        crate::projection::resolve_projection_source(&self.doc, &source)
                     else {
                         continue;
                     };
@@ -15170,6 +15211,102 @@ mod tests {
             "face pickers accept the unit face"
         );
         assert!(crate::document_lifecycle::element_alive(&state.doc, element));
+    }
+
+    /// The top cap of the solid unit's box as a sketchable unit face (#725).
+    fn unit_top_face(state: &AppState) -> crate::model::FaceId {
+        let inner_face = crate::units::inner_face_ids(
+            &crate::units::evaluate_instance(&state.doc, 0).unwrap().document,
+        )
+        .into_iter()
+        .find(|f| matches!(f, crate::model::FaceId::ExtrudeCap { top: true, .. }))
+        .expect("the unit box has a top cap");
+        crate::model::FaceId::UnitFace { instance: 0, face: Box::new(inner_face) }
+    }
+
+    /// #725: sketching on a unit's face projects its outline in as associative
+    /// construction edges, which re-project when an instance override changes.
+    #[test]
+    fn sketch_on_a_unit_face_projects_its_outline_and_follows_overrides() {
+        let (mut state, _) = state_with_solid_unit(
+            "bearcad_unit_sketchface_a.bearcad",
+            "bearcad_unit_sketchface_b.bearcad",
+        );
+        let face = unit_top_face(&state);
+        let r = state.apply(Action::BeginSketch { face: face.clone(), viewport: None });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        let sketch = state.sketch_session.unwrap().sketch;
+
+        let projected: Vec<usize> = state
+            .doc
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                l.sketch == sketch
+                    && matches!(l.projection, Some(crate::model::ProjectionSource::UnitEdge { .. }))
+            })
+            .map(|(li, _)| li)
+            .collect();
+        assert_eq!(projected.len(), 4, "the square cap projects its four edges");
+        assert!(
+            projected.iter().all(|&li| state.doc.lines[li].construction),
+            "projected edges are construction references"
+        );
+        let side = |doc: &crate::model::Document, li: usize| {
+            let l = &doc.lines[li];
+            (((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)) as f32).sqrt()
+        };
+        assert!((side(&state.doc, projected[0]) - 10.0).abs() < 1e-2);
+
+        // The cap sits at the parametric height; overriding `width` moves it and the
+        // sketch's frame + projections follow. The cap outline stays 10x10 (only the
+        // height changes), so verify by the sketch frame's origin height instead.
+        state.doc.unit_instances[0].parameter_overrides =
+            vec![("width".to_string(), "25".to_string())];
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        let frame = crate::face::sketch_frame(&state.doc, face).expect("frame still resolves");
+        assert!(
+            (frame.origin.z - 25.0).abs() < 1e-2,
+            "the sketch plane follows the override: {:?}",
+            frame.origin
+        );
+        // Re-projection kept the outline attached (endpoints still resolve, same length).
+        assert!((side(&state.doc, projected[0]) - 10.0).abs() < 1e-2);
+    }
+
+    /// #725: deleting the instance takes the sketch on its face unhealthy rather than
+    /// letting it land somewhere wrong.
+    #[test]
+    fn deleting_the_instance_takes_the_unit_face_sketch_unhealthy() {
+        let (mut state, _) = state_with_solid_unit(
+            "bearcad_unit_sketchdead_a.bearcad",
+            "bearcad_unit_sketchdead_b.bearcad",
+        );
+        let face = unit_top_face(&state);
+        state.apply(Action::BeginSketch { face, viewport: None });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.apply(Action::ExitSketch);
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::UnitInstance(0),
+            additive: false,
+        });
+        state.apply(Action::DeleteSelection);
+        assert_eq!(
+            state
+                .document_health
+                .element_status(SceneElement::Sketch(sketch)),
+            crate::document_health::HealthStatus::Invalid,
+            "the orphaned sketch reports invalid"
+        );
+        assert!(
+            state
+                .document_health
+                .element_reason(SceneElement::Sketch(sketch))
+                .is_some(),
+            "with a reason saying why"
+        );
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it

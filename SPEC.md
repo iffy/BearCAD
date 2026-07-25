@@ -2339,6 +2339,16 @@ unit body upgrades to `ParameterSource::UnitEdgeLength { instance, face, edge }`
 follows override changes; unit geometry without an analytic face keeps the quantized key
 (STL parity).
 
+**Sketch on a unit face (#725):** `FaceId::UnitFace { instance, face }` hosts a sketch on
+a unit's flat face — the inner analytic face resolved against the instance's rebuilt
+embedded document and placed by its transform (frame `None` → the sketch reports
+**invalid** with a reason, via `mark_orphaned_unit_face_sketches`). The Sketch tool picks
+unit faces like any analytic face (`pick_sketch_face` enumerates `units::inner_face_ids`
+placed polygons). Beginning the sketch projects the face's boundary in as associative
+construction edges carrying `ProjectionSource::UnitEdge { instance, face, edge }` —
+analytic, so `refresh_projections` re-projects them when overrides change and anything
+constrained to them follows.
+
 **Elements pane (#723):** an instance is **one selectable row** (`SceneElement::
 UnitInstance`): rename, hide, select, and delete work like any element; deleting
 tombstones the instance and the **embedded copy stays** (unit indices remain stable, and
