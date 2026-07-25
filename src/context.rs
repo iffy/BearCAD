@@ -2400,6 +2400,17 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Sweep), "Profile") => Some(
+            "The closed sketch faces to push along the path. Click a face to add it, \
+             click it again to drop it.",
+        ),
+        (Some(Tool::Sweep), "Path") => Some(
+            "The line(s) the profile travels along, chained end to end — straight or \
+             curved. Click lines in the viewport in order.",
+        ),
+        (Some(Tool::Sweep), "Output") => Some(
+            "Whether this becomes a new body, joins the body it touches, or cuts into it.",
+        ),
         (Some(Tool::Chamfer), "Selection") => Some(
             "The sketch corners to cut flat. Click a corner where two lines meet; the cut \
              distance is typed in the 3D view.",
