@@ -3070,8 +3070,9 @@ pub struct ImportedUnit {
     /// The embedded copy of the source document (recursive — it may hold units of its
     /// own, capped at [`MAX_UNIT_DEPTH`]).
     pub document: Document,
-    /// The source file's modification time (seconds since the Unix epoch) when the copy
-    /// was last synced; the cheap first staleness check.
+    /// The source file's modification time (**nanoseconds** since the Unix epoch — save
+    /// bursts land inside one second) when the copy was last synced; the cheap first
+    /// staleness check.
     #[serde(default)]
     pub source_mtime: Option<i64>,
     /// [`content_hash`] of the source file's bytes when the copy was last synced; the

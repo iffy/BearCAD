@@ -361,7 +361,7 @@ pub fn unit_is_stale(
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64);
+        .map(|d| d.as_nanos() as i64);
     let Some(mtime) = mtime else {
         return false;
     };
@@ -372,6 +372,94 @@ pub fn unit_is_stale(
         return false;
     };
     unit.source_hash != Some(crate::model::content_hash(&bytes))
+}
+
+/// Debounced watcher over dynamic units' source files (#733): reports a unit ready to
+/// re-sync only once its file has sat **quiet for a full poll** since the change was
+/// first seen — so an editor's rapid rewrites collapse into one rebuild, and a writer
+/// caught mid-save (before its temp-file rename lands) is never read half-written.
+/// Static units are never watched. Nanosecond mtimes, so back-to-back saves within one
+/// second still read as distinct.
+#[derive(Default)]
+pub struct UnitSourceWatcher {
+    /// Last observed source mtime (nanos since epoch) per unit index.
+    observed: std::collections::HashMap<usize, u128>,
+}
+
+impl UnitSourceWatcher {
+    /// One poll pass: the dynamic units whose sources changed and have been quiet since
+    /// the previous pass — ready to sync now.
+    pub fn poll(
+        &mut self,
+        doc: &Document,
+        own_path: Option<&str>,
+        library: Option<&std::path::Path>,
+    ) -> Vec<usize> {
+        let mut ready = Vec::new();
+        for (index, unit) in doc.units.iter().enumerate() {
+            if unit.link != crate::model::LinkMode::Dynamic {
+                continue;
+            }
+            let Some(path) = resolve_unit_source_path(&unit.source, own_path, library) else {
+                continue;
+            };
+            let mtime = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos());
+            let Some(mtime) = mtime else {
+                self.observed.remove(&index);
+                continue;
+            };
+            match self.observed.insert(index, mtime) {
+                // Still moving (or first sighting): wait for a quiet poll.
+                Some(previous) if previous == mtime => {
+                    if unit_is_stale(unit, own_path, library) {
+                        ready.push(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        ready
+    }
+}
+
+/// Where completed saves announce themselves (#733): a tiny stamp file in the app's
+/// config directory that every BearCAD instance rewrites after a successful save. Other
+/// instances stat it each tick (one syscall) and, on a change, check their dynamic units
+/// right away — the "tell B directly" channel when A is open in BearCAD, without IPC.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_ping_path() -> Option<std::path::PathBuf> {
+    Some(crate::settings::settings_path()?.parent()?.join("save-ping"))
+}
+
+/// Announce a completed save to other BearCAD instances (#733). Best-effort.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_save_ping() {
+    let Some(path) = save_ping_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let _ = std::fs::write(path, stamp.to_string());
+}
+
+/// The save-ping file's current mtime (nanos), `None` when absent (#733).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_ping_stamp() -> Option<u128> {
+    let path = save_ping_path()?;
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
 }
 
 #[cfg(test)]

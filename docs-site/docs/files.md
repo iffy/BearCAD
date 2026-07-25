@@ -84,7 +84,9 @@ bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bra
 ```
 
 `link = "dynamic"` (the default) follows later changes to the source file: the unit
-updates when you open the document and whenever the source is saved while it's open.
+updates when you open the document and whenever the source is saved while it's open —
+including saves from another BearCAD window, which land immediately. A burst of rapid
+saves rebuilds once.
 `"static"` freezes the imported copy — an amber dot on the instance row shows when the
 source has moved on, and right-click → **Update from source file** picks it up (every
 instance of the unit updates together; one undo puts the previous copy back). Either way

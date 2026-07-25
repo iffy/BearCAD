@@ -2365,10 +2365,18 @@ file*, `Action::SyncUnit`, `bearcad.sync_unit(i)`). Syncing **replaces the embed
 copy** — B stays self-contained and never depends on A being present; all instances share
 the copy, so one sync updates every instance at once. Decisions written down:
 - **When dynamic syncs happen:** on opening B (before the first frame; the document comes
-  up dirty since disk still holds the old copy), and while B is open, when A is saved —
-  via a ~2 s source poll (`tick_unit_sync`, the "file watcher" for sources not open in
-  BearCAD; a source open in another BearCAD window signals directly instead, #733). No
-  per-sync dialogs.
+  up dirty since disk still holds the old copy), and while B is open, **when A is saved**
+  (#733 — the honest boundary for a file link; unsaved edits in A are never visible).
+  Mechanisms: a debounced half-second source poll (`units::UnitSourceWatcher` — a change
+  must sit quiet for one full poll before syncing, so an editor's temp-write-then-rename
+  and rapid rewrite bursts collapse into one rebuild and a half-written file is never
+  read), plus the **save-ping** channel for sources open in another BearCAD instance:
+  every successful save rewrites a stamp file in the config directory
+  (`units::write_save_ping`), and other instances stat it each tick and sync stale
+  dynamic units immediately (a completed save needs no quiet period). B's own save pings
+  too but changes none of its units' hashes, so it never self-triggers. No per-sync
+  dialogs. Nanosecond mtimes back the staleness check so same-second saves still read as
+  distinct.
 - **Breaks apply anyway**: a sync that orphans a face, parameter, or body goes through,
   the damage reports via the existing document-health machinery, and one undo restores
   the previous embedded copy (each sync is its own undoable action).

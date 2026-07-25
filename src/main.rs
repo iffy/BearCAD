@@ -1940,6 +1940,12 @@ struct App {
     settings_open: bool,
     /// Last dynamic-unit source poll time (#732), seconds of `ctx.input().time`.
     last_unit_sync_poll: f64,
+    /// Debounced source watcher for dynamic units (#733).
+    unit_source_watcher: units::UnitSourceWatcher,
+    /// Last save-ping stamp seen (#733), so another instance's save triggers exactly one
+    /// immediate check.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_save_ping_seen: Option<u128>,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -2724,6 +2730,9 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             settings_open: false,
             last_unit_sync_poll: 0.0,
+            unit_source_watcher: units::UnitSourceWatcher::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            last_save_ping_seen: units::save_ping_stamp(),
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -2740,37 +2749,59 @@ impl App {
         }
     }
 
-    /// Poll dynamic units' source files (#732): every couple of seconds, a dynamic unit
-    /// whose source changed on disk re-syncs — each through its own undoable
-    /// `Action::SyncUnit`. This is the file-watcher mechanism for sources not open in
-    /// BearCAD; a source open in another BearCAD window signals directly instead (#733).
+    /// Watch dynamic units' source files (#732/#733): a debounced half-second poll — the
+    /// file watcher for sources saved outside BearCAD (surviving temp-write-then-rename
+    /// editors, collapsing rapid rewrites into one rebuild) — plus the save-ping channel,
+    /// which another BearCAD instance writes after a completed save so the change lands
+    /// here immediately, no quiet period needed. Each update is its own undoable
+    /// `Action::SyncUnit`; static units are never watched.
     fn tick_unit_sync(&mut self, ctx: &egui::Context) {
-        const POLL_SECONDS: f64 = 2.0;
+        const POLL_SECONDS: f64 = 0.5;
         if self.state.doc.units.iter().all(|u| u.link != model::LinkMode::Dynamic) {
             return;
         }
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let pinged = {
+            let stamp = units::save_ping_stamp();
+            let pinged = stamp.is_some() && stamp != self.last_save_ping_seen;
+            if pinged {
+                self.last_save_ping_seen = stamp;
+            }
+            pinged
+        };
+        #[cfg(target_arch = "wasm32")]
+        let pinged = false;
+
         let now = ctx.input(|i| i.time);
-        if now - self.last_unit_sync_poll < POLL_SECONDS {
-            // A pending poll keeps the loop ticking even while the app is idle.
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
+        if !pinged && now - self.last_unit_sync_poll < POLL_SECONDS {
             return;
         }
         self.last_unit_sync_poll = now;
-        let stale: Vec<usize> = (0..self.state.doc.units.len())
-            .filter(|&u| {
-                let unit = &self.state.doc.units[u];
-                unit.link == model::LinkMode::Dynamic
-                    && units::unit_is_stale(
-                        unit,
-                        self.state.path.as_deref(),
-                        self.state.library_directory.as_deref(),
-                    )
-            })
-            .collect();
-        for unit in stale {
+        let ready = if pinged {
+            // A completed save announced itself: the file is whole, sync stale units now.
+            (0..self.state.doc.units.len())
+                .filter(|&u| {
+                    let unit = &self.state.doc.units[u];
+                    unit.link == model::LinkMode::Dynamic
+                        && units::unit_is_stale(
+                            unit,
+                            self.state.path.as_deref(),
+                            self.state.library_directory.as_deref(),
+                        )
+                })
+                .collect()
+        } else {
+            self.unit_source_watcher.poll(
+                &self.state.doc,
+                self.state.path.as_deref(),
+                self.state.library_directory.as_deref(),
+            )
+        };
+        for unit in ready {
             self.state.apply(Action::SyncUnit { unit });
         }
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
     }
 
     /// The Settings window (#720): app-level preferences, saved on change. Controls and

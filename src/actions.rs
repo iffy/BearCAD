@@ -3197,7 +3197,7 @@ impl AppState {
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64);
+            .map(|d| d.as_nanos() as i64);
 
         let previous = self.doc.units[unit].document.clone();
         self.doc.units[unit].document = new_doc;
@@ -3453,7 +3453,7 @@ impl AppState {
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64);
+                .map(|d| d.as_nanos() as i64);
             self.doc.units.push(ImportedUnit {
                 source: source.clone(),
                 link: link.unwrap_or(crate::model::LinkMode::Dynamic),
@@ -12166,6 +12166,10 @@ label_hidden: false,
             Ok(()) => {
                 self.path = Some(path.to_string());
                 self.mark_saved();
+                // Announce the completed save (#733): another BearCAD instance with this
+                // file imported as a dynamic unit picks the change up on its next tick.
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::units::write_save_ping();
                 self.status = format!(
                     "Saved {} line(s) to {}",
                     self.doc.lines.len(),
@@ -15936,6 +15940,63 @@ mod tests {
             !crate::units::unit_is_stale(&state.doc.units[0], state.path.as_deref(), None),
             "a missing source is not 'stale' — the embedded copy is the truth"
         );
+    }
+
+    /// #733: the source watcher reports a changed dynamic source once it has sat quiet
+    /// for a poll (rapid rewrites collapse to one rebuild, mid-write saves are never
+    /// read); static units are never watched.
+    #[test]
+    fn source_watcher_debounces_and_ignores_static_units() {
+        let unit_path = write_solid_unit_file("bearcad_unit_watch_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_watch_b.bearcad").to_string_lossy().to_string(),
+        );
+        state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None, // dynamic
+            name: None,
+        });
+        let mut watcher = crate::units::UnitSourceWatcher::default();
+        assert!(
+            watcher.poll(&state.doc, state.path.as_deref(), None).is_empty(),
+            "an unchanged source reports nothing (first pass observes)"
+        );
+        assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
+
+        // The source is rewritten — twice, quickly (an editor's temp-write dance).
+        let mut v2 = state.doc.units[0].document.clone();
+        v2.parameters[0].expression = "17".to_string();
+        crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
+        assert!(
+            watcher.poll(&state.doc, state.path.as_deref(), None).is_empty(),
+            "a fresh change waits for a quiet poll"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        v2.parameters[0].expression = "18".to_string();
+        crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
+        assert!(
+            watcher.poll(&state.doc, state.path.as_deref(), None).is_empty(),
+            "still moving — still waiting"
+        );
+        assert_eq!(
+            watcher.poll(&state.doc, state.path.as_deref(), None),
+            vec![0],
+            "quiet now: exactly one rebuild for the whole burst"
+        );
+        // The app then syncs it; afterwards the watcher goes quiet again.
+        assert_eq!(state.apply(Action::SyncUnit { unit: 0 }), ActionResult::Ok);
+        assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
+
+        // A static unit is never reported, however stale.
+        state.doc.units[0].link = crate::model::LinkMode::Static;
+        v2.parameters[0].expression = "19".to_string();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
+        assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
+        assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
+
+        let _ = std::fs::remove_file(&unit_path);
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it
