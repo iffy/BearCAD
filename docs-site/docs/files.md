@@ -54,7 +54,9 @@ reusable part with its own parameters.
 - Importing a file that imports the current document is refused; imports can't cycle.
 
 Each instance is **one row** in the Elements pane — rename, hide, or delete it like any
-element (deleting removes just that instance). The row's triangle expands a read-only look
+element (deleting removes just that instance). Renaming an instance rewrites every
+`name.parameter` reference to it, so a rename never breaks the model; a name another
+instance already uses is refused. The row's triangle expands a read-only look
 inside; everything in a unit is edited in its source file, not here. The node graph shows
 an instance as a single node — enable **Unit contents** in the pane filter to see inside.
 

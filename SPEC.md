@@ -2359,6 +2359,14 @@ evaluator's visiting stack. Implementation: `value::document_parameter_bindings`
 qualified names into the one `&[(name, expression)]` table every evaluator already uses;
 the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
 
+**Instance rename (#731):** renaming an instance (the row, the Context pane — one
+`CommitElementName` action) rewrites every `old.param` reference across all expression
+holders (`propagate_instance_rename` → `substitute_name_everywhere`: parameters, sketch
+dimensions/constraints, extrusion depths, Move/Repeat fields, text sizes, unit
+placements and overrides), spelling the new name backticked where needed; snapshot undo
+restores name + references as one step. A name another live instance uses is refused.
+Renaming a parameter **inside A** is a sync concern (#732), not a rename concern.
+
 **Completion (#730):** the same autocomplete every value input already has covers
 qualified names: an instance name completes like a parameter (spelled backticked when it
 isn't a plain identifier — including while an unterminated `` ` `` is being typed), and a

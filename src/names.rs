@@ -349,11 +349,30 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             image.name = stored;
         }
         SceneElement::UnitInstance(index) => {
-            let instance = doc
+            let old = doc
                 .unit_instances
-                .get_mut(index)
-                .ok_or_else(|| format!("unit instance {index} not found"))?;
-            instance.name = stored;
+                .get(index)
+                .ok_or_else(|| format!("unit instance {index} not found"))?
+                .name
+                .clone();
+            // Another instance already answering to this name would make `name.param`
+            // ambiguous (#731): refuse rather than silently shadow.
+            if let Some(new_name) = stored.as_deref() {
+                let taken = doc.unit_instances.iter().enumerate().any(|(i, inst)| {
+                    i != index && !inst.deleted && inst.name.as_deref() == Some(new_name)
+                });
+                if taken {
+                    return Err(format!("Another instance is already named '{new_name}'"));
+                }
+            }
+            let unit = doc.unit_instances[index].unit;
+            doc.unit_instances[index].name = stored.clone();
+            // The rename rewrites every `old.param` reference in the same step (#731), so
+            // the (snapshot-based) undo restores both name and references together.
+            if let (Some(old), Some(new)) = (old.as_deref(), stored.as_deref()) {
+                crate::parameters::propagate_instance_rename(doc, unit, old, new);
+                let _ = crate::parameters::recompute_document_geometry(doc);
+            }
         }
         SceneElement::Point(_) => {
             return Err("points cannot be renamed".to_string());

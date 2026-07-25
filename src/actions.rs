@@ -15651,6 +15651,95 @@ mod tests {
         assert!(state.doc.unit_instances[0].parameter_overrides.is_empty());
     }
 
+    /// #731: renaming an instance rewrites every reference to it — parameter
+    /// expressions, dimensioned lines, tool fields, other instances' overrides — in the
+    /// same undoable step; a colliding rename is refused.
+    #[test]
+    fn renaming_an_instance_rewrites_references_and_undoes_as_one_step() {
+        let unit_path = write_solid_unit_file("bearcad_unit_rename_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_rename_b.bearcad").to_string_lossy().to_string(),
+        );
+        for _ in 0..2 {
+            state.apply(Action::ImportUnit {
+                path: unit_path.to_string_lossy().to_string(),
+                link: None,
+                name: None,
+            });
+        }
+        let _ = std::fs::remove_file(&unit_path);
+        let first = state.doc.unit_instances[0].name.clone().unwrap();
+        assert_eq!(first, "bearcad_unit_rename_a");
+
+        // References of several kinds.
+        state.apply(Action::AddParameter {
+            name: "x".to_string(),
+            expression: format!("{first}.width * 2"),
+        });
+        state.doc.extrusions.push(crate::model::Extrusion {
+            sketch: 0,
+            faces: Vec::new(),
+            distance: 10.0,
+            target: None,
+            expression: format!("{first}.width + 1"),
+            symmetric: false,
+            name: None,
+            deleted: true,
+            edge_treatments: Vec::new(),
+        });
+        state.doc.unit_instances[1].parameter_overrides =
+            vec![("width".to_string(), format!("{first}.width / 2"))];
+        state.doc.unit_instances[1].placement.tx = format!("{first}.width");
+
+        let r = state.apply(Action::CommitElementName {
+            element: SceneElement::UnitInstance(0),
+            name: "left bracket".to_string(),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(
+            state.doc.parameters.iter().find(|p| p.name == "x").unwrap().expression,
+            "`left bracket`.width * 2",
+            "a spaced new name rewrites into its backticked spelling"
+        );
+        assert_eq!(
+            state.doc.extrusions.last().unwrap().expression,
+            "`left bracket`.width + 1",
+            "tool fields rewrite too"
+        );
+        assert_eq!(
+            state.doc.unit_instances[1].parameter_overrides[0].1,
+            "`left bracket`.width / 2"
+        );
+        assert_eq!(state.doc.unit_instances[1].placement.tx, "`left bracket`.width");
+        assert_eq!(
+            crate::value::eval_length_mm_in_doc("`left bracket`.width", &state.doc),
+            Some(10.0),
+            "the qualified reference still evaluates after the rename"
+        );
+
+        // A collision is refused.
+        let r = state.apply(Action::CommitElementName {
+            element: SceneElement::UnitInstance(1),
+            name: "left bracket".to_string(),
+        });
+        assert!(matches!(r, ActionResult::Err(_)), "colliding rename refused");
+        assert!(state.status.contains("already named"), "status: {}", state.status);
+
+        // One undo restores both the name and the references.
+        state.apply(Action::UndoLast);
+        assert_eq!(
+            state.doc.unit_instances[0].name.as_deref(),
+            Some(first.as_str()),
+            "undo restores the name"
+        );
+        assert_eq!(
+            state.doc.parameters.iter().find(|p| p.name == "x").unwrap().expression,
+            format!("{first}.width * 2"),
+            "…and the references, in the same step"
+        );
+    }
+
     /// #723: the instance row renames through the ordinary rename action, and deleting it
     /// tombstones the instance while the embedded copy stays (unit indices remain stable
     /// and re-importing the same source stays cheap).

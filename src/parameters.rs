@@ -811,6 +811,73 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
     propagate_parameter_rename_to_constraints(doc, old, new);
 }
 
+/// Rewrite one whole (possibly qualified) name across every expression holder the app
+/// evaluates (#731): parameters, sketch dimensions and constraints, extrusion depths,
+/// Move/Repeat tool fields, text sizes, and unit placements/overrides.
+fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
+    propagate_parameter_rename(doc, old, new);
+    for extrusion in &mut doc.extrusions {
+        extrusion.expression = substitute_parameter_name(&extrusion.expression, old, new);
+    }
+    for op in &mut doc.move_ops {
+        for expr in [&mut op.tx, &mut op.ty, &mut op.tz] {
+            *expr = substitute_parameter_name(expr, old, new);
+        }
+    }
+    for op in &mut doc.repeat_ops {
+        for expr in [&mut op.count, &mut op.spacing, &mut op.length] {
+            *expr = substitute_parameter_name(expr, old, new);
+        }
+    }
+    for text in &mut doc.sketch_texts {
+        text.size_expr = substitute_parameter_name(&text.size_expr, old, new);
+    }
+    for instance in &mut doc.unit_instances {
+        let p = &mut instance.placement;
+        for expr in [&mut p.tx, &mut p.ty, &mut p.tz, &mut p.angle] {
+            *expr = substitute_parameter_name(expr, old, new);
+        }
+        for (_, expr) in &mut instance.parameter_overrides {
+            *expr = substitute_parameter_name(expr, old, new);
+        }
+    }
+}
+
+/// Renaming a unit instance rewrites every qualified reference to it (#731):
+/// `old.param` becomes `new.param` (in its backticked spelling where the new name needs
+/// one) across everything holding an expression, so the rename never breaks a model.
+pub fn propagate_instance_rename(doc: &mut Document, unit: usize, old: &str, new: &str) {
+    let old = old.trim();
+    let new = new.trim();
+    if old.is_empty() || new.is_empty() || old == new {
+        return;
+    }
+    let param_names: Vec<String> = doc
+        .units
+        .get(unit)
+        .map(|u| {
+            u.document
+                .parameters
+                .iter()
+                .filter(|p| !p.deleted)
+                .map(|p| p.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let spelled_new = if crate::value::is_valid_parameter_name(new) {
+        new.to_string()
+    } else {
+        format!("`{new}`")
+    };
+    for param in param_names {
+        substitute_name_everywhere(
+            doc,
+            &format!("{old}.{param}"),
+            &format!("{spelled_new}.{param}"),
+        );
+    }
+}
+
 /// Re-evaluate sketch constraints and apply solved geometry, then re-resolve associative
 /// projections (#140) so they track their source bodies through the change.
 pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
