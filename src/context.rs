@@ -2503,6 +2503,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether the circle grows from its center or from a point on its edge. \
              Pressing O again flips it.",
         ),
+        (Some(Tool::Project), "Selection") => Some(
+            "The outside geometry to pull onto this sketch plane — click a body edge to \
+             project it, or a face or corner to take the whole body's edges.",
+        ),
         (Some(Tool::Sketch), "Selection") => Some(
             "The face the new sketch opens on — a construction plane, a flat body face, \
              or a unit's face. Click it in the viewport.",
