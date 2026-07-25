@@ -2400,6 +2400,21 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Slice), "Bodies") => Some(
+            "The bodies to cut apart. Click one to add it, click it again to drop it.",
+        ),
+        (Some(Tool::Slice), "Cutters") => Some(
+            "What does the cutting — construction planes or flat body faces; in a \
+             sketch, the lines that split the shapes.",
+        ),
+        (Some(Tool::Slice), "Infinite cut") => Some(
+            "Whether each cutter extends without bound, or only cuts as far as the \
+             face itself reaches.",
+        ),
+        (Some(Tool::Slice), "Targets") => Some(
+            "The sketch lines and circles to split. Click one to add it, click it \
+             again to drop it.",
+        ),
         (Some(Tool::Repeat), "Bodies") => Some(
             "The bodies to copy along the axis. Click one to add it, click it again to \
              drop it.",
