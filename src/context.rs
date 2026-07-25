@@ -2400,6 +2400,24 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Mirror), "Mirror plane") => Some(
+            "The plane the reflection flips across — a construction plane or a flat \
+             body face.",
+        ),
+        (Some(Tool::Mirror), "Bodies") => Some(
+            "The bodies to reflect. Click one to add it, click it again to drop it.",
+        ),
+        (Some(Tool::Mirror), "Output") => Some(
+            "Whether each reflection is its own body, fuses with its source, or cuts \
+             into it.",
+        ),
+        (Some(Tool::Mirror), "Mirror line") => Some(
+            "The straight sketch line the copies flip across.",
+        ),
+        (Some(Tool::Mirror), "Shapes") => Some(
+            "The lines and circles to reflect. Click one to add it, click it again to \
+             drop it.",
+        ),
         (Some(Tool::Loft), "Sections") => Some(
             "The closed profiles the loft blends through, in order — one per level. \
              Click a circle or closed loop to add it, click it again to drop it.",
