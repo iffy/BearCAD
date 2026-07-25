@@ -2400,6 +2400,13 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Loft), "Sections") => Some(
+            "The closed profiles the loft blends through, in order — one per level. \
+             Click a circle or closed loop to add it, click it again to drop it.",
+        ),
+        (Some(Tool::Loft), "Output") => Some(
+            "Whether this becomes a new body, joins the body it touches, or cuts into it.",
+        ),
         (Some(Tool::Sweep), "Profile") => Some(
             "The closed sketch faces to push along the path. Click a face to add it, \
              click it again to drop it.",
