@@ -28,3 +28,10 @@ you're in sketch mode. Press **Esc** (with nothing in progress) to leave the ske
 - When faces overlap under the cursor, the one nearest the camera wins — you never pick a
   hidden face by accident.
 - Click an existing sketch's face with the Sketch tool to reopen it for editing.
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Sketch tool's Context pane, each field explained](/img/screenshots/pane-sketch.png)
