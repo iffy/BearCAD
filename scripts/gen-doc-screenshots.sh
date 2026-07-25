@@ -22,6 +22,16 @@ set -uo pipefail
 # Deterministic captures: never show the update badge (#427) in doc screenshots.
 export BEARCAD_NO_UPDATE_CHECK=1
 
+# Deterministic framing: pin the window instead of letting it maximize. Without
+# this the shot depends on the machine — a desktop maximizes to the whole (often
+# retina) display, while the CI runner has no window manager and stays at the
+# 960x640 default, so what CI deploys is framed nothing like what the author
+# reviewed locally. Anything sized in points (the exploder's loupes, toolbars,
+# labels) then covers a very different share of the viewport. A fixed logical
+# size gives both the same composition; the PNG comes out at that size times the
+# display scale factor (2x on retina), so a desktop just renders it sharper.
+export BEARCAD_WINDOW="${BEARCAD_WINDOW:-1600x900}"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -42,11 +52,16 @@ elif command -v gtimeout >/dev/null 2>&1; then
 fi
 
 # --- Wrap the run in xvfb on Linux so it renders headlessly --------------------
+# The virtual screen has to be roomier than the pinned window, otherwise the
+# window is clipped to xvfb's 1280x1024 default and the framing drifts again.
+WINDOW_SIZE="${BEARCAD_WINDOW%%@*}"   # BEARCAD_WINDOW may carry an @x,y position
+SCREEN_W=$(( ${WINDOW_SIZE%%x*} + 128 ))
+SCREEN_H=$(( ${WINDOW_SIZE##*x} + 128 ))
 XVFB_PREFIX=()
 case "$(uname -s)" in
   Linux)
     if command -v xvfb-run >/dev/null 2>&1; then
-      XVFB_PREFIX=(xvfb-run -a)
+      XVFB_PREFIX=(xvfb-run -a -s "-screen 0 ${SCREEN_W}x${SCREEN_H}x24")
     else
       echo "warning: xvfb-run not found on Linux; rendering will likely fail." >&2
     fi

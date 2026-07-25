@@ -2516,6 +2516,14 @@ missing. The Website CI job (`.github/workflows/docs.yml`) regenerates them on L
 `xvfb` + a software Vulkan driver, uploads them as a downloadable artifact, and includes them in
 the deployed site. This reuses §9.3's determinism guarantees (fixed view, no animation waits).
 
+Framing is part of that determinism: `gen-doc-screenshots.sh` pins `BEARCAD_WINDOW` (default
+`1600x900`, overridable) instead of letting the window maximize, and sizes the `xvfb` screen to
+fit it. Otherwise the shot depends on the machine — a desktop maximizes to its whole (often
+retina) display while CI, which has no window manager, keeps the 960x640 default — and anything
+sized in points (loupes, toolbars, labels) covers a wildly different share of the viewport, so
+the deployed image is framed nothing like the one the author reviewed. With the size pinned, a
+retina machine renders the same composition at 2x, just sharper.
+
 **Style swatches (#160/#173).** The docs "Viewport styles" page documents every geometry
 style (line kinds × normal/hovered/selected states, points, faces, body auras, and linear/
 angle dimensions in their normal and hover-accent colors). Hover states can't
