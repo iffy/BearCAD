@@ -2447,6 +2447,15 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
+        "Points" => Some(
+            "How many of the two calibration points are placed. Click the image over a \
+             feature of known size, once at each end.",
+        ),
+        "Direction" => Some(
+            "The axis the copies run along — the sketch's U axis, or an edge you \
+             Shift+click.",
+        ),
+        "Entities" => Some("How many sketch entities the repeat copies."),
         "Link" => Some(
             "Whether this part follows its source file: Dynamic picks up the file's \
              saves; Static keeps the copy as-is until you update it.",
@@ -3476,11 +3485,6 @@ pub fn show_pane(
         if ui.button("Edit operation").clicked() {
             on_boolean_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the pickers to change this boolean operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(control) = &content.move_op {
@@ -3681,35 +3685,24 @@ pub fn show_pane(
         // Construction-plane targets (#221) are picked via the Elements pane / viewport, like the
         // Move tool's planes — surfaced here as a count so the picked set is visible.
         let mut pending: Option<RepeatEdit> = None;
+        // Values, not sentences (#662): the picked plane/sketch/cut sets as counts.
         if !control.plane_targets.is_empty() {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} construction plane(s) — copied along the axis",
-                    control.plane_targets.len()
-                ))
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-            );
+            let count = control.plane_targets.len();
+            labeled_row(ui, "Planes", |ui| {
+                ui.label(count.to_string());
+            });
         }
         if !control.sketch_targets.is_empty() {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} sketch(es) — copied along the axis",
-                    control.sketch_targets.len()
-                ))
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-            );
+            let count = control.sketch_targets.len();
+            labeled_row(ui, "Sketches", |ui| {
+                ui.label(count.to_string());
+            });
         }
         if !control.extrusion_targets.is_empty() {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} operation(s) — replayed along the axis",
-                    control.extrusion_targets.len()
-                ))
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-            );
+            let count = control.extrusion_targets.len();
+            labeled_row(ui, "Cuts", |ui| {
+                ui.label(count.to_string());
+            });
         }
         // Axis element picker (#257/#439): empty until an axis is picked — click a straight
         // edge, a sketch line, or an origin axis in the viewport; the ✕ clears it. It reads
@@ -3927,14 +3920,15 @@ pub fn show_pane(
         use crate::model::RepeatVar;
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(format!(
-                "{} entities · direction: {} (Shift+click an edge)",
-                control.entity_count, control.direction_label
-            ))
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
+        // Values, not a sentence (#662); what the direction wants lives in help mode.
+        let entity_count = control.entity_count;
+        labeled_row(ui, "Entities", |ui| {
+            ui.label(entity_count.to_string());
+        });
+        let direction_label = control.direction_label.clone();
+        labeled_row(ui, "Direction", |ui| {
+            ui.label(direction_label);
+        });
         let mut pending: Option<SketchRepeatEdit> = None;
         if control.direction_is_edge && ui.small_button("Use U axis").clicked() {
             pending = Some(SketchRepeatEdit::ClearDirection);
@@ -4096,11 +4090,6 @@ pub fn show_pane(
         if ui.button("Edit offset").clicked() {
             on_sketch_offset_edit(SketchOffsetEdit::EditStart(op));
         }
-        ui.label(
-            egui::RichText::new("Re-open the Offset tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(control) = &content.sketch_mirror {
@@ -4178,11 +4167,6 @@ pub fn show_pane(
         if ui.button("Edit repeat").clicked() {
             on_repeat_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the Repeat tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(control) = &content.slice_op {
@@ -4617,12 +4601,6 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, "Add view");
-        ui.label(
-            egui::RichText::new(
-                "Click a body or sketch in the Elements pane to place it on the page",
-            )
-            .color(egui::Color32::from_gray(140)),
-        );
     }
 
     // Drawing text annotation editor (#312): a multiline textarea + remove button.
@@ -4687,11 +4665,6 @@ pub fn show_pane(
         if ui.button("Edit slice").clicked() {
             on_slice_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the Slice tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(op) = content.revolve_edit_start {
@@ -4700,11 +4673,6 @@ pub fn show_pane(
         if ui.button("Edit revolve").clicked() {
             on_revolve_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the Revolve tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(op) = content.sweep_edit_start {
@@ -4713,11 +4681,6 @@ pub fn show_pane(
         if ui.button("Edit sweep").clicked() {
             on_sweep_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the Sweep tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(image) = content.calibrate_start {
@@ -4726,35 +4689,23 @@ pub fn show_pane(
         if ui.button("Calibrate scale").clicked() {
             on_calibrate_start(image);
         }
-        ui.label(
-            egui::RichText::new("Set the image's real-world scale from a feature of known size")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(placed) = content.calibrate_pending {
         any_control = true;
         ui.separator();
         section_label(ui, "Calibrate scale");
-        ui.label(
-            egui::RichText::new(format!(
-                "Click two points on the image over a feature of known size ({placed} of 2 placed)"
-            ))
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
+        // A value, not prose (#662): how the two-point placement is going. What the
+        // points mean lives in help mode.
+        labeled_row(ui, "Points", |ui| {
+            ui.label(format!("{placed} / 2"));
+        });
     }
 
     if let Some(control) = content.calibrate_image {
         any_control = true;
         ui.separator();
         section_label(ui, "Calibrate scale");
-        ui.label(
-            egui::RichText::new("Real length of the marked span on the image")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
         labeled_row(ui, "Length", |ui| {
             let mut draft = pane_state.calibrate_length_draft.clone();
             crate::expression_input::ValueInput::new(
@@ -5055,11 +5006,6 @@ pub fn show_pane(
     }
 
     if !any_control {
-        ui.label(
-            egui::RichText::new("Select geometry or draw to edit properties")
-                .color(egui::Color32::from_gray(140))
-                .size(12.0),
-        );
     }
 }
 
