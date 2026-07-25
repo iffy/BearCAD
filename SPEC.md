@@ -3342,8 +3342,10 @@ a separate document-bounds diagonal so panning away never snaps the camera back.
 it.
 
 - Help mode is a toggle, off by default, reached from the command palette (*Turn On Help Mode*
-  / *Turn Off Help Mode*) and from scripts as `bearcad.ui.help([on])` (no argument toggles).
-  It is session state, never persisted.
+  / *Turn Off Help Mode*), from **Help → Help Mode** in the OS menu (a checked item with the
+  **Cmd/Ctrl+/** accelerator — the "?" binding without also pressing Shift; platforms without
+  the native menu handle the key in the egui layer), and from scripts as
+  `bearcad.ui.help([on])` (no argument toggles). It is session state, never persisted.
 - With it on, every row of the Context pane that has help text grows a floating note beside
   the pane — outside it, so the pane itself stays controls and values only (§the context pane's
   no-prose rule) — joined to its row by a leader line. Notes that would overlap slide apart.

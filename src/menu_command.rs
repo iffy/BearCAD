@@ -42,6 +42,8 @@ pub enum MenuCommand {
     ShowShortcuts,
     /// Open the Settings window (#720): app-level preferences (Cmd/Ctrl+comma).
     ShowSettings,
+    /// Toggle help mode (#672): every pane control grows a note saying what it wants.
+    ToggleHelpMode,
     SetPaneVisible { pane: Pane, visible: bool },
     /// Open the DEV → Report issue window (#627): dev-build-only filing of an issue (with
     /// optional screenshot/document-JSON attachments) into the local todoer db.
@@ -79,6 +81,7 @@ impl MenuCommand {
             // Toggles UI-only window state; handled in the app frame loop.
             MenuCommand::ShowShortcuts => None,
             MenuCommand::ShowSettings => None,
+            MenuCommand::ToggleHelpMode => Some(Action::SetHelpMode(None)),
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }

@@ -10,8 +10,7 @@ command palette, and in the app menu (macOS) or File menu (Windows).
 
 Settings belong to the machine, not the document, and save the moment you change them.
 
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every row
-explains itself:
+## Help
 
 ![The Settings window, each field explained](/img/screenshots/pane-settings.png)
 

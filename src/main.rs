@@ -3576,6 +3576,7 @@ impl App {
         self.native_menu
             .sync_pane_checks(|pane| self.state.panes.is_visible(pane));
         self.native_menu.sync_fps_mode(self.state.fps.is_some());
+        self.native_menu.sync_help_mode(self.state.help_mode);
     }
 
     fn dispatch_palette_outcome(&mut self, outcome: PaletteOutcome) {
@@ -3811,6 +3812,14 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
             self.state.settings_open = !self.state.settings_open;
+        }
+
+        // Cmd/Ctrl+/ toggles help mode (#672) — the "?" binding without reaching for
+        // Shift. On macOS/Windows the native Help-menu accelerator delivers this; the
+        // egui handler covers the platforms without a muda menu bar.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash)) {
+            self.state.apply(Action::SetHelpMode(None));
         }
 
         // While any text field has focus, leave unmodified keys to the input (e.g. "bar" must not

@@ -46,6 +46,8 @@ pub struct MenuIds {
     pub shortcuts_help: MenuId,
     /// Settings… (#720): the app menu on macOS, the File menu elsewhere.
     pub settings: MenuId,
+    /// Help ▸ Help Mode (#672), a checked toggle with the Cmd/Ctrl+/ accelerator.
+    pub help_mode: MenuId,
     /// DEV → Report issue (#627); the DEV menu only appears in debug builds.
     pub report_issue: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
@@ -57,6 +59,8 @@ pub struct NativeMenu {
     menu: Menu,
     ids: MenuIds,
     fps_mode: CheckMenuItem,
+    /// Help ▸ Help Mode's checkbox (#672), synced from app state each frame.
+    help_mode: CheckMenuItem,
     pane_checks: Vec<(Pane, CheckMenuItem)>,
 }
 
@@ -139,6 +143,9 @@ pub fn command_for_id(
     }
     if ids.settings == id {
         return Some(MenuCommand::ShowSettings);
+    }
+    if ids.help_mode == id {
+        return Some(MenuCommand::ToggleHelpMode);
     }
     if ids.licenses == id {
         return Some(MenuCommand::Licenses);
@@ -300,6 +307,15 @@ impl NativeMenu {
             MenuItem::with_id("shortcuts_view", "Keyboard Shortcuts", true, None);
         let shortcuts_help =
             MenuItem::with_id("shortcuts_help", "Keyboard Shortcuts", true, None);
+        // Help mode (#672): the pane-note overlay, toggled from the Help menu or
+        // Cmd/Ctrl+/ (a slash — the question mark without reaching for Shift).
+        let help_mode = CheckMenuItem::with_id(
+            "help_mode",
+            "Help Mode",
+            true,
+            false,
+            Some(Accelerator::new(Some(primary), Code::Slash)),
+        );
         let licenses = MenuItem::with_id("licenses", "Licenses", true, None);
         let install_cli = MenuItem::with_id(
             "install_cli",
@@ -369,6 +385,7 @@ impl NativeMenu {
         view_menu.append(&shortcuts_view)?;
         view_menu.append(&PredefinedMenuItem::separator())?;
         view_menu.append(&panes_menu)?;
+        help_menu.append(&help_mode)?;
         help_menu.append(&shortcuts_help)?;
         help_menu.append(&export_session_commands)?;
         help_menu.append(&install_cli)?;
@@ -419,6 +436,7 @@ impl NativeMenu {
             shortcuts_view: shortcuts_view.id().clone(),
             shortcuts_help: shortcuts_help.id().clone(),
             settings: settings_item.id().clone(),
+            help_mode: help_mode.id().clone(),
             report_issue: report_issue.id().clone(),
             pane_checks: pane_ids,
         };
@@ -427,6 +445,7 @@ impl NativeMenu {
             menu,
             ids,
             fps_mode,
+            help_mode,
             pane_checks,
         })
     }
@@ -447,6 +466,11 @@ impl NativeMenu {
     /// Keep the View ▸ FPS Mode checkmark aligned with whether FPS mode is active (#118).
     pub fn sync_fps_mode(&self, active: bool) {
         self.fps_mode.set_checked(active);
+    }
+
+    /// Keep the Help ▸ Help Mode checkmark aligned with the app state (#672).
+    pub fn sync_help_mode(&self, active: bool) {
+        self.help_mode.set_checked(active);
     }
 }
 
@@ -528,6 +552,7 @@ mod tests {
             shortcuts_view: MenuId::new("shortcuts_view"),
             shortcuts_help: MenuId::new("shortcuts_help"),
             settings: MenuId::new("settings"),
+            help_mode: MenuId::new("help_mode"),
             report_issue: MenuId::new("report_issue"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
@@ -594,6 +619,20 @@ mod tests {
             Some(MenuCommand::ShowSettings)
         );
         assert_eq!(MenuCommand::ShowSettings.to_action(), None);
+    }
+
+    #[test]
+    fn maps_help_mode_menu_item() {
+        // #672: Help ▸ Help Mode (Cmd/Ctrl+/) toggles the pane-note overlay.
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.help_mode, &ids, |_| true),
+            Some(MenuCommand::ToggleHelpMode)
+        );
+        assert_eq!(
+            MenuCommand::ToggleHelpMode.to_action(),
+            Some(Action::SetHelpMode(None))
+        );
     }
 
     #[test]

@@ -78,6 +78,8 @@ bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
 
 ## Help mode
 
+**Help → Help Mode** in the OS menu (⌘/Ctrl+/) toggles it in the app; from scripts:
+
 ```lua
 bearcad.ui.help(true)    -- explain every Context-pane control
 bearcad.ui.help(false)
