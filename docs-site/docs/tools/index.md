@@ -31,6 +31,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/sweep.svg")} width="22" /> | [Sweep](/docs/tools/sweep) | — | Sweep a profile along a path of sketch lines. |
 | <img src={useBaseUrl("/img/icons/combine.svg")} width="22" /> | [Combine](/docs/tools/combine) | — | Boolean operations on bodies: merge, cut, intersect, difference. |
 | <img src={useBaseUrl("/img/icons/move.svg")} width="22" /> | [Move](/docs/tools/move) | — | Translate or rotate bodies into moved copies. |
+| <img src={useBaseUrl("/img/icons/mirror.svg")} width="22" /> | [Mirror](/docs/tools/mirror) | — | Reflect bodies or sketch shapes across a plane or line. |
 | <img src={useBaseUrl("/img/icons/repeat.svg")} width="22" /> | [Repeat](/docs/tools/repeat) | — | Copies of bodies spaced along an axis. |
 | <img src={useBaseUrl("/img/icons/slice.svg")} width="22" /> | [Slice](/docs/tools/slice) | — | Cut bodies into fragments with planes or faces. |
 | <img src={useBaseUrl("/img/icons/dimension.svg")} width="22" /> | [Dimension](/docs/tools/dimension) | `D` | Set exact lengths, distances, and angles. |
