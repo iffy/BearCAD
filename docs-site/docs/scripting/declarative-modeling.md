@@ -314,6 +314,12 @@ bearcad.import_step("part.step")
 -- embeds one copy, adds an instance named after the file stem.
 bearcad.import_unit("bracket.bearcad")
 bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }
+bearcad.add_unit_instance{ unit = 0, name = "right_bracket" }
+bearcad.set_unit_parameter{ instance = 1, name = "width", expression = "20" }
+bearcad.set_unit_parameter{ instance = 1, name = "width" }   -- back to the part's value
+bearcad.unit_link(0, "dynamic")                              -- or "static"
+bearcad.sync_unit(0)                                         -- update from the source now
+bearcad.select{ kind = "unit_instance", index = 1 }          -- or by instance name
 
 -- Tracing images (see the Tracing images tool page): PNG/JPEG onto a
 -- construction plane (default: ground), centered, seeded at 1 px = 1 mm.

@@ -1221,17 +1221,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // #728: override one unit instance's parameter (omit `value` to clear back to the
     // unit's own). `bearcad.unit_override{ instance = 0, name = "width", value = "20" }`.
-    api.set(
-        "unit_override",
-        lua.create_function(|lua, opts: Table| {
-            check_keys(&opts, "unit_override", &["instance", "name", "value"])?;
-            let instance: usize = opts.get("instance")?;
-            let name: String = opts.get("name")?;
-            let expression: Option<String> = opts.get("value")?;
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::SetUnitParameterOverride { instance, name, expression }) }
-        })?,
-    )?;
+    // Registered under both names (#736 spells it `set_unit_parameter`; `unit_override`
+    // is what session export writes).
+    for hook in ["unit_override", "set_unit_parameter"] {
+        api.set(
+            hook,
+            lua.create_function(|lua, opts: Table| {
+                check_keys(&opts, "unit_override", &["instance", "name", "value", "expression"])?;
+                let instance: usize = opts.get("instance")?;
+                let name: String = opts.get("name")?;
+                let expression: Option<String> = match opts.get::<Option<String>>("value")? {
+                    Some(v) => Some(v),
+                    None => opts.get("expression")?,
+                };
+                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                unsafe {
+                    tick.exec(Instruction::SetUnitParameterOverride { instance, name, expression })
+                }
+            })?,
+        )?;
+    }
 
     // #734: switch a unit's link mode: `bearcad.unit_link(0, "static"|"dynamic")`.
     api.set(
@@ -1251,10 +1260,33 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #732: re-sync a unit's embedded copy from its source file.
+    // #736: another instance of an already-embedded unit.
+    api.set(
+        "add_unit_instance",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "add_unit_instance", &["unit", "name"])?;
+            let unit: usize = opts.get("unit")?;
+            let name: Option<String> = opts.get("name")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::AddUnitInstance { unit, name }) }
+        })?,
+    )?;
+
+    // #732: re-sync a unit's embedded copy from its source file. Takes the unit index,
+    // or `{ unit = n }`.
     api.set(
         "sync_unit",
-        lua.create_function(|lua, unit: usize| {
+        lua.create_function(|lua, value: Value| {
+            let unit = match value {
+                Value::Integer(i) => i as usize,
+                Value::Number(n) => n.round() as usize,
+                Value::Table(t) => t.get::<usize>("unit")?,
+                _ => {
+                    return Err(mlua::Error::external(
+                        "sync_unit takes a unit index or { unit = n }",
+                    ))
+                }
+            };
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::SyncUnit { unit }) }
         })?,

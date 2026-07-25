@@ -2359,6 +2359,14 @@ evaluator's visiting stack. Implementation: `value::document_parameter_bindings`
 qualified names into the one `&[(name, expression)]` table every evaluator already uses;
 the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
 
+**Scripting (#736):** everything above is scriptable: `bearcad.import_unit{ path, link,
+name }`, `add_unit_instance{ unit, name }`, `set_unit_parameter{ instance, name,
+expression }` (alias `unit_override`; omit the value to clear), `unit_link(unit, mode)`,
+`sync_unit(unit)` (index or `{ unit = n }`), `derive_parameter kind="unit_edge_length"`,
+and `select{ kind = "unit_instance", index }` / select-by-instance-name. Session-command
+export writes each as its replayable call. A unit's *children* are deliberately not
+selectable kinds — they carry no scene identity (#723).
+
 **Moving instances & nesting (#735):** Move accepts a unit instance like a plane: the
 click gathers the **instance** (`MoveOperation::instance_targets`), and the op composes
 onto the instance's placement at evaluation — the instance itself moves, no output

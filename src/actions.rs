@@ -1456,6 +1456,9 @@ pub enum Action {
     /// Switch a unit's link mode (#734): dynamic follows the source file, static
     /// freezes the embedded copy until an explicit update.
     SetUnitLink { unit: usize, link: crate::model::LinkMode },
+    /// Add another instance of an already-embedded unit (#736): named like an import's
+    /// first instance (the source file stem, uniquified) unless a name is given.
+    AddUnitInstance { unit: usize, name: Option<String> },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -7448,6 +7451,31 @@ impl AppState {
                         crate::model::LinkMode::Static => "static — frozen until updated",
                     }
                 );
+                ActionResult::Ok
+            }
+            Action::AddUnitInstance { unit, name } => {
+                if self.doc.units.get(unit).is_none() {
+                    self.status = format!("Unit {unit} not found");
+                    return ActionResult::Err(self.status.clone());
+                }
+                let stem = match &self.doc.units[unit].source {
+                    crate::model::UnitSource::RelativePath(p)
+                    | crate::model::UnitSource::Library(p) => std::path::Path::new(p)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "unit".to_string()),
+                };
+                let instance_name =
+                    unique_instance_name(&self.doc, &identifier_name(&name.unwrap_or(stem)));
+                self.doc.unit_instances.push(crate::model::UnitInstance {
+                    unit,
+                    name: Some(instance_name.clone()),
+                    parameter_overrides: Vec::new(),
+                    placement: crate::model::UnitPlacement::default(),
+                    deleted: false,
+                });
+                self.refresh_document_health();
+                self.status = format!("Added instance {instance_name}");
                 ActionResult::Ok
             }
             Action::SyncUnit { unit } => match self.sync_unit(unit) {

@@ -582,6 +582,8 @@ pub enum Instruction {
     SyncUnit { unit: usize },
     /// Switch a unit's link mode (#734).
     SetUnitLink { unit: usize, link: crate::model::LinkMode },
+    /// Add another instance of an embedded unit (#736).
+    AddUnitInstance { unit: usize, name: Option<String> },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1434,6 +1436,12 @@ impl Instruction {
                 format!("bearcad.parameter(\"primary\", {index}, {primary})")
             }
             Instruction::SyncUnit { unit } => format!("bearcad.sync_unit({unit})"),
+            Instruction::AddUnitInstance { unit, name } => match name {
+                Some(name) => {
+                    format!("bearcad.add_unit_instance{{ unit = {unit}, name = {name:?} }}")
+                }
+                None => format!("bearcad.add_unit_instance{{ unit = {unit} }}"),
+            },
             Instruction::SetUnitLink { unit, link } => format!(
                 "bearcad.unit_link({unit}, \"{}\")",
                 match link {
@@ -2087,6 +2095,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::SyncUnit { unit } => Some(Instruction::SyncUnit { unit: *unit }),
         Action::SetUnitLink { unit, link } => {
             Some(Instruction::SetUnitLink { unit: *unit, link: *link })
+        }
+        Action::AddUnitInstance { unit, name } => {
+            Some(Instruction::AddUnitInstance { unit: *unit, name: name.clone() })
         }
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
@@ -4973,6 +4984,11 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::AddUnitInstance { unit, name } => {
+                let r = state.apply(Action::AddUnitInstance { unit, name });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
             Instruction::DeleteParameter { index } => {
                 state.apply(Action::DeleteParameter { index });
                 StepResult::Continue
@@ -5630,6 +5646,38 @@ mod tests {
         };
         // The default region stays implicit, exactly as it was written before regions.
         assert_eq!(viewport.as_lua(), "bearcad.ui.screenshot(\"out.png\")");
+    }
+
+    /// #736: every unit instruction exports as a replayable `bearcad.*` call.
+    #[test]
+    fn unit_instructions_export_as_lua() {
+        assert_eq!(
+            Instruction::ImportUnit {
+                path: "a.bearcad".to_string(),
+                link: Some(crate::model::LinkMode::Static),
+                name: Some("bracket".to_string()),
+            }
+            .as_lua(),
+            "bearcad.import_unit{ path = \"a.bearcad\", link = \"static\", name = \"bracket\" }"
+        );
+        assert_eq!(
+            Instruction::AddUnitInstance { unit: 0, name: Some("b2".to_string()) }.as_lua(),
+            "bearcad.add_unit_instance{ unit = 0, name = \"b2\" }"
+        );
+        assert_eq!(
+            Instruction::SetUnitParameterOverride {
+                instance: 1,
+                name: "width".to_string(),
+                expression: Some("20".to_string()),
+            }
+            .as_lua(),
+            "bearcad.unit_override{ instance = 1, name = \"width\", value = \"20\" }"
+        );
+        assert_eq!(Instruction::SyncUnit { unit: 2 }.as_lua(), "bearcad.sync_unit(2)");
+        assert_eq!(
+            Instruction::SetUnitLink { unit: 0, link: crate::model::LinkMode::Dynamic }.as_lua(),
+            "bearcad.unit_link(0, \"dynamic\")"
+        );
 
         let pane = Instruction::Screenshot {
             path: "out.png".to_string(),
