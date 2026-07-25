@@ -2359,6 +2359,13 @@ evaluator's visiting stack. Implementation: `value::document_parameter_bindings`
 qualified names into the one `&[(name, expression)]` table every evaluator already uses;
 the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
 
+**Completion (#730):** the same autocomplete every value input already has covers
+qualified names: an instance name completes like a parameter (spelled backticked when it
+isn't a plain identifier — including while an unterminated `` ` `` is being typed), and a
+`instance.` prefix offers that instance's parameters with **primary ones first**. The
+token scanner (`qualified_token_at_cursor`) extends across the prefix; `10.` still
+completes nothing.
+
 **Instance parameters in the pane (#728):** selecting a unit instance puts **its**
 parameters at the top of the Parameters pane, headed by the instance name: the unit's
 primary parameters first, secondary ones behind an "Internals" eye toggle (off by

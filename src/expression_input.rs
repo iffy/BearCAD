@@ -179,6 +179,113 @@ pub fn identifier_token_at_cursor(text: &str, cursor_char_index: usize) -> Optio
     Some((start, end))
 }
 
+/// Spell an instance name the way an expression accepts it (#729/#730): backticked when
+/// it isn't a plain identifier.
+fn spell_instance_name(name: &str) -> String {
+    if crate::value::is_valid_parameter_name(name) {
+        name.to_string()
+    } else {
+        format!("`{name}`")
+    }
+}
+
+/// Char range of the (possibly qualified) token at the cursor (#730): the identifier
+/// under the cursor, extended left across an `instance.` prefix — plain or backticked —
+/// or back to an unterminated opening backtick while an instance name with spaces is
+/// being typed. `foo.` (cursor right after the dot) yields the prefix with an empty
+/// partial, which is what offers that instance's parameters.
+pub fn qualified_token_at_cursor(text: &str, cursor_char_index: usize) -> Option<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = cursor_char_index.min(chars.len());
+
+    // Inside an unterminated backtick span: the token runs from the opening tick.
+    let mut i = cursor;
+    while i > 0 {
+        let c = chars[i - 1];
+        if c == '`' {
+            let ticks_before = chars[..i - 1].iter().filter(|c| **c == '`').count();
+            if ticks_before % 2 == 0
+                && !chars[i..cursor.min(chars.len())].contains(&'`')
+            {
+                let mut end = cursor;
+                while end < chars.len()
+                    && chars[end] != '`'
+                    && (is_identifier_part(chars[end]) || chars[end] == ' ')
+                {
+                    end += 1;
+                }
+                return Some((i - 1, end));
+            }
+            break;
+        }
+        if !(is_identifier_part(c) || c == ' ') {
+            break;
+        }
+        i -= 1;
+    }
+
+    let mut start = cursor;
+    while start > 0 && is_identifier_part(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = cursor;
+    while end < chars.len() && is_identifier_part(chars[end]) {
+        end += 1;
+    }
+    if start > 0 && chars[start - 1] == '.' {
+        // A dot before the token: a qualification prefix when what precedes it is a
+        // name; no completion when it's a number (`10.`), matching the old rule.
+        let dot = start - 1;
+        if dot > 0 && chars[dot - 1] == '`' {
+            let mut q = dot - 1;
+            while q > 0 {
+                if chars[q - 1] == '`' {
+                    return Some((q - 1, end));
+                }
+                q -= 1;
+            }
+            return None;
+        }
+        let mut s2 = dot;
+        while s2 > 0 && is_identifier_part(chars[s2 - 1]) {
+            s2 -= 1;
+        }
+        if s2 < dot && (chars[s2].is_ascii_alphabetic() || chars[s2] == '_') {
+            return Some((s2, end));
+        }
+        return None;
+    }
+    if start == end {
+        return None;
+    }
+    let first = chars[start];
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if start > 0 {
+        let before = chars[..start]
+            .iter()
+            .rposition(|c| !c.is_whitespace())
+            .map(|idx| chars[idx]);
+        if before.is_some_and(|c| c.is_ascii_digit()) {
+            return None;
+        }
+    }
+    Some((start, end))
+}
+
+/// Split an autocomplete query into `(instance name, partial)` when it is qualified
+/// (#730): `foo.wi` or `` `my bracket`.wi ``; the partial may be empty (`foo.`).
+fn split_qualified_query(query: &str) -> Option<(String, String)> {
+    if let Some(rest) = query.strip_prefix('`') {
+        let (instance, after) = rest.split_once('`')?;
+        let partial = after.strip_prefix('.')?;
+        return Some((instance.to_string(), partial.to_string()));
+    }
+    let (instance, partial) = query.split_once('.')?;
+    (!instance.is_empty()).then(|| (instance.to_string(), partial.to_string()))
+}
+
 fn token_query(text: &str, token: (usize, usize)) -> String {
     text.chars().skip(token.0).take(token.1 - token.0).collect()
 }
@@ -242,6 +349,53 @@ pub fn parameter_autocomplete_candidates(
     if query.is_empty() {
         return Vec::new();
     }
+    // Qualified query (#730): `instance.partial` offers that instance's parameters —
+    // primary ones first (they're the knobs you're expected to reach for).
+    if let Some((instance_name, partial)) = split_qualified_query(query) {
+        let Some(inst) = doc
+            .unit_instances
+            .iter()
+            .filter(|i| !i.deleted)
+            .find(|i| i.name.as_deref() == Some(instance_name.as_str()))
+        else {
+            return Vec::new();
+        };
+        let Some(unit) = doc.units.get(inst.unit) else {
+            return Vec::new();
+        };
+        let spelled = spell_instance_name(&instance_name);
+        let mut matches: Vec<(bool, AutocompleteMatch)> = Vec::new();
+        for param in unit.document.parameters.iter().filter(|p| !p.deleted) {
+            let score = if partial.is_empty() {
+                0
+            } else {
+                match fuzzy_score(&partial, &param.name) {
+                    Some(score) => score,
+                    None => continue,
+                }
+            };
+            let name = format!("{spelled}.{}", param.name);
+            let value = match crate::value::eval_parameter_in_doc(&name, doc) {
+                Some(crate::value::EvaluatedParameter::LengthMm(v)) => {
+                    crate::value::format_length_display_in(v, doc.default_length_unit)
+                }
+                Some(crate::value::EvaluatedParameter::AngleRad(v)) => {
+                    crate::value::format_angle_display_in(v, doc.default_angle_unit)
+                }
+                None => String::new(),
+            };
+            matches.push((param.primary, AutocompleteMatch { name, value, score }));
+        }
+        matches.sort_by(|(ap, a), (bp, b)| {
+            bp.cmp(ap)
+                .then_with(|| b.score.cmp(&a.score))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        let mut out: Vec<AutocompleteMatch> = matches.into_iter().map(|(_, m)| m).collect();
+        out.truncate(AUTOCOMPLETE_MAX);
+        return out;
+    }
+
     let mut matches = Vec::new();
     for (index, param) in doc.parameters.iter().enumerate() {
         if param.deleted || exclude_names.iter().any(|name| *name == param.name) {
@@ -253,6 +407,34 @@ pub fn parameter_autocomplete_candidates(
         matches.push(AutocompleteMatch {
             name: param.name.clone(),
             value: format_parameter_autocomplete_value(doc, index),
+            score,
+        });
+    }
+    // Unit instance names (#730): completing one is the doorway to its parameters. A
+    // name with spaces offers its backticked spelling (the query's stray opening
+    // backtick, if any, is ignored for matching).
+    let name_query = query.trim_start_matches('`');
+    for inst in doc.unit_instances.iter().filter(|i| !i.deleted) {
+        let Some(name) = inst.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        let Some(score) = fuzzy_score(name_query, name) else {
+            continue;
+        };
+        let value = doc
+            .units
+            .get(inst.unit)
+            .map(|u| match &u.source {
+                crate::model::UnitSource::RelativePath(p)
+                | crate::model::UnitSource::Library(p) => std::path::Path::new(p)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.clone()),
+            })
+            .unwrap_or_default();
+        matches.push(AutocompleteMatch {
+            name: spell_instance_name(name),
+            value,
             score,
         });
     }
@@ -312,7 +494,7 @@ pub fn expression_autocomplete_handle_keys(
     doc: &Document,
     exclude_names: &[&str],
 ) -> bool {
-    autocomplete_handle_keys_with(ui, ctx, id, text, doc, exclude_names, identifier_token_at_cursor)
+    autocomplete_handle_keys_with(ui, ctx, id, text, doc, exclude_names, qualified_token_at_cursor)
 }
 
 /// Like [`expression_autocomplete_handle_keys`], but scoped to `{…}` fields for free-text areas
@@ -415,7 +597,7 @@ pub fn expression_autocomplete_show_dropdown(
 ) -> bool {
     autocomplete_show_dropdown_with(
         ui, ctx, anchor, id, text, doc, exclude_names, cursor_char_index,
-        identifier_token_at_cursor,
+        qualified_token_at_cursor,
     )
 }
 
@@ -758,6 +940,108 @@ pub(crate) fn canonical_value_text(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::parameters::add_parameter;
+
+    /// A document with a unit and two named instances (`foo`, `my bracket`) whose unit
+    /// carries a primary `width` and secondary `internal` parameter (#730).
+    fn doc_with_instances() -> Document {
+        let mut inner = Document::default();
+        for (name, expression, primary) in
+            [("internal", "width * 2", false), ("width", "10", true)]
+        {
+            inner.parameters.push(crate::model::Parameter {
+                name: name.to_string(),
+                expression: expression.to_string(),
+                deleted: false,
+                primary,
+                source: None,
+            });
+        }
+        let mut doc = Document::default();
+        doc.units.push(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath("bracket.bearcad".to_string()),
+            link: crate::model::LinkMode::Static,
+            document: inner,
+            source_mtime: None,
+            source_hash: None,
+        });
+        for name in ["foo", "my bracket"] {
+            doc.unit_instances.push(crate::model::UnitInstance {
+                unit: 0,
+                name: Some(name.to_string()),
+                parameter_overrides: Vec::new(),
+                placement: crate::model::UnitPlacement::default(),
+                deleted: false,
+            });
+        }
+        doc
+    }
+
+    /// #730: typing part of an instance name offers it (backticked when it has spaces);
+    /// `foo.` offers that instance's parameters, primary first.
+    #[test]
+    fn completion_offers_instances_then_their_parameters_primary_first() {
+        let doc = doc_with_instances();
+        let names: Vec<String> = parameter_autocomplete_candidates(&doc, "fo", &[])
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert!(names.contains(&"foo".to_string()), "{names:?}");
+
+        let spaced: Vec<String> = parameter_autocomplete_candidates(&doc, "my", &[])
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert!(
+            spaced.contains(&"`my bracket`".to_string()),
+            "a name with spaces completes backticked: {spaced:?}"
+        );
+
+        let after_dot: Vec<String> = parameter_autocomplete_candidates(&doc, "foo.", &[])
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(
+            after_dot,
+            vec!["foo.width".to_string(), "foo.internal".to_string()],
+            "the primary knob leads"
+        );
+
+        let filtered: Vec<String> = parameter_autocomplete_candidates(&doc, "foo.int", &[])
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(filtered, vec!["foo.internal".to_string()]);
+
+        let backticked: Vec<String> =
+            parameter_autocomplete_candidates(&doc, "`my bracket`.", &[])
+                .into_iter()
+                .map(|m| m.name)
+                .collect();
+        assert_eq!(
+            backticked,
+            vec![
+                "`my bracket`.width".to_string(),
+                "`my bracket`.internal".to_string()
+            ]
+        );
+    }
+
+    /// #730: the token under the cursor extends across a qualification prefix — and
+    /// `10.` still completes nothing.
+    #[test]
+    fn qualified_token_spans_the_prefix() {
+        // "foo.wi" with the cursor at the end: one token from `f` to `i`.
+        assert_eq!(qualified_token_at_cursor("foo.wi", 6), Some((0, 6)));
+        // Right after the dot: the prefix with an empty partial.
+        assert_eq!(qualified_token_at_cursor("foo.", 4), Some((0, 4)));
+        // A backticked prefix.
+        assert_eq!(qualified_token_at_cursor("`my bracket`.wi", 15), Some((0, 15)));
+        // An unterminated backtick while typing a spaced name.
+        assert_eq!(qualified_token_at_cursor("1 + `my br", 10), Some((4, 10)));
+        // Numbers don't qualify.
+        assert_eq!(qualified_token_at_cursor("10.", 3), None);
+        assert_eq!(qualified_token_at_cursor("10.5", 4), None);
+    }
 
     /// #456: the computed value shows exactly when it differs from the typed text —
     /// a bare number gains the default unit, an exact match (modulo spacing/case) hides.

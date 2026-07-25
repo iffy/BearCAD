@@ -56,7 +56,9 @@ Whenever what you typed isn't literally the resulting value, the field shows the
 result beside it — `1in` shows `= 25.4 mm`, a bare `10` shows `= 10.0 mm`.
 
 While typing a name, autocomplete offers matching parameters: **Space**/**Tab** completes,
-**Enter** completes *and* commits.
+**Enter** completes *and* commits. Unit instances complete too: typing `fo` offers `foo`
+(backticked when the name has spaces), and `foo.` offers that instance's parameters —
+primary knobs first.
 
 ## Creating parameters inline
 
