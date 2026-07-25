@@ -43,6 +43,10 @@ bearcad.unit_override{ instance = 0, name = "width" }   -- back to the part's va
 - Functions: `max`, `min` (any number of arguments, or one `[a, b, c]` array), `abs`,
   `floor`, `ceil`/`ceiling`, and `round` — `max(w, 20)`, `min([leg, arm, 40])`,
   `ceil(span / step)`.
+- **A unit instance's parameters**, qualified by the instance name: `bracket.width`.
+  Backticks wrap a single name where it has spaces — `` `left bracket`.width ``. The
+  value is the instance's override where one is set, otherwise the part's own. One level
+  only: a nested unit's internals aren't reachable.
 - Parameter names, including inside other parameters' expressions: `A + 5in`.
 - **Mixed units**: `3mm + 2in` evaluates correctly. Lengths take `mm`, `cm`, `m`, `in`,
   `ft`; angles take `deg`, `rad`. A bare number is millimetres (degrees in angle fields).

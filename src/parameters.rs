@@ -929,6 +929,14 @@ fn parameter_bindings_for_check(
             (param.name.clone(), expr)
         })
         .collect();
+    // Qualified unit-instance bindings (#729), so `foo.bar` validates and evaluates in a
+    // parameter expression like anywhere else. Their names carry a dot, so they can never
+    // collide with the document's own names above.
+    bindings.extend(
+        crate::value::document_parameter_bindings(doc)
+            .into_iter()
+            .filter(|(name, _)| name.contains('.')),
+    );
     if existing_index.is_none() && !bindings.iter().any(|(name, _)| name == param_name) {
         bindings.push((param_name.to_string(), expression.to_string()));
     }

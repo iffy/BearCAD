@@ -80,8 +80,9 @@ pub fn length_expression_field_errors(
         };
         if !expression.is_empty() {
             let known_names = document_parameter_names(doc);
+            let known_refs: Vec<&str> = known_names.iter().map(String::as_str).collect();
             errors.extend(
-                unknown_variables_in_expression(expression, &known_names)
+                unknown_variables_in_expression(expression, &known_refs)
                     .into_iter()
                     .map(|name| format_unknown_variable_error(&name)),
             );

@@ -2346,6 +2346,19 @@ unit body upgrades to `ParameterSource::UnitEdgeLength { instance, face, edge }`
 follows override changes; unit geometry without an analytic face keeps the quantized key
 (STL parity).
 
+**Qualified references (#729):** every value input accepts `instance.param` — a named
+unit instance's parameter, resolved to the instance's override where set, else the
+unit's own expression **re-qualified into the instance's namespace** (so `internal =
+width * 2` inside the unit reads that instance's width). Backticks wrap a **single name
+segment**, never a whole reference: `` `left bracket`.width `` (either segment may be
+backticked); this is the one spelling accepted everywhere. One level deep by design —
+nested units' internals are not reachable (their values are already folded into the
+nested unit's evaluation). Unknown instance or parameter fails like any unknown variable,
+naming the full `a.b`; cycles threaded through qualified bindings are refused by the
+evaluator's visiting stack. Implementation: `value::document_parameter_bindings` flattens
+qualified names into the one `&[(name, expression)]` table every evaluator already uses;
+the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
+
 **Instance parameters in the pane (#728):** selecting a unit instance puts **its**
 parameters at the top of the Parameters pane, headed by the instance name: the unit's
 primary parameters first, secondary ones behind an "Internals" eye toggle (off by

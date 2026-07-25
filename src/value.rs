@@ -13,10 +13,10 @@ pub fn eval_length_mm(text: &str) -> Option<f32> {
 
 /// Evaluate a length expression using document parameters.
 pub fn eval_length_mm_in_doc(text: &str, doc: &Document) -> Option<f32> {
-    let params: Vec<(&str, &str)> = doc
-        .parameters
+    let bindings = document_parameter_bindings(doc);
+    let params: Vec<(&str, &str)> = bindings
         .iter()
-        .map(|p| (p.name.as_str(), p.expression.as_str()))
+        .map(|(n, e)| (n.as_str(), e.as_str()))
         .collect();
     eval_length_mm_with_params(text, &params)
 }
@@ -68,17 +68,22 @@ pub fn is_valid_parameter_name(name: &str) -> bool {
 
 /// Replace whole identifier occurrences of `old` with `new` in an expression.
 pub fn substitute_parameter_name(expression: &str, old: &str, new: &str) -> String {
-    if old == new || old.is_empty() || !is_valid_parameter_name(old) {
+    // `old` may be plain (`bar`) or qualified (`foo.bar`, spaces allowed in segments,
+    // #729/#731); every dot-separated segment must be non-empty.
+    let old_ok = !old.is_empty() && old.split('.').all(|seg| !seg.trim().is_empty());
+    if old == new || !old_ok {
         return expression.to_string();
     }
     let mut out = String::with_capacity(expression.len());
     let mut i = 0;
     while i < expression.len() {
-        if let Some((ident, len)) = identifier_at(expression, i) {
+        // Matching on whole (possibly qualified) names keeps `bar` from rewriting the
+        // parameter half of `foo.bar` (#729).
+        if let Some((ident, len)) = qualified_identifier_at(expression, i) {
             if ident == old {
                 out.push_str(new);
             } else {
-                out.push_str(ident);
+                out.push_str(&expression[i..i + len]);
             }
             i += len;
         } else {
@@ -127,11 +132,12 @@ pub fn identifiers_in_expression(expression: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut i = 0;
     while i < expression.len() {
-        if let Some((ident, len)) = identifier_at(expression, i) {
-            if !is_unit_suffix_at(expression, i, ident)
-                && !names.iter().any(|n| n == ident)
+        if let Some((ident, len)) = qualified_identifier_at(expression, i) {
+            // A unit suffix can only ever be a plain, unqualified identifier.
+            if !(len == ident.len() && is_unit_suffix_at(expression, i, &ident))
+                && !names.iter().any(|n| n == &ident)
             {
-                names.push(ident.to_string());
+                names.push(ident);
             }
             i += len;
         } else {
@@ -173,7 +179,7 @@ pub fn unknown_variables_in_parameter_expression(
     identifiers_in_expression(expression)
         .into_iter()
         .filter(|name| {
-            if known.contains(&name.as_str()) {
+            if known.iter().any(|k| k == name) {
                 return false;
             }
             !(existing_index.is_none() && name == param_name)
@@ -185,8 +191,62 @@ pub fn format_unknown_variable_error(name: &str) -> String {
     format!("Unknown variable: {name}")
 }
 
-pub fn document_parameter_names(doc: &Document) -> Vec<&str> {
-    doc.parameters.iter().map(|p| p.name.as_str()).collect()
+pub fn document_parameter_names(doc: &Document) -> Vec<String> {
+    document_parameter_bindings(doc)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// Every parameter binding an expression in `doc` can see (#729): the document's own
+/// parameters, plus `instance.param` entries for each **named**, live unit instance —
+/// the instance's override where one is set, else the unit's own expression with its
+/// identifiers re-qualified into the instance's namespace (so a unit-internal expression
+/// keeps resolving against the unit's own values). One level only: nested units'
+/// internals are not reachable.
+pub fn document_parameter_bindings(doc: &Document) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = doc
+        .parameters
+        .iter()
+        .filter(|p| !p.deleted)
+        .map(|p| (p.name.clone(), p.expression.clone()))
+        .collect();
+    for inst in doc.unit_instances.iter().filter(|i| !i.deleted) {
+        let Some(name) = inst.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        let Some(unit) = doc.units.get(inst.unit) else {
+            continue;
+        };
+        let inner: Vec<&crate::model::Parameter> =
+            unit.document.parameters.iter().filter(|p| !p.deleted).collect();
+        for param in &inner {
+            let qualified = format!("{name}.{}", param.name);
+            let expression = match inst
+                .parameter_overrides
+                .iter()
+                .find(|(n, _)| *n == param.name)
+            {
+                // An override is written in the importing document's namespace: as-is.
+                Some((_, expr)) => expr.clone(),
+                // The unit's own expression lives in the unit's namespace: qualify its
+                // identifiers so `internal = width * 2` reads this instance's width.
+                None => {
+                    let mut expr = param.expression.clone();
+                    for other in &inner {
+                        expr = substitute_parameter_name(
+                            &expr,
+                            &other.name,
+                            &format!("{name}.{}", other.name),
+                        );
+                    }
+                    expr
+                }
+            };
+            out.push((qualified, expression));
+        }
+    }
+    out
 }
 
 /// Whether `expression` contains a whole identifier referencing a document parameter.
@@ -225,6 +285,40 @@ fn identifier_at(text: &str, start: usize) -> Option<(&str, usize)> {
         len += c.len_utf8();
     }
     Some((&text[start..start + len], len))
+}
+
+/// One **name segment** at `start` (#729): a plain identifier, or an arbitrary run
+/// (spaces included) wrapped in backticks — the backticks wrap a single *name*, never a
+/// whole `a.b` reference. Returns the segment text (backticks stripped) and the source
+/// length consumed (backticks included).
+fn name_segment_at(text: &str, start: usize) -> Option<(String, usize)> {
+    let rest = &text[start..];
+    if let Some(stripped) = rest.strip_prefix('`') {
+        let end = stripped.find('`')?;
+        let inner = &stripped[..end];
+        if inner.trim().is_empty() || inner.contains('.') {
+            return None;
+        }
+        return Some((inner.to_string(), end + 2));
+    }
+    identifier_at(text, start).map(|(s, l)| (s.to_string(), l))
+}
+
+/// A possibly **qualified** identifier at `start` (#729): `segment` or
+/// `segment.segment` — `instance.parameter`, reaching a unit instance's parameter from
+/// the importing document. Either segment may be backticked. One level only: a second
+/// dot is not consumed, so nested units' internals stay unreachable by design (their
+/// values are already folded into the nested unit's own evaluation).
+fn qualified_identifier_at(text: &str, start: usize) -> Option<(String, usize)> {
+    let (first, mut len) = name_segment_at(text, start)?;
+    let mut name = first;
+    if text[start + len..].starts_with('.') {
+        if let Some((second, second_len)) = name_segment_at(text, start + len + 1) {
+            name = format!("{name}.{second}");
+            len += 1 + second_len;
+        }
+    }
+    Some((name, len))
 }
 
 /// Evaluated length for display above a dimension field, using document parameters.
@@ -353,10 +447,10 @@ pub fn eval_angle_rad(text: &str) -> Option<f32> {
 
 /// Evaluate an angle expression using document parameters.
 pub fn eval_angle_rad_in_doc(text: &str, doc: &Document) -> Option<f32> {
-    let params: Vec<(&str, &str)> = doc
-        .parameters
+    let bindings = document_parameter_bindings(doc);
+    let params: Vec<(&str, &str)> = bindings
         .iter()
-        .map(|p| (p.name.as_str(), p.expression.as_str()))
+        .map(|(n, e)| (n.as_str(), e.as_str()))
         .collect();
     eval_angle_rad_with_params(text, &params)
 }
@@ -838,11 +932,12 @@ impl<'a> Parser<'a> {
     fn try_parse_identifier(&mut self) -> Option<String> {
         self.skip_ws();
         let rest: String = self.chars.clone().collect();
-        let (ident, len) = identifier_at(&rest, 0)?;
+        // Qualified references (#729): `instance.param`, either segment backtickable.
+        let (ident, len) = qualified_identifier_at(&rest, 0)?;
         for _ in 0..len {
             self.bump();
         }
-        Some(ident.to_string())
+        Some(ident)
     }
 
     fn resolve_identifier(&mut self, name: String) -> Result<f32, ()> {
@@ -1146,11 +1241,12 @@ impl<'a> AngleParser<'a> {
     fn try_parse_identifier(&mut self) -> Option<String> {
         self.skip_ws();
         let rest: String = self.chars.clone().collect();
-        let (ident, len) = identifier_at(&rest, 0)?;
+        // Qualified references (#729): `instance.param`, either segment backtickable.
+        let (ident, len) = qualified_identifier_at(&rest, 0)?;
         for _ in 0..len {
             self.bump();
         }
-        Some(ident.to_string())
+        Some(ident)
     }
 
     fn resolve_identifier(&mut self, name: String) -> Result<f32, ()> {
@@ -1227,6 +1323,92 @@ impl<'a> AngleParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document with one embedded unit (params `width = 10`, `internal = width * 2`)
+    /// and two named instances: `foo` and `my bracket` (#729).
+    fn doc_with_named_instances() -> Document {
+        let mut inner = Document::default();
+        for (name, expression) in [("width", "10"), ("internal", "width * 2")] {
+            inner.parameters.push(crate::model::Parameter {
+                name: name.to_string(),
+                expression: expression.to_string(),
+                deleted: false,
+                primary: false,
+                source: None,
+            });
+        }
+        let mut doc = Document::default();
+        doc.units.push(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath("a.bearcad".to_string()),
+            link: crate::model::LinkMode::Static,
+            document: inner,
+            source_mtime: None,
+            source_hash: None,
+        });
+        for name in ["foo", "my bracket"] {
+            doc.unit_instances.push(crate::model::UnitInstance {
+                unit: 0,
+                name: Some(name.to_string()),
+                parameter_overrides: Vec::new(),
+                placement: crate::model::UnitPlacement::default(),
+                deleted: false,
+            });
+        }
+        doc
+    }
+
+    /// #729: `foo.bar` reaches a unit instance's parameter; backticks wrap a single name
+    /// segment (`` `my bracket`.width ``); overrides win; unit-internal expressions
+    /// resolve in the unit's own namespace.
+    #[test]
+    fn qualified_references_evaluate() {
+        let mut doc = doc_with_named_instances();
+        assert_eq!(eval_length_mm_in_doc("foo.width * 2", &doc), Some(20.0));
+        assert_eq!(eval_length_mm_in_doc("`my bracket`.width", &doc), Some(10.0));
+        assert_eq!(
+            eval_length_mm_in_doc("foo.internal", &doc),
+            Some(20.0),
+            "the unit's own expression resolves against the unit's parameters"
+        );
+
+        doc.unit_instances[0].parameter_overrides =
+            vec![("width".to_string(), "25".to_string())];
+        assert_eq!(eval_length_mm_in_doc("foo.width", &doc), Some(25.0));
+        assert_eq!(
+            eval_length_mm_in_doc("foo.internal", &doc),
+            Some(50.0),
+            "internals follow the instance's override"
+        );
+        assert_eq!(
+            eval_length_mm_in_doc("`my bracket`.width", &doc),
+            Some(10.0),
+            "the other instance is untouched"
+        );
+    }
+
+    /// #729: unknown qualified references fail like unknown parameters — named — and a
+    /// cycle threaded through a qualified reference is refused, not looped.
+    #[test]
+    fn qualified_reference_errors_and_cycles() {
+        let mut doc = doc_with_named_instances();
+        assert_eq!(eval_length_mm_in_doc("foo.nope", &doc), None);
+        assert_eq!(eval_length_mm_in_doc("nope.width", &doc), None);
+        let unknown = unknown_variables_in_parameter_expression("foo.nope + 1", &doc, "x", None);
+        assert_eq!(unknown, vec!["foo.nope".to_string()], "the message names what's missing");
+
+        // B's `x` = foo.width, and foo.width overridden back to `x`: a cycle through the
+        // qualified binding, refused by the evaluator.
+        doc.parameters.push(crate::model::Parameter {
+            name: "x".to_string(),
+            expression: "foo.width".to_string(),
+            deleted: false,
+            primary: false,
+            source: None,
+        });
+        doc.unit_instances[0].parameter_overrides =
+            vec![("width".to_string(), "x".to_string())];
+        assert_eq!(eval_length_mm_in_doc("x", &doc), None, "cycle refused");
+    }
 
     /// #431: `max`/`min`/`abs` work in expressions — multiple args or one square-bracket
     /// array — in both the length and angle parsers, composing with units and parameters.
