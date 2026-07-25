@@ -1938,6 +1938,8 @@ struct App {
     /// The Settings window (#720), toggled by Cmd/Ctrl+comma, the palette, or the menu.
     #[cfg(not(target_arch = "wasm32"))]
     settings_open: bool,
+    /// Last dynamic-unit source poll time (#732), seconds of `ctx.input().time`.
+    last_unit_sync_poll: f64,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -2721,6 +2723,7 @@ impl App {
             settings,
             #[cfg(not(target_arch = "wasm32"))]
             settings_open: false,
+            last_unit_sync_poll: 0.0,
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -2735,6 +2738,39 @@ impl App {
             showing_quit_prompt: false,
             allow_close: false,
         }
+    }
+
+    /// Poll dynamic units' source files (#732): every couple of seconds, a dynamic unit
+    /// whose source changed on disk re-syncs — each through its own undoable
+    /// `Action::SyncUnit`. This is the file-watcher mechanism for sources not open in
+    /// BearCAD; a source open in another BearCAD window signals directly instead (#733).
+    fn tick_unit_sync(&mut self, ctx: &egui::Context) {
+        const POLL_SECONDS: f64 = 2.0;
+        if self.state.doc.units.iter().all(|u| u.link != model::LinkMode::Dynamic) {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if now - self.last_unit_sync_poll < POLL_SECONDS {
+            // A pending poll keeps the loop ticking even while the app is idle.
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
+            return;
+        }
+        self.last_unit_sync_poll = now;
+        let stale: Vec<usize> = (0..self.state.doc.units.len())
+            .filter(|&u| {
+                let unit = &self.state.doc.units[u];
+                unit.link == model::LinkMode::Dynamic
+                    && units::unit_is_stale(
+                        unit,
+                        self.state.path.as_deref(),
+                        self.state.library_directory.as_deref(),
+                    )
+            })
+            .collect();
+        for unit in stale {
+            self.state.apply(Action::SyncUnit { unit });
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
     }
 
     /// The Settings window (#720): app-level preferences, saved on change. Controls and
@@ -8120,6 +8156,7 @@ impl eframe::App for App {
 
         #[cfg(not(target_arch = "wasm32"))]
         self.handle_native_menu(ctx);
+        self.tick_unit_sync(ctx);
         #[cfg(target_arch = "wasm32")]
         {
             let panes = self.state.panes.clone();
@@ -8802,8 +8839,15 @@ impl eframe::App for App {
                 self.state.apply(Action::EditEdgeTreatmentOp { op });
             }
             if let Some(element) = edit_operation {
-                // Universal operation editing (#546): double-click / right-click → "Edit".
-                self.begin_operation_edit(element);
+                // Universal operation editing (#546) — and a unit instance's "Update
+                // from source file" (#732), which rides the same callback.
+                if let SceneElement::UnitInstance(instance) = element {
+                    if let Some(unit) = self.state.doc.unit_instances.get(instance).map(|i| i.unit) {
+                        self.state.apply(Action::SyncUnit { unit });
+                    }
+                } else {
+                    self.begin_operation_edit(element);
+                }
             }
             if let Some(index) = export_body {
                 self.export_stl_body(index);

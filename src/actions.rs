@@ -1447,6 +1447,10 @@ pub enum Action {
         name: String,
         expression: Option<String>,
     },
+    /// Replace unit `unit`'s embedded copy from its source file (#732) — every instance
+    /// of the unit updates at once. Breaks are applied and reported through document
+    /// health; undo puts the previous copy back.
+    SyncUnit { unit: usize },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -2974,6 +2978,17 @@ impl AppState {
         // derived body per live instance before anything below reads the body list.
         crate::units::sync_unit_bodies(&mut self.doc);
         self.document_health = recompute_document_health(&self.doc);
+        // Stale units (#732): the embedded copy is behind the source file. Cheap — the
+        // content hash is only consulted when the mtime moved.
+        self.document_health.stale_units = (0..self.doc.units.len())
+            .filter(|&u| {
+                crate::units::unit_is_stale(
+                    &self.doc.units[u],
+                    self.path.as_deref(),
+                    self.library_directory.as_deref(),
+                )
+            })
+            .collect();
         // #103 part 2: this is the one seam every document mutation already goes through
         // (commits, open, undo, imports — never per-frame drags), so the "kernel fallback is
         // silently dropping this body's cuts" check lives here rather than being replicated
@@ -3152,6 +3167,87 @@ impl AppState {
             &mut self.doc,
             crate::hierarchy::SceneElement::Sketch(sketch),
         );
+    }
+
+    /// Replace unit `unit`'s embedded copy from its source file (#732). The sync applies
+    /// even when it breaks something in B — what broke then reports through document
+    /// health (a decision written down in the SPEC), and snapshot undo restores the
+    /// previous copy. Refuses only a missing/unreadable source or an import cycle.
+    fn sync_unit(&mut self, unit: usize) -> Result<String, String> {
+        let Some(source) = self.doc.units.get(unit).map(|u| u.source.clone()) else {
+            return Err(format!("Unit {unit} not found"));
+        };
+        let Some(path) = crate::units::resolve_unit_source_path(
+            &source,
+            self.path.as_deref(),
+            self.library_directory.as_deref(),
+        ) else {
+            return Err("The unit's source path can't be resolved here".to_string());
+        };
+        let path_str = path.to_string_lossy().to_string();
+        // Existence first: `storage::open` would create an empty SQLite file at a
+        // missing path as a side effect of opening a connection.
+        if !path.exists() {
+            return Err(format!("Update failed: {path_str} is missing"));
+        }
+        let new_doc = crate::storage::open(&path_str)
+            .map_err(|e| format!("Update failed: {e}"))?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("Update failed: {e}"))?;
+        let mtime = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+
+        let previous = self.doc.units[unit].document.clone();
+        self.doc.units[unit].document = new_doc;
+        if let Err(e) = crate::model::validate_units(
+            &self.doc,
+            self.path.as_deref().map(std::path::Path::new),
+        ) {
+            self.doc.units[unit].document = previous;
+            return Err(format!("Update refused: {e}"));
+        }
+        self.doc.units[unit].source_mtime = mtime;
+        self.doc.units[unit].source_hash = Some(crate::model::content_hash(&bytes));
+        // Everything built from the unit re-runs against the new copy; breaks surface
+        // through health, not dialogs.
+        let _ = crate::parameters::recompute_document_geometry(&mut self.doc);
+        self.refresh_document_health();
+        let instances = self
+            .doc
+            .unit_instances
+            .iter()
+            .filter(|i| !i.deleted && i.unit == unit)
+            .count();
+        Ok(format!(
+            "Updated {} for {instances} instance(s)",
+            path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(path_str)
+        ))
+    }
+
+    /// Sync every **dynamic** unit whose embedded copy is behind its source (#732): the
+    /// on-open and file-poll path. Static units never pass through here. Returns how
+    /// many units updated.
+    pub fn sync_stale_dynamic_units(&mut self) -> usize {
+        let mut updated = 0;
+        for unit in 0..self.doc.units.len() {
+            let u = &self.doc.units[unit];
+            if u.link != crate::model::LinkMode::Dynamic {
+                continue;
+            }
+            if !crate::units::unit_is_stale(
+                u,
+                self.path.as_deref(),
+                self.library_directory.as_deref(),
+            ) {
+                continue;
+            }
+            if self.sync_unit(unit).is_ok() {
+                updated += 1;
+            }
+        }
+        updated
     }
 
     /// Register cut extrusion `ei` against unit `instance` (#726): appended to the
@@ -5370,10 +5466,19 @@ impl AppState {
                     self.doc = doc;
                     self.sketch_session = None;
                     self.cam.set_view_up(None);
-                    self.refresh_document_health();
                     self.path = Some(path.clone());
                     self.mark_saved();
-                    self.status = format!("Opened {} ({} line(s))", path, n_lines);
+                    // Dynamic links pick up source changes on open (#732): the sync
+                    // replaces the embedded copies before the first frame renders (and
+                    // leaves the document dirty — the file on disk still holds the old
+                    // copies until the user saves).
+                    let synced = self.sync_stale_dynamic_units();
+                    self.refresh_document_health();
+                    self.status = if synced > 0 {
+                        format!("Opened {path} ({n_lines} line(s)); {synced} unit(s) updated")
+                    } else {
+                        format!("Opened {path} ({n_lines} line(s))")
+                    };
                     ActionResult::Ok
                 }
                 Err(e) => {
@@ -7320,6 +7425,16 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
+            Action::SyncUnit { unit } => match self.sync_unit(unit) {
+                Ok(message) => {
+                    self.status = message;
+                    ActionResult::Ok
+                }
+                Err(e) => {
+                    self.status = e.clone();
+                    ActionResult::Err(e)
+                }
+            },
             Action::SetUnitParameterOverride { instance, name, expression } => {
                 let Some(inst) = self
                     .doc
@@ -15737,6 +15852,89 @@ mod tests {
             state.doc.parameters.iter().find(|p| p.name == "x").unwrap().expression,
             format!("{first}.width * 2"),
             "…and the references, in the same step"
+        );
+    }
+
+    /// #732: a dynamic unit picks up a changed source (updating every instance at once);
+    /// a static one waits until told; a sync that orphans a reference reports unhealthy
+    /// and undoes cleanly; a missing source leaves the document fully usable.
+    #[test]
+    fn syncing_replaces_the_embedded_copy() {
+        let unit_path = write_solid_unit_file("bearcad_unit_sync_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_sync_b.bearcad").to_string_lossy().to_string(),
+        );
+        for _ in 0..2 {
+            state.apply(Action::ImportUnit {
+                path: unit_path.to_string_lossy().to_string(),
+                link: None, // dynamic
+                name: None,
+            });
+        }
+        assert_eq!(state.doc.units.len(), 1);
+        let height = |doc: &crate::model::Document, instance: usize| {
+            let eval = crate::units::evaluate_instance(doc, instance).unwrap();
+            let (min, max) = eval.meshes[0].bounds().unwrap();
+            max.z - min.z
+        };
+        assert!((height(&state.doc, 0) - 10.0).abs() < 1e-2);
+
+        // B references the unit's parameter; the source then changes on disk (taller box,
+        // `width` renamed to `w` — the rename can't be followed, it just goes missing).
+        let first = state.doc.unit_instances[0].name.clone().unwrap();
+        state.apply(Action::AddParameter {
+            name: "x".to_string(),
+            expression: format!("{first}.width"),
+        });
+        let mut v2 = state.doc.units[0].document.clone();
+        v2.parameters[0].name = "w".to_string();
+        v2.extrusions[0].expression = "w * 2".to_string();
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // move the mtime second
+        crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
+
+        assert!(
+            crate::units::unit_is_stale(&state.doc.units[0], state.path.as_deref(), None),
+            "the changed source reads as stale"
+        );
+        // The dynamic auto-sync path (open / poll) picks it up without being told.
+        assert_eq!(state.sync_stale_dynamic_units(), 1);
+        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "instance 0 updated");
+        assert!((height(&state.doc, 1) - 20.0).abs() < 1e-2, "…and instance 1, at once");
+
+        // The orphaned reference reports through health rather than blocking the sync.
+        state.refresh_document_health();
+        let xi = state.doc.parameters.iter().position(|p| p.name == "x").unwrap();
+        assert_ne!(
+            state.document_health.parameter_status(xi),
+            crate::document_health::HealthStatus::Healthy,
+            "the reference to the renamed parameter reports unhealthy"
+        );
+
+        // A static unit does not sync by itself — only when told.
+        state.doc.units[0].link = crate::model::LinkMode::Static;
+        let mut v3 = v2.clone();
+        v3.extrusions[0].expression = "w * 3".to_string();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        crate::storage::save(&unit_path.to_string_lossy(), &v3).unwrap();
+        assert_eq!(state.sync_stale_dynamic_units(), 0, "static units never auto-sync");
+        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "unchanged until told");
+        let r = state.apply(Action::SyncUnit { unit: 0 });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        assert!((height(&state.doc, 0) - 30.0).abs() < 1e-2, "explicit update applies");
+
+        // Undo puts the previous embedded copy back.
+        state.apply(Action::UndoLast);
+        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "undo restores the copy");
+
+        // A missing source refuses the sync and leaves everything usable.
+        std::fs::remove_file(&unit_path).unwrap();
+        let r = state.apply(Action::SyncUnit { unit: 0 });
+        assert!(matches!(r, ActionResult::Err(_)));
+        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "the embedded copy still builds");
+        assert!(
+            !crate::units::unit_is_stale(&state.doc.units[0], state.path.as_deref(), None),
+            "a missing source is not 'stale' — the embedded copy is the truth"
         );
     }
 

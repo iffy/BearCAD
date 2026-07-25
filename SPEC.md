@@ -2359,6 +2359,27 @@ evaluator's visiting stack. Implementation: `value::document_parameter_bindings`
 qualified names into the one `&[(name, expression)]` table every evaluator already uses;
 the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
 
+**Syncing (#732) — the rules:** a **dynamic** link picks up changes to A; a **static**
+link doesn't, but updates on demand (the instance row's right-click → *Update from source
+file*, `Action::SyncUnit`, `bearcad.sync_unit(i)`). Syncing **replaces the embedded
+copy** — B stays self-contained and never depends on A being present; all instances share
+the copy, so one sync updates every instance at once. Decisions written down:
+- **When dynamic syncs happen:** on opening B (before the first frame; the document comes
+  up dirty since disk still holds the old copy), and while B is open, when A is saved —
+  via a ~2 s source poll (`tick_unit_sync`, the "file watcher" for sources not open in
+  BearCAD; a source open in another BearCAD window signals directly instead, #733). No
+  per-sync dialogs.
+- **Breaks apply anyway**: a sync that orphans a face, parameter, or body goes through,
+  the damage reports via the existing document-health machinery, and one undo restores
+  the previous embedded copy (each sync is its own undoable action).
+- **A parameter renamed in A is not followed** (A's file carries no rename record):
+  overrides and `instance.old` references to it simply stop resolving and report
+  unhealthy, like any dead reference.
+- **Staleness is visible**: `DocumentHealth::stale_units` (mtime check first, content
+  hash as the authority) puts an amber dot on the instance row with the update hint. A
+  missing source is *not* stale — the embedded copy is then the truth, and a sync against
+  it refuses with a clear error.
+
 **Instance rename (#731):** renaming an instance (the row, the Context pane — one
 `CommitElementName` action) rewrites every `old.param` reference across all expression
 holders (`propagate_instance_rename` → `substitute_name_everywhere`: parameters, sketch

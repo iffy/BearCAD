@@ -578,6 +578,8 @@ pub enum Instruction {
         name: String,
         expression: Option<String>,
     },
+    /// Re-sync one unit's embedded copy from its source file (#732).
+    SyncUnit { unit: usize },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1429,6 +1431,7 @@ impl Instruction {
             Instruction::SetParameterPrimary { index, primary } => {
                 format!("bearcad.parameter(\"primary\", {index}, {primary})")
             }
+            Instruction::SyncUnit { unit } => format!("bearcad.sync_unit({unit})"),
             Instruction::SetUnitParameterOverride { instance, name, expression } => {
                 match expression {
                     Some(expression) => format!(
@@ -2072,6 +2075,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 expression: expression.clone(),
             })
         }
+        Action::SyncUnit { unit } => Some(Instruction::SyncUnit { unit: *unit }),
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
             name: name.clone(),
@@ -4942,6 +4946,11 @@ impl ScriptRunner {
             }
             Instruction::SetUnitParameterOverride { instance, name, expression } => {
                 let r = state.apply(Action::SetUnitParameterOverride { instance, name, expression });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SyncUnit { unit } => {
+                let r = state.apply(Action::SyncUnit { unit });
                 self.record_action_error(r);
                 StepResult::Continue
             }

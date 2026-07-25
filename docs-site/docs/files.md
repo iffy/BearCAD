@@ -83,8 +83,16 @@ bearcad.import_unit("bracket.bearcad")
 bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }
 ```
 
-`link = "dynamic"` (the default) follows later changes to the source file; `"static"`
-freezes the imported copy.
+`link = "dynamic"` (the default) follows later changes to the source file: the unit
+updates when you open the document and whenever the source is saved while it's open.
+`"static"` freezes the imported copy — an amber dot on the instance row shows when the
+source has moved on, and right-click → **Update from source file** picks it up (every
+instance of the unit updates together; one undo puts the previous copy back). Either way
+the document embeds its own copy, so it opens and builds with the source file absent.
+
+```lua
+bearcad.sync_unit(0)   -- update unit 0's embedded copy now
+```
 
 ## Turning a session into a script
 

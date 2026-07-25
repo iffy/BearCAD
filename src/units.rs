@@ -328,6 +328,52 @@ pub fn unit_face_world_polygon(
     Some(loop_world.into_iter().map(|p| transform.transform_point3(p)).collect())
 }
 
+/// Resolve where a unit's source file lives on this machine (#732): a relative source
+/// against the importing document's own directory, a library source against the app's
+/// library directory. `None` when the anchor it needs isn't known.
+pub fn resolve_unit_source_path(
+    source: &crate::model::UnitSource,
+    own_path: Option<&str>,
+    library: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    match source {
+        crate::model::UnitSource::RelativePath(p) => {
+            let own = std::path::Path::new(own_path?);
+            Some(own.parent().unwrap_or_else(|| std::path::Path::new("")).join(p))
+        }
+        crate::model::UnitSource::Library(p) => Some(library?.join(p)),
+    }
+}
+
+/// Whether a unit's embedded copy is behind its source file (#732): a cheap mtime check
+/// first, the content hash as the authority (mtimes lie across copies and checkouts). A
+/// missing or unresolvable source is **not** stale — the embedded copy is then simply
+/// the truth.
+pub fn unit_is_stale(
+    unit: &ImportedUnit,
+    own_path: Option<&str>,
+    library: Option<&std::path::Path>,
+) -> bool {
+    let Some(path) = resolve_unit_source_path(&unit.source, own_path, library) else {
+        return false;
+    };
+    let mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let Some(mtime) = mtime else {
+        return false;
+    };
+    if unit.source_mtime == Some(mtime) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return false;
+    };
+    unit.source_hash != Some(crate::model::content_hash(&bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

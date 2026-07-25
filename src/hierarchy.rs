@@ -4615,6 +4615,25 @@ fn show_row(
             row_shows_selection(&element, selection, style_selection),
             styled_label(&label, style),
         );
+        // A stale unit (#732): the embedded copy is behind the source file. An amber dot
+        // says so; right-click → "Update from source file" picks the change up.
+        if let HierarchyNode::UnitInstance(index) = node {
+            let stale = doc
+                .unit_instances
+                .get(index)
+                .is_some_and(|inst| health.stale_units.contains(&inst.unit));
+            if stale {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(
+                    dot.center(),
+                    3.0,
+                    crate::document_health::UNSTABLE_DISPLAY,
+                );
+                ui.allocate_rect(dot, egui::Sense::hover()).on_hover_text(
+                    "The source file has changed — right-click → Update from source file",
+                );
+            }
+        }
         // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
         if response.hovered() {
             on_hover_element(element.clone());
@@ -4825,6 +4844,15 @@ fn element_context_menu(
             }
             if ui.button("Export STEP…").clicked() {
                 on_export_body_step(index);
+                ui.close();
+            }
+        }
+        // A unit instance (#732): update its unit's embedded copy from the source file
+        // (every instance of the unit updates at once); routed through the universal
+        // operation callback and dispatched in `begin_operation_edit`.
+        HierarchyNode::UnitInstance(index) => {
+            if ui.button("Update from source file").clicked() {
+                on_edit_operation(SceneElement::UnitInstance(index));
                 ui.close();
             }
         }

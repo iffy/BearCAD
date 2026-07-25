@@ -94,6 +94,10 @@ pub struct DocumentHealth {
     /// Unit instances whose evaluation failed (#722): instance index → reason. The rest
     /// of the document stays healthy and usable around them.
     pub unit_instances: HashMap<usize, String>,
+    /// Units whose embedded copy is behind their source file (#732). Populated by
+    /// `AppState::refresh_document_health` (staleness needs the document's own path and
+    /// the library directory, which the pure health pass doesn't have).
+    pub stale_units: std::collections::HashSet<usize>,
 }
 
 impl DocumentHealth {

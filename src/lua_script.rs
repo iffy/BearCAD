@@ -1233,6 +1233,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #732: re-sync a unit's embedded copy from its source file.
+    api.set(
+        "sync_unit",
+        lua.create_function(|lua, unit: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SyncUnit { unit }) }
+        })?,
+    )?;
+
     // #163/#169: import a PNG/JPEG as a tracing image. `import_image("p.png")` or
     // `import_image{ path = "p.png", plane = 0 }`.
     api.set(
