@@ -16,3 +16,10 @@ dimension anywhere on the page.
 
 All of the page's elements are also listed in the Elements pane, nested under the
 drawing — hover a row to highlight it on the page.
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![A selected view's Context pane, each field explained](/img/screenshots/pane-drawing-select.png)

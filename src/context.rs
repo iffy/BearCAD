@@ -2442,6 +2442,28 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::ConstructionPlane), "Tilt") => Some(
             "The tilt about the anchored axis, in degrees — for an edge or axis anchor.",
         ),
+        (Some(Tool::DrawingAdd), "Add view") => Some(
+            "Click a body or sketch — in the Elements pane or the 3D view — and a \
+             projection of it lands on the page.",
+        ),
+        (Some(Tool::DrawingAlign), "Base view") => Some(
+            "The view the new projection aligns to: click a view card, then a side of \
+             it, and the aligned view lands there.",
+        ),
+        (_, "Shows") => Some("The body or sketch this view projects, and from which side."),
+        (_, "Style") => Some("How the projection draws — hidden lines shown, hidden, or dashed."),
+        (_, "Scale") => Some(
+            "The view's drawing scale. Views print at this ratio; the label can show it.",
+        ),
+        (_, "Label") => Some("The caption under the view — shown or hidden, with its text."),
+        (_, "Dimensions") => Some(
+            "Measurements shown on this view. Click an edge on the page to add or \
+             remove its dimension.",
+        ),
+        (_, "Text") => Some("The caption's wording."),
+        (_, "Position") => Some(
+            "Where it sits on the page, as fractions of the sheet — drag it there too.",
+        ),
         (Some(Tool::Select), "Selection") => Some(
             "Everything currently selected, one row each — click things in the viewport \
              or the Elements pane; a row's clear drops it.",
@@ -4624,7 +4646,7 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, "View");
-        labeled_row(ui, "Source", |ui| {
+        labeled_row(ui, "Shows", |ui| {
             ui.label(&control.source);
         });
         // An aligned child stays lined up with its base, but its **angle** can be adjusted within
@@ -4795,7 +4817,12 @@ pub fn show_pane(
     } else if content.drawing_add_active {
         any_control = true;
         ui.separator();
-        section_label(ui, "Add view");
+        let header = ui.label(
+            egui::RichText::new("Add view")
+                .color(egui::Color32::from_gray(130))
+                .size(11.5),
+        );
+        note_help(ui, "Add view", header.rect);
     }
 
     // Drawing text annotation editor (#312): a multiline textarea + remove button.

@@ -15,3 +15,10 @@ With the **Dimension tool**:
   a cylinder's side wall gets its length.
 - Shift+click two lines to show the angle between them.
 - Click and drag dimensions to reposition them.
+
+## The Context pane
+
+A selected view's pane carries the **Dimensions** row this tool feeds — with help mode
+on it explains itself, along with the rest of the view's fields:
+
+![A selected view's Context pane, each field explained](/img/screenshots/pane-drawing-select.png)

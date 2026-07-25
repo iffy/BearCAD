@@ -14,3 +14,10 @@ the shared edge) and a **Projection lines** checkbox connecting the pair with da
 lines.
 
 ![A Top view with a Right view aligned beside it and a Front view aligned below](/img/screenshots/aligned-views.png)
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Aligned view tool's Context pane, each field explained](/img/screenshots/pane-drawing-align.png)
