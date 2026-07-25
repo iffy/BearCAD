@@ -2400,6 +2400,21 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::ConstructionPlane), "Anchor") => Some(
+            "What the plane hangs on: a face, an edge, a vertex, or a line plus a \
+             point. Click it in the viewport; the clear button starts the pick over.",
+        ),
+        (Some(Tool::ConstructionPlane), "Normal") => Some(
+            "Which way the plane faces when the anchor leaves more than one choice — \
+             pick among the directions at that corner.",
+        ),
+        (Some(Tool::ConstructionPlane), "Offset") => Some(
+            "How far off the anchor the plane sits, as an expression. Mirrors the drag \
+             handle in the 3D view.",
+        ),
+        (Some(Tool::ConstructionPlane), "Tilt") => Some(
+            "The tilt about the anchored axis, in degrees — for an edge or axis anchor.",
+        ),
         (Some(Tool::Constraint), "Selection") => Some(
             "The geometry the constraint applies to — click lines, points, or edges in \
              the viewport; Shift+click adds more.",
@@ -2621,8 +2636,8 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              this instance.",
         ),
         "Override" => Some(
-            "This value is overridden for this instance (it reads gold). The ✕ goes back \
-             to the part's own value.",
+            "This value is overridden for this instance (it reads gold). The button \
+             beside it goes back to the part's own value.",
         ),
         "Internals" => Some(
             "The part's secondary parameters — internals its author didn't put at the \
@@ -3549,7 +3564,7 @@ pub fn show_pane(
                 });
             });
             if control.show_angle {
-                labeled_row(ui, "Angle", |ui| {
+                labeled_row(ui, "Tilt", |ui| {
                     ui.add_enabled_ui(controls_enabled, |ui| {
                         let mut text = control.angle_text.clone();
                         let resp = crate::expression_input::ValueInput::new(
