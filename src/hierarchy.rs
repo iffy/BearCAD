@@ -93,6 +93,14 @@ pub enum HierarchyNode {
     /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
     /// leaf with no [`SceneElement`]; clicking it opens the drawing.
     DrawingAnnotation { drawing: usize, annotation: usize },
+    /// An imported unit instance (#723): a selectable top-level row (its
+    /// [`SceneElement::UnitInstance`] renames, hides, and deletes the instance). Its
+    /// children ([`HierarchyNode::UnitChild`]) expand beneath it in the List view.
+    UnitInstance(usize),
+    /// One element inside an imported unit (#723): a **display-only, read-only** leaf (no
+    /// [`SceneElement`]) shown when the instance row is expanded, so a user can look
+    /// inside without being able to edit. `ordinal` indexes [`unit_child_rows`]'s output.
+    UnitChild { instance: usize, ordinal: usize },
     /// A length dimension shown on a projection (#341), nested under its
     /// [`HierarchyNode::DrawingProjection`]. `a`/`b` are the dimensioned edge's quantized world
     /// endpoints. A display-only leaf; clicking it opens the drawing and selects the dimension.
@@ -177,6 +185,10 @@ pub enum SceneElement {
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
     Component(usize),
+    /// An imported unit instance (#723): one row per placement of an imported document.
+    /// Selecting, renaming, hiding, and deleting act on the instance; its contents are
+    /// read-only from the importing document.
+    UnitInstance(usize),
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -207,6 +219,9 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         | HierarchyNode::DrawingProjection { .. }
         | HierarchyNode::DrawingAnnotation { .. }
         | HierarchyNode::DrawingDimension { .. }
+        // A unit's contents are read-only from the importing document (#723): no scene
+        // identity means no selection, visibility, deletion, or renaming can target them.
+        | HierarchyNode::UnitChild { .. }
         | HierarchyNode::Loft(_) => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
@@ -231,6 +246,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
         HierarchyNode::SweepOp(i) => SceneElement::SweepOp(i),
         HierarchyNode::Component(i) => SceneElement::Component(i),
+        HierarchyNode::UnitInstance(i) => SceneElement::UnitInstance(i),
     })
 }
 
@@ -335,6 +351,8 @@ impl ElementVisibility {
             }
         }
         match element {
+            // A unit instance's visibility is just its own toggle (#723).
+            SceneElement::UnitInstance(_) => true,
             SceneElement::Component(index) => doc
                 .components
                 .get(index)
@@ -1369,6 +1387,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::Revolution(i) => HierarchyNode::Revolution(*i),
         SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
         SceneElement::Component(i) => HierarchyNode::Component(*i),
+        SceneElement::UnitInstance(i) => HierarchyNode::UnitInstance(*i),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -1859,6 +1878,23 @@ pub fn build_hierarchy(
             });
         }
     }
+    // Imported unit instances (#723): one top-level row each; the contents expand as
+    // read-only leaves beneath it.
+    for index in 0..doc.unit_instances.len() {
+        if doc.unit_instances[index].deleted {
+            continue;
+        }
+        let children = (0..unit_child_rows(doc, index).len())
+            .map(|ordinal| HierarchyEntry {
+                node: HierarchyNode::UnitChild { instance: index, ordinal },
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::UnitInstance(index),
+            children,
+        });
+    }
     // Components (#423): move member roots under their component's entry, then nest
     // component entries by their parent links. Unassigned roots stay at the top level.
     let roots = group_roots_into_components(doc, roots);
@@ -2008,6 +2044,10 @@ pub struct ElementFilter {
     /// from the drawing rows themselves (#381): page details are noise while modeling, so
     /// the Model workbench hides them by default (the Drawing workbench shows them).
     pub drawing_components: bool,
+    /// What's **inside** an imported unit (#723). Off by default: the node graph shows an
+    /// instance as one opaque row; turning this on lets its contents into the graph. The
+    /// List view ignores it — there the instance row expands instead.
+    pub unit_contents: bool,
 }
 
 impl Default for ElementFilter {
@@ -2021,6 +2061,7 @@ impl Default for ElementFilter {
             images: true,
             drawings: true,
             drawing_components: false,
+            unit_contents: false,
         }
     }
 }
@@ -2039,11 +2080,12 @@ impl ElementFilter {
             images: false,
             drawings: true,
             drawing_components: true,
+            unit_contents: false,
         }
     }
 
     /// The toggles in display order: `(label, &mut enabled)` pairs the filter UI iterates.
-    pub fn rows(&mut self) -> [(&'static str, &mut bool); 8] {
+    pub fn rows(&mut self) -> [(&'static str, &mut bool); 9] {
         [
             ("Planes", &mut self.planes),
             ("Sketches", &mut self.sketches),
@@ -2053,6 +2095,7 @@ impl ElementFilter {
             ("Images", &mut self.images),
             ("Drawings", &mut self.drawings),
             ("Drawing components", &mut self.drawing_components),
+            ("Unit contents", &mut self.unit_contents),
         ]
     }
 
@@ -2091,7 +2134,21 @@ impl ElementFilter {
             | HierarchyNode::DrawingDimension { .. } => {
                 self.drawings && self.drawing_components
             }
+            HierarchyNode::UnitInstance(_) => true,
+            // The List view keeps a unit's children (they hide behind the row's collapse
+            // instead); the Graph consults `unit_contents` separately (#723).
+            HierarchyNode::UnitChild { .. } => true,
         }
+    }
+}
+
+/// Drop every [`HierarchyNode::UnitChild`] from a tree (#723): the graph's default view
+/// of a unit instance is one opaque node. Unlike [`filter_hierarchy`] there is no
+/// promotion — a unit's contents never surface as loose nodes.
+pub fn prune_unit_children(tree: &mut Vec<HierarchyEntry>) {
+    tree.retain(|e| !matches!(e.node, HierarchyNode::UnitChild { .. }));
+    for entry in tree {
+        prune_unit_children(&mut entry.children);
     }
 }
 
@@ -2259,6 +2316,8 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
 
 fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement> {
     match element {
+        // A unit instance is always a top-level row (#723).
+        SceneElement::UnitInstance(_) => None,
         SceneElement::Component(index) => doc
             .components
             .get(index)
@@ -2356,6 +2415,8 @@ fn collect_ancestors(doc: &Document, element: SceneElement, out: &mut HashSet<Sc
 
 fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<SceneElement>) {
     match element {
+        // A unit's contents have no scene identity to collect (#723).
+        SceneElement::UnitInstance(_) => {}
         SceneElement::Component(index) => {
             for (k, i, c) in doc.component_members.iter() {
                 if *c != index {
@@ -2895,7 +2956,44 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::DrawingProjection { .. } => IconId::Projection,
         HierarchyNode::DrawingAnnotation { .. } => IconId::Text,
         HierarchyNode::DrawingDimension { .. } => IconId::Dimension,
+        HierarchyNode::UnitInstance(_) => IconId::Import,
+        HierarchyNode::UnitChild { instance, ordinal } => {
+            return unit_child_rows(doc, instance)
+                .get(ordinal)
+                .map(|(icon, _)| *icon)
+        }
     })
+}
+
+/// The rows a unit instance expands into (#723): the embedded document's live planes
+/// (past the default ground plane), sketches, and bodies as `(icon, label)` pairs —
+/// enough to look inside a part without exposing its full history. Read-only: these back
+/// [`HierarchyNode::UnitChild`] display leaves with no [`SceneElement`].
+pub fn unit_child_rows(doc: &Document, instance: usize) -> Vec<(IconId, String)> {
+    let Some(inst) = doc.unit_instances.get(instance) else {
+        return Vec::new();
+    };
+    let Some(unit) = doc.units.get(inst.unit) else {
+        return Vec::new();
+    };
+    let inner = &unit.document;
+    let mut rows = Vec::new();
+    for (i, plane) in inner.construction_planes.iter().enumerate().skip(1) {
+        if !plane.deleted {
+            rows.push((IconId::Plane, node_label(inner, HierarchyNode::ConstructionPlane(i))));
+        }
+    }
+    for (i, sketch) in inner.sketches.iter().enumerate() {
+        if !sketch.deleted {
+            rows.push((IconId::Sketch, node_label(inner, HierarchyNode::Sketch(i))));
+        }
+    }
+    for (i, body) in inner.bodies.iter().enumerate() {
+        if !body.deleted && !body.shadow {
+            rows.push((IconId::Body, node_label(inner, HierarchyNode::Body(i))));
+        }
+    }
+    rows
 }
 
 /// The [`EdgeTreatment`] a [`HierarchyNode::EdgeTreatment`] points at, if it still exists.
@@ -3221,6 +3319,9 @@ pub fn show_pane(
     rollback_marker: Option<&RollbackMarker>,
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     collapsed_components: &mut HashSet<usize>,
+    // Unit instances whose read-only contents are expanded in the List (#723); default
+    // collapsed, so an instance reads as one row.
+    expanded_units: &mut HashSet<usize>,
     on_add_component: &mut impl FnMut(Option<usize>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
     active_component: Option<usize>,
@@ -3325,7 +3426,13 @@ pub fn show_pane(
         // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
-            let rows = component_list_rows(&tree, doc, collapsed_components);
+            let mut rows = component_list_rows(&tree, doc, collapsed_components);
+            // A collapsed unit instance is one row (#723): its read-only contents only
+            // appear while the row's triangle has expanded it.
+            rows.retain(|(node, _)| {
+                !matches!(node, HierarchyNode::UnitChild { instance, .. }
+                    if !expanded_units.contains(instance))
+            });
             let elements: Vec<HierarchyNode> = rows.iter().map(|(n, _)| *n).collect();
             let style_selection = selection_styles_visible_list(&elements, selection);
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -3379,11 +3486,15 @@ pub fn show_pane(
                             }
                             _ => 0,
                         };
+                    // A unit's contents indent one level under their instance row (#723).
+                    let row_depth = row_depth
+                        + usize::from(matches!(node, HierarchyNode::UnitChild { .. }));
                     show_row(
                         ui,
                         doc,
                         node,
                         row_depth,
+                        expanded_units,
                         visibility,
                         selection,
                         health,
@@ -3421,7 +3532,14 @@ pub fn show_pane(
             });
         }
         HierarchyViewMode::Graph => {
-            let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
+            let mut tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
+            // The graph shows a unit instance as one opaque node (#723): its contents stay
+            // out unless the "Unit contents" filter toggle lets them in. The List keeps
+            // them (they hide behind the row's collapse instead), so this prune is the
+            // graph's own.
+            if !filter.unit_contents {
+                prune_unit_children(&mut tree);
+            }
             show_graph_view(
                 ui,
                 doc,
@@ -3478,8 +3596,9 @@ pub fn show_pane(
                         images,
                         drawings,
                         drawing_components,
+                        unit_contents,
                     } = filter;
-                    let groups: [(&str, &[I], &mut bool); 8] = [
+                    let groups: [(&str, &[I], &mut bool); 9] = [
                         ("Planes", &[I::Plane], planes),
                         ("Sketches", &[I::Sketch], sketches),
                         ("Sketch components", &[I::SketchComponents], sketch_geometry),
@@ -3488,6 +3607,7 @@ pub fn show_pane(
                         ("Images", &[I::Image], images),
                         ("Drawings", &[I::Drawing], drawings),
                         ("Drawing components", &[I::DrawingComponents], drawing_components),
+                        ("Unit contents", &[I::Import], unit_contents),
                     ];
                     ui.horizontal_wrapped(|ui| {
                         for (label, icons, enabled) in groups {
@@ -4214,6 +4334,7 @@ fn show_row(
     doc: &Document,
     node: HierarchyNode,
     depth: usize,
+    expanded_units: &mut HashSet<usize>,
     visibility: &mut ElementVisibility,
     selection: &SceneSelection,
     health: &DocumentHealth,
@@ -4350,6 +4471,25 @@ fn show_row(
         return;
     }
 
+    // An element inside an imported unit (#723): a display-only, read-only leaf. Clicking
+    // explains itself instead of selecting — nothing in a unit can be edited from here.
+    if let HierarchyNode::UnitChild { .. } = node {
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 18.0);
+            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                ui.add(
+                    egui::Image::new(sized_texture(ui.ctx(), icon))
+                        .tint(Color32::from_gray(140)),
+                );
+            }
+            ui.add(egui::Label::new(
+                RichText::new(node_label(doc, node)).color(Color32::from_gray(150)),
+            ))
+            .on_hover_text("Part of an imported unit — read-only here; edit the source file");
+        });
+        return;
+    }
+
     // A loft operation (#252): a display-only row (no SceneElement yet); its output body nests
     // beneath it and its sketch inputs show as graph edges.
     if matches!(node, HierarchyNode::Loft(_)) {
@@ -4409,6 +4549,43 @@ fn show_row(
 
     ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 18.0);
+        // A unit instance row grows a collapse triangle (#723), like a component's: its
+        // read-only contents expand beneath it in the List.
+        if let HierarchyNode::UnitInstance(index) = node {
+            let expanded = expanded_units.contains(&index);
+            let (tri_rect, tri_resp) =
+                ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::click());
+            let c = tri_rect.center();
+            let r = 4.0;
+            let pts = if expanded {
+                vec![
+                    egui::pos2(c.x - r, c.y - r * 0.5),
+                    egui::pos2(c.x + r, c.y - r * 0.5),
+                    egui::pos2(c.x, c.y + r),
+                ]
+            } else {
+                vec![
+                    egui::pos2(c.x - r * 0.5, c.y - r),
+                    egui::pos2(c.x + r, c.y),
+                    egui::pos2(c.x - r * 0.5, c.y + r),
+                ]
+            };
+            ui.painter().add(egui::Shape::convex_polygon(
+                pts,
+                Color32::from_gray(170),
+                egui::Stroke::NONE,
+            ));
+            if tri_resp
+                .on_hover_text(if expanded { "Collapse" } else { "Look inside (read-only)" })
+                .clicked()
+            {
+                if expanded {
+                    expanded_units.remove(&index);
+                } else {
+                    expanded_units.insert(index);
+                }
+            }
+        }
         if icon_button(
             ui,
             icon_for_visibility(visible),
@@ -4725,6 +4902,92 @@ fn component_member_node(node: HierarchyNode) -> bool {
 mod tests {
     use super::*;
     use crate::model::ShapeKind;
+
+    /// A document with one imported unit (a sketch + a body inside) and one instance (#723).
+    fn doc_with_unit_instance() -> Document {
+        let mut inner = Document::default();
+        let sketch = inner.add_sketch(FaceId::ConstructionPlane(0));
+        crate::construction::add_line_rectangle(&mut inner, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        inner.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: Some("Inner body".to_string()),
+            deleted: false,
+            shadow: false,
+        });
+        let mut doc = Document::default();
+        doc.units.push(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath("a.bearcad".to_string()),
+            link: crate::model::LinkMode::Static,
+            document: inner,
+            source_mtime: None,
+            source_hash: None,
+        });
+        doc.unit_instances.push(crate::model::UnitInstance {
+            unit: 0,
+            name: Some("bracket".to_string()),
+            parameter_overrides: Vec::new(),
+            placement: crate::model::UnitPlacement::default(),
+            deleted: false,
+        });
+        doc
+    }
+
+    /// #723: an instance is one top-level row; its children are display-only leaves with
+    /// no scene identity — the single gate every selection/visibility/mutation dispatch
+    /// goes through — so nothing inside a unit can be targeted by a mutating action.
+    #[test]
+    fn unit_instance_is_one_row_and_its_children_are_read_only() {
+        let doc = doc_with_unit_instance();
+        let tree = build_hierarchy(&doc, None);
+        let instance_entry = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::UnitInstance(0))
+            .expect("the instance is a top-level row");
+        assert!(!instance_entry.children.is_empty(), "the contents expand beneath it");
+        for child in &instance_entry.children {
+            assert!(
+                matches!(child.node, HierarchyNode::UnitChild { .. }),
+                "every child is a read-only unit-content leaf: {:?}",
+                child.node
+            );
+            assert_eq!(
+                scene_element_for_node(child.node),
+                None,
+                "no scene identity → unaddressable by selection or any mutating action"
+            );
+        }
+        // The row itself is a real element: selectable, nameable, hideable.
+        assert_eq!(
+            scene_element_for_node(HierarchyNode::UnitInstance(0)),
+            Some(SceneElement::UnitInstance(0))
+        );
+        // The child labels come from the unit's own document.
+        let labels: Vec<String> = unit_child_rows(&doc, 0).into_iter().map(|(_, l)| l).collect();
+        assert!(labels.iter().any(|l| l == "Inner body"), "{labels:?}");
+    }
+
+    /// #723: the node graph hides a unit's contents by default — the "Unit contents"
+    /// filter toggle (default off) lets them in; the prune never promotes them.
+    #[test]
+    fn graph_filter_hides_unit_children_by_default() {
+        let doc = doc_with_unit_instance();
+        let filter = ElementFilter::default();
+        assert!(!filter.unit_contents, "unit contents are off by default");
+        let mut tree = filter_hierarchy(&build_hierarchy(&doc, None), &filter);
+        prune_unit_children(&mut tree);
+        fn any_unit_child(entries: &[HierarchyEntry]) -> bool {
+            entries.iter().any(|e| {
+                matches!(e.node, HierarchyNode::UnitChild { .. }) || any_unit_child(&e.children)
+            })
+        }
+        assert!(!any_unit_child(&tree), "pruned tree has no unit contents anywhere");
+        // The instance row itself survives the prune.
+        assert!(tree[0]
+            .children
+            .iter()
+            .any(|e| e.node == HierarchyNode::UnitInstance(0)));
+    }
 
     /// #622: layering enforcement — inputs always end up above consumers; a dragged
     /// consumer pushes its input up instead of snapping back; without a drag, violated

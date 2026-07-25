@@ -4864,6 +4864,7 @@ fn validate_slice_inputs(
 fn element_label(element: SceneElement) -> String {
     match element {
         SceneElement::Component(i) => format!("Component {i}"),
+        SceneElement::UnitInstance(i) => format!("Unit instance {i}"),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
@@ -15006,6 +15007,38 @@ mod tests {
         assert_eq!(loaded.units[0].document.parameters[0].name, "width");
 
         let _ = std::fs::remove_dir_all(&elsewhere_dir);
+    }
+
+    /// #723: the instance row renames through the ordinary rename action, and deleting it
+    /// tombstones the instance while the embedded copy stays (unit indices remain stable
+    /// and re-importing the same source stays cheap).
+    #[test]
+    fn unit_instance_row_renames_and_deletes_as_an_instance() {
+        let unit_path = write_unit_file("bearcad_unit_row_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_row_b.bearcad").to_string_lossy().to_string(),
+        );
+        state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+
+        let element = crate::hierarchy::SceneElement::UnitInstance(0);
+        let r = state.apply(Action::CommitElementName {
+            element: element.clone(),
+            name: "left_bracket".to_string(),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(state.doc.unit_instances[0].name.as_deref(), Some("left_bracket"));
+
+        state.apply(Action::ClickSceneElement { element, additive: false });
+        state.apply(Action::DeleteSelection);
+        assert!(state.doc.unit_instances[0].deleted, "the instance tombstones");
+        assert_eq!(state.doc.units.len(), 1, "the embedded copy stays");
+
+        let _ = std::fs::remove_file(&unit_path);
     }
 
     #[test]

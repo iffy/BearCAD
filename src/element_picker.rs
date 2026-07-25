@@ -86,6 +86,7 @@ impl ElementKind {
             SceneElement::BodyFace { .. } => ElementKind::Face,
             SceneElement::Body(_) => ElementKind::Body,
             SceneElement::Component(_) => ElementKind::Operation,
+            SceneElement::UnitInstance(_) => ElementKind::Body,
             SceneElement::Extrusion(_)
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)

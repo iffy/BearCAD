@@ -113,6 +113,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Revolution(_) => "revolution",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
+        SceneElement::UnitInstance(_) => "unit_instance",
     }
 }
 
@@ -140,7 +141,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Revolution(i)
         | SceneElement::SweepOp(i)
-        | SceneElement::Component(i) => i,
+        | SceneElement::Component(i)
+        | SceneElement::UnitInstance(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin

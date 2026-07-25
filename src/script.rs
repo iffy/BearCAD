@@ -1703,6 +1703,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::UnitInstance(i) => ElementScriptTokens {
+            kind: "unit_instance",
+            index: i,
+            point: None,
+        },
         SceneElement::Origin => ElementScriptTokens {
             kind: "origin",
             index: 0,

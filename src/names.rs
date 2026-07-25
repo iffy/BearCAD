@@ -30,7 +30,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::EdgeTreatmentOp(_)
         | SceneElement::Revolution(_)
         | SceneElement::SweepOp(_)
-        | SceneElement::Component(_) => Some(element),
+        | SceneElement::Component(_)
+        | SceneElement::UnitInstance(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -151,6 +152,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
         SceneElement::SweepOp(index) => doc.sweeps.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
+        SceneElement::UnitInstance(index) => doc.unit_instances.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -337,6 +339,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("image {index} not found"))?;
             image.name = stored;
         }
+        SceneElement::UnitInstance(index) => {
+            let instance = doc
+                .unit_instances
+                .get_mut(index)
+                .ok_or_else(|| format!("unit instance {index} not found"))?;
+            instance.name = stored;
+        }
         SceneElement::Point(_) => {
             return Err("points cannot be renamed".to_string());
         }
@@ -361,6 +370,15 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         // doesn't carry one — so it always gets this fixed label.
         HierarchyNode::Document => "Document".to_string(),
         HierarchyNode::Component(i) => format!("Component {i}"),
+        // The instance's own name (set at import from the file stem) lives in
+        // `element_name`; this is only the fallback for an unnamed instance (#723).
+        HierarchyNode::UnitInstance(i) => format!("Unit {i}"),
+        HierarchyNode::UnitChild { instance, ordinal } => {
+            crate::hierarchy::unit_child_rows(doc, instance)
+                .get(ordinal)
+                .map(|(_, label)| label.clone())
+                .unwrap_or_else(|| format!("Unit content {ordinal}"))
+        }
         HierarchyNode::ConstructionPlane(i) => {
             if i == 0 {
                 "Construction plane (XY)".to_string()
@@ -551,6 +569,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             }
         }
         SceneElement::Component(i) => format!("Component {i}"),
+        SceneElement::UnitInstance(i) => format!("Unit {i}"),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),

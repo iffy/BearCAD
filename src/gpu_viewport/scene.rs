@@ -875,13 +875,25 @@ impl ViewportScene {
         // per unit + override set), placed by its transform. A broken unit contributes
         // whatever still built; document health carries the reason.
         for index in 0..input.doc.unit_instances.len() {
-            if input.doc.unit_instances[index].deleted {
+            if input.doc.unit_instances[index].deleted
+                || !input
+                    .element_visibility
+                    .effective_visible(input.doc, SceneElement::UnitInstance(index))
+            {
                 continue;
             }
-            let fill = if input.sketch_session.is_some() {
-                scale_color(SOLID_FILL, SKETCH_MODE_BODY_DIM)
+            let base_fill = if input
+                .selection
+                .is_selected(SceneElement::UnitInstance(index))
+            {
+                SOLID_FILL_SELECTED
             } else {
                 SOLID_FILL
+            };
+            let fill = if input.sketch_session.is_some() {
+                scale_color(base_fill, SKETCH_MODE_BODY_DIM)
+            } else {
+                base_fill
             };
             for solid in crate::units::placed_instance_meshes(input.doc, index) {
                 match input.cam.shading_mode() {
@@ -3124,6 +3136,12 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::Revolution(_)
             | SceneElement::SweepOp(_)
             | SceneElement::Component(_) => {}
+            // A selected/hovered unit instance outlines its placed meshes (#723).
+            SceneElement::UnitInstance(index) => {
+                for solid in crate::units::placed_instance_meshes(doc, index) {
+                    self.push_solid_wireframe(&solid, color, cam, viewport, view_proj);
+                }
+            }
             // A hovered body recolors in the main pass (#455); a hovered extrusion
             // recolors just its own solid.
             SceneElement::Body(_) => {}

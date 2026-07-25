@@ -2325,6 +2325,16 @@ expressions (`tx`/`ty`/`tz`, axis+angle) evaluate in the importing document; the
 draws each instance's placed meshes. A unit that fails to rebuild reports per-instance on
 `DocumentHealth::unit_instances` (and builds what it can) instead of breaking the document.
 
+**Elements pane (#723):** an instance is **one selectable row** (`SceneElement::
+UnitInstance`): rename, hide, select, and delete work like any element; deleting
+tombstones the instance and the **embedded copy stays** (unit indices remain stable, and
+re-importing the same source reuses it). The row's triangle expands the unit's contents
+as display-only leaves (`HierarchyNode::UnitChild`) in the List. Read-only is enforced at
+the scene-identity layer: unit contents map to **no `SceneElement`** — the single gate
+every selection/visibility/mutation dispatch flows through — so nothing inside a unit is
+addressable by a mutating action. The node graph shows one opaque node per instance; the
+"Unit contents" pane-filter toggle (off by default) admits the content leaves.
+
 ---
 
 ## 8. Scripting (Lua API)

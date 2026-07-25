@@ -53,6 +53,11 @@ reusable part with its own parameters.
   stored relative to the importing document — save the document once before importing.
 - Importing a file that imports the current document is refused; imports can't cycle.
 
+Each instance is **one row** in the Elements pane — rename, hide, or delete it like any
+element (deleting removes just that instance). The row's triangle expands a read-only look
+inside; everything in a unit is edited in its source file, not here. The node graph shows
+an instance as a single node — enable **Unit contents** in the pane filter to see inside.
+
 ```lua
 bearcad.import_unit("bracket.bearcad")
 bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }

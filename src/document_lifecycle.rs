@@ -55,6 +55,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::BodyEdge { body, .. }
         | SceneElement::BodyVertex { body, .. }
         | SceneElement::BodyFace { body, .. } => body_alive(doc, body),
+        SceneElement::UnitInstance(index) => doc
+            .unit_instances
+            .get(index)
+            .is_some_and(|i| !i.deleted),
         SceneElement::Component(index) => doc
             .components
             .get(index)
@@ -215,6 +219,15 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         c.parent = parent;
                     }
                 }
+                changed = true;
+            }
+        }
+        // Deleting a unit instance removes that placement only (#723). The embedded copy
+        // stays in `Document.units` even when the last instance goes: unit indices stay
+        // stable and re-importing the same source stays cheap (it reuses the copy).
+        SceneElement::UnitInstance(index) => {
+            if doc.unit_instances.get(index).is_some_and(|i| !i.deleted) {
+                doc.unit_instances[index].deleted = true;
                 changed = true;
             }
         }

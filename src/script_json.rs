@@ -88,6 +88,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Revolution(_) => "revolution",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
+        SceneElement::UnitInstance(_) => "unit_instance",
     }
 }
 
@@ -120,7 +121,8 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Revolution(i)
         | SceneElement::SweepOp(i)
-        | SceneElement::Component(i) => Some(*i),
+        | SceneElement::Component(i)
+        | SceneElement::UnitInstance(i) => Some(*i),
         SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => Some(0),

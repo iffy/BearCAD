@@ -1906,6 +1906,9 @@ struct App {
     graph_force: bool,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
     collapsed_components: std::collections::HashSet<usize>,
+    /// Unit instances whose read-only contents are expanded in the Elements list (#723);
+    /// UI-only state, default collapsed.
+    expanded_units: std::collections::HashSet<usize>,
     /// Timeline rollback marker (#524): when set, everything created after this element is
     /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
     /// just after that element. UI-only session state (not persisted).
@@ -2699,6 +2702,7 @@ impl App {
             graph_layout: hierarchy::GraphLayout::default(),
             graph_force: true,
             collapsed_components: std::collections::HashSet::new(),
+            expanded_units: std::collections::HashSet::new(),
             rollback_marker: None,
             exploder: None,
             exploder_palette_request: false,
@@ -8673,6 +8677,7 @@ impl eframe::App for App {
                         self.rollback_marker.as_ref(),
                         &mut queue_set_rollback,
                         &mut self.collapsed_components,
+                        &mut self.expanded_units,
                         &mut queue_add_component,
                         &mut queue_move_to_component,
                         self.state.active_component,

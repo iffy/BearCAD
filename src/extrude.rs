@@ -2663,6 +2663,15 @@ pub fn selection_world_bounds(
             SceneElement::BodyFace { centroid, .. } => {
                 extend(crate::hierarchy::dequantize_body_point(centroid));
             }
+            // A unit instance frames its placed evaluated meshes (#723).
+            SceneElement::UnitInstance(index) => {
+                for solid in crate::units::placed_instance_meshes(doc, index) {
+                    if let Some((min, max)) = solid.bounds() {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::Sketch(_)
             | SceneElement::ConstructionPlane(_)
             | SceneElement::Constraint(_)
