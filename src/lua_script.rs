@@ -1233,6 +1233,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #734: switch a unit's link mode: `bearcad.unit_link(0, "static"|"dynamic")`.
+    api.set(
+        "unit_link",
+        lua.create_function(|lua, (unit, mode): (usize, String)| {
+            let link = match mode.as_str() {
+                "static" => crate::model::LinkMode::Static,
+                "dynamic" => crate::model::LinkMode::Dynamic,
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unit_link mode must be \"static\" or \"dynamic\", got {other:?}"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetUnitLink { unit, link }) }
+        })?,
+    )?;
+
     // #732: re-sync a unit's embedded copy from its source file.
     api.set(
         "sync_unit",

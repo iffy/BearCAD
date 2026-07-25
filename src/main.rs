@@ -9686,6 +9686,7 @@ impl eframe::App for App {
             let mut curve_mode_change: Option<bool> = None;
             let mut tangent_constraint_change: Option<bool> = None;
             let mut name_commit: Option<(SceneElement, String)> = None;
+            let mut unit_pane_edit: Option<context::UnitPaneEdit> = None;
             let mut constraint_apply: Option<crate::geometric_constraints::GeometricConstraintType> =
                 None;
             let mut snapping_change: Option<bool> = None;
@@ -9744,6 +9745,7 @@ impl eframe::App for App {
                         &self.state.scene_selection,
                         &self.state.doc,
                         &mut |element, name| name_commit = Some((element, name)),
+                        &mut |edit| unit_pane_edit = Some(edit),
                         &mut |curve_mode| {
                             curve_mode_change = Some(curve_mode);
                         },
@@ -10688,6 +10690,17 @@ impl eframe::App for App {
             if let Some((element, name)) = name_commit {
                 self.state
                     .apply(Action::CommitElementName { element, name });
+            }
+            if let Some(edit) = unit_pane_edit {
+                // The unit-instance section's edits (#734).
+                match edit {
+                    context::UnitPaneEdit::SetLink { unit, link } => {
+                        self.state.apply(Action::SetUnitLink { unit, link });
+                    }
+                    context::UnitPaneEdit::Sync { unit } => {
+                        self.state.apply(Action::SyncUnit { unit });
+                    }
+                }
             }
             if let Some(anchor) = rect_anchor_change {
                 self.state.apply(Action::SetRectAnchor { anchor });

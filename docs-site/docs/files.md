@@ -60,6 +60,11 @@ instance already uses is refused. The row's triangle expands a read-only look
 inside; everything in a unit is edited in its source file, not here. The node graph shows
 an instance as a single node — enable **Unit contents** in the pane filter to see inside.
 
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and the selected
+instance's Context pane explains its rows:
+
+![A unit instance's Context pane, each field explained](/img/screenshots/pane-unit.png)
+
 Read-only doesn't mean inert: a unit's geometry is a full **target**, drawn in its own
 warmer tone so it reads as not-yours-to-edit.
 

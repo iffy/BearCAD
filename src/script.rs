@@ -580,6 +580,8 @@ pub enum Instruction {
     },
     /// Re-sync one unit's embedded copy from its source file (#732).
     SyncUnit { unit: usize },
+    /// Switch a unit's link mode (#734).
+    SetUnitLink { unit: usize, link: crate::model::LinkMode },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1432,6 +1434,13 @@ impl Instruction {
                 format!("bearcad.parameter(\"primary\", {index}, {primary})")
             }
             Instruction::SyncUnit { unit } => format!("bearcad.sync_unit({unit})"),
+            Instruction::SetUnitLink { unit, link } => format!(
+                "bearcad.unit_link({unit}, \"{}\")",
+                match link {
+                    crate::model::LinkMode::Static => "static",
+                    crate::model::LinkMode::Dynamic => "dynamic",
+                }
+            ),
             Instruction::SetUnitParameterOverride { instance, name, expression } => {
                 match expression {
                     Some(expression) => format!(
@@ -2076,6 +2085,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::SyncUnit { unit } => Some(Instruction::SyncUnit { unit: *unit }),
+        Action::SetUnitLink { unit, link } => {
+            Some(Instruction::SetUnitLink { unit: *unit, link: *link })
+        }
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
             name: name.clone(),
@@ -4951,6 +4963,11 @@ impl ScriptRunner {
             }
             Instruction::SyncUnit { unit } => {
                 let r = state.apply(Action::SyncUnit { unit });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SetUnitLink { unit, link } => {
+                let r = state.apply(Action::SetUnitLink { unit, link });
                 self.record_action_error(r);
                 StepResult::Continue
             }

@@ -765,6 +765,8 @@ pub struct ContextPaneContent {
     /// have their own selection/section headings instead.
     pub tool_title: Option<&'static str>,
     pub name: Option<NameControl>,
+    /// The selected unit instance's link/source/placement section (#734).
+    pub unit_instance: Option<UnitInstanceControl>,
     /// Curve-mode (`B`) checkbox while the line tool is active (#73).
     pub curve_mode: Option<bool>,
     /// Tangent-constraint (`T`) checkbox while the line tool is active (#73).
@@ -968,6 +970,30 @@ pub enum ExtrudeEdit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NameControl {
     pub element: SceneElement,
+}
+
+/// The selected unit instance's section (#734): link mode, source (with staleness), and
+/// placement values. Moving an instance is the Move tool's job (#735) — the pane shows
+/// where it sits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitInstanceControl {
+    pub instance: usize,
+    pub unit: usize,
+    pub link: crate::model::LinkMode,
+    /// The source file's name plus how it's referenced ("library" / "relative").
+    pub source: String,
+    /// Translation summary, e.g. "5, 0, 12.5 mm".
+    pub position: String,
+    /// Rotation summary, e.g. "90° about 0, 0, 1"; "—" when unrotated.
+    pub rotation: String,
+}
+
+/// Edits the unit-instance section can make (#734), applied by the frame loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitPaneEdit {
+    SetLink { unit: usize, link: crate::model::LinkMode },
+    /// Update the embedded copy from the source file (#732).
+    Sync { unit: usize },
 }
 
 /// Draft text and focus state for the name field in the context pane.
@@ -1258,9 +1284,78 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
     })
 }
 
+/// Test hook for [`unit_instance_control`] (#734).
+#[cfg(test)]
+pub fn unit_instance_control_for_tests(
+    doc: &Document,
+    instance: usize,
+) -> Option<UnitInstanceControl> {
+    unit_instance_control(doc, instance)
+}
+
+/// Build the selected unit instance's section (#734) from the document.
+fn unit_instance_control(doc: &Document, instance: usize) -> Option<UnitInstanceControl> {
+    let inst = doc.unit_instances.get(instance).filter(|i| !i.deleted)?;
+    let unit = doc.units.get(inst.unit)?;
+    let (path, kind) = match &unit.source {
+        crate::model::UnitSource::RelativePath(p) => (p, "relative"),
+        crate::model::UnitSource::Library(p) => (p, "library"),
+    };
+    let file = std::path::Path::new(path)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.clone());
+    let axis_len = |expr: &str| {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            0.0
+        } else {
+            crate::value::eval_length_mm_in_doc(expr, doc).unwrap_or(0.0)
+        }
+    };
+    let p = &inst.placement;
+    let position = format!(
+        "{}, {}, {} mm",
+        axis_len(&p.tx),
+        axis_len(&p.ty),
+        axis_len(&p.tz)
+    );
+    let angle_rad = if p.angle.trim().is_empty() {
+        0.0
+    } else {
+        crate::value::eval_angle_rad_in_doc(&p.angle, doc).unwrap_or(0.0)
+    };
+    let rotation = if angle_rad.abs() < 1e-6 {
+        "—".to_string()
+    } else {
+        format!(
+            "{:.1}° about {}, {}, {}",
+            angle_rad.to_degrees(),
+            p.axis[0],
+            p.axis[1],
+            p.axis[2]
+        )
+    };
+    Some(UnitInstanceControl {
+        instance,
+        unit: inst.unit,
+        link: unit.link,
+        source: format!("{file} — {kind}"),
+        position,
+        rotation,
+    })
+}
+
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let tool_title = tool_context_title(input);
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
+    // The selected unit instance's own section (#734).
+    let unit_instance = match input.selection.single() {
+        Some(SceneElement::UnitInstance(instance)) => {
+            unit_instance_control(input.doc, instance)
+        }
+        _ => None,
+    };
     // Snapping shows for the drawing tools in 3D as well as in a sketch (#636): the
     // Rectangle/Line/Circle sections read identically either way, and the toggle is sticky,
     // so setting it in 3D carries into the sketch the first click opens. The Select tool
@@ -1519,6 +1614,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         return ContextPaneContent {
             tool_title,
             name,
+            unit_instance: None,
             curve_mode: None,
             rect_anchor: input.rect_anchor,
             circle_anchor: input.circle_anchor,
@@ -1574,6 +1670,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         return ContextPaneContent {
             tool_title,
             name,
+            unit_instance: None,
             curve_mode: input.draw_line_curve_mode,
             rect_anchor: input.rect_anchor,
             circle_anchor: input.circle_anchor,
@@ -1629,6 +1726,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         return ContextPaneContent {
             tool_title,
             name,
+            unit_instance: None,
             curve_mode: None,
             // The Anchor row (centre+radius vs edge-to-edge) rides along here (#635) — it
             // used to be dropped, hiding a mode that `O` could still toggle blind.
@@ -1695,6 +1793,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     ContextPaneContent {
         tool_title,
         name,
+        unit_instance,
         curve_mode: None,
         rect_anchor: input.rect_anchor,
         circle_anchor: input.circle_anchor,
@@ -2348,6 +2447,19 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
+        "Link" => Some(
+            "Whether this part follows its source file: Dynamic picks up the file's \
+             saves; Static keeps the copy as-is until you update it.",
+        ),
+        "Source" => Some(
+            "The file this part came from — found through the library, or by a path \
+             relative to this document. A dot means the file has moved on; Update picks \
+             it up.",
+        ),
+        "Placement" => Some(
+            "Where this instance sits. The Move tool moves it; these are the numbers.",
+        ),
+        "Rotation" => Some("How this instance is turned, about the axis shown."),
         "Unit parameters" => Some(
             "The selected imported part's own knobs. Editing a value here changes this \
              one instance — never the part's file, never its other instances.",
@@ -2515,6 +2627,7 @@ pub fn show_pane(
     selection: &SceneSelection,
     doc: &Document,
     on_name_committed: &mut impl FnMut(SceneElement, String),
+    on_unit_edit: &mut impl FnMut(UnitPaneEdit),
     on_curve_mode_changed: &mut impl FnMut(bool),
     on_tangent_constraint_changed: &mut impl FnMut(bool),
     on_construction_changed: &mut impl FnMut(bool),
@@ -2769,6 +2882,45 @@ pub fn show_pane(
             on_name_committed(control.element.clone(), pane_state.name_draft.clone());
         }
         ui.add_space(4.0);
+    }
+
+    // The selected unit instance (#734): link, source (with staleness + update), and
+    // placement values. Name is the shared Name row above; moving is the Move tool's job.
+    if let Some(control) = &content.unit_instance {
+        any_control = true;
+        labeled_row(ui, "Link", |ui| {
+            for (mode, label) in [
+                (crate::model::LinkMode::Dynamic, "Dynamic"),
+                (crate::model::LinkMode::Static, "Static"),
+            ] {
+                if ui.selectable_label(control.link == mode, label).clicked()
+                    && control.link != mode
+                {
+                    on_unit_edit(UnitPaneEdit::SetLink { unit: control.unit, link: mode });
+                }
+            }
+        });
+        labeled_row(ui, "Source", |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(&control.source).size(11.0)).truncate());
+            if health.stale_units.contains(&control.unit) {
+                let (dot, _) =
+                    ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(
+                    dot.center(),
+                    3.0,
+                    crate::document_health::UNSTABLE_DISPLAY,
+                );
+                if ui.button("Update").clicked() {
+                    on_unit_edit(UnitPaneEdit::Sync { unit: control.unit });
+                }
+            }
+        });
+        labeled_row(ui, "Placement", |ui| {
+            ui.label(egui::RichText::new(&control.position).size(11.0));
+        });
+        labeled_row(ui, "Rotation", |ui| {
+            ui.label(egui::RichText::new(&control.rotation).size(11.0));
+        });
     }
 
     if let Some(rows) = &content.constraints {
@@ -5860,6 +6012,7 @@ mod tests {
             context_pane_content(&input(&doc, &SceneSelection::default())),
             ContextPaneContent {
                 tool_title: None,
+                unit_instance: None,
                 dimension_derive: None,
                 name: None,
                 curve_mode: None,
@@ -5982,6 +6135,7 @@ mod tests {
             content,
             ContextPaneContent {
                 tool_title: None,
+                unit_instance: None,
                 dimension_derive: None,
                 name: None,
                 curve_mode: None,
@@ -6118,6 +6272,7 @@ mod tests {
             context_pane_content(&input(&doc, &sel)),
             ContextPaneContent {
                 tool_title: None,
+                unit_instance: None,
                 dimension_derive: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
@@ -6366,6 +6521,7 @@ mod tests {
             content,
             ContextPaneContent {
                 tool_title: None,
+                unit_instance: None,
                 dimension_derive: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),

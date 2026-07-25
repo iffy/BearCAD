@@ -2359,6 +2359,13 @@ evaluator's visiting stack. Implementation: `value::document_parameter_bindings`
 qualified names into the one `&[(name, expression)]` table every evaluator already uses;
 the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
 
+**Instance Context pane (#734):** selecting an instance shows, under the shared Name row
+(renames drive #731): **Link** (Dynamic/Static selectable, `Action::SetUnitLink`,
+`bearcad.unit_link(i, mode)`), **Source** (file name + library/relative tag, an amber dot
+plus an **Update** button when stale, #732), and **Placement**/**Rotation** value rows
+(the Move tool moves instances, #735 — the pane shows the numbers). Controls and values
+only; each row's explanation is help-mode text keyed on its label.
+
 **Syncing (#732) — the rules:** a **dynamic** link picks up changes to A; a **static**
 link doesn't, but updates on demand (the instance row's right-click → *Update from source
 file*, `Action::SyncUnit`, `bearcad.sync_unit(i)`). Syncing **replaces the embedded

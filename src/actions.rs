@@ -1451,6 +1451,9 @@ pub enum Action {
     /// of the unit updates at once. Breaks are applied and reported through document
     /// health; undo puts the previous copy back.
     SyncUnit { unit: usize },
+    /// Switch a unit's link mode (#734): dynamic follows the source file, static
+    /// freezes the embedded copy until an explicit update.
+    SetUnitLink { unit: usize, link: crate::model::LinkMode },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -7422,6 +7425,22 @@ impl AppState {
                     "{} is now {}",
                     param.name,
                     if primary { "primary" } else { "secondary" }
+                );
+                ActionResult::Ok
+            }
+            Action::SetUnitLink { unit, link } => {
+                let Some(u) = self.doc.units.get_mut(unit) else {
+                    self.status = format!("Unit {unit} not found");
+                    return ActionResult::Err(self.status.clone());
+                };
+                u.link = link;
+                self.refresh_document_health();
+                self.status = format!(
+                    "Link: {}",
+                    match link {
+                        crate::model::LinkMode::Dynamic => "dynamic — follows the source file",
+                        crate::model::LinkMode::Static => "static — frozen until updated",
+                    }
                 );
                 ActionResult::Ok
             }
@@ -15997,6 +16016,41 @@ mod tests {
         assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
 
         let _ = std::fs::remove_file(&unit_path);
+    }
+
+    /// #734: the Context pane's Link toggle switches a unit after import, and the pane
+    /// content carries the instance section for a selected instance.
+    #[test]
+    fn unit_link_switches_and_pane_content_shows_the_section() {
+        let unit_path = write_solid_unit_file("bearcad_unit_pane_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_pane_b.bearcad").to_string_lossy().to_string(),
+        );
+        state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        let _ = std::fs::remove_file(&unit_path);
+        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Dynamic);
+        let r = state.apply(Action::SetUnitLink {
+            unit: 0,
+            link: crate::model::LinkMode::Static,
+        });
+        assert_eq!(r, ActionResult::Ok);
+        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Static);
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::UnitInstance(0),
+            additive: false,
+        });
+        let control = crate::context::unit_instance_control_for_tests(&state.doc, 0)
+            .expect("the section builds for a live instance");
+        assert_eq!(control.link, crate::model::LinkMode::Static);
+        assert!(control.source.contains("bearcad_unit_pane_a.bearcad"));
+        assert!(control.source.contains("relative"));
+        assert_eq!(control.position, "0, 0, 0 mm");
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it
