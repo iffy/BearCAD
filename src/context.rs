@@ -2400,6 +2400,25 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Text), "Text") => Some(
+            "What the text says. {curly braces} interpolate an expression — {w * 2} — \
+             and re-render when parameters change.",
+        ),
+        (Some(Tool::Text), "Font") => Some(
+            "The typeface, from the fonts on this machine. It embeds in the file, so \
+             the text renders the same anywhere.",
+        ),
+        (Some(Tool::Text), "Size") => Some(
+            "Letter height as an expression — parametric text sizes work.",
+        ),
+        (Some(Tool::Text), "Rotation°") => Some(
+            "The text's turn about its anchor, in degrees — the round handle in the \
+             viewport drags it too.",
+        ),
+        (Some(Tool::Text), "Wrap width") => Some(
+            "Where lines break. Empty grows one line; drag the side handle in the \
+             viewport to set it.",
+        ),
         (Some(Tool::ConstructionPlane), "Anchor") => Some(
             "What the plane hangs on: a face, an edge, a vertex, or a line plus a \
              point. Click it in the viewport; the clear button starts the pick over.",

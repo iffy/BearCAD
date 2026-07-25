@@ -54,6 +54,13 @@ The [Extrude](/docs/tools/extrude) tool treats a text as one face set: click it,
 it out or push it in to **cut** (engraving). Letter counters — the holes in `o`, `a` —
 stay holes.
 
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Text tool's Context pane, each field explained](/img/screenshots/pane-text.png)
+
 ## Scripting
 
 ```lua
