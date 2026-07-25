@@ -1438,6 +1438,8 @@ pub enum Action {
     /// Turn help mode on, off, or (with `None`) the other way (#672): the Context pane's
     /// controls each grow a floating note explaining what they want.
     SetHelpMode(Option<bool>),
+    /// Show/hide/toggle the Settings window (#720/#737).
+    SetSettingsWindow { open: Option<bool> },
     AddParameter { name: String, expression: String },
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
     /// knobs an importing file is offered first; advisory only.
@@ -2617,6 +2619,9 @@ pub struct AppState {
     /// the explanations live next to the controls they describe rather than in a separate
     /// page that can drift.
     pub help_mode: bool,
+    /// The Settings window (#720) is open. Lives here (not on `App`) so scripts can
+    /// drive it for docs captures (#737): `bearcad.ui.settings(...)`.
+    pub settings_open: bool,
     /// Name typed for the next 3D-derived parameter (Dimension tool, #618); cleared on commit.
     pub dimension_param_name: String,
     /// The last auto-prefilled derived-parameter name (#629): while the field still holds
@@ -2788,6 +2793,7 @@ impl Default for AppState {
         Self {
             auto_zoom: false,
             help_mode: false,
+            settings_open: false,
             dimension_param_name: String::new(),
             dimension_param_auto: String::new(),
             active_component: None,
@@ -7390,6 +7396,15 @@ impl AppState {
                     }
                     None => ActionResult::Err("Nothing to zoom to".to_string()),
                 }
+            }
+            Action::SetSettingsWindow { open } => {
+                self.settings_open = open.unwrap_or(!self.settings_open);
+                self.status = if self.settings_open {
+                    "Settings opened".to_string()
+                } else {
+                    "Settings closed".to_string()
+                };
+                ActionResult::Ok
             }
             Action::SetHelpMode(on) => {
                 self.help_mode = on.unwrap_or(!self.help_mode);

@@ -1932,12 +1932,10 @@ struct App {
     /// The Keyboard Shortcuts window (#434), toggled from the View/Help menus.
     shortcuts_open: bool,
     /// Persisted app settings (#720), loaded at startup and saved when the Settings
-    /// window changes something.
+    /// window changes something. (The window's open flag lives on `AppState` so scripts
+    /// can drive it, #737.)
     #[cfg(not(target_arch = "wasm32"))]
     settings: settings::AppSettings,
-    /// The Settings window (#720), toggled by Cmd/Ctrl+comma, the palette, or the menu.
-    #[cfg(not(target_arch = "wasm32"))]
-    settings_open: bool,
     /// Last dynamic-unit source poll time (#732), seconds of `ctx.input().time`.
     last_unit_sync_poll: f64,
     /// Debounced source watcher for dynamic units (#733).
@@ -2727,8 +2725,6 @@ impl App {
             shortcuts_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             settings,
-            #[cfg(not(target_arch = "wasm32"))]
-            settings_open: false,
             last_unit_sync_poll: 0.0,
             unit_source_watcher: units::UnitSourceWatcher::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -2808,7 +2804,7 @@ impl App {
     /// values only — what each row means lives in help mode (#672), like the Context pane.
     #[cfg(not(target_arch = "wasm32"))]
     fn show_settings_window(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
+        if !self.state.settings_open {
             return;
         }
         // Help notes (#672) for this window's rows: a self-contained collect-and-draw
@@ -2823,6 +2819,12 @@ impl App {
             .collapsible(false)
             .resizable(false)
             .default_width(380.0)
+            // Toward the right, like the panes — so help-mode notes (#672), which fan
+            // out to the left, have room on screen.
+            .default_pos(egui::pos2(
+                (ctx.screen_rect().right() - 440.0).max(0.0),
+                60.0,
+            ))
             .show(ctx, |ui| {
                 context::labeled_row(ui, "Library directory", |ui| {
                     if ui.button("Choose…").clicked() {
@@ -2863,13 +2865,19 @@ impl App {
                 self.state.status = format!("Could not save settings: {err}");
             }
         }
+        let mut shot_rect = response.as_ref().map(|r| r.response.rect);
         if self.state.help_mode {
             if let Some(resp) = &response {
-                let _ = context::draw_help_notes(ctx, resp.response.rect);
+                if let Some(notes) = context::draw_help_notes(ctx, resp.response.rect) {
+                    shot_rect = Some(resp.response.rect.union(notes));
+                }
             }
             context::end_help_notes(ctx);
         }
-        self.settings_open = open;
+        // Registered as a capture region (#737) so docs screenshots can frame the
+        // window (help notes included): `bearcad.ui.screenshot(path, "settings")`.
+        remember_pane_rect(ctx, "settings", shot_rect);
+        self.state.settings_open = open;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3530,7 +3538,7 @@ impl App {
             }
             #[cfg(not(target_arch = "wasm32"))]
             MenuCommand::ShowSettings => {
-                self.settings_open = true;
+                self.state.settings_open = true;
             }
             // DEV → Report issue (#627): open (or re-focus) the report window.
             MenuCommand::ReportIssue => match &mut self.report_issue {
@@ -3577,7 +3585,7 @@ impl App {
             }
             PaletteOutcome::ShowShortcuts => self.shortcuts_open = true,
             #[cfg(not(target_arch = "wasm32"))]
-            PaletteOutcome::ShowSettings => self.settings_open = true,
+            PaletteOutcome::ShowSettings => self.state.settings_open = true,
             #[cfg(not(target_arch = "wasm32"))]
             PaletteOutcome::ImportUnit => self.import_unit(),
             #[cfg(target_arch = "wasm32")]
@@ -3802,7 +3810,7 @@ impl App {
         // preferences binding, so it works with or without a text field focused.
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
-            self.settings_open = !self.settings_open;
+            self.state.settings_open = !self.state.settings_open;
         }
 
         // While any text field has focus, leave unmodified keys to the input (e.g. "bar" must not

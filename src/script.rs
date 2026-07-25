@@ -47,6 +47,8 @@ pub enum ScreenshotRegion {
     Window,
     /// A single pane. Captures nothing if that pane is hidden.
     Pane(crate::actions::Pane),
+    /// The Settings window (#737), help notes included when help mode is on.
+    Settings,
 }
 
 impl ScreenshotRegion {
@@ -56,6 +58,7 @@ impl ScreenshotRegion {
         match name.to_ascii_lowercase().as_str() {
             "viewport" | "view" | "3d" => Some(Self::Viewport),
             "window" | "whole" | "whole_window" | "all" => Some(Self::Window),
+            "settings" => Some(Self::Settings),
             other => crate::actions::Pane::from_name(other).map(Self::Pane),
         }
     }
@@ -65,6 +68,7 @@ impl ScreenshotRegion {
         match self {
             Self::Viewport => "viewport",
             Self::Window => "window",
+            Self::Settings => "settings",
             Self::Pane(pane) => pane.script_name(),
         }
     }
@@ -584,6 +588,8 @@ pub enum Instruction {
     SetUnitLink { unit: usize, link: crate::model::LinkMode },
     /// Add another instance of an embedded unit (#736).
     AddUnitInstance { unit: usize, name: Option<String> },
+    /// Show/hide/toggle the Settings window (#737).
+    SetSettingsWindow { open: Option<bool> },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1471,6 +1477,14 @@ impl Instruction {
                 };
                 format!("bearcad.ui.palette({verb:?})")
             }
+            Instruction::SetSettingsWindow { open } => {
+                let verb = match open {
+                    Some(true) => "show",
+                    Some(false) => "hide",
+                    None => "toggle",
+                };
+                format!("bearcad.ui.settings({verb:?})")
+            }
             Instruction::RunPaletteCommand { query } => {
                 format!("bearcad.ui.palette(\"run\", {query:?})")
             }
@@ -2099,6 +2113,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::AddUnitInstance { unit, name } => {
             Some(Instruction::AddUnitInstance { unit: *unit, name: name.clone() })
         }
+        Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
             name: name.clone(),
@@ -4989,6 +5004,10 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::SetSettingsWindow { open } => {
+                state.apply(Action::SetSettingsWindow { open });
+                StepResult::Continue
+            }
             Instruction::DeleteParameter { index } => {
                 state.apply(Action::DeleteParameter { index });
                 StepResult::Continue
@@ -5139,6 +5158,17 @@ impl ScriptRunner {
                             return StepResult::Continue;
                         }
                     },
+                    ScreenshotRegion::Settings => {
+                        match ctx.data(|d| d.get_temp::<egui::Rect>(pane_rect_id("settings"))) {
+                            Some(rect) => Some(Some(rect)),
+                            None => {
+                                self.record_action_error(crate::actions::ActionResult::Err(
+                                    "the Settings window is not on screen to capture".to_string(),
+                                ));
+                                return StepResult::Continue;
+                            }
+                        }
+                    }
                 };
                 let crop = rect.flatten().map(|rect| ScreenshotCrop {
                     rect,

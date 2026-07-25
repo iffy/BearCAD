@@ -2679,6 +2679,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #737: drive the Settings window (docs captures need it open with help mode on).
+    api.set(
+        "settings",
+        lua.create_function(|lua, verb: Option<String>| {
+            let open = match verb.as_deref() {
+                Some("show") | Some("open") => Some(true),
+                Some("hide") | Some("close") => Some(false),
+                None | Some("toggle") => None,
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "settings expects \"show\"/\"hide\"/\"toggle\", got {other:?}"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetSettingsWindow { open }) }
+        })?,
+    )?;
+
     api.set(
         "palette",
         lua.create_function(|lua, args: MultiValue| {
@@ -4388,7 +4407,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette",
+            "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom",
