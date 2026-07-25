@@ -2972,6 +2972,186 @@ impl Default for Drawing {
     }
 }
 
+/// Where an imported unit's source document lives (#719).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitSource {
+    /// A path relative to the importing document's own file.
+    RelativePath(String),
+    /// A path under the app's library directory (#720).
+    Library(String),
+}
+
+/// Whether an imported unit follows its source file (#719).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkMode {
+    /// The embedded copy is frozen: updates to the source file are not seen.
+    #[default]
+    Static,
+    /// The embedded copy syncs from the source file when it changes (#732).
+    Dynamic,
+}
+
+/// An imported BearCAD document (#719): one embedded copy of the source, shared by every
+/// [`UnitInstance`] that places it. The importing document is self-contained — it opens
+/// and rebuilds with the source file absent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportedUnit {
+    pub source: UnitSource,
+    #[serde(default)]
+    pub link: LinkMode,
+    /// The embedded copy of the source document (recursive — it may hold units of its
+    /// own, capped at [`MAX_UNIT_DEPTH`]).
+    pub document: Document,
+    /// The source file's modification time (seconds since the Unix epoch) when the copy
+    /// was last synced; the cheap first staleness check.
+    #[serde(default)]
+    pub source_mtime: Option<i64>,
+    /// [`content_hash`] of the source file's bytes when the copy was last synced; the
+    /// authoritative staleness check (mtimes lie across copies and checkouts).
+    #[serde(default)]
+    pub source_hash: Option<u64>,
+}
+
+/// One placement of an [`ImportedUnit`] (#719). Ten instances of A cost one embedded copy
+/// of A plus ten of these.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UnitInstance {
+    /// Index into [`Document::units`].
+    pub unit: usize,
+    /// The instance name used in qualified expression references (`name.param`, #729).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `(parameter name, expression)`, only where this instance differs from the unit's
+    /// own value.
+    #[serde(default)]
+    pub parameter_overrides: Vec<(String, String)>,
+    /// Where the instance sits in this document's world space.
+    #[serde(default)]
+    pub placement: UnitPlacement,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// A [`UnitInstance`]'s placement (#719): a rotation about an axis through the unit's
+/// origin, then a translation. Identity by default.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UnitPlacement {
+    /// Translation components (mm expressions; empty = 0), like the Move tool's.
+    #[serde(default)]
+    pub tx: String,
+    #[serde(default)]
+    pub ty: String,
+    #[serde(default)]
+    pub tz: String,
+    /// Rotation axis direction (need not be normalized); zero = no rotation.
+    #[serde(default)]
+    pub axis: [f32; 3],
+    /// Rotation angle about `axis` (degree expression; empty = 0).
+    #[serde(default)]
+    pub angle: String,
+}
+
+/// Stable content hash for unit staleness checks (#719): FNV-1a 64 over the file bytes.
+/// Not cryptographic — it only answers "did the source change since we copied it".
+#[allow(dead_code)] // consumed by the import command (#721) and sync (#732)
+pub fn content_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
+/// Hard cap on unit nesting (#719): loading or importing a document nested deeper than
+/// this fails with a clear error instead of recursing unboundedly.
+pub const MAX_UNIT_DEPTH: usize = 8;
+
+/// Reject over-deep nesting and import cycles among a document's units (#719), matched on
+/// resolved source path. `own_path` is the document's file path when known (native open);
+/// relative sources then resolve against its directory, so "A imports B imports A" is
+/// caught however the two files spell the paths. Without it (web, in-memory bytes),
+/// sources still resolve lexically relative to each other, catching structural cycles.
+pub fn validate_units(doc: &Document, own_path: Option<&std::path::Path>) -> Result<(), String> {
+    use std::path::{Component, Path, PathBuf};
+
+    /// Lexical normalization only — the source file may legitimately be absent, so no
+    /// filesystem access: fold `.`, pop `..` where a normal component precedes it.
+    fn normalize(path: &Path) -> String {
+        let mut out = PathBuf::new();
+        for comp in path.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    let can_pop =
+                        matches!(out.components().next_back(), Some(Component::Normal(_)));
+                    if !can_pop || !out.pop() {
+                        out.push("..");
+                    }
+                }
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out.to_string_lossy().into_owned()
+    }
+
+    /// `prefix` namespaces the key ("" = resolved against a real file path, "rel:" =
+    /// unanchored relative context, "lib:" = under the library directory); `dir` is the
+    /// directory nested relative sources resolve against.
+    fn walk(
+        doc: &Document,
+        prefix: &str,
+        dir: &Path,
+        stack: &mut Vec<String>,
+        depth: usize,
+    ) -> Result<(), String> {
+        if depth > MAX_UNIT_DEPTH {
+            return Err(format!(
+                "imported units nest deeper than {MAX_UNIT_DEPTH} levels"
+            ));
+        }
+        for unit in &doc.units {
+            let (key, child_prefix, child_dir) = match &unit.source {
+                UnitSource::RelativePath(p) => {
+                    let resolved = dir.join(p);
+                    let child_dir = resolved.parent().map(PathBuf::from).unwrap_or_default();
+                    (
+                        format!("{prefix}{}", normalize(&resolved)),
+                        prefix.to_string(),
+                        child_dir,
+                    )
+                }
+                UnitSource::Library(p) => {
+                    let path = Path::new(p);
+                    let child_dir = path.parent().map(PathBuf::from).unwrap_or_default();
+                    (format!("lib:{}", normalize(path)), "lib:".to_string(), child_dir)
+                }
+            };
+            if stack.contains(&key) {
+                return Err(format!(
+                    "import cycle: '{key}' is imported by a document it imports"
+                ));
+            }
+            stack.push(key);
+            walk(&unit.document, &child_prefix, &child_dir, stack, depth + 1)?;
+            stack.pop();
+        }
+        Ok(())
+    }
+
+    let mut stack = Vec::new();
+    let (prefix, dir) = match own_path {
+        Some(path) => {
+            stack.push(normalize(path));
+            ("", path.parent().map(PathBuf::from).unwrap_or_default())
+        }
+        None => ("rel:", PathBuf::new()),
+    };
+    walk(doc, prefix, &dir, &mut stack, 0)
+}
+
 /// The whole document: sketches, sketch primitives, constraints, and construction planes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -3070,6 +3250,14 @@ pub struct Document {
     /// go through live elements only.
     #[serde(default)]
     pub component_members: Vec<(ComponentMember, usize, usize)>,
+    /// Imported units (#719): one embedded copy per imported source document, placed by
+    /// [`unit_instances`](Self::unit_instances).
+    #[serde(default)]
+    pub units: Vec<ImportedUnit>,
+    /// Placements of imported units (#719), each with its own name, parameter overrides,
+    /// and placement transform.
+    #[serde(default)]
+    pub unit_instances: Vec<UnitInstance>,
 }
 
 /// A component (#423): a named, nestable group of top-level elements in the Elements pane.
@@ -3238,6 +3426,8 @@ impl Default for Document {
             default_angle_unit: AngleUnit::default(),
             components: Vec::new(),
             component_members: Vec::new(),
+            units: Vec::new(),
+            unit_instances: Vec::new(),
         }
     }
 }

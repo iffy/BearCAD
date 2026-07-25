@@ -30,6 +30,9 @@ pub fn from_json_bytes(bytes: &[u8]) -> Result<Document> {
 
 /// Post-load normalization shared by every load path (SQLite, legacy, JSON).
 pub(crate) fn fixup_loaded_document(doc: &mut Document) -> Result<()> {
+    // Depth cap + structural cycle check on imported units (#719). Native `open` re-runs
+    // this with the file's real path, which also catches cycles across relative sources.
+    crate::model::validate_units(doc, None)?;
     ensure_construction_plane_indices(doc);
     crate::constraints::migrate_legacy_dimensions(doc);
     migrate_text_pins(doc);
@@ -254,6 +257,8 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
+    save_indexed_nodes(&tx, &mut row_id, "unit", &doc.units)?;
+    save_indexed_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -483,7 +488,9 @@ pub fn open(path: &str) -> Result<Document> {
     // sniff the magic bytes rather than trusting the extension, so either format opens.
     if let Ok(bytes) = std::fs::read(path) {
         if !bytes.starts_with(b"SQLite format 3") {
-            return super::from_json_bytes(&bytes);
+            let doc = super::from_json_bytes(&bytes)?;
+            crate::model::validate_units(&doc, Some(std::path::Path::new(path)))?;
+            return Ok(doc);
         }
     }
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
@@ -540,6 +547,8 @@ pub fn open(path: &str) -> Result<Document> {
     let sketch_slice_ops = load_indexed_entities(&conn, "sketch_slice_op")?;
     let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
     let drawings = load_indexed_entities(&conn, "drawing")?;
+    let units = load_indexed_entities(&conn, "unit")?;
+    let unit_instances = load_indexed_entities(&conn, "unit_instance")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
@@ -580,8 +589,11 @@ pub fn open(path: &str) -> Result<Document> {
         default_angle_unit,
         components,
         component_members,
+        units,
+        unit_instances,
     };
     super::fixup_loaded_document(&mut doc)?;
+    crate::model::validate_units(&doc, Some(std::path::Path::new(path)))?;
     Ok(doc)
 }
 
@@ -1358,6 +1370,163 @@ mod tests {
         assert_eq!(loaded.sketches[inheriting].angle_unit, None);
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A small standalone document to embed as a unit (#719).
+    fn unit_source_doc(param: &str) -> Document {
+        let mut doc = Document::default();
+        doc.parameters.push(crate::model::Parameter {
+            name: param.to_string(),
+            expression: "10".to_string(),
+            deleted: false,
+            source: None,
+        });
+        doc.shape_order.push(ShapeKind::Parameter);
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc
+    }
+
+    /// #719: a document with two units and several instances round-trips through SQLite —
+    /// and, since the sources' files don't exist on disk, this also shows a document whose
+    /// unit file is missing still loads (the embedded copies make it self-contained).
+    #[test]
+    fn units_and_instances_round_trip() {
+        use crate::model::{ImportedUnit, LinkMode, UnitInstance, UnitPlacement, UnitSource};
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_units_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.units.push(ImportedUnit {
+            source: UnitSource::RelativePath("missing/bracket.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: unit_source_doc("width"),
+            source_mtime: Some(1_700_000_000),
+            source_hash: Some(crate::model::content_hash(b"bracket bytes")),
+        });
+        doc.units.push(ImportedUnit {
+            source: UnitSource::Library("hardware/bolt.bearcad".to_string()),
+            link: LinkMode::Dynamic,
+            document: unit_source_doc("length"),
+            source_mtime: None,
+            source_hash: None,
+        });
+        doc.unit_instances.push(UnitInstance {
+            unit: 0,
+            name: Some("bracket1".to_string()),
+            parameter_overrides: vec![("width".to_string(), "20".to_string())],
+            placement: UnitPlacement {
+                tx: "5".to_string(),
+                ty: String::new(),
+                tz: "height / 2".to_string(),
+                axis: [0.0, 0.0, 1.0],
+                angle: "90".to_string(),
+            },
+            deleted: false,
+        });
+        doc.unit_instances.push(UnitInstance {
+            unit: 0,
+            name: None,
+            parameter_overrides: Vec::new(),
+            placement: UnitPlacement::default(),
+            deleted: true,
+        });
+        doc.unit_instances.push(UnitInstance {
+            unit: 1,
+            name: Some("bolt_a".to_string()),
+            parameter_overrides: Vec::new(),
+            placement: UnitPlacement::default(),
+            deleted: false,
+        });
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.units, doc.units);
+        assert_eq!(loaded.unit_instances, doc.unit_instances);
+
+        // The JSON byte format (web save/load) round-trips the same content.
+        let bytes = super::super::to_json_bytes(&doc).unwrap();
+        let reloaded = super::super::from_json_bytes(&bytes).unwrap();
+        assert_eq!(reloaded.units, doc.units);
+        assert_eq!(reloaded.unit_instances, doc.unit_instances);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #719: an existing pre-units document (no `units`/`unit_instances` fields in its
+    /// JSON) still loads, with both defaulting to empty.
+    #[test]
+    fn documents_without_unit_fields_still_load() {
+        let mut value =
+            serde_json::to_value(Document::default()).expect("serialize default document");
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("units");
+        obj.remove("unit_instances");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let loaded = super::super::from_json_bytes(&bytes).expect("pre-units document loads");
+        assert!(loaded.units.is_empty());
+        assert!(loaded.unit_instances.is_empty());
+    }
+
+    /// #719: a cycle — the opened file A embeds B, whose embedded copy claims to import A
+    /// again — is refused at load, matched on resolved source path.
+    #[test]
+    fn unit_import_cycle_is_refused_at_load() {
+        use crate::model::{ImportedUnit, LinkMode, UnitSource};
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_unit_cycle_test.bearcad");
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut inner_b = Document::default();
+        inner_b.units.push(ImportedUnit {
+            source: UnitSource::RelativePath("bearcad_unit_cycle_test.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: Document::default(),
+            source_mtime: None,
+            source_hash: None,
+        });
+        let mut doc = Document::default();
+        doc.units.push(ImportedUnit {
+            source: UnitSource::RelativePath("b.bearcad".to_string()),
+            link: LinkMode::Static,
+            document: inner_b,
+            source_mtime: None,
+            source_hash: None,
+        });
+
+        save(&path_str, &doc).unwrap();
+        let err = open(&path_str).expect_err("cycle must refuse to load");
+        assert!(err.contains("cycle"), "error should name the cycle: {err}");
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #719: unit nesting deeper than the hard cap is refused with a clear error rather
+    /// than recursing toward a stack overflow.
+    #[test]
+    fn unit_nesting_deeper_than_cap_is_refused() {
+        use crate::model::{ImportedUnit, LinkMode, UnitSource, MAX_UNIT_DEPTH};
+        let mut doc = Document::default();
+        for level in 0..=MAX_UNIT_DEPTH {
+            let mut outer = Document::default();
+            outer.units.push(ImportedUnit {
+                source: UnitSource::RelativePath(format!("level{level}.bearcad")),
+                link: LinkMode::Static,
+                document: doc,
+                source_mtime: None,
+                source_hash: None,
+            });
+            doc = outer;
+        }
+        let bytes = super::super::to_json_bytes(&doc).unwrap();
+        let err = super::super::from_json_bytes(&bytes)
+            .expect_err("over-deep nesting must refuse to load");
+        assert!(err.contains("nest"), "error should mention nesting: {err}");
     }
 }
 
