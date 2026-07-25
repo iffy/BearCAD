@@ -26,3 +26,10 @@ interior is a face you can extrude.
 
 - **Esc** cancels the in-progress rectangle.
 - **X** makes it construction (reference) geometry.
+
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Rectangle tool's Context pane, each field explained](/img/screenshots/pane-rectangle.png)

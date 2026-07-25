@@ -2400,6 +2400,22 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Line), "Curve") => Some(
+            "Draws a curved (bezier) line instead of a straight one — Cmd/Ctrl+B \
+             switches mid-draw too.",
+        ),
+        (Some(Tool::Line), "Tangent") => Some(
+            "Starts the next line tangent to the one it leaves from, and keeps them \
+             tangent afterwards.",
+        ),
+        (Some(Tool::Rectangle), "Anchor") => Some(
+            "Whether the rectangle grows from a corner or from its center. Pressing R \
+             again flips it.",
+        ),
+        (Some(Tool::Circle), "Anchor") => Some(
+            "Whether the circle grows from its center or from a point on its edge. \
+             Pressing O again flips it.",
+        ),
         (Some(Tool::Sketch), "Selection") => Some(
             "The face the new sketch opens on — a construction plane, a flat body face, \
              or a unit's face. Click it in the viewport.",
@@ -2553,6 +2569,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         ),
         "Length" => Some("The length unit a value you type is read in when you don't write one."),
         "Angle" => Some("The angle unit a value you type is read in when you don't write one."),
+        "Construction" => Some(
+            "Whether this lands as construction geometry — dashed guides to measure and \
+             snap against that never become part of a profile.",
+        ),
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
