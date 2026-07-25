@@ -974,6 +974,8 @@ pub struct CreatingMove {
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
     pub image_targets: Vec<usize>,
+    /// Unit instances being moved (#735): the placement itself moves.
+    pub instance_targets: Vec<usize>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -1910,6 +1912,8 @@ pub enum Action {
         plane_targets: Vec<usize>,
         #[allow(dead_code)]
         image_targets: Vec<usize>,
+        /// Unit instances whose placement this op moves (#735).
+        instance_targets: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -1928,6 +1932,8 @@ pub enum Action {
         plane_targets: Vec<usize>,
         #[allow(dead_code)]
         image_targets: Vec<usize>,
+        /// Unit instances whose placement this op moves (#735).
+        instance_targets: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -10229,6 +10235,7 @@ label_hidden: false,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
+                        instance_targets: Vec::new(),
                         tx: cm.tx.clone(),
                         ty: cm.ty.clone(),
                         tz: cm.tz.clone(),
@@ -10253,6 +10260,7 @@ label_hidden: false,
                                     targets: self.doc.move_ops[op].targets.clone(),
                                     plane_targets: self.doc.move_ops[op].plane_targets.clone(),
                                     image_targets: self.doc.move_ops[op].image_targets.clone(),
+                                    instance_targets: self.doc.move_ops[op].instance_targets.clone(),
                                     tx,
                                     ty,
                                     tz,
@@ -10267,6 +10275,7 @@ label_hidden: false,
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
                                 image_targets: cm.image_targets.clone(),
+                                instance_targets: cm.instance_targets.clone(),
                                 tx: cm.tx.clone(),
                                 ty: cm.ty.clone(),
                                 tz: cm.tz.clone(),
@@ -10281,9 +10290,13 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, tx, ty, tz } => {
-                if targets.is_empty() && plane_targets.is_empty() && image_targets.is_empty() {
-                    let e = "Pick at least one body, plane, or image to move".to_string();
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
+                if targets.is_empty()
+                    && plane_targets.is_empty()
+                    && image_targets.is_empty()
+                    && instance_targets.is_empty()
+                {
+                    let e = "Pick at least one body, plane, image, or unit to move".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -10303,6 +10316,7 @@ label_hidden: false,
                     end_point_b,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
+                    instance_targets: instance_targets.clone(),
                     tx,                    ty,                    tz,
                     outputs: Vec::new(),
                     name: None,
@@ -10344,7 +10358,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, tx, ty, tz } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -10372,6 +10386,7 @@ label_hidden: false,
                     entry.end_point_b = end_point_b;
                     entry.plane_targets = plane_targets.clone();
                     entry.image_targets = image_targets.clone();
+                    entry.instance_targets = instance_targets.clone();
                     entry.tx = tx;
                     entry.ty = ty;
                     entry.tz = tz;
@@ -13748,6 +13763,20 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
     }
     match state.tool {
         Tool::Move => {
+            // A unit's materialized body (#735): what moves is the *instance* — its
+            // placement transform — so the click gathers the instance, not the body.
+            if let Some(crate::model::BodySource::UnitInstance(instance)) =
+                state.doc.bodies.get(bi).map(|b| b.source.clone())
+            {
+                toggle(
+                    &mut state
+                        .creating_move
+                        .get_or_insert_with(CreatingMove::default)
+                        .instance_targets,
+                    instance,
+                );
+                return true;
+            }
             toggle(&mut state.creating_move.get_or_insert_with(CreatingMove::default).targets, bi);
             true
         }
@@ -14672,6 +14701,7 @@ mod tests {
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: String::new(),
             ty: String::new(),
             tz: "40mm".to_string(),
@@ -14696,6 +14726,7 @@ mod tests {
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
@@ -14769,6 +14800,7 @@ mod tests {
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![0],
+            instance_targets: Vec::new(),
             tx: "25mm".to_string(),
             ty: String::new(),
             tz: "7mm".to_string(),
@@ -14794,6 +14826,7 @@ mod tests {
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![0],
+            instance_targets: Vec::new(),
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
@@ -14811,6 +14844,7 @@ mod tests {
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: "25mm".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -14844,6 +14878,7 @@ mod tests {
                 start_point_b: None,
                 end_point_b: None,
                 image_targets: vec![0],
+            instance_targets: Vec::new(),
                 tx: tx.to_string(),
                 ..Default::default()
             });
@@ -15010,6 +15045,7 @@ mod tests {
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: "5mm".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -16051,6 +16087,98 @@ mod tests {
         assert!(control.source.contains("bearcad_unit_pane_a.bearcad"));
         assert!(control.source.contains("relative"));
         assert_eq!(control.position, "0, 0, 0 mm");
+    }
+
+    /// #735: Move accepts a unit instance — the placement transform is what moves, so
+    /// the geometry (and everything referencing it) follows; no output bodies.
+    #[test]
+    fn move_targets_a_unit_instance() {
+        let (mut state, unit_body) = state_with_solid_unit(
+            "bearcad_unit_move2_a.bearcad",
+            "bearcad_unit_move2_b.bearcad",
+        );
+        let before = crate::extrude::body_solid_mesh(&state.doc, unit_body)
+            .unwrap()
+            .bounds()
+            .unwrap();
+        let r = state.apply(Action::CreateMoveOperation {
+            translate_mode: crate::model::MoveTranslateMode::Free,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            targets: Vec::new(),
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: vec![0],
+            tx: "5".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+        assert!(state.doc.move_ops[0].outputs.is_empty(), "the instance itself moves");
+        assert!(!state.doc.bodies[unit_body].shadow, "nothing is consumed");
+        let after = crate::extrude::body_solid_mesh(&state.doc, unit_body)
+            .unwrap()
+            .bounds()
+            .unwrap();
+        assert!((after.0.x - (before.0.x + 5.0)).abs() < 1e-2, "{after:?}");
+        // A Move snap point on the moved unit still resolves (against the unmoved
+        // placement — the guard breaks the transform ↔ mesh cycle).
+        let corner = crate::hierarchy::quantize_body_point(glam::Vec3::new(15.0, 10.0, 10.0));
+        assert!(crate::extrude::move_point_world(
+            &state.doc,
+            &crate::model::MovePointRef::Vertex { body: unit_body, p: corner },
+        )
+        .is_some());
+    }
+
+    /// #735: a nested unit builds — B imports A, which itself imports C — and reads as
+    /// one opaque row inside A's contents. (The depth cap's clean error is covered by
+    /// `unit_nesting_deeper_than_cap_is_refused`.)
+    #[test]
+    fn nested_units_build() {
+        // C: a solid box.
+        let c_path = write_solid_unit_file("bearcad_unit_nested_c.bearcad");
+        // A imports C.
+        let mut a = AppState::default();
+        let a_path = std::env::temp_dir().join("bearcad_unit_nested_a.bearcad");
+        a.path = Some(a_path.to_string_lossy().to_string());
+        let r = a.apply(Action::ImportUnit {
+            path: c_path.to_string_lossy().to_string(),
+            link: None,
+            name: Some("c".to_string()),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", a.status);
+        let _ = std::fs::remove_file(&a_path);
+        crate::storage::save(&a_path.to_string_lossy(), &a.doc).unwrap();
+
+        // B imports A.
+        let mut b = AppState::default();
+        b.path = Some(
+            std::env::temp_dir().join("bearcad_unit_nested_b.bearcad").to_string_lossy().to_string(),
+        );
+        let r = b.apply(Action::ImportUnit {
+            path: a_path.to_string_lossy().to_string(),
+            link: None,
+            name: Some("a".to_string()),
+        });
+        assert_eq!(r, ActionResult::Ok, "status: {}", b.status);
+        let eval = crate::units::evaluate_instance(&b.doc, 0).expect("nested unit evaluates");
+        assert!(
+            eval.meshes.iter().any(|m| !m.is_empty()),
+            "C's geometry builds through A: {:?}",
+            eval.error
+        );
+        // A's contents show the nested unit as one opaque row.
+        let rows = crate::hierarchy::unit_child_rows(&b.doc, 0);
+        assert!(
+            rows.iter().any(|(_, label)| label == "c"),
+            "the nested unit reads as one row: {rows:?}"
+        );
+
+        let _ = std::fs::remove_file(&c_path);
+        let _ = std::fs::remove_file(&a_path);
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it
@@ -18215,6 +18343,7 @@ mod tests {
             targets: vec![0, 1],
             plane_targets: vec![],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: "25".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -18256,6 +18385,7 @@ mod tests {
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -18271,6 +18401,7 @@ mod tests {
             targets: vec![0, 1],
             plane_targets: vec![],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: "5".to_string(),
             ty: "2".to_string(),
             tz: String::new(),
@@ -18297,6 +18428,7 @@ mod tests {
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
+            instance_targets: Vec::new(),
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -19260,6 +19392,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: vec![0],
             image_targets: Vec::new(),
+            instance_targets: Vec::new(),
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),

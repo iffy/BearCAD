@@ -70,6 +70,10 @@ warmer tone so it reads as not-yours-to-edit.
 
 - Its corners and edge midpoints fill Move's start/end point pickers, and its faces,
   edges, and vertices fill any tool's picker.
+- **Move it**: pick the instance with the Move tool — snap or free translation moves the
+  instance's placement itself, so everything referencing it follows.
+- A unit may itself import other units; a nested part reads as one row inside its
+  parent's contents, at any depth.
 - Measure to it: select a unit edge (or corner pair) and add a dimension parameter as
   usual. A dimension to a unit edge follows the unit when an instance parameter changes.
 - **Sketch on it**: pick a flat unit face with the Sketch tool. The face's own outline

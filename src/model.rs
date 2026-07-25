@@ -1772,6 +1772,10 @@ pub struct MoveOperation {
     /// place at recompute (projected onto the host plane), like a plane. No output bodies.
     #[serde(default)]
     pub image_targets: Vec<usize>,
+    /// Unit instances moved by this op (#735): like a plane, the instance itself moves —
+    /// its placement transform composes with this op at evaluation, no output bodies.
+    #[serde(default)]
+    pub instance_targets: Vec<usize>,
     /// Translation components (mm expressions; empty = 0).
     #[serde(default)]
     pub tx: String,
@@ -3102,7 +3106,9 @@ pub struct UnitInstance {
 }
 
 /// A [`UnitInstance`]'s placement (#719): a rotation about an axis through the unit's
-/// origin, then a translation. Identity by default.
+/// origin, then a translation. Identity by default. Every field is `#[serde(default)]`,
+/// so a future **scale** (#735: instances will be scalable) slots in without a format
+/// change.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnitPlacement {
     /// Translation components (mm expressions; empty = 0), like the Move tool's.

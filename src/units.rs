@@ -34,9 +34,13 @@ pub struct UnitEvaluation {
 type CacheKey = (usize, Vec<(String, String)>);
 
 thread_local! {
-    /// Per-thread memo: `(fingerprint of Document.units, (unit, overrides) → evaluation)`.
-    static UNIT_EVAL_CACHE: RefCell<(u64, HashMap<CacheKey, Rc<UnitEvaluation>>)> =
-        RefCell::new((0, HashMap::new()));
+    /// Per-thread memo, keyed by units-fingerprint then (unit, overrides). Two levels —
+    /// not one fingerprint slot — because evaluating a **nested** unit (#735) evaluates
+    /// the inner document's own instances mid-flight, and a single-slot cache would
+    /// thrash between the two documents every frame. Bounded: far-past fingerprints are
+    /// dropped once a handful accumulate.
+    static UNIT_EVAL_CACHE: RefCell<HashMap<u64, HashMap<CacheKey, Rc<UnitEvaluation>>>> =
+        RefCell::new(HashMap::new());
 
     /// How many uncached evaluations have run on this thread (test hook: identical
     /// instances must share one).
@@ -76,18 +80,23 @@ pub fn evaluate_instance(doc: &Document, instance: usize) -> Option<Rc<UnitEvalu
     overrides.sort();
     let key = (inst.unit, overrides);
     let fingerprint = units_fingerprint(doc);
+    // The borrow is released before evaluating: a nested unit's evaluation (#735)
+    // re-enters this cache for the inner document.
+    let hit = UNIT_EVAL_CACHE.with(|cache| {
+        cache.borrow().get(&fingerprint).and_then(|m| m.get(&key).cloned())
+    });
+    if let Some(hit) = hit {
+        return Some(hit);
+    }
+    let eval = Rc::new(evaluate_uncached(unit, &inst.parameter_overrides));
     UNIT_EVAL_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.0 != fingerprint {
-            *cache = (fingerprint, HashMap::new());
+        if cache.len() > 8 && !cache.contains_key(&fingerprint) {
+            cache.clear();
         }
-        if let Some(hit) = cache.1.get(&key) {
-            return Some(hit.clone());
-        }
-        let eval = Rc::new(evaluate_uncached(unit, &inst.parameter_overrides));
-        cache.1.insert(key, eval.clone());
-        Some(eval)
-    })
+        cache.entry(fingerprint).or_default().insert(key, eval.clone());
+    });
+    Some(eval)
 }
 
 /// Rebuild the embedded document with `overrides` applied and mesh its live bodies.
@@ -165,7 +174,36 @@ pub fn instance_transform(doc: &Document, instance: usize) -> glam::Mat4 {
     } else {
         glam::Mat4::IDENTITY
     };
-    glam::Mat4::from_translation(translation) * rotation
+    let base = glam::Mat4::from_translation(translation) * rotation;
+
+    // Move operations targeting this instance (#735) compose on top, like a moved
+    // construction plane — the instance itself moves, no output bodies. Guarded against
+    // re-entry: a Move's snap points resolve against body meshes, and a snap point on
+    // this very instance would otherwise recurse — the guard makes it resolve against
+    // the **unmoved** placement, which is exactly what a start point means.
+    INSTANCE_TRANSFORM_GUARD.with(|guard| {
+        if guard.borrow().contains(&instance) {
+            return base;
+        }
+        guard.borrow_mut().push(instance);
+        let mut transform = base;
+        for op in doc.move_ops.iter().filter(|o| !o.deleted) {
+            if !op.instance_targets.contains(&instance) {
+                continue;
+            }
+            if let Some(m) = crate::extrude::move_op_transform(doc, op) {
+                transform = m * transform;
+            }
+        }
+        guard.borrow_mut().pop();
+        transform
+    })
+}
+
+thread_local! {
+    /// Instances whose transform is being computed right now (#735) — breaks the
+    /// snap-point → mesh → transform cycle; see [`instance_transform`].
+    static INSTANCE_TRANSFORM_GUARD: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Keep one live derived body per live unit instance (#724): a

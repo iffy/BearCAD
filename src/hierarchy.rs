@@ -2995,8 +2995,20 @@ pub fn unit_child_rows(doc: &Document, instance: usize) -> Vec<(IconId, String)>
         }
     }
     for (i, body) in inner.bodies.iter().enumerate() {
-        if !body.deleted && !body.shadow {
+        // A unit's own materialized instance bodies show as nested-unit rows below.
+        if !body.deleted
+            && !body.shadow
+            && !matches!(body.source, crate::model::BodySource::UnitInstance(_))
+        {
             rows.push((IconId::Body, node_label(inner, HierarchyNode::Body(i))));
+        }
+    }
+    // Nested units (#735): a unit the unit itself imported reads as one opaque row —
+    // its instance name — however deep the nesting goes (the cap is MAX_UNIT_DEPTH,
+    // enforced at load/import, #719).
+    for (i, nested) in inner.unit_instances.iter().enumerate() {
+        if !nested.deleted {
+            rows.push((IconId::Import, node_label(inner, HierarchyNode::UnitInstance(i))));
         }
     }
     rows

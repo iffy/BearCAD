@@ -2359,6 +2359,18 @@ evaluator's visiting stack. Implementation: `value::document_parameter_bindings`
 qualified names into the one `&[(name, expression)]` table every evaluator already uses;
 the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backticks.
 
+**Moving instances & nesting (#735):** Move accepts a unit instance like a plane: the
+click gathers the **instance** (`MoveOperation::instance_targets`), and the op composes
+onto the instance's placement at evaluation — the instance itself moves, no output
+bodies, nothing consumed; snap and free translation both apply (a snap start point on
+the moved instance resolves against the *unmoved* placement via a re-entrancy guard).
+**Nesting:** A may import C; B importing A builds C's geometry through A's evaluation
+(the per-fingerprint evaluation cache handles the nested re-entry), C reads as **one
+opaque row** inside A's expanded contents at any depth, `foo.bar` never reaches a nested
+unit's internals (#729), and the depth cap is `MAX_UNIT_DEPTH` at load/import (#719).
+**Scaling:** instances will be scalable later; `UnitPlacement` is all-`serde(default)`,
+so a `scale` field lands without a format change.
+
 **Instance Context pane (#734):** selecting an instance shows, under the shared Name row
 (renames drive #731): **Link** (Dynamic/Static selectable, `Action::SetUnitLink`,
 `bearcad.unit_link(i, mode)`), **Source** (file name + library/relative tag, an amber dot
