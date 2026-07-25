@@ -16,9 +16,6 @@ Notes embed parameters in curly braces: `Width: {plate_w}`. Any expression works
 (`{plate_w + 3in}`); `{{` prints a literal brace. Press **Tab** to accept the completion
 popup.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![A drawing text note's Context pane, each field explained](/img/screenshots/pane-drawing-text.png)

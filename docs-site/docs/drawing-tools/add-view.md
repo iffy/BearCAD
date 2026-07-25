@@ -18,9 +18,6 @@ the page. Click a placed view to reopen its editor. Options:
 - **Scale:** type a print scale like `1:20` (page mm : model mm). Clear to auto-fit.
 - **Style:** Visible edges, Wireframe (default), or Shaded.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Add view tool's Context pane, each field explained](/img/screenshots/pane-drawing-add.png)

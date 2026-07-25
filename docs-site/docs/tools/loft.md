@@ -32,10 +32,7 @@ horns, hulls, funnels, transitions between shapes.
   reshapes to match.
 - A loft undoes as one step, and appears in the Elements pane with its body.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Loft tool's Context pane, each field explained](/img/screenshots/pane-loft.png)
 

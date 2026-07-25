@@ -40,9 +40,6 @@ to smooth it (**Straighten curve** undoes). Deleting a handle straightens the cu
 Curved lines close loops, extrude, and take dimensions like straight ones (a length
 dimension controls the endpoint-to-endpoint distance).
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Line tool's Context pane, each field explained](/img/screenshots/pane-line.png)

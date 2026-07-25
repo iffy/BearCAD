@@ -21,23 +21,8 @@ it off flat. Everything else works the same way —
 
 ![A box with its two long top edges chamfered](/img/screenshots/chamfer.png)
 
-## The Context pane
-
-The pane collects what to cut; the cut distance itself is typed (or dragged) in the 3D view
-once something is picked.
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Chamfer tool's Context pane inside a sketch, each field explained](/img/screenshots/pane-chamfer-sketch.png)
 
-Outside a sketch it collects body edges instead:
-
 ![The Chamfer tool's Context pane on a solid, each field explained](/img/screenshots/pane-chamfer-body.png)
-
-**Countersinking screw holes** is a chamfer too: click the rim of a drilled hole, set the
-distance, **Enter** — the rim is cut into a cone, ready for a flat-head screw. The
-[Quickstart bracket](/docs/quickstart#7-countersink-the-holes) does exactly this.
-
-See [Fillet](./fillet.md) for the shared details: live preview, the Context-pane edge list,
-expression input, and current limitations.

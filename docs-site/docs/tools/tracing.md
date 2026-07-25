@@ -58,9 +58,6 @@ bearcad.add_geometric_constraint("coincident")
 Sketch on the image's plane as usual and trace what you need. Because the image is
 calibrated, the traced geometry is in real units — dimension it, extrude it, print it.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![A tracing image's Context pane, each field explained](/img/screenshots/pane-tracing.png)

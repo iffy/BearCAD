@@ -16,10 +16,7 @@ Projections are **associative**: when the source body changes, the projected lin
 it. Imported units project too — a [unit's face outline](/docs/files#importing-bearcad-files)
 lands in a sketch opened on it automatically.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Project tool's Context pane, each field explained](/img/screenshots/pane-project.png)
 

@@ -48,14 +48,9 @@ With a sketch open, Mirror reflects **sketch geometry** instead of bodies:
 The reflected lines and circles are added to the sketch, grouped under the mirror operation.
 Edit or delete it later just like the 3D version.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants. On the model workbench:
+## Help
 
 ![The Mirror tool's Context pane, each field explained](/img/screenshots/pane-mirror-body.png)
-
-Inside a sketch:
 
 ![The in-sketch Mirror pane, each field explained](/img/screenshots/pane-mirror-sketch.png)
 

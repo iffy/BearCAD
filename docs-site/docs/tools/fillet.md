@@ -33,17 +33,9 @@ it in the graph. This is the same input → operation → output shape every oth
 operation uses, so a fillet takes part in [rolling back](/docs/components#rolling-back) and
 undo like anything else.
 
-## The Context pane
-
-The pane collects what to round; the radius itself is typed (or dragged) in the 3D view once
-something is picked.
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Fillet tool's Context pane inside a sketch, each field explained](/img/screenshots/pane-fillet-sketch.png)
-
-Outside a sketch it collects body edges instead:
 
 ![The Fillet tool's Context pane on a solid, each field explained](/img/screenshots/pane-fillet-body.png)
 

@@ -32,10 +32,7 @@ every path line feed the **Sweep** operation, and the swept body hangs off it as
 its output. Select a committed sweep and press **Edit sweep** in the context pane
 to re-open it with its faces, path, and body mode loaded.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Sweep tool's Context pane, each field explained](/img/screenshots/pane-sweep.png)
 

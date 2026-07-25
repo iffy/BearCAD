@@ -33,10 +33,7 @@ adjusting the distance or target first.
 - Typing a digit jumps straight into the distance field.
 - **Flip** extrudes to the other side of the sketch plane, keeping the same depth.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Extrude tool's Context pane with a face picked, each field explained](/img/screenshots/pane-extrude.png)
 

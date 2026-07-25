@@ -33,9 +33,6 @@ Their handles stay visible and grabbable even when a body is in front of them.
 
 Hiding a plane puts the plane away, not the work — sketches drawn on it stay visible.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Construction Plane tool's Context pane, each field explained](/img/screenshots/pane-construction-plane.png)

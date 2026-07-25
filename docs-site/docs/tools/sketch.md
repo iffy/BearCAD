@@ -29,9 +29,6 @@ you're in sketch mode. Press **Esc** (with nothing in progress) to leave the ske
   hidden face by accident.
 - Click an existing sketch's face with the Sketch tool to reopen it for editing.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Sketch tool's Context pane, each field explained](/img/screenshots/pane-sketch.png)

@@ -27,9 +27,6 @@ A circle is a face: extrude it to get a cylinder, or extrude it **into** a body 
 - **Esc** cancels the in-progress circle.
 - **X** makes it construction (reference) geometry — handy for bolt-circle layouts.
 
-## The Context pane
-
-Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
-the pane grows a note saying what it wants:
+## Help
 
 ![The Circle tool's Context pane, each field explained](/img/screenshots/pane-circle.png)
