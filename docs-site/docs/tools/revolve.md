@@ -28,6 +28,13 @@ Revolve spins a flat profile around an axis into a solid — rings, shafts, vase
 
 The profile can't cross its axis; keep it entirely on one side.
 
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Revolve tool's Context pane, each field explained](/img/screenshots/pane-revolve.png)
+
 ## Sketching on the result
 
 Every **flat** face of a revolved body accepts new sketches, just like an extrusion's caps
