@@ -2194,6 +2194,9 @@ pub fn draw_help_notes(ctx: &egui::Context, pane_rect: egui::Rect) -> Option<egu
         egui::Area::new(egui::Id::new(("context_help_note", i)))
             .order(egui::Order::Foreground)
             .fixed_pos(note.min)
+            // No fade-in: a note appearing mid-animation would make captures
+            // non-deterministic (SPEC §9.3).
+            .fade_in(false)
             .interactable(false)
             .show(ctx, |ui| {
                 let painter = ui.painter();
@@ -2307,7 +2310,7 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Combine), "Side B") => {
             Some("The bodies applied to side A. For a cut, the ones carved away.")
         }
-        (Some(Tool::Combine), "Keep B") => Some(
+        (Some(Tool::Combine), "Keep B bodies") => Some(
             "Leaves the side B bodies as real bodies afterwards; by default every input \
              becomes a shadow body.",
         ),
@@ -3245,11 +3248,11 @@ pub fn show_pane(
         // clicking a picker makes it the active side. Only the "keep B" toggle stays here.
         if two_sided {
             let mut keep_b = control.keep_b;
-            if ui
+            let resp = ui
                 .checkbox(&mut keep_b, "Keep B bodies")
-                .on_hover_text("Leave the B-side inputs as real bodies instead of shadows")
-                .changed()
-            {
+                .on_hover_text("Leave the B-side inputs as real bodies instead of shadows");
+            note_help(ui, "Keep B bodies", resp.rect);
+            if resp.changed() {
                 on_boolean_edit(BooleanEdit::KeepB(keep_b));
             }
         }

@@ -36,6 +36,17 @@ After — the cutting body is carved away:
 
 A cut that severs a body into separate pieces gives one body per piece.
 
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Combine tool's Context pane in Combine mode, each field explained](/img/screenshots/pane-combine-combine.png)
+
+A two-sided operation splits the picker in two and offers **Keep B bodies**:
+
+![The Combine tool's Context pane in Cut mode, each field explained](/img/screenshots/pane-combine-cut.png)
+
 ## Shadow bodies
 
 Input bodies become **shadow bodies**: out of the 3D view and out of clicking's way until
