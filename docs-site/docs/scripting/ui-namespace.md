@@ -81,13 +81,21 @@ bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
 ```lua
 bearcad.ui.screenshot()                       -- writes screenshot-bearcad.png
 bearcad.ui.screenshot("out.png")
-bearcad.ui.screenshot("out.png", true)        -- whole_window = true: capture the entire window
+bearcad.ui.screenshot("out.png", true)        -- the entire window
+bearcad.ui.screenshot("out.png", "window")    -- the same, named
+bearcad.ui.screenshot("out.png", "context")   -- just the Context pane
+bearcad.ui.screenshot("out.png", "elements")  -- just the Elements pane
 ```
 
 By default, `screenshot` captures the 3D viewport only (the view bear is suppressed for
 that frame). This is the mechanism behind BearCAD's visual regression testing: a script
 drives an exact interactive flow and emits a screenshot to compare against a golden image
 in CI.
+
+The second argument picks the region: `"viewport"` (the default), `"window"`, or a pane
+name — `"context"`, `"elements"`, `"parameters"`. A pane shot is cropped to the pane and
+stops below its last control, so it is the controls rather than a tall empty column. The
+docs' annotated pane pictures are made this way.
 
 Whether an action arrives declaratively or through `bearcad.ui.*`, it lands as the same
 committed document change.

@@ -4,6 +4,7 @@ title: Move
 ---
 
 import useBaseUrl from '@docusaurus/useBaseUrl';
+import PaneCallouts from '@site/src/components/PaneCallouts';
 
 # <img src={useBaseUrl("/img/icons/move.svg")} width="30" /> Move
 
@@ -33,6 +34,38 @@ Move slides whole bodies to a new place, producing moved copies.
 
 The tool moves you along as you go: pick a body and it's ready for the start point, pick that
 and it's ready for the end point. Click any picker to jump back to it.
+
+## The Context pane
+
+<PaneCallouts
+  src="/img/screenshots/pane-move-snap.png"
+  alt="The Move tool's Context pane in Snap mode"
+  title="Translate: Snap"
+  items={[
+    {x: 37, y: 27, label: 'Bodies', children: <>The bodies that will move. Click one in the viewport to add it, click it again to drop it.</>},
+    {x: 37, y: 39, label: 'Translate', children: <>Snap or Free — how you say where the bodies go. <strong>M</strong> switches between them.</>},
+    {x: 37, y: 49, label: 'Start point A', children: <>The corner or edge midpoint on a moving body that you're aiming with.</>},
+    {x: 37, y: 60, label: 'End point A', children: <>Where start point A lands — a corner or edge midpoint on something that isn't moving.</>},
+    {x: 37, y: 70, label: 'Start point B', children: <>Optional. A second point on a moving body, to turn the bodies as well as slide them.</>},
+    {x: 37, y: 81, label: 'End point B', children: <>Optional. Where start point B swings to, about end point A. Only the spots it can reach are offered.</>},
+    {x: 37, y: 92, label: 'Commit', children: <>Applies the move. <strong>Enter</strong> does the same.</>},
+  ]}
+/>
+
+<PaneCallouts
+  src="/img/screenshots/pane-move-free.png"
+  alt="The Move tool's Context pane in Free mode"
+  title="Translate: Free"
+  items={[
+    {x: 37, y: 28, label: 'Bodies', children: <>The bodies that will move.</>},
+    {x: 37, y: 41, label: 'Translate', children: <>Set to Free: you type the distance instead of picking points.</>},
+    {x: 37, y: 50, label: 'Start point A', children: <>Where the drag arrows sit. Leave it and they sit on the selection.</>},
+    {x: 37, y: 61, label: 'X', children: <>How far along X, as an expression — <code>25</code>, <code>gap * 2</code>, <code>10mm</code>.</>},
+    {x: 37, y: 71, label: 'Y', children: <>How far along Y.</>},
+    {x: 37, y: 81, label: 'Z', children: <>How far along Z.</>},
+    {x: 37, y: 92, label: 'Commit', children: <>Applies the move.</>},
+  ]}
+/>
 
 Once a start point is picked the moving bodies go translucent, so you can see the gizmos and
 what you're aiming at through them. Start point A marks **green** and end point A **red** — go

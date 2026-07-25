@@ -33,6 +33,43 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+/// What part of the window a scripted screenshot captures.
+///
+/// Panes are capturable so documentation can show one pane on its own (#672) — a
+/// whole-window shot of, say, the Context pane is mostly viewport, and cropping it
+/// afterwards would need the pane's position, which only the running app knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScreenshotRegion {
+    /// The 3D viewport only, with the view-cube HUD suppressed for that frame.
+    #[default]
+    Viewport,
+    /// The entire window, panes and toolbar included.
+    Window,
+    /// A single pane. Captures nothing if that pane is hidden.
+    Pane(crate::actions::Pane),
+}
+
+impl ScreenshotRegion {
+    /// Parse a region name as written in a script: `"viewport"`, `"window"`, or any
+    /// pane name [`crate::actions::Pane::from_name`] accepts (`"context"`, …).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "viewport" | "view" | "3d" => Some(Self::Viewport),
+            "window" | "whole" | "whole_window" | "all" => Some(Self::Window),
+            other => crate::actions::Pane::from_name(other).map(Self::Pane),
+        }
+    }
+
+    /// The name this region is written as in a script.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Viewport => "viewport",
+            Self::Window => "window",
+            Self::Pane(pane) => pane.script_name(),
+        }
+    }
+}
+
 /// A single script instruction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instruction {
@@ -566,11 +603,10 @@ pub enum Instruction {
     // Sequencing
     WaitMs(u64),
     WaitFrames(u32),
-    /// Save a screenshot. `whole_window` captures the full window; otherwise just the 3D
-    /// viewport (with the view-cube HUD suppressed).
+    /// Save a screenshot of [`ScreenshotRegion`].
     Screenshot {
         path: String,
-        whole_window: bool,
+        region: ScreenshotRegion,
     },
     Quit,
 }
@@ -1384,13 +1420,10 @@ impl Instruction {
             Instruction::Type(text) => format!("bearcad.ui.type({text:?})"),
             Instruction::WaitMs(ms) => format!("bearcad.ui.wait_ms({ms})"),
             Instruction::WaitFrames(n) => format!("bearcad.ui.wait({n})"),
-            Instruction::Screenshot { path, whole_window } => {
-                if *whole_window {
-                    format!("bearcad.ui.screenshot({path:?}, true)")
-                } else {
-                    format!("bearcad.ui.screenshot({path:?})")
-                }
-            }
+            Instruction::Screenshot { path, region } => match region {
+                ScreenshotRegion::Viewport => format!("bearcad.ui.screenshot({path:?})"),
+                other => format!("bearcad.ui.screenshot({path:?}, {:?})", other.script_name()),
+            },
             Instruction::SetGizmo { name, value, relative } => {
                 if *relative {
                     format!("bearcad.drag_gizmo{{ name = {name:?}, by = {value} }}")
@@ -3116,6 +3149,30 @@ impl ReplRunner {
 
 #[cfg(target_arch = "wasm32")]
 struct ReplRunner {}
+
+/// egui data key under which a pane records where it landed this frame, so a
+/// scripted screenshot can crop to it (#672). `shell_id` is the pane's panel id.
+pub fn pane_rect_id(shell_id: &str) -> egui::Id {
+    egui::Id::new(("bearcad_pane_rect", shell_id))
+}
+
+/// The panel id a pane draws itself under, or `None` for the view-cube HUD, which
+/// is drawn inside the viewport rather than as a pane of its own.
+fn pane_shell_id(pane: crate::actions::Pane) -> Option<&'static str> {
+    use crate::actions::Pane;
+    match pane {
+        Pane::Hierarchy => Some("tree"),
+        Pane::Parameters => Some("parameters"),
+        Pane::Context => Some("context"),
+        Pane::ViewCube => None,
+    }
+}
+
+/// Where `pane` was drawn last frame, in logical points. `None` when it is hidden.
+fn pane_rect(ctx: &egui::Context, pane: crate::actions::Pane) -> Option<egui::Rect> {
+    let id = pane_rect_id(pane_shell_id(pane)?);
+    ctx.data(|data| data.get_temp::<egui::Rect>(id))
+}
 
 /// A pending screenshot request, resolved when egui delivers the captured frame.
 struct ScreenshotRequest {
@@ -4920,15 +4977,25 @@ impl ScriptRunner {
                     StepResult::Wait
                 }
             }
-            Instruction::Screenshot { path, whole_window } => {
-                let crop = if whole_window {
-                    None
-                } else {
-                    viewport.map(|rect| ScreenshotCrop {
-                        rect,
-                        pixels_per_point: ctx.pixels_per_point(),
-                    })
+            Instruction::Screenshot { path, region } => {
+                let rect = match region {
+                    ScreenshotRegion::Window => None,
+                    ScreenshotRegion::Viewport => Some(viewport),
+                    ScreenshotRegion::Pane(pane) => match pane_rect(ctx, pane) {
+                        Some(rect) => Some(Some(rect)),
+                        None => {
+                            self.record_action_error(crate::actions::ActionResult::Err(format!(
+                                "the {} pane is not on screen to capture",
+                                pane.label()
+                            )));
+                            return StepResult::Continue;
+                        }
+                    },
                 };
+                let crop = rect.flatten().map(|rect| ScreenshotCrop {
+                    rect,
+                    pixels_per_point: ctx.pixels_per_point(),
+                });
                 self.screenshot_pending = Some(ScreenshotRequest { path, crop });
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 StepResult::Wait
@@ -5389,6 +5456,44 @@ mod tests {
         let opts = parse_args(["bearcad", "--repl"]);
         assert!(opts.repl);
         assert!(parse_args(["bearcad"]).repl == false);
+    }
+
+    #[test]
+    fn screenshot_regions_round_trip_through_their_script_names() {
+        use crate::actions::Pane;
+        for region in [
+            ScreenshotRegion::Viewport,
+            ScreenshotRegion::Window,
+            ScreenshotRegion::Pane(Pane::Context),
+            ScreenshotRegion::Pane(Pane::Hierarchy),
+            ScreenshotRegion::Pane(Pane::Parameters),
+        ] {
+            assert_eq!(ScreenshotRegion::from_name(region.script_name()), Some(region));
+        }
+
+        // Pane aliases are accepted, and the viewport is still the default.
+        assert_eq!(
+            ScreenshotRegion::from_name("elements"),
+            Some(ScreenshotRegion::Pane(Pane::Hierarchy))
+        );
+        assert_eq!(ScreenshotRegion::default(), ScreenshotRegion::Viewport);
+        assert_eq!(ScreenshotRegion::from_name("nonsense"), None);
+    }
+
+    #[test]
+    fn screenshot_instruction_writes_its_region_back_out() {
+        let viewport = Instruction::Screenshot {
+            path: "out.png".to_string(),
+            region: ScreenshotRegion::Viewport,
+        };
+        // The default region stays implicit, exactly as it was written before regions.
+        assert_eq!(viewport.as_lua(), "bearcad.ui.screenshot(\"out.png\")");
+
+        let pane = Instruction::Screenshot {
+            path: "out.png".to_string(),
+            region: ScreenshotRegion::Pane(crate::actions::Pane::Context),
+        };
+        assert_eq!(pane.as_lua(), "bearcad.ui.screenshot(\"out.png\", \"context\")");
     }
 
     #[test]

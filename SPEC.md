@@ -2350,9 +2350,13 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   construction-plane offset (`"offset"`), and the Move tool's translation
   (`"move_x"`/`"move_y"`/`"move_z"`, mm). The Move values are exposed ahead of the viewport
   drag handles (#185/#215); the Move rotation gizmo went with the tool's rotation half (#663).
-- `bearcad.ui.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
-  view bear (the view-cube HUD) is suppressed for that frame); passing `whole_window = true` captures the
-  entire window. With no `path`, the image is written to `screenshot-bearcad.png`.
+- `bearcad.ui.screenshot([path], [region])` captures the 3D viewport only by default (the
+  view bear (the view-cube HUD) is suppressed for that frame). `region` is `true` or
+  `"window"` for the entire window, or a pane name — `"context"`, `"elements"`,
+  `"parameters"` — to capture that pane alone (#672). A pane capture is cropped to the
+  pane's rect, cut off below its last control so the shot is the controls rather than an
+  empty column, and fails (no PNG, a script error) if that pane is hidden. With no `path`,
+  the image is written to `screenshot-bearcad.png`.
 - Geometry-creation helpers are single calls that create the thing directly (no simulated
   mouse/keyboard) and enter a ground-plane sketch if none is open: `bearcad.rect{ width, height,
   x?, y?, name? }`, `bearcad.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
@@ -2515,6 +2519,15 @@ directory named by `$BEARCAD_SCREENSHOT_OUT`. `scripts/gen-doc-screenshots.sh` r
 missing. The Website CI job (`.github/workflows/docs.yml`) regenerates them on Linux under
 `xvfb` + a software Vulkan driver, uploads them as a downloadable artifact, and includes them in
 the deployed site. This reuses §9.3's determinism guarantees (fixed view, no animation waits).
+
+**Annotated pane pictures (#672).** Every tool's documentation page shows its Context pane —
+one shot per mode where the tool has modes — with a numbered marker on each control and a
+matching numbered description beside it. The shots come from `docs-site/screenshots/pane-*.lua`
+capturing `bearcad.ui.screenshot(path, "context")`; a scene that yields several shots writes
+them as `<script-name>-<variant>.png`. The markers are placed by the `PaneCallouts` component
+(`docs-site/src/components/`) as percentages of the image, so the descriptions stay real text
+rather than pixels; `scripts/pane-callout-rows.py` reads the row positions off a captured PNG
+(and can draw a preview to check them).
 
 Framing is part of that determinism: `gen-doc-screenshots.sh` pins `BEARCAD_WINDOW` (default
 `1600x900`, overridable) instead of letting the window maximize, and sizes the `xvfb` screen to

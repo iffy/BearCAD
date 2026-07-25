@@ -107,9 +107,11 @@ for script in "${scripts[@]}"; do
   # Skip helper/partial files by convention (names starting with '_').
   [[ "$name" == _* ]] && continue
 
+  # A script writes either <name>.png or, when one scene yields several shots (a
+  # tool's Context pane in each of its modes), <name>-<variant>.png.
   out_png="$OUT_DIR/$name.png"
-  rm -f "$out_png"
-  echo "==> $script -> $out_png"
+  rm -f "$out_png" "$OUT_DIR/$name"-*.png
+  echo "==> $script -> $OUT_DIR/$name*.png"
 
   # Give the app a self-timeout a little under the outer budget so it exits on
   # its own where possible (cleaner than an external kill).
@@ -122,8 +124,14 @@ for script in "${scripts[@]}"; do
     BEARCAD_SCREENSHOT_OUT="$OUT_DIR" "${run[@]}" || true
   fi
 
-  if [[ -s "$out_png" ]]; then
-    echo "    ok ($(wc -c <"$out_png" | tr -d ' ') bytes)"
+  produced=()
+  for png in "$out_png" "$OUT_DIR/$name"-*.png; do
+    [[ -s "$png" ]] && produced+=("$png")
+  done
+  if [[ ${#produced[@]} -gt 0 ]]; then
+    for png in "${produced[@]}"; do
+      echo "    ok $(basename "$png") ($(wc -c <"$png" | tr -d ' ') bytes)"
+    done
     succeeded+=("$name")
   else
     echo "    FAILED: no non-empty PNG produced" >&2

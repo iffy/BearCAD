@@ -10926,14 +10926,23 @@ fn show_pane_shell(
         } else {
             egui::pos2(screen.left() + 8.0, screen.top() + 44.0)
         };
-        egui::Window::new(title)
+        let mut content_bottom = None;
+        let response = egui::Window::new(title)
             .id(egui::Id::new(id))
             .open(&mut open)
             .default_pos(pos)
             .default_width(width)
             .max_height(screen.height() * 0.7)
             .vscroll(true)
-            .show(ctx, |ui| add_contents(ui));
+            .show(ctx, |ui| {
+                add_contents(ui);
+                content_bottom = Some(ui.cursor().min.y);
+            });
+        remember_pane_rect(
+            ctx,
+            id,
+            response.map(|r| trim_to_content(r.response.rect, content_bottom)),
+        );
         open
     } else {
         let panel = if right {
@@ -10948,9 +10957,39 @@ fn show_pane_shell(
         if let Some(m) = max_width {
             panel = panel.max_width(m);
         }
-        panel.show(ctx, |ui| add_contents(ui));
+        let mut content_bottom = None;
+        let response = panel.show(ctx, |ui| {
+            add_contents(ui);
+            content_bottom = Some(ui.cursor().min.y);
+        });
+        remember_pane_rect(ctx, id, Some(trim_to_content(response.response.rect, content_bottom)));
         true
     }
+}
+
+/// A pane's rect cut off below its last control, so a captured pane (#672) is the
+/// controls rather than a column of empty panel running to the bottom of the window.
+///
+/// `content_bottom` comes from the layout cursor rather than `Ui::min_rect`, which a
+/// side panel stretches to full height so its frame paints the whole side.
+fn trim_to_content(mut rect: egui::Rect, content_bottom: Option<f32>) -> egui::Rect {
+    const PADDING: f32 = 8.0;
+    if let Some(bottom) = content_bottom {
+        rect.max.y = (bottom + PADDING).min(rect.max.y);
+    }
+    rect
+}
+
+/// Stash where a pane landed this frame so a scripted screenshot can crop to it
+/// (#672). Kept in egui's own data rather than app state because `show_pane_shell`
+/// is a free function shared by every pane, and the script executor already has the
+/// context in hand when the capture arrives.
+fn remember_pane_rect(ctx: &egui::Context, id: &'static str, rect: Option<egui::Rect>) {
+    let key = script::pane_rect_id(id);
+    ctx.data_mut(|data| match rect {
+        Some(rect) => data.insert_temp(key, rect),
+        None => data.remove::<egui::Rect>(key),
+    });
 }
 
 /// The build's full identity (About, web and native alike): the release tag when this

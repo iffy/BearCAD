@@ -10,7 +10,7 @@ use crate::model::{
     LineEnd, SketchId, VertexTreatmentKind,
 };
 use crate::names::find_element_by_name;
-use crate::script::{parse_key, Instruction, ScriptRunner, SyntheticInput};
+use crate::script::{parse_key, Instruction, ScreenshotRegion, ScriptRunner, SyntheticInput};
 use crate::value::{AngleUnit, LengthUnit};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
@@ -2765,18 +2765,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "_screenshot",
-        lua.create_function(|lua, (path, whole_window): (Option<String>, Option<bool>)| {
+        lua.create_function(|lua, (path, region): (Option<String>, Option<Value>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let path = path
                 .map(|p| p.trim().to_string())
                 .filter(|p| !p.is_empty())
                 .unwrap_or_else(|| "screenshot-bearcad.png".to_string());
-            unsafe {
-                tick.exec(Instruction::Screenshot {
-                    path,
-                    whole_window: whole_window.unwrap_or(false),
-                })
-            }
+            // `true` still means the whole window, as it did before regions (#672).
+            let region = match region {
+                None | Some(Value::Nil) | Some(Value::Boolean(false)) => ScreenshotRegion::Viewport,
+                Some(Value::Boolean(true)) => ScreenshotRegion::Window,
+                Some(Value::String(name)) => {
+                    let name = name.to_str()?;
+                    ScreenshotRegion::from_name(&name).ok_or_else(|| {
+                        mlua::Error::external(format!("unknown screenshot region '{name}'"))
+                    })?
+                }
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "screenshot region must be a name or a boolean, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            unsafe { tick.exec(Instruction::Screenshot { path, region }) }
         })?,
     )?;
 
