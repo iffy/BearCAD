@@ -83,6 +83,12 @@ pub enum Instruction {
     ExportStep { path: String, body: Option<String> },
     /// Import an STL file at `path` as a new body (#70).
     ImportStl { path: String },
+    /// Import another BearCAD document as a unit with a first instance (#721).
+    ImportUnit {
+        path: String,
+        link: Option<crate::model::LinkMode>,
+        name: Option<String>,
+    },
     /// Import a tracing image (#169).
     ImportImage { path: String, plane: Option<usize> },
     /// Calibrate a tracing image's scale (#171).
@@ -635,6 +641,22 @@ impl Instruction {
                 body: Some(body),
             } => format!("bearcad.export_step({path:?}, {body:?})"),
             Instruction::ImportStl { path } => format!("bearcad.import_stl({path:?})"),
+            Instruction::ImportUnit { path, link, name } => {
+                let mut args = format!("path = {path:?}");
+                if let Some(link) = link {
+                    args.push_str(&format!(
+                        ", link = \"{}\"",
+                        match link {
+                            crate::model::LinkMode::Static => "static",
+                            crate::model::LinkMode::Dynamic => "dynamic",
+                        }
+                    ));
+                }
+                if let Some(name) = name {
+                    args.push_str(&format!(", name = {name:?}"));
+                }
+                format!("bearcad.import_unit{{ {args} }}")
+            }
             Instruction::ImportImage { path, plane } => match plane {
                 Some(p) => format!("bearcad.import_image{{ path = {path:?}, plane = {p} }}"),
                 None => format!("bearcad.import_image({path:?})"),
@@ -1813,6 +1835,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             body: body.clone(),
         }),
         Action::ImportStl { path } => Some(Instruction::ImportStl { path: path.clone() }),
+        Action::ImportUnit { path, link, name } => Some(Instruction::ImportUnit {
+            path: path.clone(),
+            link: *link,
+            name: name.clone(),
+        }),
         Action::ImportImage { path, plane } => Some(Instruction::ImportImage {
             path: path.clone(),
             plane: *plane,
@@ -3828,6 +3855,11 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::ImportUnit { path, link, name } => {
+                let r = state.apply(Action::ImportUnit { path, link, name });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
             Instruction::ImportImage { path, plane } => {
                 let r = state.apply(Action::ImportImage { path, plane });
                 self.record_action_error(r);
@@ -4882,7 +4914,8 @@ impl ScriptRunner {
                         | PaletteOutcome::DocumentJson
                         | PaletteOutcome::OpenExploder
                         | PaletteOutcome::ShowShortcuts
-                        | PaletteOutcome::ShowSettings => {
+                        | PaletteOutcome::ShowSettings
+                        | PaletteOutcome::ImportUnit => {
                             state.status =
                                 "Palette file commands require the GUI".to_string();
                         }

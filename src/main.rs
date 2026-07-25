@@ -2608,6 +2608,14 @@ impl App {
             status,
             ..AppState::default()
         };
+        // App settings (#720): loaded once here; the library directory is mirrored into
+        // AppState so Action::ImportUnit (#721) can classify sources.
+        #[cfg(not(target_arch = "wasm32"))]
+        let settings = settings::AppSettings::load();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            state.library_directory = settings.library_directory.clone();
+        }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
                 actions::ActionResult::Err(message) => state.status = message,
@@ -2705,7 +2713,7 @@ impl App {
             update_fallback_opened: false,
             shortcuts_open: false,
             #[cfg(not(target_arch = "wasm32"))]
-            settings: settings::AppSettings::load(),
+            settings,
             #[cfg(not(target_arch = "wasm32"))]
             settings_open: false,
             element_filter: hierarchy::ElementFilter::default(),
@@ -2777,6 +2785,8 @@ impl App {
                 });
             });
         if changed {
+            // Keep the action layer's mirror in step (#721) before persisting.
+            self.state.library_directory = self.settings.library_directory.clone();
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
             }
@@ -2835,6 +2845,23 @@ impl App {
         if let Some(path) = picked {
             self.state.apply(Action::ImportStl {
                 path: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    /// Import another BearCAD document as a unit via an open dialog (#721), starting in
+    /// the library directory when one is set.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_unit(&mut self) {
+        let mut dialog = rfd::FileDialog::new().add_filter("BearCAD document", &["bearcad"]);
+        if let Some(dir) = &self.settings.library_directory {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.state.apply(Action::ImportUnit {
+                path: path.to_string_lossy().to_string(),
+                link: None,
+                name: None,
             });
         }
     }
@@ -3398,6 +3425,8 @@ impl App {
             MenuCommand::ExportStl => self.export_stl_all(),
             MenuCommand::ExportStep => self.export_step_all(),
             MenuCommand::ImportStl => self.import_stl(),
+            #[cfg(not(target_arch = "wasm32"))]
+            MenuCommand::ImportUnit => self.import_unit(),
             MenuCommand::ImportImage => self.import_image(),
             MenuCommand::ImportStep => self.import_step(),
             MenuCommand::ExportSessionCommands => self.export_session_commands(),
@@ -3477,8 +3506,10 @@ impl App {
             PaletteOutcome::ShowShortcuts => self.shortcuts_open = true,
             #[cfg(not(target_arch = "wasm32"))]
             PaletteOutcome::ShowSettings => self.settings_open = true,
+            #[cfg(not(target_arch = "wasm32"))]
+            PaletteOutcome::ImportUnit => self.import_unit(),
             #[cfg(target_arch = "wasm32")]
-            PaletteOutcome::ShowSettings => {}
+            PaletteOutcome::ShowSettings | PaletteOutcome::ImportUnit => {}
             PaletteOutcome::OpenFile => self.open(),
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
@@ -8237,10 +8268,15 @@ impl eframe::App for App {
                     ui,
                     icons::IconId::Import,
                     false,
-                    "Import STL, STEP, or an image",
+                    "Import a BearCAD file, STL, STEP, or an image",
                     TOOLBAR_ICON_SIZE,
                 );
                 egui::Popup::menu(&import_btn).show(|ui| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui.button("Import BearCAD File…").clicked() {
+                        self.import_unit();
+                        ui.close();
+                    }
                     if ui.button("Import STL…").clicked() {
                         self.import_stl();
                         ui.close();

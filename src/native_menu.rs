@@ -25,6 +25,8 @@ pub struct MenuIds {
     pub export_stl: MenuId,
     pub export_step: MenuId,
     pub import_stl: MenuId,
+    /// File → Import → BearCAD File… (#721).
+    pub import_unit: MenuId,
     pub load_script: MenuId,
     pub import_image: MenuId,
     pub import_step: MenuId,
@@ -101,6 +103,9 @@ pub fn command_for_id(
     }
     if ids.import_stl == id {
         return Some(MenuCommand::ImportStl);
+    }
+    if ids.import_unit == id {
+        return Some(MenuCommand::ImportUnit);
     }
     if ids.load_script == id {
         return Some(MenuCommand::LoadScript);
@@ -263,6 +268,7 @@ impl NativeMenu {
         let export_stl = MenuItem::with_id("export_stl", "STL…", true, None);
         let export_step = MenuItem::with_id("export_step", "STEP…", true, None);
         let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
+        let import_unit = MenuItem::with_id("import_unit", "BearCAD File…", true, None);
         let import_stl = MenuItem::with_id("import_stl", "STL…", true, None);
         let import_image = MenuItem::with_id("import_image", "Image…", true, None);
         let import_step = MenuItem::with_id("import_step", "STEP…", true, None);
@@ -326,6 +332,7 @@ impl NativeMenu {
         file_menu.append(&save_as)?;
         file_menu.append(&PredefinedMenuItem::separator())?;
         let import_menu = Submenu::new("Import", true);
+        import_menu.append(&import_unit)?;
         import_menu.append(&import_stl)?;
         import_menu.append(&import_step)?;
         import_menu.append(&import_image)?;
@@ -394,6 +401,7 @@ impl NativeMenu {
             export_step: export_step.id().clone(),
             load_script: load_script.id().clone(),
             import_stl: import_stl.id().clone(),
+            import_unit: import_unit.id().clone(),
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
             document_json: document_json.id().clone(),
@@ -502,6 +510,7 @@ mod tests {
             export_step: MenuId::new("export_step"),
             load_script: MenuId::new("load_script"),
             import_stl: MenuId::new("import_stl"),
+            import_unit: MenuId::new("import_unit"),
             import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),
             document_json: MenuId::new("document_json"),

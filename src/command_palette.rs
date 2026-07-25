@@ -75,6 +75,8 @@ pub enum PaletteCommandId {
     /// Open the Settings window (#720). Native only: the settings it edits (the library
     /// directory) are filesystem paths the web build has no use for.
     ShowSettings,
+    /// Import another BearCAD document as a unit (#721). Native only (path-based).
+    ImportUnit,
     ShowHelpMode,
     HideHelpMode,
 }
@@ -87,6 +89,8 @@ pub enum PaletteOutcome {
     ShowShortcuts,
     /// Open the Settings window (#720).
     ShowSettings,
+    /// Pick a BearCAD file and import it as a unit (#721).
+    ImportUnit,
     OpenFile,
     SaveFile,
     SaveFileAs,
@@ -189,6 +193,7 @@ impl PaletteCommand {
             PaletteCommandId::ProjectSelection => PaletteOutcome::Action(Action::ProjectSelection),
             PaletteCommandId::ShowShortcuts => PaletteOutcome::ShowShortcuts,
             PaletteCommandId::ShowSettings => PaletteOutcome::ShowSettings,
+            PaletteCommandId::ImportUnit => PaletteOutcome::ImportUnit,
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
                 visible: true,
@@ -611,6 +616,12 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ShowSettings,
         "Settings",
         "settings preferences options library directory",
+    ),
+    #[cfg(not(target_arch = "wasm32"))]
+    PaletteCommand::new(
+        PaletteCommandId::ImportUnit,
+        "Import BearCAD File",
+        "import bearcad file unit part assembly library",
     ),
 ];
 

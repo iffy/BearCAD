@@ -21,6 +21,8 @@ saved state). Quitting with unsaved changes asks whether to **Save**, **Don't Sa
 
 ## Import
 
+- **File → Import → BearCAD File…** — another BearCAD document becomes a reusable **unit**;
+  see [Importing BearCAD files](#importing-bearcad-files).
 - **File → Import → STL…** — a triangulated mesh becomes a body.
 - **File → Import → STEP…** — BREP from other CAD tools, curved surfaces included,
   tessellated into a body.
@@ -36,6 +38,28 @@ saved state). Quitting with unsaved changes asks whether to **Save**, **Don't Sa
   Right-click a body or a component row to export just that body or the whole component.
 - **Technical drawings** export as vector **PDF** or **SVG** from the drawing workbench —
   see [Drawings](/docs/tools/drawing#exporting).
+
+## Importing BearCAD files
+
+**File → Import → BearCAD File…** brings another `.bearcad` document in as a **unit**: a
+reusable part with its own parameters.
+
+- The importing document embeds a copy, so it opens and rebuilds even with the source
+  file absent.
+- Importing the same file again adds a second **instance** sharing the one embedded copy.
+- Each instance gets a name from the file stem (`bracket`, `bracket2`, …).
+- A file under the [library directory](/docs/settings#library-directory) is remembered by
+  its library path, so it resolves on any machine with the same library. Any other file is
+  stored relative to the importing document — save the document once before importing.
+- Importing a file that imports the current document is refused; imports can't cycle.
+
+```lua
+bearcad.import_unit("bracket.bearcad")
+bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }
+```
+
+`link = "dynamic"` (the default) follows later changes to the source file; `"static"`
+freezes the imported copy.
 
 ## Turning a session into a script
 

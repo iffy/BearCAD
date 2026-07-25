@@ -16,6 +16,8 @@ pub enum MenuCommand {
     ImportStl,
     ImportImage,
     ImportStep,
+    /// Import another BearCAD document as a unit (#721).
+    ImportUnit,
     ExportSessionCommands,
     /// Open the Document JSON dialog: the whole document as pasteable JSON text, for
     /// copying into (and loading back out of) bug reports.
@@ -58,6 +60,7 @@ impl MenuCommand {
             | MenuCommand::ImportStl
             | MenuCommand::ImportImage
             | MenuCommand::ImportStep
+            | MenuCommand::ImportUnit
             | MenuCommand::ExportSessionCommands
             | MenuCommand::DocumentJson
             | MenuCommand::LoadScript => None,

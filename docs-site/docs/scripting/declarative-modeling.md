@@ -310,6 +310,11 @@ bearcad.new()
 bearcad.import_stl("part.stl")
 bearcad.import_step("part.step")
 
+-- Another BearCAD document as a unit (see Files → Importing BearCAD files):
+-- embeds one copy, adds an instance named after the file stem.
+bearcad.import_unit("bracket.bearcad")
+bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }
+
 -- Tracing images (see the Tracing images tool page): PNG/JPEG onto a
 -- construction plane (default: ground), centered, seeded at 1 px = 1 mm.
 bearcad.import_image{ path = "drawing.png" }

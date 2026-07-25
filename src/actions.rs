@@ -1318,6 +1318,14 @@ pub enum Action {
     AddCalibrationPoint { x: f32, y: f32 },
     /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
     ImportStep { path: String },
+    /// Import another BearCAD document as a unit (#721): embed one copy of it (reused if
+    /// the same source is already imported) and add an instance. `link` defaults to
+    /// dynamic; `name` defaults to the file stem, uniquified against existing instances.
+    ImportUnit {
+        path: String,
+        link: Option<crate::model::LinkMode>,
+        name: Option<String>,
+    },
     Clear,
     UndoLast,
     SetTool(Tool),
@@ -2479,10 +2487,94 @@ impl CommandPaletteState {
     }
 }
 
+/// Classify where an imported unit's source is recorded (#721): under the library
+/// directory (#720) → a stable library-relative path; otherwise a path relative to the
+/// importing document, which must therefore have been saved.
+fn classify_unit_source(
+    imported: &std::path::Path,
+    own_path: Option<&str>,
+    library: Option<&std::path::Path>,
+) -> Result<crate::model::UnitSource, String> {
+    if let Some(lib) = library {
+        let lib = lib.canonicalize().unwrap_or_else(|_| lib.to_path_buf());
+        if let Ok(rel) = imported.strip_prefix(&lib) {
+            return Ok(crate::model::UnitSource::Library(
+                rel.to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    let own = own_path.ok_or_else(|| {
+        "Import failed: save this document first, so the import can be stored relative to it"
+            .to_string()
+    })?;
+    let own_dir = std::path::Path::new(own)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    let own_dir = own_dir.canonicalize().unwrap_or_else(|_| own_dir.to_path_buf());
+    Ok(crate::model::UnitSource::RelativePath(relative_path_from(
+        &own_dir, imported,
+    )))
+}
+
+/// `to` expressed relative to `from_dir`, lexically (both sides pre-canonicalized by the
+/// caller as far as the filesystem allows).
+fn relative_path_from(from_dir: &std::path::Path, to: &std::path::Path) -> String {
+    let from: Vec<_> = from_dir.components().collect();
+    let to_parts: Vec<_> = to.components().collect();
+    let common = from.iter().zip(&to_parts).take_while(|(a, b)| a == b).count();
+    let mut out = std::path::PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for part in &to_parts[common..] {
+        out.push(part.as_os_str());
+    }
+    out.to_string_lossy().into_owned()
+}
+
+/// A usable expression identifier from a file stem (qualified references, #729, will be
+/// `name.param`): keep alphanumerics and underscores, fold everything else to `_`.
+fn identifier_name(base: &str) -> String {
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() {
+        "unit".to_string()
+    } else if cleaned.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("_{cleaned}")
+    } else {
+        cleaned
+    }
+}
+
+/// `base`, made unique against live instance names by appending 2, 3, … (#721).
+fn unique_instance_name(doc: &Document, base: &str) -> String {
+    let taken = |name: &str| {
+        doc.unit_instances
+            .iter()
+            .any(|i| !i.deleted && i.name.as_deref() == Some(name))
+    };
+    if !taken(base) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// Application state that actions mutate.
 pub struct AppState {
     pub doc: Document,
     pub path: Option<String>,
+    /// The app-settings library directory (#720), mirrored here by the frame loop so
+    /// [`Action::ImportUnit`] can classify sources without reaching into `App`.
+    pub library_directory: Option<std::path::PathBuf>,
     /// Unsaved-changes tracking (#522): a snapshot of the document as of the last
     /// save/open/new, and a cached flag for whether the live document now differs from it.
     /// `dirty` drives the window title's `*` marker and the quit-save prompt; it is
@@ -2675,6 +2767,7 @@ impl Default for AppState {
             active_component: None,
             doc: Document::default(),
             path: None,
+            library_directory: None,
             saved_snapshot: Document::default(),
             dirty: false,
             tool: Tool::default(),
@@ -3141,6 +3234,90 @@ impl AppState {
                 ActionResult::Err(e)
             }
         }
+    }
+
+    /// Import another BearCAD document as a unit (#721): embed one copy (reused when the
+    /// same source is already imported) and add an instance named after the file stem.
+    fn import_unit(
+        &mut self,
+        path: &str,
+        link: Option<crate::model::LinkMode>,
+        name: Option<String>,
+    ) -> ActionResult {
+        use crate::model::{ImportedUnit, UnitInstance, UnitPlacement};
+        let source_doc = match crate::storage::open(path) {
+            Ok(doc) => doc,
+            Err(e) => {
+                self.status = format!("Import failed: {e}");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("Import failed: {e}");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        let canonical =
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let source = match classify_unit_source(
+            &canonical,
+            self.path.as_deref(),
+            self.library_directory.as_deref(),
+        ) {
+            Ok(source) => source,
+            Err(e) => {
+                self.status = e;
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        // The same file imported again shares the existing embedded copy (#719).
+        let existing = self.doc.units.iter().position(|u| u.source == source);
+        let unit = existing.unwrap_or_else(|| {
+            let mtime = std::fs::metadata(path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64);
+            self.doc.units.push(ImportedUnit {
+                source: source.clone(),
+                link: link.unwrap_or(crate::model::LinkMode::Dynamic),
+                document: source_doc,
+                source_mtime: mtime,
+                source_hash: Some(crate::model::content_hash(&bytes)),
+            });
+            self.doc.units.len() - 1
+        });
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unit".to_string());
+        let instance_name =
+            unique_instance_name(&self.doc, &identifier_name(&name.unwrap_or(stem)));
+        self.doc.unit_instances.push(UnitInstance {
+            unit,
+            name: Some(instance_name.clone()),
+            parameter_overrides: Vec::new(),
+            placement: UnitPlacement::default(),
+            deleted: false,
+        });
+        // Cycle/depth refusal (#719) against this document's own path; roll the trial
+        // insertion back so a refused import leaves nothing behind.
+        if let Err(e) = crate::model::validate_units(
+            &self.doc,
+            self.path.as_deref().map(std::path::Path::new),
+        ) {
+            self.doc.unit_instances.pop();
+            if existing.is_none() {
+                self.doc.units.pop();
+            }
+            self.status = format!("Import refused: {e}");
+            return ActionResult::Err(self.status.clone());
+        }
+        self.refresh_document_health();
+        self.status = format!("Imported {instance_name}");
+        ActionResult::Ok
     }
 
     /// Import an STL from raw bytes as a new body.
@@ -5519,6 +5696,7 @@ impl AppState {
                     }
                 }
             }
+            Action::ImportUnit { path, link, name } => self.import_unit(&path, link, name),
             Action::Clear => {
                 self.doc = Document::default();
                 self.sketch_session = None;
@@ -14655,6 +14833,179 @@ mod tests {
         assert!(state.doc.bodies.is_empty());
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Build a small standalone document on disk to import as a unit (#721).
+    fn write_unit_file(name: &str) -> std::path::PathBuf {
+        let mut source = AppState::default();
+        source.doc.parameters.push(crate::model::Parameter {
+            name: "width".to_string(),
+            expression: "10".to_string(),
+            deleted: false,
+            source: None,
+        });
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        crate::storage::save(&path.to_string_lossy(), &source.doc).unwrap();
+        path
+    }
+
+    /// #721: importing a BearCAD file embeds one copy and creates a named first instance;
+    /// importing the same file again adds a second instance against the same copy.
+    #[test]
+    fn import_unit_twice_yields_one_unit_and_two_instances() {
+        let unit_path = write_unit_file("bearcad_unit_import_a.bearcad");
+        let mut state = AppState::default();
+        // B lives in the same temp dir, so the source stores as a relative path.
+        state.path =
+            Some(std::env::temp_dir().join("bearcad_unit_import_b.bearcad").to_string_lossy().to_string());
+
+        let result = state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(state.doc.units.len(), 1);
+        assert_eq!(state.doc.unit_instances.len(), 1);
+        assert_eq!(
+            state.doc.units[0].source,
+            crate::model::UnitSource::RelativePath("bearcad_unit_import_a.bearcad".to_string())
+        );
+        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Dynamic, "default link is dynamic");
+        assert!(state.doc.units[0].source_hash.is_some());
+        assert_eq!(state.doc.units[0].document.parameters[0].name, "width");
+        assert_eq!(
+            state.doc.unit_instances[0].name.as_deref(),
+            Some("bearcad_unit_import_a")
+        );
+
+        let result = state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(state.doc.units.len(), 1, "same file re-imported shares the embedded copy");
+        assert_eq!(state.doc.unit_instances.len(), 2);
+        assert_eq!(
+            state.doc.unit_instances[1].name.as_deref(),
+            Some("bearcad_unit_import_a2"),
+            "second instance name is uniquified"
+        );
+
+        let _ = std::fs::remove_file(&unit_path);
+    }
+
+    /// #721: a file under the library directory stores as a stable library path.
+    #[test]
+    fn import_unit_under_library_directory_stores_a_library_source() {
+        let lib_dir = std::env::temp_dir().join("bearcad_unit_lib_dir");
+        std::fs::create_dir_all(lib_dir.join("hardware")).unwrap();
+        let unit_path = write_unit_file("bearcad_unit_lib_dir/hardware/bolt.bearcad");
+
+        let mut state = AppState::default();
+        state.library_directory = Some(lib_dir.clone());
+        // B was never saved — a library import needs no relative anchor.
+        let result = state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: Some(crate::model::LinkMode::Static),
+            name: Some("bolt".to_string()),
+        });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(
+            state.doc.units[0].source,
+            crate::model::UnitSource::Library("hardware/bolt.bearcad".to_string())
+        );
+        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Static);
+        assert_eq!(state.doc.unit_instances[0].name.as_deref(), Some("bolt"));
+
+        let _ = std::fs::remove_dir_all(&lib_dir);
+    }
+
+    /// #721: a relative import into a never-saved document is refused with a clear ask.
+    #[test]
+    fn import_unit_into_unsaved_document_asks_for_a_save_first() {
+        let unit_path = write_unit_file("bearcad_unit_unsaved_a.bearcad");
+        let mut state = AppState::default();
+        let result = state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert!(state.status.to_lowercase().contains("save"), "status: {}", state.status);
+        assert!(state.doc.units.is_empty());
+        assert!(state.doc.unit_instances.is_empty());
+        let _ = std::fs::remove_file(&unit_path);
+    }
+
+    /// #721: importing a file that (transitively) imports this document is refused.
+    #[test]
+    fn import_unit_refuses_a_cycle() {
+        let dir = std::env::temp_dir();
+        let b_path = dir.join("bearcad_unit_cycle_b.bearcad");
+
+        // A imports B (by relative path), saved beside it.
+        let mut a_state = AppState::default();
+        a_state.doc.units.push(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath(
+                "bearcad_unit_cycle_b.bearcad".to_string(),
+            ),
+            link: crate::model::LinkMode::Dynamic,
+            document: crate::model::Document::default(),
+            source_mtime: None,
+            source_hash: None,
+        });
+        let a_path = dir.join("bearcad_unit_cycle_a.bearcad");
+        let _ = std::fs::remove_file(&a_path);
+        crate::storage::save(&a_path.to_string_lossy(), &a_state.doc).unwrap();
+
+        // B tries to import A back.
+        let mut state = AppState::default();
+        state.path = Some(b_path.to_string_lossy().to_string());
+        let result = state.apply(Action::ImportUnit {
+            path: a_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        assert!(matches!(result, ActionResult::Err(_)), "cycle must be refused");
+        assert!(state.status.contains("cycle"), "status: {}", state.status);
+        assert!(state.doc.units.is_empty(), "refused import leaves nothing behind");
+        assert!(state.doc.unit_instances.is_empty());
+
+        let _ = std::fs::remove_file(&a_path);
+    }
+
+    /// #721: a relative-path import survives the importing document being saved elsewhere —
+    /// the embedded copy keeps the document self-contained.
+    #[test]
+    fn imported_unit_survives_saving_the_document_elsewhere() {
+        let unit_path = write_unit_file("bearcad_unit_move_a.bearcad");
+        let mut state = AppState::default();
+        state.path = Some(
+            std::env::temp_dir().join("bearcad_unit_move_b.bearcad").to_string_lossy().to_string(),
+        );
+        state.apply(Action::ImportUnit {
+            path: unit_path.to_string_lossy().to_string(),
+            link: None,
+            name: None,
+        });
+        assert_eq!(state.doc.units.len(), 1);
+        // The source file disappears and B is saved somewhere else entirely.
+        std::fs::remove_file(&unit_path).unwrap();
+        let elsewhere_dir = std::env::temp_dir().join("bearcad_unit_move_elsewhere");
+        std::fs::create_dir_all(&elsewhere_dir).unwrap();
+        let elsewhere = elsewhere_dir.join("b.bearcad");
+        let r = state.apply(Action::Save { path: Some(elsewhere.to_string_lossy().to_string()) });
+        assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
+
+        let loaded = crate::storage::open(&elsewhere.to_string_lossy()).unwrap();
+        assert_eq!(loaded.units.len(), 1, "the embedded copy travels with the document");
+        assert_eq!(loaded.unit_instances.len(), 1);
+        assert_eq!(loaded.units[0].document.parameters[0].name, "width");
+
+        let _ = std::fs::remove_dir_all(&elsewhere_dir);
     }
 
     #[test]

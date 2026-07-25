@@ -1183,6 +1183,38 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #721: import another BearCAD document as a unit. `import_unit("a.bearcad")` or
+    // `import_unit{ path = "a.bearcad", link = "dynamic"|"static", name = "bracket" }`.
+    api.set(
+        "import_unit",
+        lua.create_function(|lua, value: Value| {
+            let (path, link, name) = match value {
+                Value::String(s) => (s.to_str()?.to_string(), None, None),
+                Value::Table(t) => {
+                    check_keys(&t, "import_unit", &["path", "link", "name"])?;
+                    let link = match t.get::<Option<String>>("link")?.as_deref() {
+                        None => None,
+                        Some("dynamic") => Some(crate::model::LinkMode::Dynamic),
+                        Some("static") => Some(crate::model::LinkMode::Static),
+                        Some(other) => {
+                            return Err(mlua::Error::external(format!(
+                                "import_unit link must be \"dynamic\" or \"static\", got {other:?}"
+                            )))
+                        }
+                    };
+                    (t.get::<String>("path")?, link, t.get::<Option<String>>("name")?)
+                }
+                _ => {
+                    return Err(mlua::Error::external(
+                        "import_unit takes a path string or { path =, link =, name = }",
+                    ))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ImportUnit { path, link, name }) }
+        })?,
+    )?;
+
     // #163/#169: import a PNG/JPEG as a tracing image. `import_image("p.png")` or
     // `import_image{ path = "p.png", plane = 0 }`.
     api.set(
