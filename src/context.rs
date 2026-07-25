@@ -2400,6 +2400,18 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Whether this becomes a new body, joins the body it touches, or cuts into it.",
         ),
 
+        (Some(Tool::Offset), "Entities") => Some(
+            "The lines and circles to copy at a distance. Click one to add it, click it \
+             again to drop it.",
+        ),
+        (Some(Tool::Offset), "Distance") => Some(
+            "How far the copies sit from their sources, as an expression. Negative \
+             flips the side.",
+        ),
+        (Some(Tool::Offset), "Construction") => Some(
+            "Whether the copies land as construction geometry — guides that don't \
+             become part of a profile.",
+        ),
         (Some(Tool::Slice), "Bodies") => Some(
             "The bodies to cut apart. Click one to add it, click it again to drop it.",
         ),

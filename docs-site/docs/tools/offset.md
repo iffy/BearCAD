@@ -28,6 +28,13 @@ so parameters work. **Edit offset** on the element changes anything later.
 Toggle **Construction** (or press **X**) to emit the copies as construction geometry — e.g.
 a guide line a fixed clearance from a wall.
 
+## The Context pane
+
+Turn on **help mode** — the command palette's *Turn On Help Mode* — and every control in
+the pane grows a note saying what it wants:
+
+![The Offset tool's Context pane, each field explained](/img/screenshots/pane-offset.png)
+
 ## Scripting
 
 ```lua
