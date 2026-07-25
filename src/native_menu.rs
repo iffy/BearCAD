@@ -42,6 +42,8 @@ pub struct MenuIds {
     pub zoom_to_fit: MenuId,
     pub shortcuts_view: MenuId,
     pub shortcuts_help: MenuId,
+    /// Settings… (#720): the app menu on macOS, the File menu elsewhere.
+    pub settings: MenuId,
     /// DEV → Report issue (#627); the DEV menu only appears in debug builds.
     pub report_issue: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
@@ -130,6 +132,9 @@ pub fn command_for_id(
     if ids.shortcuts_view == id || ids.shortcuts_help == id {
         return Some(MenuCommand::ShowShortcuts);
     }
+    if ids.settings == id {
+        return Some(MenuCommand::ShowSettings);
+    }
     if ids.licenses == id {
         return Some(MenuCommand::Licenses);
     }
@@ -183,6 +188,11 @@ impl NativeMenu {
         let menu = Menu::new();
         let primary = primary_modifier();
 
+        // Settings… (#720): the app menu on macOS (the conventional spot), the File menu
+        // elsewhere. No muda accelerator — Cmd/Ctrl+comma is handled in the egui key
+        // layer, one code path for every platform (and it toggles, which a menu can't).
+        let settings_item = MenuItem::with_id("settings", "Settings…", true, None);
+
         #[cfg(target_os = "macos")]
         {
             let app_menu = Submenu::new("BearCAD", true);
@@ -200,6 +210,8 @@ impl NativeMenu {
                         ..Default::default()
                     }),
                 ),
+                &PredefinedMenuItem::separator(),
+                &settings_item,
                 &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::services(None),
                 &PredefinedMenuItem::separator(),
@@ -326,6 +338,8 @@ impl NativeMenu {
         file_menu.append(&document_json)?;
         #[cfg(not(target_os = "macos"))]
         {
+            file_menu.append(&PredefinedMenuItem::separator())?;
+            file_menu.append(&settings_item)?;
             let quit_sep = PredefinedMenuItem::separator();
             file_menu.append(&quit_sep)?;
             file_menu.append(&quit)?;
@@ -396,6 +410,7 @@ impl NativeMenu {
             zoom_to_fit: zoom_to_fit.id().clone(),
             shortcuts_view: shortcuts_view.id().clone(),
             shortcuts_help: shortcuts_help.id().clone(),
+            settings: settings_item.id().clone(),
             report_issue: report_issue.id().clone(),
             pane_checks: pane_ids,
         };
@@ -503,6 +518,7 @@ mod tests {
             zoom_to_fit: MenuId::new("zoom_to_fit"),
             shortcuts_view: MenuId::new("shortcuts_view"),
             shortcuts_help: MenuId::new("shortcuts_help"),
+            settings: MenuId::new("settings"),
             report_issue: MenuId::new("report_issue"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
@@ -557,6 +573,18 @@ mod tests {
             MenuCommand::ToggleCommandPalette.to_action(),
             Some(Action::ToggleCommandPalette)
         );
+    }
+
+    #[test]
+    fn maps_settings_menu_item() {
+        // #720: the Settings… item opens the Settings window (no direct Action — the
+        // window is frame-loop state, like Keyboard Shortcuts).
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.settings, &ids, |_| true),
+            Some(MenuCommand::ShowSettings)
+        );
+        assert_eq!(MenuCommand::ShowSettings.to_action(), None);
     }
 
     #[test]

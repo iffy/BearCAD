@@ -38,6 +38,8 @@ pub enum MenuCommand {
     ZoomToFit,
     /// Open the Keyboard Shortcuts window (View/Help menus, #434).
     ShowShortcuts,
+    /// Open the Settings window (#720): app-level preferences (Cmd/Ctrl+comma).
+    ShowSettings,
     SetPaneVisible { pane: Pane, visible: bool },
     /// Open the DEV → Report issue window (#627): dev-build-only filing of an issue (with
     /// optional screenshot/document-JSON attachments) into the local todoer db.
@@ -73,6 +75,7 @@ impl MenuCommand {
             MenuCommand::ZoomToFit => Some(Action::ZoomToFit),
             // Toggles UI-only window state; handled in the app frame loop.
             MenuCommand::ShowShortcuts => None,
+            MenuCommand::ShowSettings => None,
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }

@@ -4881,7 +4881,8 @@ impl ScriptRunner {
                         | PaletteOutcome::ExportSessionCommands
                         | PaletteOutcome::DocumentJson
                         | PaletteOutcome::OpenExploder
-                        | PaletteOutcome::ShowShortcuts => {
+                        | PaletteOutcome::ShowShortcuts
+                        | PaletteOutcome::ShowSettings => {
                             state.status =
                                 "Palette file commands require the GUI".to_string();
                         }

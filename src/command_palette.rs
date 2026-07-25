@@ -72,6 +72,9 @@ pub enum PaletteCommandId {
     ZoomToFit,
     ProjectSelection,
     ShowShortcuts,
+    /// Open the Settings window (#720). Native only: the settings it edits (the library
+    /// directory) are filesystem paths the web build has no use for.
+    ShowSettings,
     ShowHelpMode,
     HideHelpMode,
 }
@@ -82,6 +85,8 @@ pub enum PaletteOutcome {
     Action(Action),
     /// Open the Keyboard Shortcuts window (#434).
     ShowShortcuts,
+    /// Open the Settings window (#720).
+    ShowSettings,
     OpenFile,
     SaveFile,
     SaveFileAs,
@@ -183,6 +188,7 @@ impl PaletteCommand {
             PaletteCommandId::ZoomToFit => PaletteOutcome::Action(Action::ZoomToFit),
             PaletteCommandId::ProjectSelection => PaletteOutcome::Action(Action::ProjectSelection),
             PaletteCommandId::ShowShortcuts => PaletteOutcome::ShowShortcuts,
+            PaletteCommandId::ShowSettings => PaletteOutcome::ShowSettings,
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
                 visible: true,
@@ -599,6 +605,12 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ShowShortcuts,
         "Keyboard Shortcuts",
         "keyboard shortcuts keys hotkeys bindings help",
+    ),
+    #[cfg(not(target_arch = "wasm32"))]
+    PaletteCommand::new(
+        PaletteCommandId::ShowSettings,
+        "Settings",
+        "settings preferences options library directory",
     ),
 ];
 

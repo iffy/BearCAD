@@ -206,6 +206,7 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
         scope: None,
         entries: vec![
             (format!("{cmd}P"), "Command palette".to_string()),
+            (format!("{cmd},"), "Settings (again closes)".to_string()),
             (format!("{cmd}Z"), "Undo".to_string()),
             ("Enter".to_string(), "Commit the in-progress shape/value".to_string()),
             (

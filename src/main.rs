@@ -65,6 +65,8 @@ mod release_artifacts;
 #[cfg(not(target_arch = "wasm32"))]
 mod updater;
 mod script;
+#[cfg(not(target_arch = "wasm32"))]
+mod settings;
 // The JSON command dispatcher (todoer #179) is the web build's scripting hook: on wasm it
 // backs `web_lua`'s bearcad_call dispatch; on native it's exercised by its own tests.
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -1925,6 +1927,13 @@ struct App {
     update_fallback_opened: bool,
     /// The Keyboard Shortcuts window (#434), toggled from the View/Help menus.
     shortcuts_open: bool,
+    /// Persisted app settings (#720), loaded at startup and saved when the Settings
+    /// window changes something.
+    #[cfg(not(target_arch = "wasm32"))]
+    settings: settings::AppSettings,
+    /// The Settings window (#720), toggled by Cmd/Ctrl+comma, the palette, or the menu.
+    #[cfg(not(target_arch = "wasm32"))]
+    settings_open: bool,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -2695,6 +2704,10 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             update_fallback_opened: false,
             shortcuts_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            settings: settings::AppSettings::load(),
+            #[cfg(not(target_arch = "wasm32"))]
+            settings_open: false,
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -2709,6 +2722,72 @@ impl App {
             showing_quit_prompt: false,
             allow_close: false,
         }
+    }
+
+    /// The Settings window (#720): app-level preferences, saved on change. Controls and
+    /// values only — what each row means lives in help mode (#672), like the Context pane.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn show_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        // Help notes (#672) for this window's rows: a self-contained collect-and-draw
+        // cycle that finishes before the Context pane starts its own for the frame.
+        if self.state.help_mode {
+            context::begin_help_notes(ctx, None);
+        }
+        let mut open = true;
+        let mut changed = false;
+        let response = egui::Window::new("Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                context::labeled_row(ui, "Library directory", |ui| {
+                    if ui.button("Choose…").clicked() {
+                        let mut dialog = rfd::FileDialog::new();
+                        if let Some(dir) = &self.settings.library_directory {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        if let Some(dir) = dialog.pick_folder() {
+                            self.settings.library_directory = Some(dir);
+                            changed = true;
+                        }
+                    }
+                    match self.settings.library_directory.clone() {
+                        Some(dir) => {
+                            if ui.button("✕").on_hover_text("Clear").clicked() {
+                                self.settings.library_directory = None;
+                                changed = true;
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(dir.to_string_lossy())
+                                        .monospace()
+                                        .size(11.0),
+                                )
+                                .truncate(),
+                            );
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("—").weak());
+                        }
+                    }
+                });
+            });
+        if changed {
+            if let Err(err) = self.settings.save() {
+                self.state.status = format!("Could not save settings: {err}");
+            }
+        }
+        if self.state.help_mode {
+            if let Some(resp) = &response {
+                let _ = context::draw_help_notes(ctx, resp.response.rect);
+            }
+            context::end_help_notes(ctx);
+        }
+        self.settings_open = open;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3348,6 +3427,10 @@ impl App {
             MenuCommand::ShowShortcuts => {
                 self.shortcuts_open = true;
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            MenuCommand::ShowSettings => {
+                self.settings_open = true;
+            }
             // DEV → Report issue (#627): open (or re-focus) the report window.
             MenuCommand::ReportIssue => match &mut self.report_issue {
                 Some(window) => window.focus = true,
@@ -3392,6 +3475,10 @@ impl App {
                 self.state.apply(action);
             }
             PaletteOutcome::ShowShortcuts => self.shortcuts_open = true,
+            #[cfg(not(target_arch = "wasm32"))]
+            PaletteOutcome::ShowSettings => self.settings_open = true,
+            #[cfg(target_arch = "wasm32")]
+            PaletteOutcome::ShowSettings => {}
             PaletteOutcome::OpenFile => self.open(),
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
@@ -3606,6 +3693,13 @@ impl App {
         // toggling. The modifier disambiguates it from ordinary typing.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
             self.state.apply(Action::ToggleCurveMode);
+        }
+
+        // Cmd/Ctrl+comma toggles the Settings window (#720) — the OS-conventional
+        // preferences binding, so it works with or without a text field focused.
+        #[cfg(not(target_arch = "wasm32"))]
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
+            self.settings_open = !self.settings_open;
         }
 
         // While any text field has focus, leave unmodified keys to the input (e.g. "bar" must not
@@ -8206,6 +8300,10 @@ impl eframe::App for App {
                 self.dispatch_palette_outcome(chosen);
             }
         }
+
+        // Settings window (#720): app-level preferences, saved on change.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.show_settings_window(ctx);
 
         // Keyboard Shortcuts window (#434): a closable, scrollable list of every binding,
         // grouped by where it applies, rendered from shortcuts::all_shortcuts().

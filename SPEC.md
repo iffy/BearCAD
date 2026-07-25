@@ -2305,6 +2305,18 @@ CREATE TABLE geometry_cache  (node_id INTEGER PRIMARY KEY, fingerprint TEXT NOT 
 The exact `payload`/`kind` encoding for each feature type is **TBD** but must round-trip
 losslessly.
 
+### 7.4 Imported units (#719)
+
+A document can embed other BearCAD documents as **units**: `Document.units` holds one
+embedded copy per imported source (`unit` dag rows) — its source (a path relative to the
+importing file, or a library path, §11.z), a link mode (static or dynamic, #732), the
+embedded `Document`, and staleness provenance (source mtime + content hash) — and
+`Document.unit_instances` (`unit_instance` rows) are the placements: unit index, instance
+name (for qualified expression references, #729), parameter overrides, and a placement
+transform. Ten instances of one part cost one embedded copy plus ten override lists, and
+the importing file opens and rebuilds with the source file absent. Load refuses import
+cycles (matched on resolved source path) and nesting deeper than `MAX_UNIT_DEPTH`.
+
 ---
 
 ## 8. Scripting (Lua API)
@@ -3192,6 +3204,24 @@ labels use) and Constraints from `GeometricConstraintType::ALL` — with tests
 (`shortcut_list_covers_every_tool_shortcut`,
 `shortcut_list_covers_every_constraint_mnemonic`) enforcing the coverage; everything
 else is listed explicitly in that function.
+
+### 11.z Settings window & app settings store (#720)
+
+**Cmd/Ctrl+comma** toggles the **Settings** window; it is also reachable from the
+command palette ("Settings") and the native menu (app menu on macOS, File menu on
+Windows). Like the Context pane, it shows controls and values only — what each row
+means lives in help mode (#672), keyed on the row's label.
+
+Settings are **per-machine app state**, not document state: JSON at the platform config
+path (`~/Library/Application Support/BearCAD/settings.json` on macOS,
+`%APPDATA%\BearCAD` on Windows, `$XDG_CONFIG_HOME`/`~/.config` on Linux), loaded at
+startup, saved on change. A missing or malformed file silently means defaults. Every
+field is `#[serde(default)]` so files round-trip across versions (`src/settings.rs`).
+
+Settings:
+- **Library directory** (`library_directory`) — the folder `Library(...)` unit-import
+  sources resolve against (imported units, #719): **Choose…** (folder picker) sets it,
+  **✕** clears it.
 
 ## 12. Technical drawings & printable schematics
 

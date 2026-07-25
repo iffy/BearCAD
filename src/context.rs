@@ -2280,6 +2280,21 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             Some("Grows the same depth either side of the sketch plane instead of one way.")
         }
 
+        (Some(Tool::Revolve), "Profile") => Some(
+            "The sketch faces to sweep around the axis. Click a face to add it, click it again \
+             to drop it.",
+        ),
+        (Some(Tool::Revolve), "Axis") => Some(
+            "The line the profile turns about — a straight sketch line or one of the global \
+             axes. The angle is dragged in the 3D view.",
+        ),
+        (Some(Tool::Revolve), "Symmetric") => {
+            Some("Sweeps the same angle either side of the profile instead of one way.")
+        }
+        (Some(Tool::Revolve), "Output") => Some(
+            "Whether this becomes a new body, joins the body it touches, or cuts into it.",
+        ),
+
         (Some(Tool::Chamfer), "Selection") => Some(
             "The sketch corners to cut flat. Click a corner where two lines meet; the cut \
              distance is typed in the 3D view.",
@@ -2317,18 +2332,29 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         _ => None,
     };
     per_tool.or_else(|| match label {
+        // Revolve, Sweep and Loft all grow this picker when their output is set to Cut.
+        "Cut bodies" => Some(
+            "The bodies this cuts into. They are consumed — click a body to add it, click it \
+             again to drop it.",
+        ),
         "Length" => Some("The length unit a value you type is read in when you don't write one."),
         "Angle" => Some("The angle unit a value you type is read in when you don't write one."),
         "Snapping" => {
             Some("Whether drawing snaps to nearby geometry — vertices, midpoints, and axes.")
         }
+        "Library directory" => Some(
+            "Where your reusable parts live. A document can import a file under this folder \
+             by name, so the import is found again on any machine whose library holds the \
+             same parts.",
+        ),
         _ => None,
     })
 }
 
 /// A two-column field row (#371): `label` in the fixed-width left column (vertically centred
-/// against the input), the input(s) from `add_input` in the aligned right column.
-fn labeled_row<R>(
+/// against the input), the input(s) from `add_input` in the aligned right column. Shared
+/// with the Settings window (#720) so its rows line up — and note help (#672) — the same way.
+pub(crate) fn labeled_row<R>(
     ui: &mut egui::Ui,
     label: impl Into<egui::WidgetText>,
     add_input: impl FnOnce(&mut egui::Ui) -> R,
