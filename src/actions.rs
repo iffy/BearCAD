@@ -2526,9 +2526,9 @@ fn classify_unit_source(
     if let Some(lib) = library {
         let lib = lib.canonicalize().unwrap_or_else(|_| lib.to_path_buf());
         if let Ok(rel) = imported.strip_prefix(&lib) {
-            return Ok(crate::model::UnitSource::Library(
-                rel.to_string_lossy().into_owned(),
-            ));
+            return Ok(crate::model::UnitSource::Library(portable_path(
+                &rel.to_string_lossy(),
+            )));
         }
     }
     let own = own_path.ok_or_else(|| {
@@ -2539,9 +2539,15 @@ fn classify_unit_source(
         .parent()
         .unwrap_or_else(|| std::path::Path::new(""));
     let own_dir = own_dir.canonicalize().unwrap_or_else(|_| own_dir.to_path_buf());
-    Ok(crate::model::UnitSource::RelativePath(relative_path_from(
-        &own_dir, imported,
+    Ok(crate::model::UnitSource::RelativePath(portable_path(
+        &relative_path_from(&own_dir, imported),
     )))
+}
+
+/// Stored unit-source paths always use forward slashes (#750), so a document saved on
+/// Windows opens anywhere — and Windows itself resolves `/`-separated paths fine.
+fn portable_path(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 /// `to` expressed relative to `from_dir`, lexically (both sides pre-canonicalized by the
