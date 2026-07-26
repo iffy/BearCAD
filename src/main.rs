@@ -12382,15 +12382,16 @@ fn build_viewport_scene_input<'a>(
 
     // Move-tool preview (#660): ghost each body at where the in-progress move would put it,
     // through the same translucent preview-solid path the Mirror and Repeat previews use — so
-    // a snap translation shows its destination before commit like everything else.
+    // a snap translation shows its destination before commit like everything else. The B
+    // pair carries through (#748), so a completed rotation previews too.
     if let Some(cm) = creating_move.filter(|c| !c.targets.is_empty()) {
         let probe = model::MoveOperation {
             targets: cm.targets.clone(),
             translate_mode: cm.translate_mode,
             start_point_a: cm.start_point_a,
             end_point_a: cm.end_point_a,
-            start_point_b: None,
-            end_point_b: None,
+            start_point_b: cm.start_point_b,
+            end_point_b: cm.end_point_b,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
@@ -19458,8 +19459,9 @@ impl App {
                 true,
             ));
         }
-        // Move tool (#660): mark the picked points — source green ("go"), target red ("stop"),
-        // and the rotation point in the pivot's own colour when it's been set apart from them.
+        // Move tool (#660): mark the picked points — source green ("go"), target red
+        // ("stop") — and the B pair in candidate blue (#748), with a line between the two
+        // B points once both are picked so the rotation's chord reads at a glance.
         let move_point_marks: Vec<(construction::PickTargetKind, egui::Color32)> = self
             .state
             .creating_move
@@ -19469,6 +19471,8 @@ impl App {
                 [
                     (cm.start_point_a, theme::MOVE_START_POINT),
                     (cm.end_point_a, theme::MOVE_END_POINT),
+                    (cm.start_point_b, theme::MOVE_CANDIDATE),
+                    (cm.end_point_b, theme::MOVE_CANDIDATE),
                 ]
                 .into_iter()
                 .filter_map(|(point, color)| {
@@ -19485,6 +19489,21 @@ impl App {
                 .collect()
             })
             .unwrap_or_default();
+        // The B pair's connector (#748), in the same blue as its marks.
+        if let Some((a, b)) = self
+            .state
+            .creating_move
+            .as_ref()
+            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
+            .and_then(|cm| {
+                Some((
+                    extrude::move_point_world(&self.state.doc, &cm.start_point_b?)?,
+                    extrude::move_point_world(&self.state.doc, &cm.end_point_b?)?,
+                ))
+            })
+        {
+            move_connector.push((a, b, theme::MOVE_CANDIDATE, false));
+        }
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored
         // at the picked vertex and pointing along the inward bisector of its two lines. Shares
         // one gizmo slot between the 2D (sketch vertex) and 3D (extrusion edge, #77) cases,
@@ -22298,18 +22317,17 @@ mod tests {
                 std::collections::HashMap::new(),
             )
             .repeat_ghosts
-            .len()
         };
 
         // Nothing picked yet, or a move that resolves to no motion: no ghost to draw.
-        assert_eq!(ghosts(None), 0);
+        assert_eq!(ghosts(None).len(), 0);
         let picking = actions::CreatingMove {
             targets: vec![0],
             translate_mode: MoveTranslateMode::Snap,
             start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) }),
             ..Default::default()
         };
-        assert_eq!(ghosts(Some(&picking)), 0, "an identity move has nothing to preview");
+        assert_eq!(ghosts(Some(&picking)).len(), 0, "an identity move has nothing to preview");
 
         // Both points picked: one ghost, at the destination.
         let snapped = actions::CreatingMove {
@@ -22319,7 +22337,34 @@ mod tests {
             }),
             ..picking
         };
-        assert_eq!(ghosts(Some(&snapped)), 1, "the snapped destination ghosts");
+        assert_eq!(ghosts(Some(&snapped)).len(), 1, "the snapped destination ghosts");
+
+        // A complete B pair rotates the ghost too (#748): start B (the far corner) swings
+        // about end point A onto end B — here a quarter turn about Z, so the corner that
+        // rode the translation to (20, 0, 0) previews at (10, 10, 0).
+        let rotated = actions::CreatingMove {
+            start_point_b: Some(MovePointRef::Vertex {
+                body: 0,
+                p: q(glam::Vec3::new(10.0, 0.0, 0.0)),
+            }),
+            end_point_b: Some(MovePointRef::OnEdge {
+                body: 0,
+                p: q(glam::Vec3::new(10.0, 10.0, 0.0)),
+            }),
+            ..snapped
+        };
+        let ghost = ghosts(Some(&rotated));
+        assert_eq!(ghost.len(), 1);
+        let landed = glam::Vec3::new(10.0, 10.0, 0.0);
+        assert!(
+            ghost[0]
+                .triangles
+                .iter()
+                .flatten()
+                .any(|p| (*p - landed).length() < 1e-3),
+            "the rotated corner previews at end B, got {:?}",
+            ghost[0].triangles
+        );
     }
 
     /// #668: once both A points are picked, a connector spans them — the translation drawn as

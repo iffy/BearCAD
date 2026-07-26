@@ -690,10 +690,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   move that resolves to the identity draws nothing. Every ghost's **feature edges** also draw
   into the always-on-top wireframe overlay (#743): a destination flush against — or embedded
   in — stationary geometry would otherwise be swallowed by the depth test, and the visible
-  remainder read as landing offset from the snap target. The picked points are marked in the
+  remainder read as landing offset from the snap target. The B pair carries through to the
+  ghost (#748), so a completed rotation previews too. The picked points are marked in the
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
-  a glance.
+  a glance — and **both B points in candidate blue** with a blue connector between them once
+  the pair is complete (#748).
 
   **One focused picker, stepping through (#656/#658/#659):** exactly one Move picker is armed
   at a time — it's the one the pane rings and the one the viewport hover-highlights, so what
