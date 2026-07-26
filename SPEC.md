@@ -679,6 +679,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     drawn between them (`move_snap_connector` → `ViewportSceneInput::colored_segments`), so
     the translation reads as a vector apart from its green/red endpoint marks.
 
+  **Esc** drops the in-progress move (#749) — picked bodies, snap points, and with them the
+  destination ghost — leaving the tool armed fresh; a second Esc returns to Select through
+  the ordinary tool-switch cleanup (`Action::SetTool`), so no tool's cancelled picks survive
+  to resurface on its next visit.
+
   **Live preview and point marks (#660):** an in-progress move **ghosts** each picked body at
   its destination through the same translucent preview-solid path the Mirror and Repeat
   previews use (`repeat_ghosts`), so a snap translation shows where it lands before commit; a

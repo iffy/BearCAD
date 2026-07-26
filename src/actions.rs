@@ -6399,6 +6399,18 @@ impl AppState {
                         self.creating_sketch_offset.as_ref().unwrap().sketch,
                     ));
                     self.status = "Cancelled offset".to_string();
+                } else if self.creating_move.as_ref().is_some_and(|c| {
+                    !c.targets.is_empty()
+                        || !c.plane_targets.is_empty()
+                        || !c.image_targets.is_empty()
+                        || !c.instance_targets.is_empty()
+                        || c.start_point_a.is_some()
+                        || c.editing.is_some()
+                }) {
+                    // Esc drops the in-progress move (#749): the destination ghost and
+                    // point marks follow the picked state, so clearing it clears them.
+                    self.creating_move = Some(CreatingMove::default());
+                    self.status = "Cancelled move".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()
@@ -6420,9 +6432,13 @@ impl AppState {
                             "Select tool — Delete/Backspace removes selection".to_string();
                     }
                 } else if self.tool != Tool::Select {
-                    self.tool = Tool::Select;
+                    // Route through SetTool so every tool's in-progress state gets its
+                    // usual tool-switch cleanup (#749) — a bare `self.tool = …` left
+                    // move/boolean/mirror picks alive to resurface on the next visit.
+                    let result = self.apply_inner(Action::SetTool(Tool::Select));
                     self.status =
                         "Select tool — Delete/Backspace removes selection".to_string();
+                    return result;
                 }
                 ActionResult::Ok
             }
@@ -21658,6 +21674,28 @@ mod tests {
         state.apply(Action::CancelOperation);
         assert!(state.sketch_session.is_none());
         assert_eq!(state.tool, Tool::Select);
+    }
+
+    /// #749: Esc during a Move drops the in-progress picks — the destination ghost
+    /// follows them, so it vanishes too — and a second Esc leaves the tool with the
+    /// usual tool-switch cleanup, not a bare tool assignment that lets stale picks
+    /// resurface on the next visit.
+    #[test]
+    fn escape_cancels_an_in_progress_move_then_leaves_the_tool() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Move));
+        state.creating_move.as_mut().unwrap().targets.push(0);
+        state.creating_move.as_mut().unwrap().start_point_a =
+            Some(crate::model::MovePointRef::Vertex { body: 0, p: [0; 3] });
+
+        state.apply(Action::CancelOperation);
+        assert_eq!(state.tool, Tool::Move, "first Esc only cancels the picks");
+        let cm = state.creating_move.as_ref().unwrap();
+        assert!(cm.targets.is_empty() && cm.start_point_a.is_none(), "picks dropped");
+
+        state.apply(Action::CancelOperation);
+        assert_eq!(state.tool, Tool::Select, "second Esc leaves the tool");
+        assert!(state.creating_move.is_none(), "the switch cleans the move state up");
     }
 
     #[test]
