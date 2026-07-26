@@ -924,6 +924,26 @@ impl ViewportScene {
         for ghost in &input.repeat_ghosts {
             mesh.push_solid_translucent(ghost, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
         }
+        // Ghost feature edges draw on top of everything (#743): a Move preview that lands
+        // flush against — or embedded in — stationary geometry is otherwise swallowed by
+        // the depth test, and the visible remainder reads as landing in the wrong place.
+        mesh.set_index_layer(MeshIndexLayer::Wireframe);
+        for ghost in &input.repeat_ghosts {
+            for chain in solid_mesh_edge_chains(ghost) {
+                for (a, b) in chain {
+                    mesh.push_line_segment(
+                        a,
+                        b,
+                        SOLID_PREVIEW_FILL,
+                        2.0,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                }
+            }
+        }
+        mesh.set_index_layer(MeshIndexLayer::Base);
 
         let mut plane_draws: Vec<(usize, ConstructionPlane, Color32, f32)> = Vec::new();
         for (i, plane) in input.doc.construction_planes.iter().enumerate() {
@@ -4466,6 +4486,14 @@ mod tests {
         state: &AppState,
         mode: crate::camera::ShadingMode,
     ) -> ViewportScene {
+        build_scene_with_ghosts(state, mode, Vec::new())
+    }
+
+    fn build_scene_with_ghosts(
+        state: &AppState,
+        mode: crate::camera::ShadingMode,
+        repeat_ghosts: Vec<crate::extrude::SolidMesh>,
+    ) -> ViewportScene {
         let mut cam = state.cam.clone();
         cam.set_shading_mode(mode);
         ViewportScene::build(&ViewportSceneInput {
@@ -4486,7 +4514,7 @@ mod tests {
             preview_circle: None,
             preview_extrusion: None,
             preview_solid: None,
-            repeat_ghosts: Vec::new(),
+            repeat_ghosts,
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
             highlighted_bezier_handles: Vec::new(),
@@ -4544,6 +4572,26 @@ mod tests {
         });
         assert_eq!(state.doc.bodies.len(), 1);
         state
+    }
+
+    /// #743: a preview ghost's feature edges draw into the always-on-top wireframe
+    /// layer, so a Move preview landing flush against — or inside — stationary geometry
+    /// stays readable instead of being swallowed by the depth test.
+    #[test]
+    fn preview_ghost_edges_land_on_the_wireframe_overlay() {
+        let state = state_with_one_body();
+        let ghost = crate::extrude::SolidMesh {
+            triangles: vec![
+                [Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0)],
+                [Vec3::ZERO, Vec3::new(10.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 0.0)],
+            ],
+        };
+        let scene =
+            build_scene_with_ghosts(&state, crate::camera::ShadingMode::Solid, vec![ghost]);
+        assert!(
+            !scene.wireframe_indices.is_empty(),
+            "ghost outline draws on the depth-test-free overlay layer"
+        );
     }
 
     #[test]

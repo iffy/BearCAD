@@ -672,7 +672,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Live preview and point marks (#660):** an in-progress move **ghosts** each picked body at
   its destination through the same translucent preview-solid path the Mirror and Repeat
   previews use (`repeat_ghosts`), so a snap translation shows where it lands before commit; a
-  move that resolves to the identity draws nothing. The picked points are marked in the
+  move that resolves to the identity draws nothing. Every ghost's **feature edges** also draw
+  into the always-on-top wireframe overlay (#743): a destination flush against — or embedded
+  in — stationary geometry would otherwise be swallowed by the depth test, and the visible
+  remainder read as landing offset from the snap target. The picked points are marked in the
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
   a glance.
