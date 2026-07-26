@@ -39,7 +39,9 @@ whole model — in one step.
 framed: type rectangle dimensions bigger than the view, or drag an extrusion past the
 edge, and the camera glides out to fit — shrink it back and the camera glides in.
 Committed results count too: confirm an extrusion taller than the view and the camera
-glides out to show the whole body; undo it and the view glides back in.
+glides out to show the whole body; undo it and the view glides back in. Selections too:
+pick a face that's half out of view and the camera glides out until all of it is on
+screen — only ever outward, so selecting something small never dives the camera in.
 Scripts: `bearcad.ui.auto_zoom(true)`.
 
 ## Keyboard shortcuts

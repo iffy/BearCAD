@@ -3336,6 +3336,18 @@ view out to fit, and an undo that shrinks the model well inside glides back in.
 Committed geometry always counts as deliberately sized; growth/shrinkage is tracked via
 a separate document-bounds diagonal so panning away never snaps the camera back.
 
+**Selection watch:** the moment the selection *changes* to something that pokes
+off-screen — e.g. a body face picked while half of it sits outside the view — the camera
+glides out to take the whole selection in (`selection_world_bounds`, which resolves a
+selected body face to its full coplanar triangle group via `body_face_triangles`, not
+just its stored centroid). Framing is **zoom-out only**
+(`Camera::frame_bounds_zoom_out_animated`: the destination distance never drops below
+the current one), so picking something small pans over without diving in, and a fully
+visible selection never moves the camera at all. "Changed" is judged by an
+order-independent fingerprint of the selection set (`scene_selection_fingerprint`;
+empty → never frames), so orbiting or panning away from a still-selected face doesn't
+snap the view back.
+
 ### 11.x Help mode (#672)
 
 **Directive:** A beginner should be able to ask the app what a control is for, without leaving

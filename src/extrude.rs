@@ -2521,6 +2521,29 @@ pub fn order_loft_sections(
     }
 }
 
+/// Resolve a `SceneElement::BodyFace`'s quantized centroid+normal key back to the coplanar
+/// triangle group it names on the body's current solid mesh (#555). `None` when a rebuild
+/// has moved the face so no group matches the key anymore.
+pub fn body_face_triangles(
+    doc: &Document,
+    body: usize,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<Vec<[Vec3; 3]>> {
+    let solid = body_solid_mesh(doc, body)?;
+    let q = crate::hierarchy::quantize_body_point;
+    crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+        .into_iter()
+        .find(|tris| {
+            let count = (tris.len() * 3).max(1) as f32;
+            let c = tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+            let n = (tris[0][1] - tris[0][0])
+                .cross(tris[0][2] - tris[0][0])
+                .normalize_or_zero();
+            q(c) == centroid && q(n) == normal
+        })
+}
+
 /// World bounds of the current selection (#164):/// World bounds of the current selection (#164): union of every selected element's own
 /// geometry (a body's solid, an extrusion's solid, a line/circle's sampled points, a point's
 /// position). `None` when nothing in the selection has world extent (then zoom-to-fit falls
@@ -2700,9 +2723,20 @@ pub fn selection_world_bounds(
             SceneElement::BodyVertex { p, .. } => {
                 extend(crate::hierarchy::dequantize_body_point(p));
             }
-            // A body face (#555): its centroid is the only stored point; enough to frame toward it.
-            SceneElement::BodyFace { centroid, .. } => {
-                extend(crate::hierarchy::dequantize_body_point(centroid));
+            // A body face (#555): the whole coplanar triangle group, so framing the selection
+            // (and auto-zoom's selection watch) takes in the entire face — with the centroid as
+            // a fallback should a rebuild have moved the face out from under its key.
+            SceneElement::BodyFace { body, centroid, normal } => {
+                match body_face_triangles(doc, body, centroid, normal) {
+                    Some(triangles) => {
+                        for tri in &triangles {
+                            for p in tri {
+                                extend(*p);
+                            }
+                        }
+                    }
+                    None => extend(crate::hierarchy::dequantize_body_point(centroid)),
+                }
             }
             // A unit instance frames its placed evaluated meshes (#723).
             SceneElement::UnitInstance(index) => {
@@ -5191,6 +5225,48 @@ mod tests {
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let ext = extrusion(sketch, vec![profile], 5.0);
         (doc, sketch, ext)
+    }
+
+    /// A selected body face contributes its whole coplanar triangle group to the selection
+    /// bounds, so framing it (zoom-to-selection, auto-zoom's selection watch) takes in the
+    /// entire face — not just the centroid point its selection key stores.
+    #[test]
+    fn selection_bounds_cover_a_body_faces_full_extent() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.push(ext);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let solid = body_solid_mesh(&doc, 0).unwrap();
+        let cap = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+            .into_iter()
+            .find(|tris| {
+                (tris[0][1] - tris[0][0])
+                    .cross(tris[0][2] - tris[0][0])
+                    .normalize_or_zero()
+                    .z
+                    > 0.9
+            })
+            .unwrap();
+        let count = (cap.len() * 3) as f32;
+        let centroid = cap.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+        let normal = (cap[0][1] - cap[0][0])
+            .cross(cap[0][2] - cap[0][0])
+            .normalize_or_zero();
+        let q = crate::hierarchy::quantize_body_point;
+        let mut selection = crate::selection::SceneSelection::default();
+        selection.insert(crate::hierarchy::SceneElement::BodyFace {
+            body: 0,
+            centroid: q(centroid),
+            normal: q(normal),
+        });
+        let (min, max) = selection_world_bounds(&doc, &selection).unwrap();
+        assert!((max.x - min.x - 10.0).abs() < 1e-3, "covers the cap's x extent");
+        assert!((max.y - min.y - 10.0).abs() < 1e-3, "covers the cap's y extent");
+        assert!(max.z - min.z < 1e-3, "the cap is flat");
     }
 
     /// #186: a repeat's fill length can be bound to a target's extended plane (like an

@@ -864,11 +864,36 @@ impl Camera {
     /// but as a short animation (#438, auto-zoom): orientation stays put; only the target
     /// and distance glide over `duration` seconds.
     pub fn frame_bounds_animated(&mut self, min: Vec3, max: Vec3, aspect: f32, duration: f32) {
+        self.frame_bounds_animated_from(min, max, aspect, duration, 0.0);
+    }
+
+    /// Frame a bounding box like [`frame_bounds_animated`](Self::frame_bounds_animated),
+    /// but only ever **zooming out**: the destination distance never drops below the
+    /// current one, so framing something small pans over to it without diving in
+    /// (auto-zoom's selection watch, #438).
+    pub fn frame_bounds_zoom_out_animated(
+        &mut self,
+        min: Vec3,
+        max: Vec3,
+        aspect: f32,
+        duration: f32,
+    ) {
+        self.frame_bounds_animated_from(min, max, aspect, duration, self.distance);
+    }
+
+    fn frame_bounds_animated_from(
+        &mut self,
+        min: Vec3,
+        max: Vec3,
+        aspect: f32,
+        duration: f32,
+        min_distance: f32,
+    ) {
         // Compute the destination with the instant math on a scratch copy.
         let mut probe = self.clone();
         probe.transition = None;
         probe.frame_bounds_instant(min, max, aspect);
-        let (to_target, to_distance) = (probe.target, probe.distance);
+        let (to_target, to_distance) = (probe.target, probe.distance.max(min_distance));
         if (to_target - self.target).length() < 1e-3
             && (to_distance - self.distance).abs() < 1e-3
         {
@@ -1279,6 +1304,33 @@ mod tests {
         assert!(!animated.transition_active());
         assert!((animated.target - instant.target).length() < 1e-3);
         assert!((animated.distance - instant.distance).abs() < 1e-2);
+    }
+
+    /// Auto-zoom's selection watch (#438): the zoom-out-only frame pans to small bounds at
+    /// the current distance instead of diving in, while genuinely large bounds still push
+    /// the camera out to the plain animated frame's destination.
+    #[test]
+    fn frame_bounds_zoom_out_animated_pans_but_never_dives_in() {
+        let small = (glam::Vec3::splat(-1.0), glam::Vec3::splat(1.0));
+        let mut cam = Camera::default();
+        cam.set_pose_instant(None, None, Some(400.0), Some(glam::Vec3::new(90.0, 0.0, 0.0)));
+        let start_distance = cam.distance;
+        cam.frame_bounds_zoom_out_animated(small.0, small.1, 1.5, 0.2);
+        assert!(cam.transition_active());
+        for _ in 0..60 {
+            cam.tick_transition(0.016);
+        }
+        assert!((cam.target - glam::Vec3::ZERO).length() < 1e-3);
+        assert!((cam.distance - start_distance).abs() < 1e-2);
+
+        let big = (glam::Vec3::splat(-5000.0), glam::Vec3::splat(5000.0));
+        let mut instant = Camera::default();
+        instant.frame_bounds_instant(big.0, big.1, 1.5);
+        cam.frame_bounds_zoom_out_animated(big.0, big.1, 1.5, 0.2);
+        for _ in 0..60 {
+            cam.tick_transition(0.016);
+        }
+        assert!((cam.distance - instant.distance).abs() < 1e-2);
     }
 
     fn test_viewport() -> Rect {

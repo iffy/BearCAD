@@ -2436,34 +2436,25 @@ impl<'a> SceneMesh<'a> {
                 // quantized centroid+normal matches the stored key, then fill + stroke it in the
                 // selection color, depth-test-disabled like the edge/vertex marks above.
                 SceneElement::BodyFace { body, centroid, normal } => {
-                    if let Some(solid) = crate::extrude::body_solid_mesh(doc, body) {
-                        let q = crate::hierarchy::quantize_body_point;
-                        let group = solid_mesh_coplanar_faces(&solid).into_iter().find(|tris| {
-                            let count = (tris.len() * 3).max(1) as f32;
-                            let c = tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
-                            let n = (tris[0][1] - tris[0][0])
-                                .cross(tris[0][2] - tris[0][0])
-                                .normalize_or_zero();
-                            q(c) == centroid && q(n) == normal
-                        });
-                        if let Some(tris) = group {
-                            let restore = self.index_layer;
-                            self.set_index_layer(MeshIndexLayer::Wireframe);
-                            let eye = cam.eye();
-                            let n = (tris[0][1] - tris[0][0])
-                                .cross(tris[0][2] - tris[0][0])
-                                .normalize_or_zero();
-                            let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
-                            let lift =
-                                |p: Vec3| offset_toward_camera(p, n, eye, HOVER_FILL_DEPTH_BIAS);
-                            for tri in &tris {
-                                self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
-                            }
-                            for (a, b) in crate::construction::coplanar_face_boundary(&tris) {
-                                self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
-                            }
-                            self.set_index_layer(restore);
+                    if let Some(tris) =
+                        crate::extrude::body_face_triangles(doc, body, centroid, normal)
+                    {
+                        let restore = self.index_layer;
+                        self.set_index_layer(MeshIndexLayer::Wireframe);
+                        let eye = cam.eye();
+                        let n = (tris[0][1] - tris[0][0])
+                            .cross(tris[0][2] - tris[0][0])
+                            .normalize_or_zero();
+                        let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
+                        let lift =
+                            |p: Vec3| offset_toward_camera(p, n, eye, HOVER_FILL_DEPTH_BIAS);
+                        for tri in &tris {
+                            self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
                         }
+                        for (a, b) in crate::construction::coplanar_face_boundary(&tris) {
+                            self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
+                        }
+                        self.set_index_layer(restore);
                     }
                 }
                 // A selected face edge (#199): highlight the edge segment so selecting it gives
@@ -3042,34 +3033,24 @@ impl<'a> SceneMesh<'a> {
             // A hovered body face (#555): re-find the coplanar group by its quantized key and
             // reuse the pick-target face highlight (fill + boundary stroke).
             SceneElement::BodyFace { body, centroid, normal } => {
-                if let Some(solid) = crate::extrude::body_solid_mesh(doc, body) {
-                    let q = crate::hierarchy::quantize_body_point;
-                    let group = solid_mesh_coplanar_faces(&solid).into_iter().find(|tris| {
-                        let count = (tris.len() * 3).max(1) as f32;
-                        let c = tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
-                        let n = (tris[0][1] - tris[0][0])
-                            .cross(tris[0][2] - tris[0][0])
-                            .normalize_or_zero();
-                        q(c) == centroid && q(n) == normal
-                    });
-                    if let Some(tris) = group {
-                        let n = (tris[0][1] - tris[0][0])
-                            .cross(tris[0][2] - tris[0][0])
-                            .normalize_or_zero();
-                        self.push_pick_target_highlight(
-                            doc,
-                            &PickTargetKind::BodyFace {
-                                body,
-                                triangles: tris,
-                                normal: n,
-                            },
-                            color,
-                            cam,
-                            viewport,
-                            view_proj,
-                            &project,
-                        );
-                    }
+                if let Some(tris) = crate::extrude::body_face_triangles(doc, body, centroid, normal)
+                {
+                    let n = (tris[0][1] - tris[0][0])
+                        .cross(tris[0][2] - tris[0][0])
+                        .normalize_or_zero();
+                    self.push_pick_target_highlight(
+                        doc,
+                        &PickTargetKind::BodyFace {
+                            body,
+                            triangles: tris,
+                            normal: n,
+                        },
+                        color,
+                        cam,
+                        viewport,
+                        view_proj,
+                        &project,
+                    );
                 }
             }
             // A hovered sketch text (#307): trace its glyph outlines in the hover color, so

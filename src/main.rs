@@ -1893,6 +1893,10 @@ struct App {
     /// that appears via a commit (#624) — e.g. a 20 m extrusion confirmed from the
     /// context pane — not just live previews.
     auto_zoom_doc_extent: Option<f32>,
+    /// Fingerprint of the last-seen scene selection, so auto-zoom's selection watch
+    /// fires once per selection change: picking something that pokes off-screen (e.g.
+    /// a face half in view) glides the camera out to take the whole thing in.
+    auto_zoom_selection: Option<u64>,
     /// The last `inputmode` applied to eframe's hidden text agent (web).
     #[cfg(target_arch = "wasm32")]
     agent_inputmode_none: Option<bool>,
@@ -2012,6 +2016,9 @@ impl App {
             return;
         }
         let Some(viewport) = self.last_viewport else { return };
+        if self.tick_auto_zoom_selection(viewport) {
+            return;
+        }
         let Some((min, max)) = self.auto_zoom_live_bounds() else {
             self.auto_zoom_last_extent = None;
             self.tick_auto_zoom_committed(viewport);
@@ -2038,6 +2045,35 @@ impl App {
                 .cam
                 .frame_bounds_animated(min, max, aspect, 0.22);
         }
+    }
+
+    /// Selection auto-zoom: the moment the selection changes to something that pokes
+    /// off-screen — e.g. a face picked while half of it sits outside the view — the
+    /// camera glides out to take the whole selection in. Framing is **zoom-out only**
+    /// ([`camera::Camera::frame_bounds_zoom_out_animated`]), so picking a small fully
+    /// framable element pans over without diving in, and a fully visible selection does
+    /// nothing at all. Returns whether a glide was started.
+    fn tick_auto_zoom_selection(&mut self, viewport: egui::Rect) -> bool {
+        let fingerprint = scene_selection_fingerprint(&self.state.scene_selection);
+        let changed = self.auto_zoom_selection != fingerprint;
+        self.auto_zoom_selection = fingerprint;
+        if !changed || fingerprint.is_none() {
+            return false;
+        }
+        let Some((min, max)) =
+            extrude::selection_world_bounds(&self.state.doc, &self.state.scene_selection)
+        else {
+            return false;
+        };
+        let (offscreen, _) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
+        if !offscreen {
+            return false;
+        }
+        let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
+        self.state
+            .cam
+            .frame_bounds_zoom_out_animated(min, max, aspect, 0.22);
+        true
     }
 
     /// Committed-geometry auto-zoom (#624): with no live preview in progress, watch the
@@ -2701,6 +2737,7 @@ impl App {
             debug_focus_requested: false,
             auto_zoom_last_extent: None,
             auto_zoom_doc_extent: None,
+            auto_zoom_selection: None,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
             gpu_viewport: gpu_viewport::install(cc),
@@ -11451,6 +11488,21 @@ fn auto_zoom_should_frame(
     deliberately_sized: bool,
 ) -> bool {
     (offscreen && grew) || (too_small && shrank && deliberately_sized)
+}
+
+/// Order-independent fingerprint of the scene selection set, so auto-zoom's selection
+/// watch fires exactly once per selection change. `None` for an empty selection —
+/// clearing never frames. XOR-folded per-element hashes, since `SceneSelection` iterates
+/// its `HashSet` in arbitrary order.
+fn scene_selection_fingerprint(selection: &selection::SceneSelection) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut combined = None;
+    for element in selection.iter() {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        element.hash(&mut hasher);
+        combined = Some(combined.unwrap_or(0u64) ^ hasher.finish());
+    }
+    combined
 }
 
 /// How the live bounds sit in the current view: (pokes off-screen, occupies < ⅓ of it).
@@ -21658,6 +21710,30 @@ mod tests {
         let (_, too_small) =
             auto_zoom_screen_state(&cam, viewport, Vec3::splat(-2.0), Vec3::splat(2.0));
         assert!(too_small, "a sliver underfills the view");
+    }
+
+    /// Auto-zoom's selection watch keys off an order-independent fingerprint of the
+    /// selection set: same set → same value regardless of iteration order, a changed
+    /// set → a different value, empty → `None` (clearing never frames).
+    #[test]
+    fn scene_selection_fingerprint_is_set_keyed() {
+        use hierarchy::SceneElement;
+        let mut a = selection::SceneSelection::default();
+        assert_eq!(scene_selection_fingerprint(&a), None);
+        a.insert(SceneElement::Body(0));
+        a.insert(SceneElement::Body(1));
+        let mut b = selection::SceneSelection::default();
+        b.insert(SceneElement::Body(1));
+        b.insert(SceneElement::Body(0));
+        assert_eq!(
+            scene_selection_fingerprint(&a),
+            scene_selection_fingerprint(&b)
+        );
+        b.insert(SceneElement::Body(2));
+        assert_ne!(
+            scene_selection_fingerprint(&a),
+            scene_selection_fingerprint(&b)
+        );
     }
 
     /// #463: auto-zoom only zooms out on actual growth, only zooms in on actual
