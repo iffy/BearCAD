@@ -728,6 +728,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     quantized world position) instead of being re-found by matching. The generic
     corner/edge/face hover stands down entirely while this picker is armed (#744) — only the
     candidates are pickable, and they mark and glow on their own (`MovePickHover::EndB`).
+    The **Selection Exploder** follows suit (#746/#747): with End point B armed its fan
+    offers exactly the sphere candidates — each loupe a blue dot — never faces, edges, or
+    corners the picker can't take; and a loupe whose content is bare point dots skips the
+    faint grey orientation mark other loupes carry.
 
   A Snap move with either A point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions

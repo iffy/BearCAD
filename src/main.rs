@@ -7012,6 +7012,40 @@ impl App {
         }
     }
 
+    /// The end-point-B candidate spots while that picker is armed (#670/#745): every place
+    /// a stationary body's feature edge crosses the constraint sphere, plus the mid-air
+    /// spots where edges through end point A, extended, leave it — the latter each paired
+    /// with a dashed pivot guide. `None` unless the Move tool has End point B focused.
+    fn move_end_b_candidates(&self) -> Option<(Vec<(usize, Vec3)>, Vec<(Vec3, Vec3)>)> {
+        let armed = self.state.tool == Tool::Move
+            && self.state.sketch_session.is_none()
+            && self.move_focus() == MoveFocus::EndPointB;
+        let cm = armed.then(|| self.state.creating_move.as_ref()).flatten()?;
+        let centre = extrude::move_point_world(&self.state.doc, &cm.end_point_a?)?;
+        let radius = extrude::snap_rotation_radius(
+            &self.state.doc,
+            cm.start_point_a.as_ref(),
+            cm.start_point_b.as_ref(),
+        )?;
+        let mut found =
+            extrude::snap_rotation_candidates(&self.state.doc, &cm.targets, centre, radius);
+        // Mid-air spots along edges through the pivot (#745), skipping any an on-edge
+        // crossing already offers; each gets a dashed guide from the pivot so the
+        // reachable direction reads in space.
+        let axis: Vec<(usize, Vec3)> = extrude::snap_rotation_axis_candidates(
+            &self.state.doc,
+            &cm.targets,
+            centre,
+            radius,
+        )
+        .into_iter()
+        .filter(|(_, p)| !found.iter().any(|(_, q)| (*q - *p).length() < 1e-3))
+        .collect();
+        let guides: Vec<(Vec3, Vec3)> = axis.iter().map(|(_, p)| (centre, *p)).collect();
+        found.extend(axis);
+        Some((found, guides))
+    }
+
     /// How a picked Move point reads in its element picker (#649/#650): the body's name plus
     /// which feature of it was taken.
     fn move_point_label(&self, point: &model::MovePointRef) -> String {
@@ -16952,6 +16986,25 @@ impl App {
         // on faces, so it must not fan out a corner's edges/vertices it could never use.
         let tool = self.state.tool;
         candidates.retain(|c| exploder_tool_accepts(tool, &c.kind));
+        // End point B takes only its sphere candidates (#747): the fan offers exactly the
+        // blue spots — never faces, edges, or corners that picker can't use.
+        if let Some((spots, _)) = self.move_end_b_candidates() {
+            candidates = spots
+                .into_iter()
+                .filter_map(|(bi, p)| {
+                    let sp = project(p)?;
+                    let d = (sp - pp).length();
+                    (d <= exploder::hitbox_radius()).then_some(construction::CrowdCandidate {
+                        kind: construction::PickTargetKind::BodyVertex {
+                            body: bi,
+                            position: p,
+                        },
+                        anchor: p,
+                        dist_px: d,
+                    })
+                })
+                .collect();
+        }
         if space {
             // Flatten the crowd into leaves, then cluster them into a ≤ MAX_LOUPES grouping tree by
             // screen proximity (#559). Anchors that fail to project fall back to the origin.
@@ -17097,8 +17150,19 @@ impl App {
                     &member.target, member.anchor, highlight, 2.4, true,
                 );
             }
-            // A faint centre mark = the cursor's hitbox centre, for orientation.
-            painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+            // A faint centre mark = the cursor's hitbox centre, for orientation. A loupe of
+            // bare point dots needs no orienting (#746) — the dot is the whole content.
+            let dots_only = !it.leaves.is_empty()
+                && it.leaves.iter().all(|&li| {
+                    matches!(
+                        ex.items[li].target,
+                        construction::PickTargetKind::BodyVertex { .. }
+                            | construction::PickTargetKind::Point(_)
+                    )
+                });
+            if !dots_only {
+                painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+            }
             // Leader line back to the real thing — only for the hovered LEAF loupe, grey, no dot.
             // It stops at the loupe's **edge**, not its centre (#572), so it reads as pointing at
             // the loupe rather than piercing it.
@@ -19355,44 +19419,7 @@ impl App {
         // constraint sphere a body edge crosses is offered in blue, and the one under the
         // cursor reads yellow — the pick a click would take.
         let (move_b_candidates, move_b_hover, move_b_guides) = {
-            let armed = self.state.tool == Tool::Move
-                && self.state.sketch_session.is_none()
-                && self.move_focus() == MoveFocus::EndPointB;
-            let (found, guides) = armed
-                .then(|| self.state.creating_move.as_ref())
-                .flatten()
-                .and_then(|cm| {
-                    let centre =
-                        extrude::move_point_world(&self.state.doc, &cm.end_point_a?)?;
-                    let radius = extrude::snap_rotation_radius(
-                        &self.state.doc,
-                        cm.start_point_a.as_ref(),
-                        cm.start_point_b.as_ref(),
-                    )?;
-                    let mut found = extrude::snap_rotation_candidates(
-                        &self.state.doc,
-                        &cm.targets,
-                        centre,
-                        radius,
-                    );
-                    // Mid-air spots along edges through the pivot (#745), skipping any an
-                    // on-edge crossing already offers; each gets a dashed guide from the
-                    // pivot so the reachable direction reads in space.
-                    let axis: Vec<(usize, Vec3)> = extrude::snap_rotation_axis_candidates(
-                        &self.state.doc,
-                        &cm.targets,
-                        centre,
-                        radius,
-                    )
-                    .into_iter()
-                    .filter(|(_, p)| !found.iter().any(|(_, q)| (*q - *p).length() < 1e-3))
-                    .collect();
-                    let guides: Vec<(Vec3, Vec3)> =
-                        axis.iter().map(|(_, p)| (centre, *p)).collect();
-                    found.extend(axis);
-                    Some((found, guides))
-                })
-                .unwrap_or_default();
+            let (found, guides) = self.move_end_b_candidates().unwrap_or_default();
             // The nearest candidate under the cursor, within the usual point pick radius.
             let hovered = pointer_screen.and_then(|pp| {
                 found
