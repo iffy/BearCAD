@@ -839,6 +839,46 @@ pub fn snap_rotation_candidates(
     out
 }
 
+/// Reachable landing spots in **mid-air** (#745): every stationary body's feature edge
+/// whose line passes through end point A (the sphere's centre), extended straight out to
+/// where it crosses the constraint sphere — so start point B can land along an edge's
+/// direction even beyond the edge's own extent. The viewport draws a dashed guide from
+/// the pivot to each of these.
+pub fn snap_rotation_axis_candidates(
+    doc: &Document,
+    moving: &[usize],
+    centre: Vec3,
+    radius: f32,
+) -> Vec<(usize, Vec3)> {
+    let mut out: Vec<(usize, Vec3)> = Vec::new();
+    if !(radius.is_finite() && radius > 1e-4) {
+        return out;
+    }
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted || body.shadow || moving.contains(&bi) {
+            continue;
+        }
+        let Some(solid) = body_solid_mesh(doc, bi) else { continue };
+        for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(&solid) {
+            let dir = (b - a).normalize_or_zero();
+            if dir.length_squared() < 0.5 {
+                continue;
+            }
+            // The edge's line must pass through the pivot (within the pick quantisation).
+            let off = a - centre;
+            if (off - dir * off.dot(dir)).length() > SNAP_ROTATION_TOLERANCE_MM {
+                continue;
+            }
+            for p in [centre + dir * radius, centre - dir * radius] {
+                if !out.iter().any(|(_, q)| (*q - p).length() < 1e-3) {
+                    out.push((bi, p));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The rotation the optional B pair asks for (#669): after the A translation has landed start
 /// point A on end point A, turn the bodies **about end point A** so that the moved start point
 /// B points at end point B.
@@ -4988,6 +5028,46 @@ mod tests {
         assert!(snap_rotation_candidates(&doc, &[], Vec3::new(0.0, 0.0, 100.0), 5.0).is_empty());
         // A degenerate radius offers nothing rather than dividing by zero.
         assert!(snap_rotation_candidates(&doc, &[], Vec3::ZERO, 0.0).is_empty());
+    }
+
+    /// #745: edges whose line passes through end point A extend straight out to the
+    /// sphere, offering mid-air landing spots along the edge's direction — even with a
+    /// radius larger than the edge itself. Edges that miss the pivot offer nothing.
+    #[test]
+    fn snap_rotation_axis_candidates_extend_edges_through_the_pivot() {
+        let mut doc = Document::default();
+        // Two edges through the origin (along X and along Y) and one that misses it.
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                Vec3::new(-10.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 10.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        // Radius 40 dwarfs every edge: nothing crosses the sphere on-edge, but the X
+        // edge's line passes through the origin and lands spots at ±40. The triangle's
+        // other two edges miss the origin, so X is the only qualifying direction.
+        let found = snap_rotation_axis_candidates(&doc, &[], Vec3::ZERO, 40.0);
+        assert_eq!(found.len(), 2, "one qualifying edge line, two ends: {found:?}");
+        assert!(
+            found.iter().any(|(_, p)| (*p - Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3)
+                && found.iter().any(|(_, p)| (*p - Vec3::new(-40.0, 0.0, 0.0)).length() < 1e-3),
+            "expected mid-air spots at ±40 along X, got {found:?}"
+        );
+        for (_, p) in &found {
+            assert!((p.length() - 40.0).abs() < 1e-3, "{p:?} is off the sphere");
+        }
+        // Moving bodies and degenerate radii offer nothing.
+        assert!(snap_rotation_axis_candidates(&doc, &[0], Vec3::ZERO, 40.0).is_empty());
+        assert!(snap_rotation_axis_candidates(&doc, &[], Vec3::ZERO, 0.0).is_empty());
     }
 
     /// #648/#650: a Snap move only overrides the X/Y/Z expressions once **both** points are

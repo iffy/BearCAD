@@ -11738,8 +11738,11 @@ fn element_in_sketch(
 enum MovePickHover {
     /// The Bodies picker: whole bodies, as for every other body-set tool.
     Bodies,
-    /// A source/target point: body corners and edges.
+    /// A source/target point: body corners, edge midpoints, and face middles.
     Point,
+    /// End point B (#744): only the constraint-sphere candidates are pickable, and they
+    /// draw their own blue/gold marks — the generic point/edge hover stands down.
+    EndB,
 }
 
 fn resolve_viewport_hover_highlight(
@@ -11973,6 +11976,10 @@ fn resolve_viewport_hover_highlight(
                 },
             ))
         }
+        // End point B (#744): the constraint-sphere candidates draw and hover-glow on
+        // their own; the generic corner/edge/face hover would light up unpickable
+        // geometry, so it stands down entirely.
+        Tool::Move if move_pick == MovePickHover::EndB && sketch_session.is_none() => None,
         // Repeat tool with the **axis** picker focused (#643): the click is for the axis, so
         // hover the straight reference under the cursor — a sketch line, a body's feature
         // edge, or an origin axis — instead of the whole body.
@@ -12067,7 +12074,7 @@ fn build_viewport_scene_input<'a>(
     // Marks with a colour of their own (#660): the Move tool's green start point A and red
     // end point A, plus the connector between them (#668).
     colored_pick_highlights: Vec<(construction::PickTargetKind, egui::Color32)>,
-    colored_segments: Vec<(Vec3, Vec3, egui::Color32)>,
+    colored_segments: Vec<(Vec3, Vec3, egui::Color32, bool)>,
     parameter_highlight_elements: Vec<SceneElement>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
@@ -19110,10 +19117,13 @@ impl App {
             sketch_session,
             match self.move_focus() {
                 MoveFocus::Bodies => MovePickHover::Bodies,
-                MoveFocus::StartPointA
-                | MoveFocus::EndPointA
-                | MoveFocus::StartPointB
-                | MoveFocus::EndPointB => MovePickHover::Point,
+                MoveFocus::StartPointA | MoveFocus::EndPointA | MoveFocus::StartPointB => {
+                    MovePickHover::Point
+                }
+                // End point B takes only the sphere candidates (#744), which mark and
+                // hover-glow on their own — generic corner/edge hover would light up
+                // unpickable geometry.
+                MoveFocus::EndPointB => MovePickHover::EndB,
             },
             repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
             self.state.creating_plane.is_some(),
@@ -19343,11 +19353,11 @@ impl App {
         // End-point-B candidates (#670): while that picker is armed, every spot on the
         // constraint sphere a body edge crosses is offered in blue, and the one under the
         // cursor reads yellow — the pick a click would take.
-        let (move_b_candidates, move_b_hover) = {
+        let (move_b_candidates, move_b_hover, move_b_guides) = {
             let armed = self.state.tool == Tool::Move
                 && self.state.sketch_session.is_none()
                 && self.move_focus() == MoveFocus::EndPointB;
-            let found = armed
+            let (found, guides) = armed
                 .then(|| self.state.creating_move.as_ref())
                 .flatten()
                 .and_then(|cm| {
@@ -19358,12 +19368,28 @@ impl App {
                         cm.start_point_a.as_ref(),
                         cm.start_point_b.as_ref(),
                     )?;
-                    Some(extrude::snap_rotation_candidates(
+                    let mut found = extrude::snap_rotation_candidates(
                         &self.state.doc,
                         &cm.targets,
                         centre,
                         radius,
-                    ))
+                    );
+                    // Mid-air spots along edges through the pivot (#745), skipping any an
+                    // on-edge crossing already offers; each gets a dashed guide from the
+                    // pivot so the reachable direction reads in space.
+                    let axis: Vec<(usize, Vec3)> = extrude::snap_rotation_axis_candidates(
+                        &self.state.doc,
+                        &cm.targets,
+                        centre,
+                        radius,
+                    )
+                    .into_iter()
+                    .filter(|(_, p)| !found.iter().any(|(_, q)| (*q - *p).length() < 1e-3))
+                    .collect();
+                    let guides: Vec<(Vec3, Vec3)> =
+                        axis.iter().map(|(_, p)| (centre, *p)).collect();
+                    found.extend(axis);
+                    Some((found, guides))
                 })
                 .unwrap_or_default();
             // The nearest candidate under the cursor, within the usual point pick radius.
@@ -19375,7 +19401,7 @@ impl App {
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(hit, _)| hit)
             });
-            (found, hovered)
+            (found, hovered, guides)
         };
         self.move_b_hover = move_b_hover;
         // Hovering a candidate previews the move you'd get by clicking it (#670): the ghost is
@@ -19409,14 +19435,29 @@ impl App {
 
         // The start-A → end-A connector (#668): the translation drawn as a vector, in
         // yellow (#740) so the line reads apart from both endpoint marks.
-        let move_connector: Vec<(Vec3, Vec3, egui::Color32)> = self
+        let mut move_connector: Vec<(Vec3, Vec3, egui::Color32, bool)> = self
             .state
             .creating_move
             .as_ref()
             .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
             .and_then(|cm| move_snap_connector(&self.state.doc, cm))
-            .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR)])
+            .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR, false)])
             .unwrap_or_default();
+        // Dashed guides from the pivot to each mid-air end-B spot (#745), in candidate
+        // blue — gold when its landing spot is the one under the cursor.
+        for (a, b) in &move_b_guides {
+            let hovered = move_b_hover.is_some_and(|(_, h)| (h - *b).length() < 1e-4);
+            move_connector.push((
+                *a,
+                *b,
+                if hovered {
+                    theme::MOVE_CANDIDATE_HOVER
+                } else {
+                    theme::MOVE_CANDIDATE
+                },
+                true,
+            ));
+        }
         // Move tool (#660): mark the picked points — source green ("go"), target red ("stop"),
         // and the rotation point in the pivot's own colour when it's been set apart from them.
         let move_point_marks: Vec<(construction::PickTargetKind, egui::Color32)> = self

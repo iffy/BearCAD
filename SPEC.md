@@ -712,10 +712,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     The pair stays optional — committing without it translates only — but the focus chain
     arms Start point B as soon as the A pair completes (#741). While that picker is armed, **every spot a stationary body's feature edge crosses
     the sphere** is offered as a **blue** candidate mark (`snap_rotation_candidates` — the roots
-    of the edge/sphere quadratic), and the one under the cursor reads **gold**; hovering it
-    previews the move it would produce, and clicking takes it. A candidate sits mid-edge rather
-    than on a corner, so it's kept as `MovePointRef::OnEdge` (its own quantized world position)
-    instead of being re-found by matching.
+    of the edge/sphere quadratic), and **edges whose line passes through end point A extend
+    straight out to the sphere** (#745, `snap_rotation_axis_candidates`): mid-air landing
+    spots along those directions, each with a **dashed blue guide** drawn from the pivot
+    (gold when its spot is hovered). The candidate under the cursor reads **gold**; hovering
+    it previews the move it would produce, and clicking takes it. Candidates sit mid-edge or
+    in the air rather than on a corner, so they're kept as `MovePointRef::OnEdge` (their own
+    quantized world position) instead of being re-found by matching. The generic
+    corner/edge/face hover stands down entirely while this picker is armed (#744) — only the
+    candidates are pickable, and they mark and glow on their own (`MovePickHover::EndB`).
 
   A Snap move with either A point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions

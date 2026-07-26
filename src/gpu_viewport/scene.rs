@@ -567,7 +567,7 @@ pub struct ViewportSceneInput<'a> {
     pub colored_pick_highlights: Vec<(crate::construction::PickTargetKind, Color32)>,
     /// World-space segments to draw in a colour of their own (#668): the Move tool's connector
     /// from start point A to end point A, so the translation reads as a vector.
-    pub colored_segments: Vec<(Vec3, Vec3, Color32)>,
+    pub colored_segments: Vec<(Vec3, Vec3, Color32, bool)>,
     /// Elements using the parameter hovered/focused in the Parameters pane (#620) — its
     /// dimensions, driven geometry, and expression consumers — each drawn in the green
     /// [`PARAMETER_HIGHLIGHT`] color.
@@ -1347,9 +1347,14 @@ impl ViewportScene {
                 &vp,
             );
         }
-        // Plain coloured segments (#668): the Move tool's start-A → end-A connector.
-        for &(a, b, color) in &input.colored_segments {
-            mesh.push_line_segment(a, b, color, 2.0, input.cam, input.viewport, &vp);
+        // Coloured segments (#668): the Move tool's start-A → end-A connector, plus the
+        // dashed end-B guides (#745).
+        for &(a, b, color, dashed) in &input.colored_segments {
+            if dashed {
+                mesh.push_dashed_line_segment(a, b, color, 2.0, input.cam, input.viewport, &vp);
+            } else {
+                mesh.push_line_segment(a, b, color, 2.0, input.cam, input.viewport, &vp);
+            }
         }
         // In-sketch mirror reflection preview (#542): solid preview-coloured lines like the
         // repeat/extrude/revolve previews, dashed only when the reflected source is construction.

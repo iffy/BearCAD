@@ -27,8 +27,10 @@ Move slides whole bodies to a new place, producing moved copies.
      and **End point B** on something that isn't. The bodies then rotate about end point A
      until start B lands on end B. End point B has to be somewhere start B can actually reach
      — the same distance from end point A as start B is from start point A — so once you're
-     picking it, every reachable spot on the surrounding edges is marked in **blue**. The one
-     under the cursor turns **gold** and the preview shows the move you'd get.
+     picking it, every reachable spot is marked in **blue**: where surrounding edges cross
+     that distance, and mid-air spots straight out along any edge running through end point
+     A, each with a dashed guide line from it. The one under the cursor turns **gold** and
+     the preview shows the move you'd get.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
