@@ -1703,6 +1703,14 @@ pub enum MovePointRef {
         body: usize,
         p: [i32; 3],
     },
+    /// The middle of one of a body's planar faces (#738), keyed by quantized
+    /// centroid+normal exactly like [`crate::hierarchy::SceneElement::BodyFace`] — resolved
+    /// against the live mesh's coplanar-triangle groups, so it follows the geometry.
+    FaceCenter {
+        body: usize,
+        centroid: [i32; 3],
+        normal: [i32; 3],
+    },
 }
 
 impl MoveOperation {
@@ -1732,7 +1740,8 @@ impl MovePointRef {
         match self {
             MovePointRef::Vertex { body, .. }
             | MovePointRef::EdgeMidpoint { body, .. }
-            | MovePointRef::OnEdge { body, .. } => *body,
+            | MovePointRef::OnEdge { body, .. }
+            | MovePointRef::FaceCenter { body, .. } => *body,
         }
     }
 }

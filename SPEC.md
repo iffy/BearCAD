@@ -666,16 +666,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Translate mode (#648, `model::MoveTranslateMode`):** a pane dropdown picks **Snap** (the
   default) or **Free**. Free is the classic behaviour — typed/dragged X/Y/Z. Snap instead
   derives the offset from two picked points:
-  - A **Start point A** picker (#649/#668) takes a corner, or the midpoint of a feature edge,
-    on one of the **moving** bodies (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/
-    `BodyEdge` and resolved against the live mesh). While one is set the moving bodies render
+  - A **Start point A** picker (#649/#668) takes a corner, the midpoint of a feature edge,
+    or the middle of a planar face (#738) on one of the **moving** bodies
+    (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/`BodyEdge`/`BodyFace` and
+    resolved against the live mesh — a face centre re-finds its coplanar group by quantized
+    centroid+normal, `MovePointRef::FaceCenter`). While one is set the moving bodies render
     **translucent** (they join `faded_bodies`) so the gizmos and points stay visible through
     the solid.
   - An **End point A** picker (#650/#668) takes the same kinds of point on a body that
     **isn't** moving; the translation is then `end - start`, and the X/Y/Z fields and drag
-    arrows are hidden. With both picked a **connector** is drawn between them
-    (`move_snap_connector` → `ViewportSceneInput::colored_segments`), so the translation reads
-    as a vector.
+    arrows are hidden. With both picked a **yellow connector** (#740, `MOVE_CONNECTOR`) is
+    drawn between them (`move_snap_connector` → `ViewportSceneInput::colored_segments`), so
+    the translation reads as a vector apart from its green/red endpoint marks.
 
   **Live preview and point marks (#660):** an in-progress move **ghosts** each picked body at
   its destination through the same translucent preview-solid path the Mirror and Repeat
@@ -692,9 +694,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   at a time — it's the one the pane rings and the one the viewport hover-highlights, so what
   lights up is always what a click takes (`MoveFocus`, `move_focus_for`). The tool **advances
   on its own**: Bodies until one is picked, then Source point, then the Target point when
-  snapping. Clicking a picker overrides the chain until that picker is satisfied
-  (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover shows body
-  corners and edges instead of whole bodies.
+  snapping — and with the A pair set the chain walks straight into **Start point B** (#741),
+  the rotation opt-in being the likeliest next click (Bodies stays a hand-focus away).
+  Clicking a picker overrides the chain until that picker is satisfied
+  (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover marks
+  the exact candidate **point** (#739) — the corner, the edge's midpoint, or the face's
+  middle (#738) — never the whole edge or face it sits on.
 
   - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
     B** on stationary geometry, adds the **rotation**: after the A translation lands start A on
@@ -704,8 +709,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (`snap_rotation_radius`) — a turn about end A can only swing start B around that sphere, so
     an off-sphere pick is refused (`snap_rotation_reachable`, ±0.05 mm for the quantisation).
     Re-picking start B resizes the sphere and clears end B; clearing start B clears end B too.
-    The pair is opt-in, so the focus chain only walks into End point B once Start point B is
-    picked. While that picker is armed, **every spot a stationary body's feature edge crosses
+    The pair stays optional — committing without it translates only — but the focus chain
+    arms Start point B as soon as the A pair completes (#741). While that picker is armed, **every spot a stationary body's feature edge crosses
     the sphere** is offered as a **blue** candidate mark (`snap_rotation_candidates` — the roots
     of the edge/sphere quadratic), and the one under the cursor reads **gold**; hovering it
     previews the move it would produce, and clicking takes it. A candidate sits mid-edge rather

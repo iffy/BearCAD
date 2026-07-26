@@ -782,6 +782,17 @@ fn parse_move_point(
     if let Some(v) = t.get::<Option<Vec<f32>>>("on_edge")? {
         return Ok(Some(crate::model::MovePointRef::OnEdge { body, p: mm(v)? }));
     }
+    // A face centre (#738): the face's centroid plus its normal — the selection key.
+    if let Some(v) = t.get::<Option<Vec<f32>>>("face_center")? {
+        let n: Vec<f32> = t.get("normal").map_err(|_| {
+            mlua::Error::external(format!("move `{what}.face_center` needs a `normal`"))
+        })?;
+        return Ok(Some(crate::model::MovePointRef::FaceCenter {
+            body,
+            centroid: mm(v)?,
+            normal: mm(n)?,
+        }));
+    }
     let ends: Vec<Vec<f32>> = t.get("edge").map_err(|_| {
         mlua::Error::external(format!("move `{what}` needs a `vertex` or an `edge`"))
     })?;

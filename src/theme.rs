@@ -43,6 +43,9 @@ pub const MOVE_START_POINT: Color32 = Color32::from_rgb(90, 220, 130);
 pub const MOVE_END_POINT: Color32 = Color32::from_rgb(230, 80, 80);
 /// The reachable spots offered for end point B (#670): blue for a candidate, and the gold the
 /// rest of the app hovers with for the one under the cursor.
+/// The start-A → end-A connector line (#740): yellow, so the vector reads apart from both
+/// endpoint marks (green start, red end).
+pub const MOVE_CONNECTOR: Color32 = Color32::from_rgb(245, 220, 80);
 pub const MOVE_CANDIDATE: Color32 = Color32::from_rgb(110, 165, 245);
 pub const MOVE_CANDIDATE_HOVER: Color32 = Color32::from_rgb(255, 210, 90);
 /// Input-like control background (matches text inputs' `extreme_bg_color`).

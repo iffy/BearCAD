@@ -1152,6 +1152,18 @@ fn move_point_from_json(
     if let Some(v) = t.get("vertex").filter(|v| !v.is_null()) {
         return Ok(Some(crate::model::MovePointRef::Vertex { body, p: point(v)? }));
     }
+    // A face centre (#738): the face's centroid plus its normal — the selection key.
+    if let Some(v) = t.get("face_center").filter(|v| !v.is_null()) {
+        let n = t
+            .get("normal")
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| format!("move `{what}.face_center` needs a `normal`"))?;
+        return Ok(Some(crate::model::MovePointRef::FaceCenter {
+            body,
+            centroid: point(v)?,
+            normal: point(n)?,
+        }));
+    }
     let ends = t
         .get("edge")
         .and_then(Value::as_array)

@@ -2922,6 +2922,12 @@ pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
         crate::model::MovePointRef::OnEdge { body, p } => {
             format!("{{ body = {body}, on_edge = {} }}", mm_point_lua(*p))
         }
+        // A face centre (#738) spells its selection key: the face's centroid plus normal.
+        crate::model::MovePointRef::FaceCenter { body, centroid, normal } => format!(
+            "{{ body = {body}, face_center = {}, normal = {} }}",
+            mm_point_lua(*centroid),
+            mm_point_lua(*normal)
+        ),
     }
 }
 

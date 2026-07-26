@@ -717,6 +717,14 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
             doc.bodies.get(*body).filter(|b| !b.deleted)?;
             Some(crate::hierarchy::dequantize_body_point(*p))
         }
+        // A face centre (#738): re-find the coplanar group by its key; its live centre is
+        // the point. Uncached mesher for the same borrow reason as the vertex arm.
+        crate::model::MovePointRef::FaceCenter { body, centroid, normal } => {
+            doc.bodies.get(*body).filter(|b| !b.deleted)?;
+            let solid = body_solid_mesh_uncached_pub(doc, *body)?;
+            face_group_matching(&solid, *centroid, *normal)
+                .map(|tris| face_group_center(&tris))
+        }
     }
 }
 
@@ -2531,8 +2539,19 @@ pub fn body_face_triangles(
     normal: [i32; 3],
 ) -> Option<Vec<[Vec3; 3]>> {
     let solid = body_solid_mesh(doc, body)?;
+    face_group_matching(&solid, centroid, normal)
+}
+
+/// The coplanar-triangle group of `solid` whose quantized centroid+normal match the key —
+/// the matching half of [`body_face_triangles`], callable on an already-obtained mesh (so
+/// resolution inside the mesh cache's borrow can use the uncached mesher, #738).
+pub fn face_group_matching(
+    solid: &SolidMesh,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<Vec<[Vec3; 3]>> {
     let q = crate::hierarchy::quantize_body_point;
-    crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+    crate::gpu_viewport::solid_mesh_coplanar_faces(solid)
         .into_iter()
         .find(|tris| {
             let count = (tris.len() * 3).max(1) as f32;
@@ -2542,6 +2561,13 @@ pub fn body_face_triangles(
                 .normalize_or_zero();
             q(c) == centroid && q(n) == normal
         })
+}
+
+/// A face group's centre — the average of its triangle vertices, the same formula its
+/// quantized selection key stores (#555/#738).
+pub fn face_group_center(tris: &[[Vec3; 3]]) -> Vec3 {
+    let count = (tris.len() * 3).max(1) as f32;
+    tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count
 }
 
 /// World bounds of the current selection (#164):/// World bounds of the current selection (#164): union of every selected element's own

@@ -7022,14 +7022,15 @@ impl App {
             model::MovePointRef::Vertex { .. } => format!("Corner of {body}"),
             model::MovePointRef::EdgeMidpoint { .. } => format!("Edge midpoint of {body}"),
             model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
+            model::MovePointRef::FaceCenter { .. } => format!("Middle of a face of {body}"),
         }
     }
 
     /// Resolve a viewport click into a Move source/target point (#649/#650): a body **corner**
-    /// under the cursor wins, else the midpoint of the body **edge** under it. `moving` picks
-    /// which side of the fence the body must be on — the source point has to sit on a body
-    /// being moved, the target point on one that isn't, and `None` (the rotation point, #651)
-    /// takes either.
+    /// under the cursor wins, else the midpoint of the body **edge** under it, else the middle
+    /// of the planar **face** under it (#738). `moving` picks which side of the fence the body
+    /// must be on — the source point has to sit on a body being moved, the target point on one
+    /// that isn't, and `None` (the rotation point, #651) takes either.
     fn pick_move_point(
         &self,
         pp: egui::Pos2,
@@ -7054,15 +7055,31 @@ impl App {
                 });
             }
         }
-        // No ground point: only body corners and edges are Move points, never the ground.
-        let target = resolve_pick_target(pp, project, None, &self.state.doc, pick_occlusion)?;
-        let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind else {
+        // No ground point: only body corners, edges, and faces are Move points, never the
+        // ground.
+        if let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, pick_occlusion)
+        {
+            if let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind {
+                if allowed(body) {
+                    return Some(model::MovePointRef::EdgeMidpoint {
+                        body,
+                        a: hierarchy::quantize_body_point(a),
+                        b: hierarchy::quantize_body_point(b),
+                    });
+                }
+                return None;
+            }
+        }
+        // The middle of the planar face under the cursor (#738).
+        let kind = crate::face::pick_body_face(pp, project, &self.state.doc, self.state.cam.eye())
+            .filter(|kind| pick_occlusion.is_none_or(|occ| occ.pickable(&self.state.doc, kind)))?;
+        let construction::PickTargetKind::BodyFace { body, triangles, normal } = &kind else {
             return None;
         };
-        allowed(body).then_some(model::MovePointRef::EdgeMidpoint {
-            body,
-            a: hierarchy::quantize_body_point(a),
-            b: hierarchy::quantize_body_point(b),
+        allowed(*body).then(|| model::MovePointRef::FaceCenter {
+            body: *body,
+            centroid: hierarchy::quantize_body_point(extrude::face_group_center(triangles)),
+            normal: hierarchy::quantize_body_point(*normal),
         })
     }
 
@@ -11654,12 +11671,13 @@ fn move_focus_for(
     if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_a.is_none() {
         return MoveFocus::EndPointA;
     }
-    // The B pair is optional (#669), so the chain only walks into it once start B is picked —
-    // choosing start B is what opts into the rotation, and end B is then what's missing.
-    if cm.translate_mode == model::MoveTranslateMode::Snap
-        && cm.start_point_b.is_some()
-        && cm.end_point_b.is_none()
-    {
+    // With the A pair set, the chain walks straight into the optional B pair (#741):
+    // start B is what the next click most likely means — the Bodies picker stays a
+    // hand-focus away. End B then follows once start B opts into the rotation (#669).
+    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.start_point_b.is_none() {
+        return MoveFocus::StartPointB;
+    }
+    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_b.is_none() {
         return MoveFocus::EndPointB;
     }
     MoveFocus::Bodies
@@ -11925,16 +11943,35 @@ fn resolve_viewport_hover_highlight(
                 .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
         }
         // Move tool with a point picker focused (#659): the click is for a point, so hover
-        // the corners and edges it takes instead of the whole body.
+        // shows the exact candidate POINT (#739) — the corner, the edge's midpoint, or the
+        // face's middle (#738) — never the whole edge or face it sits on.
         Tool::Move if move_pick == MovePickHover::Point && sketch_session.is_none() => {
             let gp = cam.ground_point(pp, viewport, vp);
             // A corner outranks the edge under it, matching the click path.
             if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
                 return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
             }
-            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
-            matches!(target.kind, construction::PickTargetKind::BodyEdge { .. })
-                .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+            if let Some(target) = resolve_pick_target(pp, project, gp, doc, occlusion) {
+                if let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind {
+                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                        construction::PickTargetKind::BodyVertex {
+                            body,
+                            position: (a + b) * 0.5,
+                        },
+                    ));
+                }
+            }
+            let kind = crate::face::pick_body_face(pp, project, doc, cam.eye())
+                .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))?;
+            let construction::PickTargetKind::BodyFace { body, triangles, .. } = &kind else {
+                return None;
+            };
+            Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                construction::PickTargetKind::BodyVertex {
+                    body: *body,
+                    position: extrude::face_group_center(triangles),
+                },
+            ))
         }
         // Repeat tool with the **axis** picker focused (#643): the click is for the axis, so
         // hover the straight reference under the cursor — a sketch line, a body's feature
@@ -19370,15 +19407,15 @@ impl App {
             })
             .collect();
 
-        // The start-A → end-A connector (#668): the translation drawn as a vector, in the
-        // same green→red pair the two point marks use (the line takes the end colour).
+        // The start-A → end-A connector (#668): the translation drawn as a vector, in
+        // yellow (#740) so the line reads apart from both endpoint marks.
         let move_connector: Vec<(Vec3, Vec3, egui::Color32)> = self
             .state
             .creating_move
             .as_ref()
             .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
             .and_then(|cm| move_snap_connector(&self.state.doc, cm))
-            .map(|(a, b)| vec![(a, b, theme::MOVE_END_POINT)])
+            .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR)])
             .unwrap_or_default();
         // Move tool (#660): mark the picked points — source green ("go"), target red ("stop"),
         // and the rotation point in the pivot's own colour when it's been set apart from them.
@@ -23253,7 +23290,11 @@ mod tests {
         assert_eq!(focus(&cm), MoveFocus::EndPointA);
 
         cm.end_point_a = Some(point(1));
-        assert_eq!(focus(&cm), MoveFocus::Bodies, "the B pair is opt-in, so the chain rests");
+        assert_eq!(
+            focus(&cm),
+            MoveFocus::StartPointB,
+            "the A pair done, the chain walks into start B (#741)"
+        );
 
         // Picking start B opts into the rotation, and end B is then what's missing (#669).
         cm.start_point_b = Some(point(0));
@@ -23283,7 +23324,11 @@ mod tests {
         assert!(!move_focus_satisfied(&partial, MoveFocus::EndPointA), "still unset");
         partial.end_point_a = Some(point(1));
         assert!(move_focus_satisfied(&partial, MoveFocus::EndPointA));
-        assert_eq!(move_focus_for(Some(&partial), None), MoveFocus::Bodies);
+        assert_eq!(
+            move_focus_for(Some(&partial), None),
+            MoveFocus::StartPointB,
+            "the chain resumes at start B once the held picker is satisfied (#741)"
+        );
     }
 
     /// #659: with a Move point picker focused, the viewport hovers body corners and edges —
@@ -23348,15 +23393,19 @@ mod tests {
         );
         let edge_mid = project(glam::Vec3::new(0.0, -20.0, 0.0)).unwrap();
         let on_edge = hover(edge_mid, MovePickHover::Point);
-        assert!(
-            matches!(
-                on_edge,
-                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    crate::construction::PickTargetKind::BodyEdge { body: 0, .. }
-                ))
-            ),
-            "an edge hovers while picking a point, got {on_edge:?}"
-        );
+        // Hovering an edge highlights the candidate POINT — its midpoint — not the whole
+        // edge (#739).
+        match on_edge {
+            Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                crate::construction::PickTargetKind::BodyVertex { body: 0, position },
+            )) => {
+                assert!(
+                    (position - glam::Vec3::new(0.0, -20.0, 0.0)).length() < 1e-3,
+                    "the mark sits at the edge midpoint, got {position:?}"
+                );
+            }
+            other => panic!("an edge hovers as its midpoint mark, got {other:?}"),
+        }
         // Back on the Bodies picker, the whole body hovers again.
         let on_body = hover(edge_mid, MovePickHover::Bodies);
         assert!(

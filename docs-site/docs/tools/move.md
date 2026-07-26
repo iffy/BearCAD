@@ -20,7 +20,9 @@ Move slides whole bodies to a new place, producing moved copies.
 2. Choose how to **Translate**:
    - **Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
-     second. Either point can be a corner or the midpoint of an edge.
+     second. Either point can be a corner, the midpoint of an edge, or the middle of a flat
+     face; hovering marks the exact point a click would take, and a **yellow line** connects
+     the two once both are picked.
      To **turn** the bodies as well, pick a second pair: **Start point B** on a moving body
      and **End point B** on something that isn't. The bodies then rotate about end point A
      until start B lands on end B. End point B has to be somewhere start B can actually reach
@@ -31,8 +33,9 @@ Move slides whole bodies to a new place, producing moved copies.
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
 
-The tool moves you along as you go: pick a body and it's ready for the start point, pick that
-and it's ready for the end point. Click any picker to jump back to it.
+The tool moves you along as you go: pick a body and it's ready for the start point, then the
+end point, then straight on to **Start point B** in case you want the turn too. Click any
+picker to jump back to it.
 
 ## Help
 
@@ -63,8 +66,8 @@ bearcad.move_bodies{ bodies = {0},
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or
-edge you mean. `vertex` is a corner, `edge` takes an edge's midpoint, and `on_edge` is a
-position along one.
+edge you mean. `vertex` is a corner, `edge` takes an edge's midpoint, `on_edge` is a position
+along one, and `face_center = {x,y,z}, normal = {x,y,z}` is the middle of a flat face.
 
 ## Moving geometry inside a sketch
 
