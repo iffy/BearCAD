@@ -9,7 +9,8 @@ reference lines you can snap, dimension, and constrain against.
 
 - Click an outside **body edge** to project that edge; click a **face** or **corner** to
   project the whole body's feature edges.
-- Or select edges (or a body) with the Select tool and press **Y**.
+- Or select edges (or a body) with the Select tool before opening the sketch, then press
+  **Y** inside it.
 - Projected lines draw dashed in their own teal, and behave like construction geometry.
 
 Projections are **associative**: when the source body changes, the projected lines follow

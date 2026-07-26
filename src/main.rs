@@ -11677,6 +11677,44 @@ fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
     }
 }
 
+/// Whether a selection-family pick belongs to the open sketch (#742): while a sketch is
+/// being edited, Select and Constraint touch only that sketch's own geometry — its lines,
+/// circles, points, and text, the origin and its axes, and the sketched-on face's own
+/// edges and corners. Outside bodies and other sketches stay untouchable until the
+/// Project tool references them in.
+fn element_in_sketch(
+    doc: &model::Document,
+    sketch: model::SketchId,
+    element: &SceneElement,
+) -> bool {
+    let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
+    let circle_in = |ci: usize| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
+    let text_in = |ti: usize| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
+    let host_face = doc.sketch_face(sketch);
+    let constraint_line_in = |cl: &model::ConstraintLine| match cl {
+        model::ConstraintLine::Line(li) => line_in(*li),
+        model::ConstraintLine::FaceEdge { face, .. } => Some(face) == host_face.as_ref(),
+        model::ConstraintLine::OriginAxis(_) => true,
+    };
+    match element {
+        SceneElement::Line(li) => line_in(*li),
+        SceneElement::Circle(ci) => circle_in(*ci),
+        SceneElement::SketchText(ti) => text_in(*ti),
+        SceneElement::Point(point) => match point {
+            model::ConstraintPoint::LineEndpoint { line, .. } => line_in(*line),
+            model::ConstraintPoint::CircleCenter(ci) => circle_in(*ci),
+            model::ConstraintPoint::FaceVertex { face, .. } => Some(face) == host_face.as_ref(),
+            model::ConstraintPoint::TextAnchor { text, .. } => text_in(*text),
+            // Gated to the host plane at creation; nothing sketch-foreign resolves here.
+            model::ConstraintPoint::ImageCalibrationPoint { .. } => true,
+        },
+        SceneElement::FaceEdge(cl) => constraint_line_in(cl),
+        SceneElement::Origin => true,
+        SceneElement::Constraint(ci) => doc.constraints.get(*ci).is_some_and(|c| c.sketch == sketch),
+        _ => false,
+    }
+}
+
 /// What the Move tool's focused picker wants the viewport to hover-highlight (#659).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MovePickHover {
@@ -11815,15 +11853,25 @@ fn resolve_viewport_hover_highlight(
             let gp = cam.ground_point(pp, viewport, vp);
             // 3D body sub-elements (#144): a vertex, edge, or face of any body highlights under
             // the cursor, in that priority order (a corner beats an edge beats the face it's on).
-            if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
-                return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+            // Outside a sketch only (#742): an open sketch hovers just its own geometry.
+            if sketch_session.is_none() {
+                if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
+                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+                }
             }
             let t = resolve_pick_target(pp, project, gp, doc, occlusion);
             // A sketch vertex under the cursor wins over the origin; otherwise the origin, when
             // hovered within its pick radius, beats edges — matching click selection (#240).
             if let Some(t) = &t {
-                if matches!(t.kind, construction::PickTargetKind::Point(_)) {
-                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind.clone()));
+                if let construction::PickTargetKind::Point(point) = &t.kind {
+                    let in_sketch = sketch_session.is_none_or(|session| {
+                        element_in_sketch(doc, session.sketch, &SceneElement::Point(point.clone()))
+                    });
+                    if in_sketch {
+                        return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                            t.kind.clone(),
+                        ));
+                    }
                 }
             }
             if let Some(session) = sketch_session {
@@ -11856,11 +11904,21 @@ fn resolve_viewport_hover_highlight(
                 }
             }
             if let Some(t) = t {
-                if scene_element_from_pick(&t.kind).is_some()
-                    || matches!(t.kind, construction::PickTargetKind::BodyEdge { .. })
-                {
+                let allowed = match sketch_session {
+                    // In a sketch, only that sketch's own geometry glows (#742).
+                    Some(session) => scene_element_from_pick(&t.kind)
+                        .is_some_and(|e| element_in_sketch(doc, session.sketch, &e)),
+                    None => {
+                        scene_element_from_pick(&t.kind).is_some()
+                            || matches!(t.kind, construction::PickTargetKind::BodyEdge { .. })
+                    }
+                };
+                if allowed {
                     return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind));
                 }
+            }
+            if sketch_session.is_some() {
+                return None;
             }
             crate::face::pick_body_face(pp, project, doc, cam.eye())
                 .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
@@ -17929,13 +17987,21 @@ impl App {
                     // reaching here selects something else — clear the handle selection (#75).
                     self.selected_bezier_handle = None;
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    // While a sketch is open, selection clicks touch only that sketch's
+                    // own geometry (#742) — outside bodies and other sketches need the
+                    // Project tool to be referenced in first. (The sketched-on face's own
+                    // edges and corners still count as the sketch's.)
+                    let sketch_only = sketch_session.map(|session| session.sketch);
                     // Body vertices outrank edges/other targets, mirroring the hover
                     // priority in `resolve_viewport_hover_highlight` (#144/#156) — what the
                     // hover shows is what the click selects.
-                    let body_vertex =
+                    let body_vertex = if sketch_only.is_some() {
+                        None
+                    } else {
                         pickable_body_vertex(pp, &project, &self.state.doc, pick_occlusion)
                             .as_ref()
-                            .and_then(scene_element_from_pick);
+                            .and_then(scene_element_from_pick)
+                    };
                     if let Some(index) =
                         pointer_over_constraint_icon(&constraint_icon_hits, pp)
                     {
@@ -17949,7 +18015,12 @@ impl App {
                     } else if let Some(target) =
                         resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
                     {
-                        if let Some(element) = scene_element_from_pick(&target.kind) {
+                        let element = scene_element_from_pick(&target.kind).filter(|element| {
+                            sketch_only.is_none_or(|sketch| {
+                                element_in_sketch(&self.state.doc, sketch, element)
+                            })
+                        });
+                        if let Some(element) = element {
                             self.state
                                 .apply(Action::ClickSceneElement { element, additive });
                         } else if !additive {
@@ -21710,6 +21781,42 @@ mod tests {
         let (_, too_small) =
             auto_zoom_screen_state(&cam, viewport, Vec3::splat(-2.0), Vec3::splat(2.0));
         assert!(too_small, "a sliver underfills the view");
+    }
+
+    /// #742: while a sketch is open, the selection-family pick filter admits only that
+    /// sketch's own geometry — lines, points, the origin, and reference lines — and
+    /// rejects body sub-elements and other sketches' shapes (those need the Project tool).
+    #[test]
+    fn sketch_isolation_filters_selection_picks() {
+        use crate::model::{ConstraintLine, ConstraintPoint, LineEnd, SketchAxis};
+        let mut doc = model::Document::default();
+        doc.lines.push(model::Line::from_local_endpoints(0, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(model::Line::from_local_endpoints(1, 0.0, 0.0, 5.0, 5.0));
+        assert!(element_in_sketch(&doc, 0, &SceneElement::Line(0)));
+        assert!(!element_in_sketch(&doc, 0, &SceneElement::Line(1)));
+        assert!(element_in_sketch(
+            &doc,
+            0,
+            &SceneElement::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start })
+        ));
+        assert!(!element_in_sketch(
+            &doc,
+            0,
+            &SceneElement::Point(ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End })
+        ));
+        assert!(element_in_sketch(&doc, 0, &SceneElement::Origin));
+        assert!(element_in_sketch(
+            &doc,
+            0,
+            &SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
+        ));
+        assert!(!element_in_sketch(&doc, 0, &SceneElement::Body(0)));
+        assert!(!element_in_sketch(
+            &doc,
+            0,
+            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+        ));
+        assert!(!element_in_sketch(&doc, 0, &SceneElement::BodyVertex { body: 0, p: [0; 3] }));
     }
 
     /// Auto-zoom's selection watch keys off an order-independent fingerprint of the

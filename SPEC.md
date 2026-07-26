@@ -222,10 +222,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `Origin` entity already gets. Picking is scoped to the *active sketch's own face* only (not
   arbitrary other faces), with vertices taking precedence over edges like other sketch points.
   Out of scope: imported STL/STEP bodies have no analytic face/edge structure to reference.
-- **Projections (#140):** with a sketch open, selecting external 3D geometry (a body's
+- **Sketch selection isolation (#742):** while a sketch is open, the selection-family
+  tools (Select, Constraint, Dimension) hover and pick **only that sketch's own
+  geometry** — its lines/circles/points/text, the origin and its axes, and the
+  sketched-on face's own edges/corners (#26/#27). Outside bodies, other sketches, and 3D
+  body sub-elements neither glow nor select; clicking them clears the selection like
+  empty space. One filter (`element_in_sketch`) gates both the hover-highlight and the
+  click path. Outside geometry enters a sketch only through the Project tool (#140) —
+  or **Y** on a selection made before the sketch was opened.
+- **Projections (#140):** selecting external 3D geometry (a body's
   edges via 3D selection, #156 — or a whole body/extrusion, which projects all of its
-  feature edges) and pressing **Y** (or "Project Selection into Sketch" in the palette)
-  projects it onto the sketch plane, along the plane normal. Discoverable via
+  feature edges) and, with a sketch open, pressing **Y** (or "Project Selection into
+  Sketch" in the palette) projects it onto the sketch plane, along the plane normal. Discoverable via
   **`Tool::Project`**: a toolbar button that appears only in sketch mode — with it
   active, outside body edges/faces hover-glow and a click projects the edge (a face or
   vertex projects the whole body) through `Action::ProjectElement`; both entry points
