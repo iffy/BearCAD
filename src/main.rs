@@ -12543,12 +12543,13 @@ fn resolve_viewport_hover_highlight(
             }
             let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
             match sketch_session {
-                Some(session) => crate::constraints::distance_target_from_pick(
-                    doc,
-                    session.sketch,
-                    &target.kind,
-                )
-                .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
+                // Everything a click can take part in glows (#800): the sketch's own lines and
+                // circles, its points, and the sketched-on face's edges and corners — a
+                // dimension is often between two *different* kinds of thing, so highlighting
+                // only what dimensions on its own left half the picks with no feedback.
+                Some(session) => scene_element_from_pick(&target.kind)
+                    .filter(|element| element_in_sketch(doc, session.sketch, element))
+                    .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
                 // 3D mode (#453): glow the measurable line or point a click would capture
                 // as a derived parameter — body feature edges and mesh corners included
                 // (#647), which the click path has always selected.
@@ -24909,6 +24910,37 @@ mod tests {
                 ))
             ),
             "hovering a line with the Dimension tool should highlight it, got {hover:?}"
+        );
+
+        // #800: a **point** of that sketch highlights too — a dimension is often between two
+        // different kinds of thing, and the click path has always accepted it.
+        let end = project(glam::Vec3::new(20.0, 0.0, 0.0)).expect("the line's end projects");
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Dimension,
+            Some(SketchSession { sketch }),
+            MovePickHover::Bodies,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(end),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+        );
+        assert!(
+            matches!(
+                hover,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    PickTargetKind::Point(_)
+                ))
+            ),
+            "hovering a sketch point with the Dimension tool should highlight it, got {hover:?}"
         );
     }
 
