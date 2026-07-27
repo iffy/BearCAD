@@ -3381,7 +3381,11 @@ document is millimeters, so the player is person-scale: eye height
   **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
   polyline — for a straight line that was its end. The second click of a pair floats a blue **Shift
   keycap** beside the orb (#759, `Step::needs_shift`, `draw_shift_keycap`), since that
-  click adds to the selection. Steps can
+  click adds to the selection. Steps whose target sits **under other geometry** — the base
+  line lying along the X axis, once it's been levelled — carry a **key hint** badge below
+  the orb (`Step::key_hint`, `draw_orb_key_hint`): a **Space** keycap and a line saying it
+  fans out whatever is crowded, which is how the tutorial introduces the Selection
+  Exploder (#777). Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going
   forward (never while reviewing with Back): the drawing step uses it to **glide the
   camera in over the profile area** (`frame_profile_area`), so a user who happened to be

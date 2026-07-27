@@ -1787,27 +1787,9 @@ fn tutorial_bubble_pos(
     egui::pos2(x.max(viewport.left() + 8.0), top)
 }
 
-/// A blue **Shift** keycap floating beside a tutorial orb (#759): the click the orb points
-/// at has to be Shift+clicked to add to the selection. Drawn like a real key — a rounded
-/// cap with a lighter top face — to the right of the orb, or to its left when the right
-/// side runs out of viewport.
-fn draw_shift_keycap(
-    painter: &egui::Painter,
-    ctx: &egui::Context,
-    orb: egui::Pos2,
-    orb_radius: f32,
-    viewport: egui::Rect,
-) {
-    const KEY: egui::Vec2 = egui::vec2(58.0, 34.0);
-    let gap = orb_radius + 14.0;
-    let mut center = orb + egui::vec2(gap + KEY.x * 0.5, 0.0);
-    if center.x + KEY.x * 0.5 > viewport.right() - 6.0 {
-        center = orb - egui::vec2(gap + KEY.x * 0.5, 0.0);
-    }
-    center.y = center
-        .y
-        .clamp(viewport.top() + KEY.y, viewport.bottom() - KEY.y);
-    let rect = egui::Rect::from_center_size(center, KEY);
+/// Draw a keyboard key at `rect` with `label` on its face — the tutorial's way of naming a
+/// key you have to hold or press (#759/#777).
+fn draw_keycap(painter: &egui::Painter, rect: egui::Rect, label: &str) {
     // The cap's body, then a lighter top face inset above it — enough shading to read as a key.
     painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(40, 78, 150));
     painter.rect_filled(
@@ -1824,9 +1806,89 @@ fn draw_shift_keycap(
     painter.text(
         egui::pos2(rect.center().x, rect.center().y - 1.5),
         egui::Align2::CENTER_CENTER,
-        "Shift",
+        label,
         egui::FontId::proportional(14.0),
         egui::Color32::WHITE,
+    );
+}
+
+/// A blue **Shift** keycap floating beside a tutorial orb (#759): the click the orb points
+/// at has to be Shift+clicked to add to the selection. Sits to the right of the orb, or to
+/// its left when the right side runs out of viewport.
+fn draw_shift_keycap(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    viewport: egui::Rect,
+) {
+    const KEY: egui::Vec2 = egui::vec2(58.0, 34.0);
+    let gap = orb_radius + 14.0;
+    let mut center = orb + egui::vec2(gap + KEY.x * 0.5, 0.0);
+    if center.x + KEY.x * 0.5 > viewport.right() - 6.0 {
+        center = orb - egui::vec2(gap + KEY.x * 0.5, 0.0);
+    }
+    center.y = center
+        .y
+        .clamp(viewport.top() + KEY.y, viewport.bottom() - KEY.y);
+    draw_keycap(painter, egui::Rect::from_center_size(center, KEY), "Shift");
+    ctx.request_repaint();
+}
+
+/// A hint under the orb naming a key that helps with the click it points at (#777): the
+/// **Space** keycap plus a line of text, for when the thing to click sits under something
+/// else and the Selection Exploder is the way in. Sits below the orb, or above it when the
+/// bottom of the view is in the way.
+fn draw_orb_key_hint(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    viewport: egui::Rect,
+    key: &str,
+    text: &str,
+) {
+    const KEY_H: f32 = 26.0;
+    let font = egui::FontId::proportional(12.5);
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE);
+    let key_w = (painter
+        .layout_no_wrap(key.to_string(), font.clone(), egui::Color32::WHITE)
+        .size()
+        .x
+        + 20.0)
+        .max(48.0);
+    let pad = 8.0;
+    let width = key_w + 8.0 + galley.size().x + pad * 2.0;
+    let height = KEY_H + pad;
+    let below = orb.y + orb_radius + 16.0 + height * 0.5;
+    let above = orb.y - orb_radius - 16.0 - height * 0.5;
+    let cy = if below + height * 0.5 <= viewport.bottom() - 6.0 {
+        below
+    } else {
+        above
+    };
+    let cx = orb
+        .x
+        .clamp(viewport.left() + width * 0.5 + 6.0, viewport.right() - width * 0.5 - 6.0);
+    let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(width, height));
+    painter.rect_filled(rect, 8.0, egui::Color32::from_rgba_unmultiplied(24, 26, 34, 235));
+    painter.rect_stroke(
+        rect,
+        8.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 130, 200)),
+        egui::StrokeKind::Inside,
+    );
+    let key_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + pad + key_w * 0.5, rect.center().y),
+        egui::vec2(key_w, KEY_H),
+    );
+    draw_keycap(painter, key_rect, key);
+    painter.text(
+        egui::pos2(key_rect.right() + 8.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        egui::Color32::from_gray(225),
     );
     ctx.request_repaint();
 }
@@ -2680,6 +2742,18 @@ impl App {
             // beside the orb saying so (#759).
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
                 draw_shift_keycap(&painter, ctx, pos, base + pulse, viewport);
+            }
+            // Crowded spot? Name the key that fans it out (#777).
+            if let Some(hint) = step.key_hint {
+                draw_orb_key_hint(
+                    &painter,
+                    ctx,
+                    pos,
+                    base + pulse,
+                    viewport,
+                    hint.0,
+                    hint.1,
+                );
             }
             ctx.request_repaint(); // keep the pulse and glide animating
         } else {

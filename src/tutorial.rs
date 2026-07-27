@@ -71,6 +71,9 @@ pub struct Step {
     /// When this returns true the orb floats a **Shift** keycap beside it (#759): the
     /// click it's pointing at has to be Shift+clicked to add to the selection.
     pub needs_shift: Option<fn(&AppState) -> bool>,
+    /// A `(key, explanation)` badge under the orb (#777) — used to introduce **Space**, the
+    /// Selection Exploder, on steps whose target sits under other geometry.
+    pub key_hint: Option<(&'static str, &'static str)>,
 }
 
 /// Split a step's narration into plain prose and **code** runs (#757): anything between
@@ -676,6 +679,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "First, a name for our first number. See the Parameters pane on the \
@@ -685,6 +689,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Type `leg` \u{2014} just those three letters. It's the length of each \
@@ -694,6 +699,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Now tap the value box beside it and type `50mm`.",
@@ -702,6 +708,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
@@ -710,6 +717,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Five more, exactly the same moves:\n\
@@ -721,6 +729,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Add them for me", actions: add_missing_params }),
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
@@ -729,6 +738,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "I've brought us in over the drawing area. Now click each glowing point \
@@ -738,6 +748,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: Some(frame_profile_area),
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Now the Constraint tool \u{2014} the glowing button, or press C.",
@@ -746,6 +757,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Pin the profile down: click the bend corner, Shift+click the origin, \
@@ -755,6 +767,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(pin_shift),
+        key_hint: None,
     },
     Step {
         narration: "Level the base: click the bottom line, Shift+click the red X axis, \
@@ -764,6 +777,10 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(level_shift),
+        key_hint: Some((
+            "Space",
+            "fans out whatever is crowded under the cursor",
+        )),
     },
     Step {
         narration: "Click the bottom line, Shift+click the inner base line, press `1`.",
@@ -772,6 +789,10 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(base_strip_shift),
+        key_hint: Some((
+            "Space",
+            "fans out whatever is crowded under the cursor",
+        )),
     },
     Step {
         narration: "The tilted leg: click one long line, Shift+click the other, \
@@ -781,6 +802,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(legs_shift),
+        key_hint: None,
     },
     Step {
         narration: "Click the base leg's end cap, Shift+click the bottom line, press `2` \
@@ -790,6 +812,10 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(cap_one_shift),
+        key_hint: Some((
+            "Space",
+            "fans out whatever is crowded under the cursor",
+        )),
     },
     Step {
         narration: "Click the tilted leg's end cap, Shift+click its long line, \
@@ -799,6 +825,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(cap_two_shift),
+        key_hint: None,
     },
     Step {
         narration: "Now exact sizes. Grab the Dimension tool \u{2014} the glowing button, \
@@ -808,6 +835,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: Some(clear_selection_for_dimensioning),
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Click the glowing line, move the mouse to place the dimension, click \
@@ -817,6 +845,10 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: Some((
+            "Space",
+            "fans out whatever is crowded under the cursor",
+        )),
     },
     Step {
         narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
@@ -825,6 +857,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Now an end cap \u{2014} that's the bracket's thickness: click, place, \
@@ -834,6 +867,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "And the other end cap: `thick` again.",
@@ -842,6 +876,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
@@ -851,6 +886,10 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(bend_angle_shift),
+        key_hint: Some((
+            "Space",
+            "fans out whatever is crowded under the cursor",
+        )),
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
@@ -860,6 +899,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
@@ -870,6 +910,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Screw holes! Sketch (S) on the inside face of the base flange, then \
@@ -881,6 +922,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Esc, then Extrude (E): click both circles, drag the handle into the \
@@ -890,6 +932,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Countersink them: Chamfer (K), click one hole's rim where it meets the \
@@ -899,6 +942,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Fillet (F) again: click a vertical edge at a flange tip, Shift+click the \
@@ -908,6 +952,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type `BearCAD`. \
@@ -918,6 +963,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "The best part: in the Parameters pane, change `bend_angle` from `120deg` \
@@ -928,6 +974,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
     Step {
         narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
@@ -938,6 +985,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        key_hint: None,
     },
 ];
 
