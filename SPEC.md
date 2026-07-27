@@ -744,7 +744,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     probe copy of the in-progress move with the hovered point filled in). The ghost's pose
     **eases** toward its target (`move_ghost_pose`, exponential glide,
     `MOVE_GHOST_EASE_SECS`), so hopping the hover between candidates reads as the body
-    sweeping over — quick, but smooth — never teleporting.
+    sweeping over — quick, but smooth — never teleporting. The ease is a rotation **about the
+    A pair's pivot** (#826): the pose carries the pivot's destination and the rotation, and
+    the matrix is rebuilt as `translate(end A) · R · translate(-start A)` each frame, so start
+    A sits exactly on end A for the whole animation. Pulling the hover off mid-flight simply
+    changes the target, so the same ease runs it back where it was.
     The **Selection Exploder** follows suit (#746/#747): with End point B armed its fan
     offers exactly the sphere candidates — each loupe a blue dot — never faces, edges, or
     corners the picker can't take; and a loupe whose content is bare point dots skips the
@@ -1945,7 +1949,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   what was typed**, units included: a bare `10` in a length field previews `= 10.0 mm`
   (the default unit made explicit), `1in` previews `= 25.4 mm`, while `12.5 mm` (or any
   formatting-equivalent like `12.5mm`) previews nothing
-  (`value_input_computed_display`/`canonical_value_text`). The computed label floats under
+  (`value_input_computed_display`/`canonical_value_text`). **Errors wait for a commit**
+  (#824): half-typed text is always invalid — `thick` isn't defined until `= 5mm` lands —
+  so the red text and error tooltip stay away while the field has the keyboard, and appear
+  once Enter says "I meant that" (and go away again on the next keystroke). The computed label floats under
   the field, and the **autocomplete dropdown starts below it** when one is showing, so the
   two never overlap (#793). Kinds: `Length` (document
   length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
@@ -3483,7 +3490,11 @@ document is millimeters, so the player is person-scale: eye height
   second pick). Taking up the Dimension tool **clears the selection** the constraint steps
   left behind (#772) — under that tool a live selection is already a dimension in the
   making. The
-  bubble hangs off the **left side** of the view-cube **HUD panel** (the cube rect grown by
+  bubble **follows the orb** (#825): below it by preference, above it when the bottom of the
+  window is in the way, else to whichever side has room, with its tail on the edge facing the
+  orb — so what to read and where to look are the same place, and the orb's glide carries the
+  bubble along. With no orb (narration-only steps) it
+  hangs off the **left side** of the view-cube **HUD panel** (the cube rect grown by
   `view_cube::HUD_PANEL_PAD`, so the gear/home buttons count too), tail pointing right at
   Bear — under it, the bubble covered the Context pane controls a step was pointing at
   (#760). It's positioned from the bubble's **measured** width (frame margins make it wider

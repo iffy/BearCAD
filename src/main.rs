@@ -1767,24 +1767,60 @@ fn draw_pick_target_loupe(
     }
 }
 
-/// How far the speech bubble's tail sticks out past its right edge.
+/// How far the speech bubble's tail sticks out past its edge.
 const TUTORIAL_BUBBLE_TAIL: f32 = 12.0;
-/// Clear space between that tail's tip and the view-cube HUD panel.
+/// Clear space between that tail's tip and whatever it points at.
 const TUTORIAL_BUBBLE_GAP: f32 = 14.0;
 
-/// Top-left corner for the tutorial speech bubble (#760/#767): off the left of the
-/// view-cube HUD panel `hud`, with its tail and a gap clearing the panel (and its
-/// gear/home buttons) entirely, and never pushed out of `viewport`. `bubble_width` is the
-/// bubble's **drawn** width — measured last frame, since frame margins make it wider than
-/// its content.
-fn tutorial_bubble_pos(
-    viewport: egui::Rect,
+/// Which edge of the bubble its tail hangs off — the side facing what it's pointing at.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum BubbleTail {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// Where the tutorial speech bubble goes (#760/#767/#825).
+///
+/// With an orb on screen the bubble **follows it** — below it by preference, above it when
+/// the bottom of the window is in the way, else to whichever side has room — so what to read
+/// and where to look are the same place. With no orb (narration-only steps) it falls back to
+/// the left of the view-cube HUD panel. Always fully inside `bounds` when it fits.
+/// `size` is the bubble's **drawn** size, measured last frame.
+fn tutorial_bubble_layout(
+    orb: Option<(egui::Pos2, f32)>,
     hud: egui::Rect,
-    top: f32,
-    bubble_width: f32,
-) -> egui::Pos2 {
-    let x = hud.left() - bubble_width - TUTORIAL_BUBBLE_TAIL - TUTORIAL_BUBBLE_GAP;
-    egui::pos2(x.max(viewport.left() + 8.0), top)
+    size: egui::Vec2,
+    bounds: egui::Rect,
+) -> (egui::Pos2, BubbleTail) {
+    let clamp = |p: egui::Pos2| {
+        egui::pos2(
+            p.x.clamp(bounds.left() + 8.0, (bounds.right() - size.x - 8.0).max(bounds.left())),
+            p.y.clamp(bounds.top() + 8.0, (bounds.bottom() - size.y - 8.0).max(bounds.top())),
+        )
+    };
+    let Some((orb, radius)) = orb else {
+        let x = hud.left() - size.x - TUTORIAL_BUBBLE_TAIL - TUTORIAL_BUBBLE_GAP;
+        return (clamp(egui::pos2(x, hud.top())), BubbleTail::Right);
+    };
+    let clear = radius + TUTORIAL_BUBBLE_TAIL + TUTORIAL_BUBBLE_GAP;
+    let below = egui::pos2(orb.x - size.x * 0.5, orb.y + clear);
+    if below.y + size.y <= bounds.bottom() - 8.0 {
+        return (clamp(below), BubbleTail::Top);
+    }
+    let above = egui::pos2(orb.x - size.x * 0.5, orb.y - clear - size.y);
+    if above.y >= bounds.top() + 8.0 {
+        return (clamp(above), BubbleTail::Bottom);
+    }
+    let left = egui::pos2(orb.x - clear - size.x, orb.y - size.y * 0.5);
+    if left.x >= bounds.left() + 8.0 {
+        return (clamp(left), BubbleTail::Right);
+    }
+    (
+        clamp(egui::pos2(orb.x + clear, orb.y - size.y * 0.5)),
+        BubbleTail::Left,
+    )
 }
 
 /// Draw a keyboard key at `rect` with `label` on its face — the tutorial's way of naming a
@@ -2242,9 +2278,9 @@ struct App {
     /// The tutorial orb's animated screen position: it glides between anchors so the
     /// eye can follow it.
     tutorial_orb_pos: Option<egui::Pos2>,
-    /// The tutorial bubble's drawn width, measured each frame so the next one can sit clear
-    /// of the view-cube HUD (#767). Seeded with the content width plus typical frame chrome.
-    tutorial_bubble_width: f32,
+    /// The tutorial bubble's drawn size, measured each frame so the next one can place it
+    /// around the orb (#767/#825). Seeded with the content width plus typical frame chrome.
+    tutorial_bubble_size: egui::Vec2,
     /// Last frame's "focused text widget is a value field" — gates the touch keypad
     /// and mobile OS-keyboard suppression.
     keypad_serves_focus: bool,
@@ -2818,7 +2854,9 @@ impl App {
             },
             tutorial::StepAnchor::None => None,
         };
+        let mut orb_radius = 0.0f32;
         if let Some((goal, base)) = target {
+            orb_radius = base;
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
             let pos = match self.tutorial_orb_pos {
                 Some(prev) => {
@@ -2897,13 +2935,19 @@ impl App {
         let cube = view_cube::cube_rect_in_viewport(viewport);
         // The HUD paints a padded panel around the cube; clear that, not just the cube.
         let hud = cube.expand(view_cube::HUD_PANEL_PAD);
-        let anchor_pos =
-            tutorial_bubble_pos(viewport, hud, cube.top(), self.tutorial_bubble_width);
+        // The bubble follows the orb (#825) — its size comes from last frame's measurement,
+        // and the orb's own glide carries the bubble along with it.
+        let (anchor_pos, tail_side) = tutorial_bubble_layout(
+            self.tutorial_orb_pos.map(|p| (p, orb_radius)),
+            hud,
+            self.tutorial_bubble_size,
+            ctx.screen_rect(),
+        );
         let mut next = false;
         let mut back = false;
         let mut end = false;
         let mut assist = false;
-        let mut measured_width = self.tutorial_bubble_width;
+        let mut measured_size = self.tutorial_bubble_size;
         egui::Area::new(egui::Id::new("tutorial_bubble"))
             .fixed_pos(anchor_pos)
             .order(egui::Order::Foreground)
@@ -3020,15 +3064,43 @@ impl App {
                             );
                         });
                     });
-                // The tail: a little triangle off the bubble's right edge, pointing across
-                // at Bear.
+                // The tail hangs off whichever edge faces what the bubble is pointing at.
                 let r = bubble.response.rect;
-                let tail_y = cube.center().y.clamp(r.top() + 24.0, r.bottom() - 24.0);
-                let tip = egui::pos2(r.right() + TUTORIAL_BUBBLE_TAIL, tail_y);
-                let (base_top, base_bottom) = (
-                    egui::pos2(r.right() - 2.0, tail_y - 14.0),
-                    egui::pos2(r.right() - 2.0, tail_y + 14.0),
-                );
+                let toward = self.tutorial_orb_pos.unwrap_or(cube.center());
+                let (tip, base_top, base_bottom) = match tail_side {
+                    BubbleTail::Right => {
+                        let y = toward.y.clamp(r.top() + 24.0, r.bottom() - 24.0);
+                        (
+                            egui::pos2(r.right() + TUTORIAL_BUBBLE_TAIL, y),
+                            egui::pos2(r.right() - 2.0, y - 14.0),
+                            egui::pos2(r.right() - 2.0, y + 14.0),
+                        )
+                    }
+                    BubbleTail::Left => {
+                        let y = toward.y.clamp(r.top() + 24.0, r.bottom() - 24.0);
+                        (
+                            egui::pos2(r.left() - TUTORIAL_BUBBLE_TAIL, y),
+                            egui::pos2(r.left() + 2.0, y - 14.0),
+                            egui::pos2(r.left() + 2.0, y + 14.0),
+                        )
+                    }
+                    BubbleTail::Top => {
+                        let x = toward.x.clamp(r.left() + 24.0, r.right() - 24.0);
+                        (
+                            egui::pos2(x, r.top() - TUTORIAL_BUBBLE_TAIL),
+                            egui::pos2(x - 14.0, r.top() + 2.0),
+                            egui::pos2(x + 14.0, r.top() + 2.0),
+                        )
+                    }
+                    BubbleTail::Bottom => {
+                        let x = toward.x.clamp(r.left() + 24.0, r.right() - 24.0);
+                        (
+                            egui::pos2(x, r.bottom() + TUTORIAL_BUBBLE_TAIL),
+                            egui::pos2(x - 14.0, r.bottom() - 2.0),
+                            egui::pos2(x + 14.0, r.bottom() - 2.0),
+                        )
+                    }
+                };
                 // Fill first (covering the bubble's own border along the tail's base), then
                 // stroke **only the two outer sides** — stroking the closed polygon drew a
                 // line right across the join (#808).
@@ -3040,10 +3112,10 @@ impl App {
                 let edge = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80));
                 painter.line_segment([base_top, tip], edge);
                 painter.line_segment([tip, base_bottom], edge);
-                measured_width = r.width();
+                measured_size = r.size();
             });
         // Next frame positions from what the bubble actually measured.
-        self.tutorial_bubble_width = measured_width;
+        self.tutorial_bubble_size = measured_size;
         if assist {
             self.state.apply(Action::TutorialAssist);
         }
@@ -3244,7 +3316,7 @@ impl App {
             keypad_focus_gone_frames: 0,
             long_press_fired: false,
             tutorial_orb_pos: None,
-            tutorial_bubble_width: 352.0,
+            tutorial_bubble_size: egui::vec2(352.0, 120.0),
             keypad_serves_focus: false,
             debug_focus_requested: false,
             auto_zoom_last_extent: None,
@@ -20907,14 +20979,34 @@ impl App {
         // hovered) probe transform — quick, but smooth — so hopping the hover between
         // candidate points reads as the body sweeping over, not teleporting.
         let move_ghost_override = {
-            let target = move_hover_preview
+            let live = move_hover_preview
                 .as_ref()
                 .or(self.state.creating_move.as_ref())
-                .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
-                .and_then(|cm| move_ghost_target_transform(doc, cm));
+                .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none());
+            let target = live.and_then(|cm| move_ghost_target_transform(doc, cm));
+            // The A pair is the move's **pivot**: start A lands on end A and stays there,
+            // whatever the rotation does (#826). Easing the composed translation instead
+            // let the pivot drift mid-animation, so the body appeared to slide as it turned.
+            let pivot = live.and_then(|cm| {
+                let start = cm
+                    .start_point_a
+                    .as_ref()
+                    .and_then(|p| extrude::move_point_world(doc, p))?;
+                let end = cm
+                    .end_point_a
+                    .as_ref()
+                    .and_then(|p| extrude::move_point_world(doc, p))?;
+                Some((start, end))
+            });
             match target {
                 Some(m) => {
                     let (_, t_rot, t_pos) = m.to_scale_rotation_translation();
+                    // With a pivot, the eased "position" is the pivot's destination; the
+                    // matrix is rebuilt around it each frame so start A ↦ end A exactly.
+                    let (t_pos, rebuild) = match pivot {
+                        Some((start, end)) => (end, Some(start)),
+                        None => (t_pos, None),
+                    };
                     let pose = self.move_ghost_pose.get_or_insert((t_pos, t_rot));
                     let dt = ui.input(|i| i.stable_dt).min(0.05);
                     let k = 1.0 - (-dt / MOVE_GHOST_EASE_SECS).exp();
@@ -20926,7 +21018,14 @@ impl App {
                     } else {
                         *pose = (t_pos, t_rot);
                     }
-                    Some(glam::Mat4::from_rotation_translation(pose.1, pose.0))
+                    Some(match rebuild {
+                        Some(start) => {
+                            glam::Mat4::from_translation(pose.0)
+                                * glam::Mat4::from_quat(pose.1)
+                                * glam::Mat4::from_translation(-start)
+                        }
+                        None => glam::Mat4::from_rotation_translation(pose.1, pose.0),
+                    })
                 }
                 None => {
                     self.move_ghost_pose = None;
@@ -23119,25 +23218,62 @@ fn draw_ground(
 mod tests {
     use super::*;
 
-    /// #767: the speech bubble sits far enough left that its tail clears the view-cube
-    /// HUD panel — the bubble used to be placed from its *content* width and clipped the
-    /// panel's corner.
+    /// #826: mid-animation the Move ghost keeps start point A exactly on end point A — the
+    /// pose is a rotation *about that pivot*, not an independently eased translation.
     #[test]
-    fn tutorial_bubble_clears_the_view_cube_hud() {
-        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
-        let hud = view_cube::cube_rect_in_viewport(viewport).expand(view_cube::HUD_PANEL_PAD);
-        let width = 352.0;
-        let pos = tutorial_bubble_pos(viewport, hud, hud.top(), width);
+    fn move_ghost_rotation_keeps_the_pivot_put() {
+        let start_a = Vec3::new(10.0, 0.0, 0.0);
+        let end_a = Vec3::new(40.0, 25.0, 5.0);
+        let full = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let rot = glam::Quat::IDENTITY.slerp(full, t).normalize();
+            let m = glam::Mat4::from_translation(end_a)
+                * glam::Mat4::from_quat(rot)
+                * glam::Mat4::from_translation(-start_a);
+            let landed = m.transform_point3(start_a);
+            assert!(
+                (landed - end_a).length() < 1e-4,
+                "at t={t} start A landed at {landed:?}, not on end A"
+            );
+        }
+    }
+
+    /// #767/#825: with no orb the bubble sits clear of the view-cube HUD; with one it
+    /// follows the orb — below it by preference, above when the bottom is in the way — and
+    /// its tail hangs off the edge facing it.
+    #[test]
+    fn tutorial_bubble_follows_the_orb() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let hud = view_cube::cube_rect_in_viewport(bounds).expand(view_cube::HUD_PANEL_PAD);
+        let size = egui::vec2(352.0, 120.0);
+
+        // No orb: left of the HUD, tail pointing right at Bear.
+        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds);
+        assert_eq!(tail, BubbleTail::Right);
         assert!(
-            pos.x + width + TUTORIAL_BUBBLE_TAIL <= hud.left(),
+            pos.x + size.x + TUTORIAL_BUBBLE_TAIL <= hud.left(),
             "bubble+tail overlaps the HUD: {pos:?}"
         );
-        assert!(pos.x >= viewport.left());
 
-        // A viewport too narrow for both keeps the bubble on-screen rather than off it.
-        let narrow = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 400.0));
-        let hud = view_cube::cube_rect_in_viewport(narrow).expand(view_cube::HUD_PANEL_PAD);
-        assert!(tutorial_bubble_pos(narrow, hud, hud.top(), width).x >= narrow.left());
+        // An orb with room underneath: the bubble hangs below it, tail on top, centred.
+        let orb = egui::pos2(500.0, 300.0);
+        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds);
+        assert_eq!(tail, BubbleTail::Top);
+        assert!(pos.y > orb.y, "below the orb: {pos:?}");
+        assert!((pos.x + size.x * 0.5 - orb.x).abs() < 1.0, "centred: {pos:?}");
+
+        // An orb near the bottom: it flips above, tail underneath.
+        let low = egui::pos2(500.0, 760.0);
+        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds);
+        assert_eq!(tail, BubbleTail::Bottom);
+        assert!(pos.y + size.y < low.y, "above the orb: {pos:?}");
+
+        // Whatever happens, it stays on screen.
+        for orb in [egui::pos2(4.0, 4.0), egui::pos2(1196.0, 796.0)] {
+            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds);
+            assert!(pos.x >= bounds.left() && pos.x + size.x <= bounds.right() + 0.01, "{pos:?}");
+            assert!(pos.y >= bounds.top() && pos.y + size.y <= bounds.bottom() + 0.01, "{pos:?}");
+        }
     }
 
     /// #763: the placed dimension's offset is the cursor's distance from the measured

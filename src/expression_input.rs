@@ -714,6 +714,18 @@ pub fn show_length_expression_text_edit(
         expression_autocomplete_handle_keys(ui, &ctx, id, text, doc, exclude_names);
     }
 
+    // Half-typed text is *always* invalid — "thick" isn't defined until the "= 5mm" lands —
+    // so complaints wait until a commit is attempted (#824): while the field has the
+    // keyboard the error tooltip and the red text stay away, and Enter brings them back if
+    // the value really is wrong.
+    let errors: &[String] = if had_focus && !commit_attempted(&ctx, id) {
+        &[]
+    } else {
+        errors
+    };
+    if had_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        set_commit_attempted(&ctx, id, true);
+    }
     let invalid = !errors.is_empty();
     let output = length_expression_text_edit_frame(ui, id, invalid)
         .show(ui, |ui| {
@@ -753,6 +765,16 @@ pub fn show_length_expression_text_edit(
 
     show_expression_error_tooltips_above(ui, &output.response, errors);
     output.response
+}
+
+/// Whether a commit has been attempted on this field since its text last changed (#824).
+/// Errors are hidden while typing and shown once Enter says "I meant that".
+fn commit_attempted(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(id.with("commit_attempted")).unwrap_or(false))
+}
+
+fn set_commit_attempted(ctx: &egui::Context, id: Id, value: bool) {
+    ctx.data_mut(|d| d.insert_temp(id.with("commit_attempted"), value));
 }
 
 /// What a [`ValueInput`] measures — picks the parser, the default unit added to the
@@ -869,6 +891,11 @@ impl<'a> ValueInput<'a> {
                 self.exclude_names,
             ),
         };
+        // Typing again means "I'm still working on it": complaints wait for the next commit
+        // attempt (#824).
+        if resp.changed() {
+            set_commit_attempted(ui.ctx(), self.id, false);
+        }
         // The computed value floats *below* the field (#501) instead of sitting beside
         // it in the layout — so it appearing or disappearing while typing never shifts
         // anything around. Shown only while the field is focused (idle rows stay
