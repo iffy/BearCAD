@@ -22,6 +22,8 @@ pub enum UiAnchor {
     /// A constraint button in the Context pane's Constraints list (#770) — where a
     /// squaring-up step points once both of its picks are made.
     ConstraintButton(crate::geometric_constraints::GeometricConstraintType),
+    /// The extrude Output row's **Cut** button (#804).
+    ExtrudeCut,
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -782,6 +784,118 @@ fn bend_angle_shift(app: &AppState) -> bool {
     constraint_needs_shift(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(3))
 }
 
+/// The holes' circles, in the sketch they were drawn in.
+fn hole_circles(app: &AppState) -> Vec<&crate::model::Circle> {
+    let Some(profile) = profile_sketch(app) else {
+        return Vec::new();
+    };
+    app.doc
+        .circles
+        .iter()
+        .filter(|c| !c.deleted && !c.construction && c.sketch != profile)
+        .collect()
+}
+
+/// A hole's centre in world space (`edge` false) or a point on its rim (`edge` true, the
+/// countersink's target).
+fn hole_point(app: &AppState, nth: usize, edge: bool) -> Option<glam::Vec3> {
+    let profile = profile_sketch(app)?;
+    let circle = *hole_circles(app).get(nth)?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, circle.sketch)?;
+    let _ = profile;
+    let r = if edge { circle.r } else { 0.0 };
+    Some(crate::face::local_to_world(&frame, circle.cx + r, circle.cy))
+}
+
+/// The cut step (#803/#804): each hole face in turn, then the pane's **Cut** button.
+fn hole_cut_orb(app: &AppState) -> Option<StepTarget> {
+    if app.tool != Tool::Extrude {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Extrude)));
+    }
+    let picked = app
+        .creating_extrusion
+        .as_ref()
+        .map(|ce| ce.faces.len())
+        .unwrap_or(0);
+    if picked < hole_circles(app).len() {
+        return hole_point(app, picked, false).map(StepTarget::World);
+    }
+    // Both faces in hand: point at the Output → Cut button.
+    (!matches!(
+        app.creating_extrusion.as_ref().map(|ce| ce.body_mode),
+        Some(crate::actions::ExtrudeBodyMode::Cut(_))
+    ))
+    .then_some(StepTarget::Ui(UiAnchor::ExtrudeCut))
+}
+
+fn hole_cut_value_hint(app: &AppState) -> Option<String> {
+    app.creating_extrusion
+        .as_ref()
+        .filter(|ce| ce.faces.len() >= hole_circles(app).len().max(1))
+        .map(|_| "-(thick + 1)".to_string())
+}
+
+/// The countersink step (#806): the Chamfer tool, then each hole's rim.
+fn countersink_orb(app: &AppState) -> Option<StepTarget> {
+    if app.tool != Tool::Chamfer {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Chamfer)));
+    }
+    let picked = app
+        .creating_edge_treatment
+        .as_ref()
+        .map(|cet| cet.edges.len())
+        .unwrap_or(0);
+    (picked < 2)
+        .then(|| hole_point(app, picked, true).map(StepTarget::World))
+        .flatten()
+}
+
+fn countersink_shift(app: &AppState) -> bool {
+    app.creating_edge_treatment
+        .as_ref()
+        .is_some_and(|cet| cet.edges.len() == 1)
+}
+
+fn countersink_value_hint(app: &AppState) -> Option<String> {
+    treatment_value_hint(app, "1.2")
+}
+
+/// The corner-rounding step (#806): the Fillet tool, then each flange-tip edge.
+fn corner_fillet_orb(app: &AppState) -> Option<StepTarget> {
+    if app.tool != Tool::Fillet {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Fillet)));
+    }
+    // Profile vertices 1, 2 (base flange tip) and 4, 5 (tilted flange tip).
+    let picked = app
+        .creating_edge_treatment
+        .as_ref()
+        .map(|cet| cet.edges.len())
+        .unwrap_or(0);
+    let corners = [1usize, 2, 4, 5];
+    corners
+        .get(picked)
+        .and_then(|nth| bend_edge_point(app, *nth))
+        .map(StepTarget::World)
+}
+
+fn corner_fillet_shift(app: &AppState) -> bool {
+    app.creating_edge_treatment
+        .as_ref()
+        .is_some_and(|cet| !cet.edges.is_empty())
+}
+
+fn corner_value_hint(app: &AppState) -> Option<String> {
+    treatment_value_hint(app, "2")
+}
+
+/// The hole-positioning step's hint (#801): the same distance from each end, so the pair
+/// sits evenly on the flange.
+fn hole_position_hint(app: &AppState) -> Option<String> {
+    app.editing_committed_dim
+        .as_ref()
+        .map(|_| "10mm".to_string())
+}
+
 /// A fresh start for the dimensioning stage (#772): the constraint steps leave their last
 /// pair selected, and under the Dimension tool a live selection is already a dimension in
 /// the making — so drop it before the tutorial asks for the first click.
@@ -1385,48 +1499,50 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Pin them down with the Dimension tool (`D`): click the glowing centre, \
-                    Shift+click a face edge, place the dimension and type a distance. Then \
-                    the same for the other hole.",
+                    Shift+click the flange's end edge, place the dimension and type `10mm`. \
+                    Give the other hole the same `10mm` from the *other* edge and the pair \
+                    sits evenly.",
         anchor: StepAnchor::Guided(hole_dimension_orb),
         done: Some(holes_dimensioned),
         on_enter: None,
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: None,
+        type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
     },
     Step {
-        narration: "Esc, then Extrude (E): click both circles, drag the handle into the \
-                    bracket (or type `thick + 1`), pick Cut, press Enter.",
-        anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        narration: "Esc, then Extrude (E). Click each glowing hole face, pick **Cut** in the \
+                    Output row, and type `-(thick + 1)` for the depth \u{2014} straight \
+                    through and a little past. Enter.",
+        anchor: StepAnchor::Guided(hole_cut_orb),
         done: Some(holes_cut),
         on_enter: None,
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: None,
+        type_hint: Some(TypeHint::Dynamic(hole_cut_value_hint)),
     },
     Step {
-        narration: "Countersink them: Chamfer (K), click one hole's rim where it meets the \
-                    face, Shift+click the other, type `1.2`, Enter.",
-        anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)),
+        narration: "Countersink them: Chamfer (K), click the glowing rim, Shift+click the \
+                    other hole's, then type `1.2` and press Enter.",
+        anchor: StepAnchor::Guided(countersink_orb),
         done: Some(holes_countersunk),
         on_enter: None,
         assist: None,
-        needs_shift: None,
+        needs_shift: Some(countersink_shift),
         key_hint: None,
-        type_hint: None,
+        type_hint: Some(TypeHint::Dynamic(countersink_value_hint)),
     },
     Step {
-        narration: "Fillet (F) again: click a vertical edge at a flange tip, Shift+click the \
-                    other corners, type `2`, Enter. Rounded corners!",
-        anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
+        narration: "Fillet (F) again: click the glowing corner edge, Shift+click the other \
+                    three, then type `2` and press Enter. Rounded corners!",
+        anchor: StepAnchor::Guided(corner_fillet_orb),
         done: Some(corners_rounded),
         on_enter: None,
         assist: None,
-        needs_shift: None,
+        needs_shift: Some(corner_fillet_shift),
         key_hint: None,
-        type_hint: None,
+        type_hint: Some(TypeHint::Dynamic(corner_value_hint)),
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type `BearCAD`. \

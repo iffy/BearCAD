@@ -2962,6 +2962,26 @@ fn constraint_button_rect_id(
     egui::Id::new(("constraint_button_rect", kind.label()))
 }
 
+/// Egui-memory key for the extrude Output buttons (New body / Join / Cut). Keyed by the
+/// mode's *kind*, since Join/Cut carry a body index the caller may not know.
+fn extrude_output_button_rect_id(mode: &ExtrudeBodyMode) -> egui::Id {
+    let kind = match mode {
+        ExtrudeBodyMode::NewBody => "new",
+        ExtrudeBodyMode::MergeInto(_) => "join",
+        ExtrudeBodyMode::Cut(_) => "cut",
+    };
+    egui::Id::new(("extrude_output_button_rect", kind))
+}
+
+/// Where the pane drew an extrude **Output** button this frame (#804) — the tutorial's orb
+/// points at "pick Cut" there.
+pub fn extrude_output_button_rect(
+    ctx: &egui::Context,
+    mode: &ExtrudeBodyMode,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(extrude_output_button_rect_id(mode)))
+}
+
 /// Where the Context pane's constraint button for `kind` sits on screen, if it drew one
 /// this frame (#770) — the tutorial points its orb there once a step's picks are made.
 pub fn constraint_button_rect(
@@ -5280,16 +5300,20 @@ pub fn show_pane(
                         ),
                     ] {
                         ui.add_enabled_ui(enabled, |ui| {
-                            if crate::icons::selectable_icon_button(
+                            let response = crate::icons::selectable_icon_button(
                                 ui,
                                 icon,
                                 mode == value,
                                 tooltip,
-                            )
-                            .clicked()
-                                && mode != value
-                                && enabled
-                            {
+                            );
+                            // Where the tutorial's orb points at "pick Cut" (#804).
+                            ctx.data_mut(|d| {
+                                d.insert_temp(
+                                    extrude_output_button_rect_id(&value),
+                                    response.rect,
+                                )
+                            });
+                            if response.clicked() && mode != value && enabled {
                                 mode = value;
                             }
                         });

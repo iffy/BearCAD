@@ -3446,6 +3446,13 @@ document is millimeters, so the player is person-scale: eye height
   the Circle tool, each hole's centre, and positioning them — each step's predicate also
   satisfied by having done it already, so a user who opened the sketch themselves isn't told
   to open it again (#796), and each circle's `hole` hint waits for its diameter field (#798).
+  The **cut**, **countersink** and **corner-rounding** steps lead click by click too
+  (#803/#804/#806): each hole face in turn and then the pane's **Output → Cut** button
+  (`UiAnchor::ExtrudeCut`, the pane reporting its rect like the constraint buttons), each
+  hole's rim with the Shift keycap on the second, and each flange-tip edge in turn — with
+  the depth (`-(thick + 1)`), countersink (`1.2`) and corner radius (`2`) named as type
+  hints once their fields exist. The hole-positioning step asks for the **same distance from
+  each end** so the pair sits evenly (#801).
   **Dimensioning is one dimension
   per step too** (#776): pick up the tool, then each outer leg, each end cap and finally the
   bend angle, the orb on the line each step wants (and the Shift keycap for the angle's

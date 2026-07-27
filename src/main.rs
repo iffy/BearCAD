@@ -2752,6 +2752,11 @@ impl App {
                 tutorial::UiAnchor::ConstraintButton(kind) => {
                     context::constraint_button_rect(ctx, kind)
                 }
+                // The extrude Output row's Cut button (#804), reported the same way.
+                tutorial::UiAnchor::ExtrudeCut => context::extrude_output_button_rect(
+                    ctx,
+                    &actions::ExtrudeBodyMode::Cut(0),
+                ),
                 other => self.state.tutorial_anchor_rects.get(&other).copied(),
             }?;
             Some((rect.center(), rect.size().max_elem() * 0.5 + 6.0))
