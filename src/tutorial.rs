@@ -28,6 +28,8 @@ pub enum UiAnchor {
     DimensionValue,
     /// The extrude tool's floating **distance** field (#816).
     ExtrudeDistance,
+    /// A status-bar pane toggle (phone layout only, #828): Elements / Context / Params.
+    PaneButton(crate::actions::Pane),
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -87,6 +89,19 @@ pub struct Step {
     /// The words this step wants typed (#778), shown in code blue beside the orb — right
     /// where the typing lands.
     pub type_hint: Option<TypeHint>,
+    /// Narration for the **phone** layout (#828), where the panes are floating windows
+    /// toggled from the status bar rather than columns down the sides.
+    pub phone_narration: Option<&'static str>,
+}
+
+impl Step {
+    /// What this step says on the device it's being read on.
+    pub fn narration_for(&self, app: &AppState) -> &'static str {
+        match (app.compact_layout, self.phone_narration) {
+            (true, Some(text)) => text,
+            _ => self.narration,
+        }
+    }
 }
 
 /// What a step's "Type …" badge says: either fixed words, or a line computed from the live
@@ -253,6 +268,81 @@ fn next_missing_param(app: &AppState) -> Option<String> {
         Some(value.to_string())
     } else {
         Some(name.to_string())
+    }
+}
+
+// --- Phone-layout steps (#828) ---------------------------------------------------------
+//
+// On a phone the panes are floating windows toggled from the status bar, so the walkthrough
+// has to include those taps. Each of these steps is satisfied outright on a desktop (where
+// the panes are docked columns), so it auto-advances the moment it's reached and only ever
+// shows up on a phone.
+
+fn pane_open(app: &AppState, pane: crate::actions::Pane) -> bool {
+    app.panes.is_visible(pane)
+}
+
+/// "Open this pane" — already true off the phone layout, where panes are always docked.
+fn params_pane_ready(app: &AppState) -> bool {
+    !app.compact_layout || pane_open(app, crate::actions::Pane::Parameters)
+}
+
+fn context_pane_ready(app: &AppState) -> bool {
+    !app.compact_layout || pane_open(app, crate::actions::Pane::Context)
+}
+
+/// "Tuck it away again" — the floating pane covers the model, and the next steps need it.
+fn params_pane_tucked(app: &AppState) -> bool {
+    !app.compact_layout || !pane_open(app, crate::actions::Pane::Parameters)
+}
+
+fn context_pane_tucked(app: &AppState) -> bool {
+    !app.compact_layout || !pane_open(app, crate::actions::Pane::Context)
+}
+
+fn params_button_orb(app: &AppState) -> Option<StepTarget> {
+    (!params_pane_ready(app) || !params_pane_tucked(app))
+        .then_some(StepTarget::Ui(UiAnchor::PaneButton(crate::actions::Pane::Parameters)))
+}
+
+fn context_button_orb(app: &AppState) -> Option<StepTarget> {
+    (!context_pane_ready(app) || !context_pane_tucked(app))
+        .then_some(StepTarget::Ui(UiAnchor::PaneButton(crate::actions::Pane::Context)))
+}
+
+fn assist_open_params(app: &mut AppState) {
+    if !pane_open(app, crate::actions::Pane::Parameters) {
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Parameters,
+            visible: true,
+        });
+    }
+}
+
+fn assist_close_params(app: &mut AppState) {
+    if pane_open(app, crate::actions::Pane::Parameters) {
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Parameters,
+            visible: false,
+        });
+    }
+}
+
+fn assist_open_context(app: &mut AppState) {
+    if !pane_open(app, crate::actions::Pane::Context) {
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Context,
+            visible: true,
+        });
+    }
+}
+
+fn assist_close_context(app: &mut AppState) {
+    if pane_open(app, crate::actions::Pane::Context) {
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Context,
+            visible: false,
+        });
     }
 }
 
@@ -1765,6 +1855,19 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
+    },
+    Step {
+        narration: "On a phone the panes hide away. Tap `Params` in the bar at the bottom to bring the Parameters pane out.",
+        anchor: StepAnchor::Guided(params_button_orb),
+        done: Some(params_pane_ready),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Open it for me", run: assist_open_params }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "First, a name for our first number. See the Parameters pane on the \
@@ -1777,6 +1880,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: Some("The Parameters pane is open now. Tap inside the `name` box \u{2014} the pulsing ring marks it."),
     },
     Step {
         narration: "Type `leg` \u{2014} just those three letters. It's the length of each \
@@ -1789,6 +1893,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("leg")),
+        phone_narration: None,
     },
     Step {
         narration: "Now tap the value box beside it and type `50mm`.",
@@ -1800,6 +1905,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("50mm")),
+        phone_narration: None,
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
@@ -1811,6 +1917,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Three more, exactly the same moves:\n\
@@ -1824,6 +1931,19 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(next_missing_param)),
+        phone_narration: Some("Three more, the same moves:\n`hole` = `5mm`\n`bend` = `4mm`\n`bend_angle` = `120deg`\n\u{2014} or let me type them in for you."),
+    },
+    Step {
+        narration: "Tap `Params` again to tuck the pane away \u{2014} you'll want the whole screen for drawing.",
+        anchor: StepAnchor::Guided(params_button_orb),
+        done: Some(params_pane_tucked),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Tuck it away for me", run: assist_close_params }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
@@ -1835,6 +1955,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: Some("Grab the Line tool \u{2014} the glowing button in the toolbar along the top."),
     },
     Step {
         narration: "I've brought us in over the drawing area. Now click each glowing point \
@@ -1847,6 +1968,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Now the Constraint tool \u{2014} the glowing button, or press C.",
@@ -1858,6 +1980,19 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: Some("Now the Constraint tool \u{2014} the glowing button in the toolbar."),
+    },
+    Step {
+        narration: "The constraint buttons live in the Context pane \u{2014} tap `Context` at the bottom to open it.",
+        anchor: StepAnchor::Guided(context_button_orb),
+        done: Some(context_pane_ready),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Open it for me", run: assist_open_context }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Pin the profile down: click the bend corner, Shift+click the origin, \
@@ -1870,6 +2005,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Level the base: click the bottom line, Shift+click the red X axis, \
@@ -1885,6 +2021,7 @@ static BRACKET_STEPS: &[Step] = &[
             "fans out whatever is crowded under the cursor",
         )),
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Click the bottom line, Shift+click the inner base line, press `1`.",
@@ -1896,6 +2033,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "The tilted leg: click one long line, Shift+click the other, \
@@ -1908,6 +2046,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Click the base leg's end cap, Shift+click the bottom line, press `2` \
@@ -1920,6 +2059,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Click the tilted leg's end cap, Shift+click its long line, \
@@ -1932,6 +2072,19 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
+    },
+    Step {
+        narration: "Tap `Context` to tuck that pane away again \u{2014} the next steps are all out on the model.",
+        anchor: StepAnchor::Guided(context_button_orb),
+        done: Some(context_pane_tucked),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Tuck it away for me", run: assist_close_context }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Now exact sizes. Grab the Dimension tool \u{2014} the glowing button, \
@@ -1944,6 +2097,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: Some("Now exact sizes. Grab the Dimension tool \u{2014} the glowing button in the toolbar."),
     },
     Step {
         narration: "Click the glowing line, move the mouse to place the dimension, click \
@@ -1956,6 +2110,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
@@ -1967,6 +2122,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Now an end cap \u{2014} the bracket's thickness. We never entered that \
@@ -1980,6 +2136,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "And the other end cap \u{2014} now that `thick` exists, just type its \
@@ -1992,6 +2149,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
@@ -2004,6 +2162,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E). Click the glowing face, and \
@@ -2017,6 +2176,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Round the bend with Fillet (F): click the glowing edge \u{2014} the \
@@ -2029,6 +2189,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Now the outside edge, one bracket thickness bigger: type \
@@ -2041,6 +2202,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_thick_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Screw holes next. Grab the Sketch tool \u{2014} the glowing button, or \
@@ -2053,10 +2215,11 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
-        narration: "The holes go on the **inside** of the base flange \u{2014} which is \
-                    facing away right now. **Right-drag** anywhere in the viewport to spin \
+        narration: "The holes go on the `inside` of the base flange \u{2014} which is \
+                    facing away right now. `Right-drag` anywhere in the viewport to spin \
                     the view around until you're looking at it.",
         anchor: StepAnchor::Guided(spin_orb),
         done: Some(looking_at_flange_face),
@@ -2066,6 +2229,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: Some("Right-drag"),
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "There it is \u{2014} click the glowing face to sketch on it.",
@@ -2077,6 +2241,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Circle tool now \u{2014} the glowing button, or press `O`.",
@@ -2088,6 +2253,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Click the glowing spot for the first hole's centre, then type `hole` for \
@@ -2100,6 +2266,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "And the second hole, the same way: `hole` again.",
@@ -2111,6 +2278,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Pin them down with the Dimension tool (`D`): click the glowing centre, \
@@ -2125,9 +2293,22 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
+        phone_narration: None,
     },
     Step {
-        narration: "Esc, then Extrude (E). Click each glowing hole face, pick **Cut** in the \
+        narration: "This one needs the `Output` row: tap `Context` to open that pane again.",
+        anchor: StepAnchor::Guided(context_button_orb),
+        done: Some(context_pane_ready),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Open it for me", run: assist_open_context }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        type_hint: None,
+        phone_narration: None,
+    },
+    Step {
+        narration: "Esc, then Extrude (E). Click each glowing hole face, pick `Cut` in the \
                     Output row, and type `-(thick + 1)` for the depth \u{2014} straight \
                     through and a little past. Enter.",
         anchor: StepAnchor::Guided(hole_cut_orb),
@@ -2138,6 +2319,19 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_cut_value_hint)),
+        phone_narration: None,
+    },
+    Step {
+        narration: "Tap `Context` once more to tuck the pane away \u{2014} back to the model.",
+        anchor: StepAnchor::Guided(context_button_orb),
+        done: Some(context_pane_tucked),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Tuck it away for me", run: assist_close_context }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "Countersink them: Chamfer (K), click the glowing rim, Shift+click the \
@@ -2150,6 +2344,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(countersink_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Fillet (F) again: click the glowing corner edge, Shift+click the other \
@@ -2162,6 +2357,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(corner_value_hint)),
+        phone_narration: None,
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type `BearCAD`. \
@@ -2175,6 +2371,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "The best part: in the Parameters pane, change `bend_angle` from `120deg` \
@@ -2188,6 +2385,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
     Step {
         narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
@@ -2201,6 +2399,7 @@ static BRACKET_STEPS: &[Step] = &[
         drag_hint: None,
         key_hint: None,
         type_hint: None,
+        phone_narration: None,
     },
 ];
 
@@ -2263,23 +2462,23 @@ mod tests {
                 expression: value.to_string(),
             });
         }
-        assert_eq!(app.tutorial.unwrap().step, 6, "params chain to the line-tool step");
+        assert_eq!(app.tutorial.unwrap().step, 8, "params chain to the pane/line-tool steps");
 
         app.apply(Action::TutorialBack);
         let run = app.tutorial.unwrap();
-        assert_eq!(run.step, 5);
+        assert_eq!(run.step, 7);
         assert!(run.hold);
         // Its predicate is satisfied, but reviewing holds auto-advance off.
         app.advance_tutorial();
-        assert_eq!(app.tutorial.unwrap().step, 5);
+        assert_eq!(app.tutorial.unwrap().step, 7);
 
         // Next walks forward; reaching the line-tool step (unfinished) resumes auto.
         app.apply(Action::TutorialNext);
         let run = app.tutorial.unwrap();
-        assert_eq!(run.step, 6);
+        assert_eq!(run.step, 8);
         assert!(!run.hold, "caught up to live work — auto-advance resumes");
         app.apply(Action::SetTool(Tool::Line));
-        assert_eq!(app.tutorial.unwrap().step, 7, "auto-advance is live again");
+        assert_eq!(app.tutorial.unwrap().step, 9, "auto-advance is live again");
     }
 
     /// The parameters step's assist button fills in the whole table in one press —
@@ -2307,6 +2506,30 @@ mod tests {
         let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
         assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
         assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
+    }
+
+    /// #828: the phone-only steps (open/tuck the floating panes) are already satisfied on a
+    /// desktop, where the panes are docked — so they pass straight through and only ever
+    /// show up on a phone.
+    #[test]
+    fn phone_pane_steps_pass_straight_through_on_desktop() {
+        let mut app = AppState::default();
+        assert!(!app.compact_layout, "the default layout is the desktop one");
+        assert!(params_pane_ready(&app) && params_pane_tucked(&app));
+        assert!(context_pane_ready(&app) && context_pane_tucked(&app));
+
+        // On a phone they're real work: the pane has to be opened, then tucked away again.
+        app.compact_layout = true;
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Parameters,
+            visible: false,
+        });
+        assert!(!params_pane_ready(&app), "the pane is hidden — the step has work to do");
+        assist_open_params(&mut app);
+        assert!(params_pane_ready(&app));
+        assert!(!params_pane_tucked(&app));
+        assist_close_params(&mut app);
+        assert!(params_pane_tucked(&app));
     }
 
     /// #810: every step that asks for work offers to do it, and pressing that button really

@@ -3014,7 +3014,9 @@ impl App {
                         // as code — monospace, in their own colour — so they stand out
                         // from the sentence around them (#757).
                         let mut job = egui::text::LayoutJob::default();
-                        for (text, code) in tutorial::narration_spans(step.narration) {
+                        for (text, code) in
+                            tutorial::narration_spans(step.narration_for(&self.state))
+                        {
                             job.append(
                                 text,
                                 0.0,
@@ -9253,13 +9255,16 @@ impl eframe::App for App {
                             ("Context", Pane::Context),
                             ("Elements", Pane::Hierarchy),
                         ] {
-                            if ui
-                                .selectable_label(
-                                    self.state.panes.is_visible(pane),
-                                    egui::RichText::new(label).size(11.0),
-                                )
-                                .clicked()
-                            {
+                            let response = ui.selectable_label(
+                                self.state.panes.is_visible(pane),
+                                egui::RichText::new(label).size(11.0),
+                            );
+                            // Where the tutorial's orb points when a phone step needs a
+                            // pane opened (#828).
+                            self.state
+                                .tutorial_anchor_rects
+                                .insert(tutorial::UiAnchor::PaneButton(pane), response.rect);
+                            if response.clicked() {
                                 self.state.apply(Action::TogglePane(pane));
                             }
                         }
@@ -18339,6 +18344,7 @@ impl App {
         let viewport = response.rect;
         self.last_viewport = Some(viewport);
         self.state.viewport_aspect = (viewport.width() / viewport.height().max(1.0)).max(0.01);
+        self.state.compact_layout = touch::compact(ui.ctx());
         self.state.apply_pending_sketch_reframe(viewport);
         let mut inline_parameter_field_results = Vec::<SketchDimFieldResult>::new();
 

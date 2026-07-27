@@ -2185,7 +2185,7 @@ impl Action {
 }
 
 /// A toggleable UI pane (SPEC §11.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pane {
     /// The rotating orientation cube in the viewport corner ([`view_cube`]).
     ViewCube,
@@ -2707,6 +2707,10 @@ pub struct AppState {
     /// Viewport width/height, refreshed each frame by the UI — camera framing (ZoomToFit)
     /// needs it to fit the horizontal field of view.
     pub viewport_aspect: f32,
+    /// Phone-width layout (`touch::compact`), mirrored each frame: the side panes are
+    /// floating windows toggled from the status bar, so the tutorial has extra steps and
+    /// different wording there (#828).
+    pub compact_layout: bool,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     /// Persisted rectangle anchor mode (#532): the first click is a corner or the centre.
@@ -2841,6 +2845,7 @@ impl Default for AppState {
             hovered_drawing_element: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
+            compact_layout: false,
             draw_construction: false,
             rect_anchor: RectAnchor::default(),
             circle_anchor: CircleAnchor::default(),

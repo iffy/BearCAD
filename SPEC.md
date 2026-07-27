@@ -3503,6 +3503,16 @@ document is millimeters, so the player is person-scale: eye height
   (#760). It's positioned from the bubble's **measured** width (frame margins make it wider
   than its content) plus the tail and a gap, so it never clips the HUD (#767,
   `tutorial_bubble_pos`).
+- **Phone steps (#828):** on the compact layout the side panes are floating windows toggled
+  from the status bar, so the walkthrough includes those taps: open **Params** before the
+  parameter stage and tuck it away before drawing; open **Context** for the constraint
+  buttons and again for the extrude **Output → Cut**, tucking it away when the model needs
+  the screen. Each such step's predicate is *already satisfied* on a desktop (where the panes
+  are docked), so it auto-advances the moment it's reached and only ever shows on a phone;
+  its orb points at the status-bar toggle (`UiAnchor::PaneButton`), and its "do it for me"
+  opens or closes the pane. Steps whose wording assumes a desktop can carry
+  `Step::phone_narration`, used when `AppState::compact_layout` is set (mirrored each frame
+  from `touch::compact`).
 - **Every step that asks for work offers to do it** (#810): a **"do it for me" button** in
   the bubble (`tutorial::StepAssist { label, run: fn(&mut AppState) }`, applied by
   `Action::TutorialAssist`) makes the same document changes the user's clicks would — add the
