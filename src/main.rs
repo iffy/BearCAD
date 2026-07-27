@@ -2970,15 +2970,21 @@ impl App {
                 let r = bubble.response.rect;
                 let tail_y = cube.center().y.clamp(r.top() + 24.0, r.bottom() - 24.0);
                 let tip = egui::pos2(r.right() + TUTORIAL_BUBBLE_TAIL, tail_y);
+                let (base_top, base_bottom) = (
+                    egui::pos2(r.right() - 2.0, tail_y - 14.0),
+                    egui::pos2(r.right() - 2.0, tail_y + 14.0),
+                );
+                // Fill first (covering the bubble's own border along the tail's base), then
+                // stroke **only the two outer sides** — stroking the closed polygon drew a
+                // line right across the join (#808).
                 painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(r.right() - 2.0, tail_y - 14.0),
-                        tip,
-                        egui::pos2(r.right() - 2.0, tail_y + 14.0),
-                    ],
+                    vec![base_top, tip, base_bottom],
                     egui::Color32::from_rgb(38, 34, 26),
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
+                    egui::Stroke::NONE,
                 ));
+                let edge = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80));
+                painter.line_segment([base_top, tip], edge);
+                painter.line_segment([tip, base_bottom], edge);
                 measured_width = r.width();
             });
         // Next frame positions from what the bubble actually measured.
