@@ -139,6 +139,8 @@ pub struct ContextInput<'a> {
     pub dimension_derive: Option<DimensionDeriveControl>,
     /// The in-progress dimension value (#775), mirrored into the pane.
     pub dimension_edit: Option<DimensionEditControl>,
+    /// The in-progress chamfer/fillet amount (#792).
+    pub treatment: Option<TreatmentControl>,
 }
 
 /// What the Revolve tool's context section shows (#revolve): the picked axis (if any),
@@ -810,6 +812,8 @@ pub struct ContextPaneContent {
     pub dimension_derive: Option<DimensionDeriveView>,
     /// The dimension being typed right now (#775).
     pub dimension_edit: Option<DimensionEditControl>,
+    /// The chamfer/fillet being set right now (#792).
+    pub treatment: Option<TreatmentControl>,
     /// Tool-owned element pickers (#213): the sets a construction tool is gathering (e.g. the
     /// Revolve tool's cut bodies), each rendered by the same combo-box widget. Extensible: a
     /// tool may show several (Combine's A/B sides). Empty for tools not yet migrated.
@@ -1116,6 +1120,31 @@ pub struct DimensionEditControl {
 /// A user edit from the Dimension tool's value block (#775).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DimensionEditEdit {
+    SetText(String),
+    Commit,
+}
+
+/// The in-progress chamfer/fillet amount (#792): the pane mirrors the floating amount field
+/// and offers the same blue **Go** button the other tools commit with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreatmentControl {
+    pub text: String,
+    pub kind: crate::model::VertexTreatmentKind,
+}
+
+impl TreatmentControl {
+    /// A fillet is set by radius, a chamfer by how far back it cuts.
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            crate::model::VertexTreatmentKind::Fillet => "Radius",
+            crate::model::VertexTreatmentKind::Chamfer => "Distance",
+        }
+    }
+}
+
+/// A user edit from the chamfer/fillet amount block (#792).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TreatmentEdit {
     SetText(String),
     Commit,
 }
@@ -1706,6 +1735,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             selection_picker: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1764,6 +1794,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             selection_picker: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1824,6 +1855,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             selection_picker: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1891,6 +1923,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         selection_picker,
         dimension_derive,
         dimension_edit: input.dimension_edit.clone(),
+        treatment: input.treatment.clone(),
         tool_pickers,
         calibrate_image,
         revolve,
@@ -2993,6 +3026,7 @@ pub fn show_pane(
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
     on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),
     on_dimension_edit: &mut impl FnMut(DimensionEditEdit),
+    on_treatment_edit: &mut impl FnMut(TreatmentEdit),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -3117,6 +3151,38 @@ pub fn show_pane(
         }
         if primary_button(ui, controls_enabled, "Set dimension") {
             on_dimension_edit(DimensionEditEdit::Commit);
+        }
+        ui.add_space(4.0);
+    }
+
+    // The chamfer/fillet amount, mirrored from the floating field with the usual Go
+    // button (#792).
+    if let Some(control) = &content.treatment {
+        any_control = true;
+        let mut pending: Option<TreatmentEdit> = None;
+        labeled_row(ui, control.label(), |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                let mut text = control.text.clone();
+                crate::expression_input::ValueInput::new(
+                    "treatment_amount",
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(110.0)
+                .show(ui, &mut text, doc);
+                if text != control.text {
+                    pending = Some(TreatmentEdit::SetText(text));
+                }
+            });
+        });
+        if let Some(edit) = pending {
+            on_treatment_edit(edit);
+        }
+        let action = match control.kind {
+            crate::model::VertexTreatmentKind::Fillet => "Fillet",
+            crate::model::VertexTreatmentKind::Chamfer => "Chamfer",
+        };
+        if primary_button(ui, controls_enabled, action) {
+            on_treatment_edit(TreatmentEdit::Commit);
         }
         ui.add_space(4.0);
     }
@@ -5658,6 +5724,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         }
     }
 
@@ -5940,6 +6007,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         };
         let content = context_pane_content(&base);
         let edges_picker = |rows: Vec<String>| EdgePickerControl {
@@ -6026,6 +6094,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         };
         let picker = context_pane_content(&input)
             .selection_picker
@@ -6352,6 +6421,7 @@ mod tests {
                 unit_instance: None,
                 dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -6471,6 +6541,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         });
         assert_eq!(
             content,
@@ -6479,6 +6550,7 @@ mod tests {
                 unit_instance: None,
                 dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -6601,6 +6673,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         });
         assert_eq!(content.curve_mode, Some(true));
         assert_eq!(content.tangent_constraint, Some(false));
@@ -6620,6 +6693,7 @@ mod tests {
                 unit_instance: None,
                 dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -6797,6 +6871,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -6867,6 +6942,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         });
         assert_eq!(
             content,
@@ -6875,6 +6951,7 @@ mod tests {
                 unit_instance: None,
                 dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -6990,6 +7067,7 @@ mod tests {
             calibrate_pending: None,
             dimension_derive: None,
             dimension_edit: None,
+            treatment: None,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),

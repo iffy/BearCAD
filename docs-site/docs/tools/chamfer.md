@@ -19,6 +19,8 @@ it off flat. Everything else works the same way —
 
 - **On a solid:** click an edge (Shift+click for several), set the distance, **Enter**.
 
+The Context pane mirrors the **Distance** while you set it, with a blue ✓ to commit.
+
 ![A box with its two long top edges chamfered](/img/screenshots/chamfer.png)
 
 ## Help

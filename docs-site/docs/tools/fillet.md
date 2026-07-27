@@ -23,7 +23,8 @@ drilled hole. Shift+click more edges to round several with one radius, then drag
 and press **Enter** — like the rounded bend in the
 [Quickstart bracket](/docs/quickstart#5-round-the-bend).
 The picked edges are listed in the Context pane, where individual ones
-can be removed before committing.
+can be removed before committing — and the **Radius** is there too, with a blue ✓ to
+commit, so the whole thing can be driven from the pane.
 
 ![A box with its four vertical edges rounded](/img/screenshots/fillet.png)
 

@@ -5168,6 +5168,32 @@ impl App {
 
     /// Floating amount field for the in-progress chamfer/fillet (Enter commits). Mirrors
     /// [`Self::show_extrude_distance_input`].
+    /// Commit the chamfer/fillet being set from the pane's **Go** button (#792) — the same
+    /// thing the floating field's Enter does, for whichever kind is in progress.
+    fn commit_treatment_from_pane(&mut self) {
+        if let Some(mut cet) = self.state.creating_edge_treatment.take() {
+            // #201: a typed amount can define a parameter (`name = expr`).
+            let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
+            let amount = cet.evaluated_amount(&self.state.doc);
+            self.state.apply(Action::CommitEdgeTreatments {
+                edges: cet.edges.clone(),
+                kind: cet.kind,
+                amount,
+            });
+        } else if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
+            let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
+            // The raw expression, so an amount typed as a parameter stays parametric.
+            let amount_expr = cvt.amount_expr();
+            for point in cvt.points {
+                let _ = self.state.apply(Action::CommitVertexTreatment {
+                    point,
+                    kind: cvt.kind,
+                    amount: amount_expr.clone(),
+                });
+            }
+        }
+    }
+
     fn show_vertex_treatment_amount_input(
         &mut self,
         ui: &egui::Ui,
@@ -10257,6 +10283,23 @@ impl eframe::App for App {
                         is_angle: edit.target.is_angle(&self.state.doc),
                     }
                 }),
+                // The chamfer/fillet amount being set, edge- or vertex-flavoured (#792).
+                treatment: self
+                    .state
+                    .creating_edge_treatment
+                    .as_ref()
+                    .map(|cet| context::TreatmentControl {
+                        text: cet.text.clone(),
+                        kind: cet.kind,
+                    })
+                    .or_else(|| {
+                        self.state.creating_vertex_treatment.as_ref().map(|cvt| {
+                            context::TreatmentControl {
+                                text: cvt.text.clone(),
+                                kind: cvt.kind,
+                            }
+                        })
+                    }),
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -10284,6 +10327,7 @@ impl eframe::App for App {
             let mut calibrate_begin: Option<usize> = None;
             let mut dimension_derive_edit: Option<context::DimensionDeriveEdit> = None;
             let mut dimension_edit: Option<context::DimensionEditEdit> = None;
+            let mut treatment_edit: Option<context::TreatmentEdit> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
@@ -10379,6 +10423,7 @@ impl eframe::App for App {
                         &mut |control, text| calibrate_apply = Some((control, text)),
                         &mut |edit| dimension_derive_edit = Some(edit),
                         &mut |edit| dimension_edit = Some(edit),
+                        &mut |edit| treatment_edit = Some(edit),
                     );
                 });
             if !pane_kept_open {
@@ -11132,6 +11177,20 @@ impl eframe::App for App {
                 Some(context::DimensionEditEdit::Commit) => {
                     self.state.apply(Action::CommitCommittedDim);
                 }
+                None => {}
+            }
+            // The pane's mirrored chamfer/fillet amount and its Go button (#792).
+            match treatment_edit {
+                Some(context::TreatmentEdit::SetText(text)) => {
+                    if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
+                        cet.text = text;
+                        cet.user_edited = true;
+                    } else if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
+                        cvt.text = text;
+                        cvt.user_edited = true;
+                    }
+                }
+                Some(context::TreatmentEdit::Commit) => self.commit_treatment_from_pane(),
                 None => {}
             }
             if let Some((control, mut text)) = calibrate_apply {

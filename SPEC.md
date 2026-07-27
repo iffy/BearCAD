@@ -1938,7 +1938,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   value cells use it with **definitions disallowed** (the row is the definition) and
   cycle checking; the repeat panes (3D + in-sketch), Move X/Y/Z/Angle, offset distance,
   sketch-text size/rotation/wrap, calibration length, and the floating extrude /
-  revolve / chamfer / fillet amount popups all use it. Deliberate exceptions: the
+  revolve / chamfer / fillet amount popups all use it — the chamfer/fillet amount is also
+  **mirrored into the Context pane** ("Radius" for a fillet, "Distance" for a chamfer) with
+  the blue **Go** button the other tools commit with, so the treatment tools read like Move
+  and the rest (#792). Deliberate exceptions: the
   drawing view **scale** field (ratio syntax `1:20`) and the page-dimensions editor
   (inch drag-values).
 - Expressions may reference parameters and other values by name.
