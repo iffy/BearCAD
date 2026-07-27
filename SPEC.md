@@ -3398,9 +3398,11 @@ document is millimeters, so the player is person-scale: eye height
   (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
   ordinary font and the words themselves in the monospace blue the narration gives code.
   It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
-  parameter-list step names whichever parameter is still missing (#782), and a dimensioning
-  step holds its words back until the **value input is up** (#786/#787): during picking and
-  placement there's nowhere to type yet.
+  parameter-list step names whichever parameter is still missing (#782), and a step holds
+  its words back until the field that takes them exists (#786/#787/#789): a dimension's
+  value input after it's placed, the extrude's distance after a face is picked. The extrude
+  step's orb likewise moves from the toolbar button to the **profile face** once the tool is
+  up, so the face to click is shown rather than described (#790).
   All three badges are bounded by the **window**, not the viewport, since an orb can be
   pointing into a side pane. In the dimensioning steps the orb moves **off** the
   line once it's picked, onto the spot where the dimension will drop (#779) — the same side
@@ -3433,7 +3435,10 @@ document is millimeters, so the player is person-scale: eye height
 - First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
   interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
   angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and
-  the parametric angle change.
+  the parametric angle change. Only **four** parameters are entered up front; `thick` and
+  `width` are deliberately left out and then defined **from the field that uses them**
+  (`thick = 5mm` in an end cap's dimension, `width = 40mm` in the extrude distance), which
+  is how the walkthrough teaches the `name = value` shorthand (#788).
 - **Linkable (#765):** the web build reads **`?tutorial=<name>`** from the page URL at boot
   (`tutorial::tutorial_from_query`) and starts that walkthrough, so the docs' Quickstart can
   link straight into "show me" — `…/app/?tutorial=bracket`. The desktop twin is
