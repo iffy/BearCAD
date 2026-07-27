@@ -18,7 +18,8 @@ to drop it where you want it, then type the value and press **Enter**.
 - **Shift+click** a second line for the **angle** between them — the preview switches to the
   angle and follows the cursor the same way.
 - A plain click always moves on to dimensioning whatever you clicked, so a change of mind
-  costs one click.
+  costs one click. Something that's **already dimensioned** still selects — clicking it
+  doesn't reopen its value; **double-click** to change that.
 - While you're typing, the dimension stays drawn where you placed it — just without its
   number, which is in the field under your cursor. The **Context pane** mirrors the same
   value (**Span** for a length, **Angle** for an angle) with a blue **✓** to commit.

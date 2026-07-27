@@ -5146,7 +5146,7 @@ impl AppState {
 
     /// Start editing a dimension on the current selection, if applicable.
     pub fn try_begin_dimension_from_selection(&mut self) -> bool {
-        self.begin_dimension_from_selection()
+        self.begin_dimension_from_selection_inner(true)
     }
 
     /// Take the selection into the dimension flow (#763): a dimension that **already
@@ -5154,6 +5154,14 @@ impl AppState {
     /// sheet), while a brand-new one enters *placement* — the preview follows the cursor
     /// until a click drops it and hands off to typing.
     fn begin_dimension_from_selection(&mut self) -> bool {
+        self.begin_dimension_from_selection_inner(false)
+    }
+
+    /// `edit_existing`: a **double**-click (or Enter / the tool's own re-entry) asks to edit a
+    /// dimension that already exists; a single click never does (#802) — it just leaves the
+    /// thing selected, so picking an already-dimensioned edge as one end of a *new* dimension
+    /// works like picking any other.
+    fn begin_dimension_from_selection_inner(&mut self, edit_existing: bool) -> bool {
         let Some(session) = self.sketch_session else {
             return false;
         };
@@ -5162,6 +5170,10 @@ impl AppState {
         else {
             return false;
         };
+        if find_dimension_constraint(&self.doc, target.clone()).is_some() && !edit_existing {
+            self.status = "Already dimensioned — double-click it to change the value".to_string();
+            return false;
+        }
         if find_dimension_constraint(&self.doc, target.clone()).is_none()
             && require_dimension_target_editable(&self.document_health, &self.doc, target.clone())
                 .is_ok()
@@ -21567,11 +21579,15 @@ mod tests {
         });
         state.editing_committed_dim.as_mut().unwrap().text = "12".to_string();
         state.apply(Action::CommitCommittedDim);
+        // A single click on an already-dimensioned edge only selects it (#802) — a
+        // double-click is what opens the value; the tool's own entry point does the same.
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Line(0),
             additive: false,
         });
-        assert!(state.editing_committed_dim.is_some(), "an existing dimension edits");
+        assert!(state.editing_committed_dim.is_none(), "a single click doesn't edit");
+        state.try_begin_dimension_from_selection();
+        assert!(state.editing_committed_dim.is_some(), "double-click / D edits it");
 
         // Shift+click the other edge: the edit gives way to the angle between them.
         state.apply(Action::ClickSceneElement {
@@ -21588,6 +21604,40 @@ mod tests {
                 line_b: ConstraintLine::Line(1),
                 rotation_sign: 1,
             })
+        );
+    }
+
+    /// #802: an edge that already carries a dimension is still selectable — the click just
+    /// doesn't open its value.
+    #[test]
+    fn single_click_on_a_dimensioned_edge_only_selects_it() {
+        use crate::model::DimensionTarget;
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::SetTool(Tool::Dimension));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        state.apply(Action::BeginDimensionEdit {
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+        });
+        state.editing_committed_dim.as_mut().unwrap().text = "20".to_string();
+        state.apply(Action::CommitCommittedDim);
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        assert!(state.editing_committed_dim.is_none(), "no editor from a single click");
+        assert!(state.placing_dimension.is_none(), "and nothing new to place either");
+        assert!(
+            state.scene_selection.is_selected(SceneElement::Line(0)),
+            "but it IS selected, so it can pair with something else"
         );
     }
 

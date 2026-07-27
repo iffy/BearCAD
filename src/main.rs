@@ -15270,6 +15270,11 @@ fn handle_dimension_line_pick(
     let element = vertex_drag::scene_element_for_line(target);
     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
     state.apply(Action::ClickSceneElement { element, additive });
+    // A **double**-click on something already dimensioned opens its value for editing; a
+    // single click only ever selects it (#802).
+    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+        state.try_begin_dimension_from_selection();
+    }
     true
 }
 
@@ -15295,6 +15300,9 @@ fn handle_dimension_point_pick(
     let element = vertex_drag::scene_element_for_point(point);
     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
     state.apply(Action::ClickSceneElement { element, additive });
+    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+        state.try_begin_dimension_from_selection();
+    }
     true
 }
 

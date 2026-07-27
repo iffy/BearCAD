@@ -2026,6 +2026,10 @@ modeled on SolveSpace (https://solvespace.com).
   mirrored `ValueInput` — labelled **"Angle"** for an angle and **"Span"** for a length — plus
   the blue **Go** primary button every other tool commits with (`DimensionEditControl` /
   `DimensionEditEdit`). Typing in either place feeds the same edit buffer.
+- **A single click never opens an existing dimension (#802):** clicking something that's
+  already dimensioned just **selects** it (so it can pair with something else — a circle's
+  centre to an edge, say); **double-clicking** it — or pressing `D`/Enter on the selection —
+  opens its value for editing. Dimension labels keep their own click/drag behaviour.
 - **Shift+click lands mid-edit (#780):** clicking an edge that already carries a dimension
   opens its value editor — and a **Shift+click** from there still reaches the viewport: the
   half-typed value stands down and the pick joins the selection, so a second edge turns it
