@@ -30,7 +30,7 @@ Move slides whole bodies to a new place, producing moved copies.
      picking it, every reachable spot is marked in **blue**: where surrounding edges cross
      that distance, and mid-air spots straight out along any edge running through end point
      A, each with a dashed guide line from it. The one under the cursor turns **gold** and
-     the preview shows the move you'd get. With both B points picked, a **white curve** from
+     the preview shows the move you'd get. With both B points picked, a **dashed blue curve** from
      start B to end B traces the point's path with the slide and the turn advancing
      together — half way along, it's half way through both.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value

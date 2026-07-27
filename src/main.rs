@@ -19538,9 +19538,10 @@ impl App {
                 .collect()
             })
             .unwrap_or_default();
-        // The B pair's path (#748): a white curve from start B to end B tracing where the
-        // point travels with the slide and the turn advancing together — half way through
-        // the translation it is half way through its rotation.
+        // The B pair's path (#748): a dashed curve from start B to end B — in the same
+        // candidate blue as its endpoint marks — tracing where the point travels with the
+        // slide and the turn advancing together: half way through the translation it is
+        // half way through its rotation.
         if let Some(path) = self
             .state
             .creating_move
@@ -19575,7 +19576,7 @@ impl App {
             })
         {
             for pair in path.windows(2) {
-                move_connector.push((pair[0], pair[1], egui::Color32::WHITE, false));
+                move_connector.push((pair[0], pair[1], theme::MOVE_CANDIDATE, true));
             }
         }
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored

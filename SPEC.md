@@ -695,7 +695,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
   a glance — and **both B points in candidate blue** (#748). A complete pair draws the
-  point's **path**: a white curve from start B to end B tracing where the point travels
+  point's **path**: a dashed curve from start B to end B, in the same candidate blue as
+  its endpoint marks, tracing where the point travels
   with the slide and the turn advancing **together** — half way through the translation it
   is half way through its rotation (`move_b_path_points`:
   `p(t) = startA + t·T + R(axis, t·angle)·(startB − startA)`, sampled into
