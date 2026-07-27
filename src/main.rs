@@ -17483,7 +17483,11 @@ impl App {
             return (false, None, false);
         }
         // The palette's "Explode Selection Under Cursor" entry behaves exactly like a Space press.
-        let space = ui.input(|i| i.key_pressed(egui::Key::Space)) || palette_request;
+        // Not while a field has the keyboard, though — a space belongs in the expression being
+        // typed, not to the exploder (#794).
+        let space = (!ui.ctx().wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Space)))
+            || palette_request;
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
         let shift = ui.input(|i| i.modifiers.shift);
 

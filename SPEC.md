@@ -1931,7 +1931,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   what was typed**, units included: a bare `10` in a length field previews `= 10.0 mm`
   (the default unit made explicit), `1in` previews `= 25.4 mm`, while `12.5 mm` (or any
   formatting-equivalent like `12.5mm`) previews nothing
-  (`value_input_computed_display`/`canonical_value_text`). Kinds: `Length` (document
+  (`value_input_computed_display`/`canonical_value_text`). The computed label floats under
+  the field, and the **autocomplete dropdown starts below it** when one is showing, so the
+  two never overlap (#793). Kinds: `Length` (document
   length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and
   cycle checking; the repeat panes (3D + in-sketch), Move X/Y/Z/Angle, offset distance,
@@ -2053,7 +2055,9 @@ modeled on SolveSpace (https://solvespace.com).
   loupe previews all draw the full chain (`body_edge_curve_chain`, endpoint-matched by proximity
   since selection geometry round-trips the coarser `quantize_body_point`). The exploder crowd
   dedupes a curve's facets into a single candidate the same way.
-- **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
+- **Selection Exploder (#551):** pressing **Space** — when no field has the keyboard, so a
+  space typed into an expression stays in the expression (#794) — fans the crowd of pickable
+  things inside the
   cursor's hitbox out into spaced-apart **handles** arranged on a ring around it, so a tiny buried
   vertex/edge/line/face can be picked unambiguously. Each handle is a round **loupe** — `ZOOM ·
   touch::hit(12)` radius (`exploder::loupe_radius()`, `ZOOM = 4`) — that draws the hitbox region

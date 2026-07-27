@@ -585,6 +585,16 @@ fn autocomplete_handle_keys_with(
 }
 
 /// Show the autocomplete dropdown below a focused expression field.
+/// Height the computed-value chip occupies under a field (frame + 11pt text), so a dropdown
+/// can start below it (#793).
+const COMPUTED_CHIP_HEIGHT: f32 = 20.0;
+
+/// Whether the field with `id` is showing its computed value this frame — recorded by
+/// [`ValueInput::show`] before the field (and its dropdown) render.
+fn computed_chip_showing(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(id.with("value_input_has_computed")).unwrap_or(false))
+}
+
 pub fn expression_autocomplete_show_dropdown(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -652,9 +662,16 @@ fn autocomplete_show_dropdown_with(
     let anchor_id = anchor.id;
     let token_for_click = token;
 
+    // The computed-value chip lives directly under the field (#501); when it's showing, the
+    // dropdown starts below it instead of on top of it (#793).
+    let drop = if computed_chip_showing(ctx, id) {
+        COMPUTED_CHIP_HEIGHT
+    } else {
+        0.0
+    };
     egui::Area::new(anchor_id.with("expression_autocomplete"))
         .order(Order::Foreground)
-        .fixed_pos(anchor.rect.left_bottom())
+        .fixed_pos(anchor.rect.left_bottom() + egui::vec2(0.0, drop))
         .show(ctx, |ui| {
             Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_min_width(anchor.rect.width().max(160.0));
@@ -820,6 +837,12 @@ impl<'a> ValueInput<'a> {
         if !self.allow_definitions && text.contains('=') {
             errors.insert(0, "name=value definitions aren't allowed here".to_string());
         }
+        // Decide the computed chip *before* the field draws, so its autocomplete dropdown
+        // can start below the chip rather than under it (#793).
+        let computed = value_input_computed_display(text, self.kind, doc);
+        let has_computed = errors.is_empty() && computed.is_some();
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(self.id.with("value_input_has_computed"), has_computed));
         let resp = match self.width {
             Some(w) => {
                 ui.scope(|ui| {
@@ -851,7 +874,7 @@ impl<'a> ValueInput<'a> {
         // anything around. Shown only while the field is focused (idle rows stay
         // unobscured); error tooltips use the same spot and win when present.
         if errors.is_empty() && resp.has_focus() {
-            if let Some(computed) = value_input_computed_display(text, self.kind, doc) {
+            if let Some(computed) = computed {
                 egui::Area::new(self.id.with("value_input_computed"))
                     .order(egui::Order::Tooltip)
                     .pivot(egui::Align2::LEFT_TOP)
@@ -1041,6 +1064,18 @@ mod tests {
         // Numbers don't qualify.
         assert_eq!(qualified_token_at_cursor("10.", 3), None);
         assert_eq!(qualified_token_at_cursor("10.5", 4), None);
+    }
+
+    /// #793: the autocomplete dropdown starts below the computed-value chip when one is
+    /// showing, so the two don't sit on top of each other.
+    #[test]
+    fn dropdown_drops_below_the_computed_chip() {
+        let ctx = egui::Context::default();
+        let id = Id::new("value_field");
+        assert!(!computed_chip_showing(&ctx, id), "nothing recorded yet");
+        ctx.data_mut(|d| d.insert_temp(id.with("value_input_has_computed"), true));
+        assert!(computed_chip_showing(&ctx, id));
+        assert!(COMPUTED_CHIP_HEIGHT > 0.0);
     }
 
     /// #456: the computed value shows exactly when it differs from the typed text —
