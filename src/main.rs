@@ -20266,17 +20266,21 @@ impl App {
             && !suppress_hover_highlight
         {
             if let Some(pp) = pointer_screen {
-                if let Some((extrusion, _, a, b, _)) =
+                if let Some((extrusion, edge, _, _, _)) =
                     construction::nearest_treatable_edge(pp, &project, doc)
                 {
-                    let body = doc
-                        .bodies
-                        .iter()
-                        .position(|body| body.source.extrusion_indices().contains(&extrusion))
-                        .unwrap_or(extrusion);
-                    hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                        construction::PickTargetKind::BodyEdge { body, a, b },
-                    ));
+                    // Highlight the **whole** analytic edge: a hole's rim reaches the tools
+                    // as one `Cap` reference but many mesh chords, and lighting up the one
+                    // chord under the cursor made a circle look like a row of facets (#807).
+                    let segments: Vec<(Vec3, Vec3)> = crate::extrude::treatable_edges(doc)
+                        .into_iter()
+                        .filter(|(e, r, _, _)| *e == extrusion && *r == edge)
+                        .map(|(_, _, a, b)| (a, b))
+                        .collect();
+                    if !segments.is_empty() {
+                        hover_highlight =
+                            Some(gpu_viewport::ViewportHoverHighlight::Curve { segments });
+                    }
                 }
             }
         }

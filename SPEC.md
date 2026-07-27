@@ -1124,6 +1124,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     button, plus a clear-all; when the set is empty it shows a pick hint ("Click an edge —
     Shift+click adds more"). The picker is the first instance of the generalized per-tool
     selection input (future tools may host several, e.g. boolean A/B sets).
+  - **Whole-edge hover (#807)**: hovering with Chamfer/Fillet lights up the **entire analytic
+    edge** the cursor is nearest — every chord `treatable_edges` emits for that
+    `ExtrusionEdgeRef` (`ViewportHoverHighlight::Curve`), so a hole's rim reads as the one
+    circle it is to the tools instead of the single tessellation facet under the pointer.
+    (The rim is still *drawn* as chords — analytic curve rendering is a separate matter.)
   - **Multi-edge sets (#157/#166)**: the in-progress treatment holds a *set* of edges sharing
     one amount/gizmo. Shift/⌘+click toggles additional treatable edges into the set (a plain
     click restarts with just the clicked edge); switching to Chamfer/Fillet with body edges

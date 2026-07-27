@@ -338,6 +338,9 @@ pub enum ViewportHoverHighlight {
     /// its own — it's just `ExtrudeFace::Boolean`'s on-demand geometry) and for a Loft tool
     /// cross-section profile under the cursor.
     ClosedLoop { world_loop: Vec<Vec3> },
+    /// A whole analytic edge given as its segments (#807): a hole's rim is many chords in the
+    /// mesh but one edge to the tools, so it highlights as one.
+    Curve { segments: Vec<(Vec3, Vec3)> },
 }
 
 /// Whether curved line `li`'s tangent handles should be drawn (#550): only when the curve or
@@ -2790,6 +2793,16 @@ impl<'a> SceneMesh<'a> {
                     view_proj,
                     &project,
                 );
+                self.set_index_layer(restore_layer);
+            }
+            ViewportHoverHighlight::Curve { segments } => {
+                // Depth-test-disabled like every other pick highlight (#153): a rim sunk
+                // into a hole would otherwise be half-buried in the wall beside it.
+                let restore_layer = self.index_layer;
+                self.set_index_layer(MeshIndexLayer::Wireframe);
+                for (a, b) in segments {
+                    self.push_segment_hover(*a, *b, color, cam, viewport, view_proj, &project);
+                }
                 self.set_index_layer(restore_layer);
             }
             ViewportHoverHighlight::ClosedLoop { world_loop } => {
@@ -5327,6 +5340,24 @@ mod tests {
             hovered.overlay_indices.len(),
             base.overlay_indices.len(),
             "edge hover must not draw in the depth-tested overlay layer"
+        );
+
+        // #807: a whole analytic edge (a hole's rim reaches the tools as one edge but many
+        // chords) highlights as all of its segments, not just the one under the cursor.
+        let one = build(Some(ViewportHoverHighlight::Curve {
+            segments: vec![(Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0))],
+        }));
+        let three = build(Some(ViewportHoverHighlight::Curve {
+            segments: vec![
+                (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)),
+                (Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0)),
+                (Vec3::new(10.0, 10.0, 0.0), Vec3::ZERO),
+            ],
+        }));
+        assert!(one.wireframe_indices.len() > base.wireframe_indices.len());
+        assert!(
+            three.wireframe_indices.len() > one.wireframe_indices.len(),
+            "every segment of the edge is highlighted"
         );
     }
 
