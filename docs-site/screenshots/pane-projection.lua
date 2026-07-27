@@ -1,11 +1,11 @@
--- Documentation screenshot: the Project tool's Context pane with help mode on (#672/#718).
+-- Documentation screenshot: the Projection tool's Context pane with help mode on (#672/#718).
 --
 -- A body plus a sketch on an offset plane, the tool active: the selection picker.
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
 -- falling back to ".".
 
-local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-project.png"
+local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-projection.png"
 
 bearcad.new()
 bearcad.ui.pane("elements", "hide")

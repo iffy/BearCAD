@@ -8361,7 +8361,7 @@ impl eframe::App for App {
                     ui.separator();
                     for (icon, tool, label) in [
                         (icons::IconId::Select, Tool::Select, "Select"),
-                        (icons::IconId::Plus, Tool::DrawingAdd, "Add view"),
+                        (icons::IconId::Project, Tool::DrawingAdd, "Projection"),
                         (icons::IconId::Projection, Tool::DrawingAlign, "Aligned view"),
                         (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
                         (icons::IconId::Text, Tool::Text, "Text"),
@@ -8421,7 +8421,7 @@ impl eframe::App for App {
                         ui,
                         icons::IconId::Project,
                         self.state.tool == Tool::Project,
-                        "Project — click an outside edge or body to reference it in this sketch (or select edges and press Y)",
+                        "Projection — click an outside edge or body to reference it in this sketch (or select edges and press Y)",
                         TOOLBAR_ICON_SIZE,
                     )
                     .clicked()
@@ -21210,7 +21210,7 @@ impl App {
                 "s: sketch  •  Click a plane or any flat face  •  Esc: cancel"
             }
             Tool::Project => {
-                "Project — click an outside edge or body to bring it in as a dashed reference • Esc: done"
+                "Projection — click an outside edge or body to bring it in as a dashed reference • Esc: done"
             }
             Tool::Loft => {
                 if self
@@ -21299,7 +21299,7 @@ impl App {
                 }
             }
             Tool::DrawingAdd => {
-                "Add view — click a body or sketch in the Elements pane, then drag it into place"
+                "Projection — click a body or sketch in the Elements pane, then drag it into place"
             }
             Tool::DrawingAlign => {
                 "Aligned view — click a projection, then move the mouse and click to place a lined-up child view"

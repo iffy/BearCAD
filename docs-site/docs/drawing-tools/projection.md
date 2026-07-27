@@ -1,9 +1,9 @@
 ---
 sidebar_position: 4
-title: Add view
+title: Projection
 ---
 
-# ＋ Add view
+# Projection
 
 Adds a **view** — a body or sketch projected from a chosen direction — to the page.
 
@@ -20,4 +20,4 @@ the page. Click a placed view to reopen its editor. Options:
 
 ## Help
 
-![The Add view tool's Context pane, each field explained](/img/screenshots/pane-drawing-add.png)
+![The Projection tool's Context pane, each field explained](/img/screenshots/pane-drawing-projection.png)

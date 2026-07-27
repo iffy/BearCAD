@@ -1,9 +1,9 @@
--- Documentation screenshot: the drawing workbench's Add view tool Context pane with help mode on (#672).
+-- Documentation screenshot: the drawing workbench's Projection tool Context pane with help mode on (#672).
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
 -- falling back to ".".
 
-local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-drawing-add.png"
+local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-drawing-projection.png"
 
 bearcad.new()
 bearcad.rect{ width = 60, height = 35, name = "Plate" }

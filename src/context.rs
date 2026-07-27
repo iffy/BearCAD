@@ -1221,7 +1221,7 @@ fn body_tool_picker(
 /// being re-edited through its tool.
 fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
     use crate::actions::Tool;
-    // The drawing workbench has its own titled sections (View / Add view), not a tool title.
+    // The drawing workbench has its own titled sections (View / Projection), not a tool title.
     if input.in_drawing_workbench {
         return None;
     }
@@ -1250,7 +1250,7 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
                 "Offset"
             }
         }
-        Tool::Project => "Project",
+        Tool::Project => "Projection",
         Tool::Loft => "Loft",
         Tool::Revolve => "Revolve",
         Tool::Sweep => "Sweep",
@@ -2497,7 +2497,7 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::ConstructionPlane), "Tilt") => Some(
             "The tilt about the anchored axis, in degrees — for an edge or axis anchor.",
         ),
-        (Some(Tool::DrawingAdd), "Add view") => Some(
+        (Some(Tool::DrawingAdd), "Projection") => Some(
             "Click a body or sketch — in the Elements pane or the 3D view — and a \
              projection of it lands on the page.",
         ),
@@ -4898,11 +4898,11 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         let header = ui.label(
-            egui::RichText::new("Add view")
+            egui::RichText::new("Projection")
                 .color(egui::Color32::from_gray(130))
                 .size(11.5),
         );
-        note_help(ui, "Add view", header.rect);
+        note_help(ui, "Projection", header.rect);
     }
 
     // Drawing text annotation editor (#312): a multiline textarea + remove button.

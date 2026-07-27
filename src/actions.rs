@@ -127,9 +127,9 @@ pub enum Tool {
     /// Place text in a sketch (Text tool, #282): click to drop a text element whose glyph
     /// outlines are baked from a system font; edit its string/font/size/style in the context pane.
     Text,
-    /// Drawing workbench's "Add view" tool (#289): pick a body or sketch (Elements pane) to
-    /// drop a projection on the open drawing page, then drag it into place and set its
-    /// orientation in the context pane.
+    /// Drawing workbench's "Projection" tool (#289; called "Add view" until #753): pick a body
+    /// or sketch (Elements pane) to drop a projection on the open drawing page, then drag it
+    /// into place and set its orientation in the context pane.
     DrawingAdd,
     /// Drawing workbench's aligned-projection tool (#296): pick an existing projection, then
     /// move the mouse to preview an orthographic child view (down/up/left/right) that stays
@@ -6300,14 +6300,14 @@ impl AppState {
                             .to_string()
                     }
                     Tool::Project => {
-                        "Project tool — click an outside edge (or a body) to bring it into the sketch as a reference".to_string()
+                        "Projection tool — click an outside edge (or a body) to bring it into the sketch as a reference".to_string()
                     }
                     Tool::Text if self.sketch_session.is_some() => {
                         "Text tool — click to place text, or drag a box to set its width".to_string()
                     }
                     Tool::Text => "Text tool — open a sketch first".to_string(),
                     Tool::DrawingAdd => {
-                        "Add view — click a body or sketch in the Elements pane".to_string()
+                        "Projection — click a body or sketch in the Elements pane".to_string()
                     }
                     Tool::DrawingAlign => {
                         "Aligned view — click a projection, then move the mouse and click to place a lined-up view".to_string()
@@ -9453,8 +9453,8 @@ label_hidden: false,
                     if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
                         return ActionResult::Err(format!("No drawing {di}"));
                     }
-                    // The Drawing workbench offers Select/Add view/Aligned view/Dimension/Text
-                    // (#271, #295 dropped Move, #289 Add view, #296 Aligned view, #312 Text);
+                    // The Drawing workbench offers Select/Projection/Aligned view/Dimension/Text
+                    // (#271, #295 dropped Move, #289 Projection, #296 Aligned view, #312 Text);
                     // anything else drops to Select.
                     if !matches!(
                         self.tool,

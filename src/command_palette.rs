@@ -512,8 +512,8 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
     ),
     PaletteCommand::new(
         PaletteCommandId::ToolProject,
-        "Project Tool",
-        "project tool edges reference sketch onto",
+        "Projection Tool",
+        "projection project tool edges reference sketch onto",
     ),
     PaletteCommand::new(
         PaletteCommandId::ToolLoft,

@@ -24,7 +24,7 @@ you're in sketch mode. Press **Esc** (with nothing in progress) to leave the ske
 - **A sketch selects only its own geometry:** while a sketch is open, outside bodies and
   other sketches stay out of reach — hovering and clicking touch just this sketch's
   shapes, its origin and axes, and the sketched-on face's own edges and corners.
-- **Project outside geometry in:** in sketch mode a **Project** tool appears in the
+- **Project outside geometry in:** in sketch mode a **Projection** tool appears in the
   toolbar — click an outside body edge (or a face/vertex to take the whole body) and it
   lands on the sketch plane as a dashed [projected line](/docs/styles#lines) that follows
   its source, ready to snap and constrain against. Or select edges before opening the

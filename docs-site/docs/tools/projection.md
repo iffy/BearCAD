@@ -1,11 +1,12 @@
 ---
-title: Project
+sidebar_position: 11
+title: Projection
 ---
 
-# Project
+# Projection
 
-Available inside a sketch, **Project** pulls outside 3D geometry onto the sketch plane as
-reference lines you can snap, dimension, and constrain against.
+Available inside a sketch, **Projection** pulls outside 3D geometry onto the sketch plane
+as reference lines you can snap, dimension, and constrain against.
 
 - Click an outside **body edge** to project that edge; click a **face** or **corner** to
   project the whole body's feature edges.
@@ -19,7 +20,7 @@ lands in a sketch opened on it automatically.
 
 ## Help
 
-![The Project tool's Context pane, each field explained](/img/screenshots/pane-project.png)
+![The Projection tool's Context pane, each field explained](/img/screenshots/pane-projection.png)
 
 ## Scripting
 
