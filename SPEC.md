@@ -3342,7 +3342,13 @@ document is millimeters, so the player is person-scale: eye height
   `UiAnchor::{ParametersName, ParametersValue, ParametersAdd}` recorded by the pane,
   the name-box tap detected via `ParametersPaneState::new_name_focused`), and
   the profile-drawing step leads **vertex by vertex** around the sloppy outline
-  (`next_profile_point`), pointing at the ground origin until the sketch opens. Steps can
+  (`next_profile_point`), pointing at the ground origin until the sketch opens. The
+  squaring-up steps lead **click by click** too (#758/#761): each points the orb at the
+  first thing to click, then — once that's selected — at the second, and at nothing once
+  both are in hand; a stray pick leaves it pointing back at what's still wanted, which is
+  how a mis-click finds its way back. The second click of a pair floats a blue **Shift
+  keycap** beside the orb (#759, `Step::needs_shift`, `draw_shift_keycap`), since that
+  click adds to the selection. Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going
   forward (never while reviewing with Back): the drawing step uses it to **glide the
   camera in over the profile area** (`frame_profile_area`), so a user who happened to be
@@ -3351,8 +3357,9 @@ document is millimeters, so the player is person-scale: eye height
   *with the origin*, so the drawing phase's endpoint snaps don't satisfy it), level the
   base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
   every predicate cumulative so working ahead skips ahead. The
-  bubble hangs directly under the view cube's actual rect
-  (`view_cube::cube_rect_in_viewport`), tail pointing at the bear.
+  bubble hangs off the **left side** of the view cube's actual rect
+  (`view_cube::cube_rect_in_viewport`), tail pointing right at the bear — under it, the
+  bubble covered the Context pane controls a step was pointing at (#760).
 - A step that is **pure typing** can offer a **"do it for me" button** in the bubble
   (`tutorial::StepAssist`, applied by `Action::TutorialAssist`): the bracket's
   "five more parameters" step has **Add them for me**, which adds whichever of

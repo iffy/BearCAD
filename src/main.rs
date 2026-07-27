@@ -1748,6 +1748,50 @@ fn draw_pick_target_loupe(
     }
 }
 
+/// A blue **Shift** keycap floating beside a tutorial orb (#759): the click the orb points
+/// at has to be Shift+clicked to add to the selection. Drawn like a real key — a rounded
+/// cap with a lighter top face — to the right of the orb, or to its left when the right
+/// side runs out of viewport.
+fn draw_shift_keycap(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    viewport: egui::Rect,
+) {
+    const KEY: egui::Vec2 = egui::vec2(58.0, 34.0);
+    let gap = orb_radius + 14.0;
+    let mut center = orb + egui::vec2(gap + KEY.x * 0.5, 0.0);
+    if center.x + KEY.x * 0.5 > viewport.right() - 6.0 {
+        center = orb - egui::vec2(gap + KEY.x * 0.5, 0.0);
+    }
+    center.y = center
+        .y
+        .clamp(viewport.top() + KEY.y, viewport.bottom() - KEY.y);
+    let rect = egui::Rect::from_center_size(center, KEY);
+    // The cap's body, then a lighter top face inset above it — enough shading to read as a key.
+    painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(40, 78, 150));
+    painter.rect_filled(
+        egui::Rect::from_min_max(rect.min + egui::vec2(3.0, 3.0), rect.max - egui::vec2(3.0, 6.0)),
+        5.0,
+        egui::Color32::from_rgb(70, 125, 220),
+    );
+    painter.rect_stroke(
+        rect,
+        6.0,
+        egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 195, 255)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        egui::pos2(rect.center().x, rect.center().y - 1.5),
+        egui::Align2::CENTER_CENTER,
+        "Shift",
+        egui::FontId::proportional(14.0),
+        egui::Color32::WHITE,
+    );
+    ctx.request_repaint();
+}
+
 /// Draw the touch drawing loupe (#755): while a finger drags a sketch shape out, a round
 /// magnifier floats beside the fingertip showing what the finger itself is covering — the
 /// open sketch's geometry, the shape in progress, and the snap the next tap would take —
@@ -2578,18 +2622,24 @@ impl App {
                 4.0,
                 egui::Color32::from_rgba_unmultiplied(140, 190, 255, 200),
             );
+            // This click adds to the selection, so it wants Shift held: float a keycap
+            // beside the orb saying so (#759).
+            if step.needs_shift.is_some_and(|f| f(&self.state)) {
+                draw_shift_keycap(&painter, ctx, pos, base + pulse, viewport);
+            }
             ctx.request_repaint(); // keep the pulse and glide animating
         } else {
             self.tutorial_orb_pos = None;
         }
 
-        // The bear's speech bubble, hanging directly under the view cube (that IS
-        // the bear), tail pointing up at it.
+        // The bear's speech bubble, off the view cube's **left** side (#760) — under it,
+        // the bubble hangs over the Context pane's controls, which is exactly where the
+        // tutorial is telling you to look.
         const BUBBLE_W: f32 = 320.0;
         let cube = view_cube::cube_rect_in_viewport(viewport);
         let anchor_pos = egui::pos2(
-            (cube.right() - BUBBLE_W).max(viewport.left() + 8.0),
-            cube.bottom() + 16.0,
+            (cube.left() - BUBBLE_W - 18.0).max(viewport.left() + 8.0),
+            cube.top(),
         );
         let mut next = false;
         let mut back = false;
@@ -2711,15 +2761,16 @@ impl App {
                             );
                         });
                     });
-                // The tail: a little triangle from the bubble up toward the bear.
+                // The tail: a little triangle off the bubble's right edge, pointing across
+                // at the bear.
                 let r = bubble.response.rect;
-                let tail_x = cube.center().x.clamp(r.left() + 30.0, r.right() - 30.0);
-                let tip = egui::pos2(tail_x, r.top() - 12.0);
+                let tail_y = cube.center().y.clamp(r.top() + 24.0, r.bottom() - 24.0);
+                let tip = egui::pos2(r.right() + 12.0, tail_y);
                 painter.add(egui::Shape::convex_polygon(
                     vec![
-                        egui::pos2(tail_x - 14.0, r.top() + 2.0),
+                        egui::pos2(r.right() - 2.0, tail_y - 14.0),
                         tip,
-                        egui::pos2(tail_x + 14.0, r.top() + 2.0),
+                        egui::pos2(r.right() - 2.0, tail_y + 14.0),
                     ],
                     egui::Color32::from_rgb(38, 34, 26),
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
