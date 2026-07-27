@@ -729,32 +729,54 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
 /// what keeps a hovered solid from selecting its hidden back face.
 const FACE_PICK_DEPTH_TIE_PX: f32 = 0.5;
 
-fn consider_face_pick(
-    best: &mut Option<(FaceId, f32, f32)>,
+/// A pick candidate: which face, how far the cursor is from it on screen, how far it is from
+/// the eye, and — for sketch profiles — how big it is. `area` is `INFINITY` for a body's own
+/// face, which is never compared by size.
+struct FacePick {
     face: FaceId,
     dist: f32,
     depth: f32,
-) {
-    if dist > crate::construction::FACE_PICK_MARGIN_PX {
+    area: f32,
+}
+
+fn consider_face_pick_sized(best: &mut Option<FacePick>, candidate: FacePick) {
+    if candidate.dist > crate::construction::FACE_PICK_MARGIN_PX {
         return;
     }
     let better = match best.as_ref() {
         None => true,
-        Some((_, best_dist, best_depth)) => {
-            if dist < best_dist - FACE_PICK_DEPTH_TIE_PX {
+        Some(b) => {
+            if candidate.dist < b.dist - FACE_PICK_DEPTH_TIE_PX {
                 true
-            } else if dist > best_dist + FACE_PICK_DEPTH_TIE_PX {
+            } else if candidate.dist > b.dist + FACE_PICK_DEPTH_TIE_PX {
                 false
+            } else if candidate.area.is_finite() && b.area.is_finite() {
+                // Two sketch profiles on top of each other (a hole inside a plate outline,
+                // #822): the **smaller** one is what the cursor is aiming at. Depth can't
+                // tell them apart — they're coplanar.
+                candidate.area < b.area
             } else {
                 // Essentially the same screen distance (e.g. cursor inside both the
                 // front and back face of a solid): prefer the one nearer the camera.
-                depth < *best_depth
+                candidate.depth < b.depth
             }
         }
     };
     if better {
-        *best = Some((face, dist, depth));
+        *best = Some(candidate);
     }
+}
+
+/// World area of a closed profile polygon, for the smaller-wins rule above.
+fn polygon_world_area(points: &[Vec3]) -> f32 {
+    if points.len() < 3 {
+        return f32::INFINITY;
+    }
+    let mut sum = Vec3::ZERO;
+    for i in 0..points.len() {
+        sum += points[i].cross(points[(i + 1) % points.len()]);
+    }
+    sum.length() * 0.5
 }
 
 /// The exact face a sketch profile candidate (`Circle`/`Polygon`) was drawn on, if any.
@@ -772,22 +794,23 @@ fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
     doc.sketches.get(sketch).map(|s| s.face.clone())
 }
 
-/// True when `best` is a sketch profile drawn directly on `candidate`, at essentially the
-/// same screen distance (#117): a rectangle sketched on a solid's face is coincident with
-/// that face, so its centroid can be farther from the eye than the (larger) host face's —
-/// the depth tie-break in [`consider_face_pick`] would then wrongly let the plain face win
-/// the pick, silently discarding the sketch (`Extrude` only picks `Circle`/`Polygon` faces).
-/// A sketch drawn on a face is always meant to be picked over the bare face beneath it, so
-/// skip the depth compare entirely once we know — by construction, not by geometry — that
-/// they're the same surface.
-fn sketch_shadows(best: &Option<(FaceId, f32, f32)>, candidate: &FaceId, dist: f32, doc: &Document) -> bool {
-    let Some((best_face, best_dist, _)) = best else {
-        return false;
-    };
-    if (dist - best_dist).abs() > FACE_PICK_DEPTH_TIE_PX {
-        return false;
-    }
-    sketch_host_face(doc, best_face).as_ref() == Some(candidate)
+/// True when some sketch profile under the cursor is drawn directly on `candidate`, at
+/// essentially the same screen distance (#117): a rectangle or circle sketched on a solid's
+/// face is coincident with that face, so its centroid can be farther from the eye than the
+/// (larger) host face's — the depth tie-break in [`consider_face_pick`] would then wrongly
+/// let the plain face win the pick, silently discarding the sketch (`Extrude` only picks
+/// `Circle`/`Polygon` faces). A sketch drawn on a face is always meant to be picked over the
+/// bare face beneath it, so skip the depth compare entirely once we know — by construction,
+/// not by geometry — that they're the same surface.
+///
+/// Checked against **every** hit profile rather than just the current best (#822): with a
+/// third face also under the cursor (the bracket's own profile lying on the ground, say)
+/// the best could be that unrelated one, and the host face then beat the hole the user was
+/// aiming at.
+fn sketch_shadows(hosts: &[(FaceId, f32)], candidate: &FaceId, dist: f32) -> bool {
+    hosts.iter().any(|(host, host_dist)| {
+        host == candidate && (dist - host_dist).abs() <= FACE_PICK_DEPTH_TIE_PX
+    })
 }
 
 fn centroid(points: &[Vec3]) -> Vec3 {
@@ -820,12 +843,31 @@ pub fn pick_sketch_face(
     doc: &Document,
     eye: Vec3,
 ) -> Option<FaceId> {
-    let mut best: Option<(FaceId, f32, f32)> = None;
+    let mut best: Option<FacePick> = None;
     let depth = |p: Vec3| (p - eye).length();
+    // Host faces of every sketch profile hit this pass, so those hosts step aside for them.
+    let mut shadowed_hosts: Vec<(FaceId, f32)> = Vec::new();
+    let mut note_host = |face: &FaceId, dist: f32, doc: &Document| {
+        if dist <= crate::construction::FACE_PICK_MARGIN_PX {
+            if let Some(host) = sketch_host_face(doc, face) {
+                shadowed_hosts.push((host, dist));
+            }
+        }
+    };
 
     for (i, circle) in doc.circles.iter().enumerate().rev() {
         if let Some((dist, c)) = circle_face_pick_distance(screen, doc, circle, project) {
-            consider_face_pick(&mut best, FaceId::Circle(i), dist, depth(c));
+            let face = FaceId::Circle(i);
+            note_host(&face, dist, doc);
+            consider_face_pick_sized(
+                &mut best,
+                FacePick {
+                    face,
+                    dist,
+                    depth: depth(c),
+                    area: std::f32::consts::PI * circle.r * circle.r,
+                },
+            );
         }
     }
 
@@ -837,7 +879,17 @@ pub fn pick_sketch_face(
                 &crate::model::ExtrudeFace::Polygon(lines.clone()),
             ) {
                 if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
-                    consider_face_pick(&mut best, FaceId::Polygon(lines), dist, depth(c));
+                    let face = FaceId::Polygon(lines);
+                    note_host(&face, dist, doc);
+                    consider_face_pick_sized(
+                        &mut best,
+                        FacePick {
+                            face,
+                            dist,
+                            depth: depth(c),
+                            area: polygon_world_area(&poly),
+                        },
+                    );
                 }
             }
         }
@@ -859,8 +911,11 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         top,
                     };
-                    if !sketch_shadows(&best, &candidate, dist, doc) {
-                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                        consider_face_pick_sized(
+                        &mut best,
+                        FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                    );
                     }
                 }
             }
@@ -874,8 +929,11 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         edge: edge as u8,
                     };
-                    if !sketch_shadows(&best, &candidate, dist, doc) {
-                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                        consider_face_pick_sized(
+                        &mut best,
+                        FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                    );
                     }
                 }
             }
@@ -901,8 +959,11 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         end,
                     };
-                    if !sketch_shadows(&best, &candidate, dist, doc) {
-                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                        consider_face_pick_sized(
+                        &mut best,
+                        FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                    );
                     }
                 }
             }
@@ -917,8 +978,11 @@ pub fn pick_sketch_face(
                         profile: profile.clone(),
                         edge: edge as u8,
                     };
-                    if !sketch_shadows(&best, &candidate, dist, doc) {
-                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                        consider_face_pick_sized(
+                        &mut best,
+                        FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                    );
                     }
                 }
             }
@@ -944,8 +1008,11 @@ pub fn pick_sketch_face(
                     instance,
                     face: Box::new(inner_face),
                 };
-                if !sketch_shadows(&best, &candidate, dist, doc) {
-                    consider_face_pick(&mut best, candidate, dist, depth(c));
+                if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                    consider_face_pick_sized(
+                        &mut best,
+                        FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                    );
                 }
             }
         }
@@ -955,13 +1022,16 @@ pub fn pick_sketch_face(
         let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             let candidate = FaceId::ConstructionPlane(i);
-            if !sketch_shadows(&best, &candidate, dist, doc) {
-                consider_face_pick(&mut best, candidate, dist, depth(c));
+            if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                consider_face_pick_sized(
+                        &mut best,
+                        FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                    );
             }
         }
     }
 
-    best.map(|(face, _, _)| face)
+    best.map(|pick| pick.face)
 }
 
 /// Every sketchable analytic face within `radius` px of the cursor (#625): the same
@@ -1310,6 +1380,47 @@ fn dist_point_to_segment_px(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: efr
     }
     let t = ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0);
     (p - (a + ab * t)).length()
+}
+
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    /// #822: a hole drawn inside a bigger profile on the same plane wins the pick — the
+    /// cursor is inside both, and the smaller shape is the one being aimed at. (Depth can't
+    /// separate coplanar profiles, and the bigger one's centroid is often nearer the eye.)
+    #[test]
+    fn a_smaller_coplanar_profile_wins_the_face_pick() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        // A 40×30 rectangle as four lines, with a small circle inside it.
+        for (x0, y0, x1, y1) in [
+            (0.0, 0.0, 40.0, 0.0),
+            (40.0, 0.0, 40.0, 30.0),
+            (40.0, 30.0, 0.0, 30.0),
+            (0.0, 30.0, 0.0, 0.0),
+        ] {
+            doc.lines
+                .push(crate::model::Line::from_local_endpoints(sketch, x0, y0, x1, y1));
+        }
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 20.0, 15.0, 3.0, 0.0));
+
+        let cam = crate::camera::Camera::default();
+        let viewport =
+            eframe::egui::Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: Vec3| cam.project(w, viewport, &vp);
+        let centre = local_to_world(&sketch_geometry_frame(&doc, sketch).unwrap(), 20.0, 15.0);
+        let at = project(centre).expect("the circle's centre projects");
+
+        assert_eq!(
+            pick_sketch_face(at, &project, &doc, cam.eye()),
+            Some(FaceId::Circle(0)),
+            "the hole, not the rectangle around it"
+        );
+    }
 }
 
 #[cfg(test)]

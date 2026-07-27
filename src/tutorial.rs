@@ -78,6 +78,9 @@ pub struct Step {
     /// When this returns true the orb floats a **Shift** keycap beside it (#759): the
     /// click it's pointing at has to be Shift+clicked to add to the selection.
     pub needs_shift: Option<fn(&AppState) -> bool>,
+    /// A mouse-button badge plus a looping drag animation beside the orb (#819) — for the
+    /// steps that want a **drag**, not a click.
+    pub drag_hint: Option<&'static str>,
     /// A `(key, explanation)` badge under the orb (#777) — used to introduce **Space**, the
     /// Selection Exploder, on steps whose target sits under other geometry.
     pub key_hint: Option<(&'static str, &'static str)>,
@@ -1128,6 +1131,14 @@ fn looking_at_flange_face(app: &AppState) -> bool {
     (app.cam.eye() - spot).normalize_or_zero().dot(outward) > 0.25
 }
 
+/// Where the spin step's orb sits (#819): over the bracket itself, since the drag can start
+/// anywhere but that's where the eye is.
+fn spin_orb(app: &AppState) -> Option<StepTarget> {
+    let outer = profile_polyline(app, 0).as_deref().and_then(polyline_midpoint)?;
+    let inner = profile_polyline(app, 2).as_deref().and_then(polyline_midpoint)?;
+    Some(StepTarget::World(outer.lerp(inner, 0.5)))
+}
+
 /// Swing the camera round to that face — what the assist (and the step's own hint) does.
 fn assist_spin_to_flange(app: &mut AppState) {
     let Some(spot) = flange_face_point(app, 0.5, 0.5) else { return };
@@ -1214,6 +1225,11 @@ fn holes_dimensioned(app: &AppState) -> bool {
 fn hole_dimension_orb(app: &AppState) -> Option<StepTarget> {
     if holes_dimensioned(app) {
         return None;
+    }
+    // The step asks for the Dimension tool first — point at it while another tool is up
+    // (the circle steps leave the Circle tool active, #820).
+    if app.tool != Tool::Dimension && app.placing_dimension.is_none() {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Dimension)));
     }
     if app.editing_committed_dim.is_some() {
         return Some(StepTarget::Ui(UiAnchor::DimensionValue));
@@ -1538,20 +1554,24 @@ fn assist_second_hole(app: &mut AppState) {
 fn assist_cut_holes(app: &mut AppState) {
     use crate::actions::ExtrudeBodyChoice;
     use crate::model::ExtrudeFace;
-    let Some(session) = app.sketch_session else { return };
+    // The holes' own sketch — not whichever sketch happens to be open, which may be an empty
+    // one the user opened on the same face (#823).
+    let Some(profile) = profile_sketch(app) else { return };
     let circles: Vec<usize> = app
         .doc
         .circles
         .iter()
         .enumerate()
-        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch != profile)
         .map(|(i, _)| i)
         .collect();
     if circles.is_empty() {
         return;
     }
-    let sketch = session.sketch;
-    app.apply(Action::ExitSketch);
+    let Some(sketch) = app.doc.circles.get(circles[0]).map(|c| c.sketch) else { return };
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
     let depth = crate::value::eval_length_mm_in_doc("thick + 1", &app.doc).unwrap_or(6.0);
     app.apply(Action::CreateExtrusion {
         sketch,
@@ -1742,6 +1762,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1753,6 +1774,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1764,6 +1786,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("leg")),
     },
@@ -1774,6 +1797,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("50mm")),
     },
@@ -1784,6 +1808,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1796,6 +1821,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Add them for me", run: add_missing_params }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(next_missing_param)),
     },
@@ -1806,6 +1832,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_line_tool }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1817,6 +1844,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: Some(frame_profile_area),
         assist: Some(StepAssist { label: "Draw it for me", run: assist_draw_profile }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1827,6 +1855,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_constraint_tool }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1838,6 +1867,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_pin }),
         needs_shift: Some(pin_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1849,6 +1879,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_level }),
         needs_shift: Some(level_shift),
+        drag_hint: None,
         key_hint: Some((
             "Space",
             "fans out whatever is crowded under the cursor",
@@ -1862,6 +1893,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_base_strip }),
         needs_shift: Some(base_strip_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1873,6 +1905,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_legs }),
         needs_shift: Some(legs_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1884,6 +1917,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_cap_one }),
         needs_shift: Some(cap_one_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1895,6 +1929,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_cap_two }),
         needs_shift: Some(cap_two_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1906,6 +1941,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: Some(clear_selection_for_dimensioning),
         assist: Some(StepAssist { label: "Do it for me", run: assist_dimension_tool }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -1917,6 +1953,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_base_leg_dim }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
     },
@@ -1927,6 +1964,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_tilted_leg_dim }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
     },
@@ -1939,6 +1977,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_base_cap_dim }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
     },
@@ -1950,6 +1989,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_tilted_cap_dim }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
     },
@@ -1961,6 +2001,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_bend_angle_dim }),
         needs_shift: Some(bend_angle_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
     },
@@ -1973,6 +2014,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_extrude }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
     },
@@ -1984,6 +2026,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_inner_bend }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_value_hint)),
     },
@@ -1995,6 +2038,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_outer_bend }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_thick_value_hint)),
     },
@@ -2006,6 +2050,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_sketch_tool }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -2013,11 +2058,12 @@ static BRACKET_STEPS: &[Step] = &[
         narration: "The holes go on the **inside** of the base flange \u{2014} which is \
                     facing away right now. **Right-drag** anywhere in the viewport to spin \
                     the view around until you're looking at it.",
-        anchor: StepAnchor::None,
+        anchor: StepAnchor::Guided(spin_orb),
         done: Some(looking_at_flange_face),
         on_enter: None,
         assist: Some(StepAssist { label: "Spin it for me", run: assist_spin_to_flange }),
         needs_shift: None,
+        drag_hint: Some("Right-drag"),
         key_hint: None,
         type_hint: None,
     },
@@ -2028,6 +2074,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_flange_sketch }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -2038,6 +2085,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_circle_tool }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -2049,6 +2097,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_first_hole }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
     },
@@ -2059,6 +2108,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_second_hole }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
     },
@@ -2072,6 +2122,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_position_holes }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
     },
@@ -2084,6 +2135,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_cut_holes }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_cut_value_hint)),
     },
@@ -2095,6 +2147,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_countersink }),
         needs_shift: Some(countersink_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(countersink_value_hint)),
     },
@@ -2106,6 +2159,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_round_corners }),
         needs_shift: Some(corner_fillet_shift),
+        drag_hint: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(corner_value_hint)),
     },
@@ -2118,6 +2172,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_engrave }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -2130,6 +2185,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: Some(StepAssist { label: "Do it for me", run: assist_change_angle }),
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },
@@ -2142,6 +2198,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
+        drag_hint: None,
         key_hint: None,
         type_hint: None,
     },

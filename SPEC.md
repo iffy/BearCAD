@@ -1128,6 +1128,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     button, plus a clear-all; when the set is empty it shows a pick hint ("Click an edge —
     Shift+click adds more"). The picker is the first instance of the generalized per-tool
     selection input (future tools may host several, e.g. boolean A/B sets).
+  - **Coplanar profiles: smaller wins (#822)**: when the cursor is inside two sketch
+    profiles on the same plane — a hole inside a plate outline — the **smaller** one takes
+    the pick (`pick_sketch_face` compares profile areas on a screen-distance tie). Depth
+    can't separate coplanar faces, and the bigger one's centroid is often nearer the eye, so
+    a hole used to be unpickable with the face-picking tools.
   - **Whole-edge hover (#807)**: hovering with Chamfer/Fillet lights up the **entire analytic
     edge** the cursor is nearest — every chord `treatable_edges` emits for that
     `ExtrusionEdgeRef` (`ViewportHoverHighlight::Curve`), so a hole's rim reads as the one
@@ -2026,6 +2031,10 @@ modeled on SolveSpace (https://solvespace.com).
   mirrored `ValueInput` — labelled **"Angle"** for an angle and **"Span"** for a length — plus
   the blue **Go** primary button every other tool commits with (`DimensionEditControl` /
   `DimensionEditEdit`). Typing in either place feeds the same edit buffer.
+- **Face edges hover too (#821):** the sketched-on face's own boundary edges are pickable
+  (#26/#27) but have no `PickTargetKind` of their own, so nothing lit up for a click that
+  worked. Select/Constraint/Dimension now highlight the edge under the cursor
+  (`face_edge_hover`, drawn as a `Curve` highlight) while a sketch is open.
 - **Hover follows selectability (#800):** inside a sketch the Dimension tool highlights
   **everything a click can take** — the sketch's lines and circles, its points, and the
   sketched-on face's own edges and corners (`element_in_sketch`, the same filter the click
@@ -3411,7 +3420,9 @@ document is millimeters, so the player is person-scale: eye height
   the first target with **no Shift keycap**, since that click has to replace the selection
   rather than add a third thing to it (#785). A line's orb sits at its
   **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
-  polyline — for a straight line that was its end. The second click of a pair floats a blue **Shift
+  polyline — for a straight line that was its end. A step that wants a **drag** rather than a click shows the
+  mouse button as a keycap plus a looping drag animation beside the orb (`Step::drag_hint`,
+  #819) — the spin-the-view step uses it. The second click of a pair floats a blue **Shift
   keycap** beside the orb (#759, `Step::needs_shift`, `draw_shift_keycap`), since that
   click adds to the selection. Steps whose target sits **under other geometry** — the base
   line lying along the X axis, once it's been levelled — carry a **key hint** badge below

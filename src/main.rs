@@ -1890,6 +1890,45 @@ fn draw_orb_type_hint(
     ctx.request_repaint();
 }
 
+/// A mouse-button badge and a looping drag animation beside the orb (#819): the step wants
+/// a **drag**, so a ghost dot slides away from the orb and fades, over and over, next to a
+/// keycap naming the button to hold.
+fn draw_orb_drag_hint(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    bounds: egui::Rect,
+    label: &str,
+) {
+    let font = egui::FontId::proportional(13.0);
+    let galley = painter.layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE);
+    let key = egui::vec2(galley.size().x + 22.0, 30.0);
+    let gap = orb_radius + 16.0;
+    let mut center = orb + egui::vec2(gap + key.x * 0.5, 0.0);
+    if center.x + key.x * 0.5 > bounds.right() - 6.0 {
+        center = orb - egui::vec2(gap + key.x * 0.5, 0.0);
+    }
+    center.y = center.y.clamp(bounds.top() + key.y, bounds.bottom() - key.y);
+    draw_keycap(painter, egui::Rect::from_center_size(center, key), label);
+
+    // The drag itself: a dot that travels a short way and fades, on a loop.
+    const TRAVEL: f32 = 64.0;
+    const PERIOD: f64 = 1.6;
+    let t = (ctx.input(|i| i.time) % PERIOD) / PERIOD;
+    let eased = (t as f32 * std::f32::consts::PI * 0.5).sin();
+    let from = orb + egui::vec2(-TRAVEL * 0.5, orb_radius + 26.0);
+    let pos = from + egui::vec2(TRAVEL * eased, 0.0);
+    let fade = (1.0 - t as f32).clamp(0.0, 1.0);
+    let blue = egui::Color32::from_rgba_unmultiplied(140, 190, 255, (220.0 * fade) as u8);
+    painter.line_segment(
+        [from, pos],
+        egui::Stroke::new(2.0, blue.gamma_multiply(0.5)),
+    );
+    painter.circle_filled(pos, 6.0, blue);
+    ctx.request_repaint();
+}
+
 /// A hint under the orb naming a key that helps with the click it points at (#777): the
 /// **Space** keycap plus a line of text, for when the thing to click sits under something
 /// else and the Selection Exploder is the way in. Sits below the orb, or above it when the
@@ -2814,6 +2853,10 @@ impl App {
             let badge_bounds = ctx.screen_rect();
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
                 draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
+            }
+            // A drag, not a click: name the button and animate the motion (#819).
+            if let Some(label) = step.drag_hint {
+                draw_orb_drag_hint(&painter, ctx, pos, base, badge_bounds, label);
             }
             // What to type, hugging the field the orb marks (#778/#781/#811).
             if let Some(text) = step.type_hint.and_then(|h| h.text(&self.state)) {
@@ -12461,6 +12504,31 @@ enum MovePickHover {
     EndB,
 }
 
+/// The sketched-on face's own boundary edge under the cursor (#821), as a hover highlight.
+/// Those edges are pickable (#26/#27) but have no `PickTargetKind` of their own, so the hover
+/// path used to skip them while the click path took them — nothing lit up for a click that
+/// worked.
+fn face_edge_hover(
+    doc: &model::Document,
+    sketch: model::SketchId,
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) -> Option<gpu_viewport::ViewportHoverHighlight> {
+    // A vertex under the cursor outranks an edge, exactly as in the click path.
+    if nearest_sketch_point_in_sketch(pp, project, doc, sketch).is_some() {
+        return None;
+    }
+    let (line, _) = nearest_sketch_line_in_sketch(pp, project, doc, sketch)?;
+    let model::ConstraintLine::FaceEdge { face, index } = line else {
+        return None;
+    };
+    let loop_ = extrude::face_boundary_loop_world(doc, &face)?;
+    let n = loop_.len();
+    (n >= 2).then(|| gpu_viewport::ViewportHoverHighlight::Curve {
+        segments: vec![(loop_[index % n], loop_[(index + 1) % n])],
+    })
+}
+
 fn resolve_viewport_hover_highlight(
     suppress_hover: bool,
     tool: Tool,
@@ -12567,6 +12635,9 @@ fn resolve_viewport_hover_highlight(
                 // circles, its points, and the sketched-on face's edges and corners — a
                 // dimension is often between two *different* kinds of thing, so highlighting
                 // only what dimensions on its own left half the picks with no feedback.
+                Some(session) if face_edge_hover(doc, session.sketch, pp, project).is_some() => {
+                    face_edge_hover(doc, session.sketch, pp, project)
+                }
                 Some(session) => scene_element_from_pick(&target.kind)
                     .filter(|element| element_in_sketch(doc, session.sketch, element))
                     .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
@@ -12595,6 +12666,13 @@ fn resolve_viewport_hover_highlight(
             if sketch_session.is_none() {
                 if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
                     return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+                }
+            }
+            // The sketched-on face's own boundary edges are pickable but have no pick-target
+            // kind of their own (#821) — light them up here, like the click path takes them.
+            if let Some(session) = sketch_session {
+                if let Some(hover) = face_edge_hover(doc, session.sketch, pp, project) {
+                    return Some(hover);
                 }
             }
             let t = resolve_pick_target(pp, project, gp, doc, occlusion);
