@@ -19,6 +19,16 @@ pub enum UiAnchor {
     ParametersName,
     /// The Parameters pane's new-parameter **value** field.
     ParametersValue,
+    /// A constraint button in the Context pane's Constraints list (#770) — where a
+    /// squaring-up step points once both of its picks are made.
+    ConstraintButton(crate::geometric_constraints::GeometricConstraintType),
+}
+
+/// What a step's glowing orb points at, once resolved against the live state.
+#[derive(Clone, Copy, Debug)]
+pub enum StepTarget {
+    World(glam::Vec3),
+    Ui(UiAnchor),
 }
 
 /// Where a step's glowing ring points.
@@ -28,6 +38,9 @@ pub enum StepAnchor {
     /// A computed world point, projected into the viewport — e.g. the next profile
     /// vertex to click, so a drawing step leads point by point.
     World(fn(&AppState) -> Option<glam::Vec3>),
+    /// Either, chosen per frame: the constraint steps point at the geometry to click and
+    /// then at the pane button that applies the constraint (#770).
+    Guided(fn(&AppState) -> Option<StepTarget>),
     /// No ring — narration only.
     None,
 }
@@ -303,14 +316,31 @@ fn profile_polyline(app: &AppState, nth: usize) -> Option<Vec<glam::Vec3>> {
     crate::face::line_world_polyline(&app.doc, app.doc.lines.get(index)?)
 }
 
+/// The point half way **along** a polyline (by length, #769) — the middle of a straight
+/// line, and the middle of the curve for a bezier, rather than whichever vertex happens to
+/// sit at the halfway index (for a straight line, that was its end).
+fn polyline_midpoint(points: &[glam::Vec3]) -> Option<glam::Vec3> {
+    let total: f32 = points.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    if points.len() < 2 || total < 1e-6 {
+        return points.first().copied();
+    }
+    let mut walked = 0.0;
+    for w in points.windows(2) {
+        let seg = (w[1] - w[0]).length();
+        if walked + seg >= total * 0.5 {
+            let t = if seg > 1e-6 { (total * 0.5 - walked) / seg } else { 0.5 };
+            return Some(w[0].lerp(w[1], t));
+        }
+        walked += seg;
+    }
+    points.last().copied()
+}
+
 /// Where the orb sits for a target: a line's middle, a corner's vertex, the origin, or a
 /// clear stretch of the X axis away from the profile.
 fn target_point(app: &AppState, target: ClickTarget) -> Option<glam::Vec3> {
     match target {
-        ClickTarget::ProfileLine(n) => {
-            let poly = profile_polyline(app, n)?;
-            poly.get(poly.len() / 2).copied()
-        }
+        ClickTarget::ProfileLine(n) => polyline_midpoint(&profile_polyline(app, n)?),
         ClickTarget::ProfileCorner(n) => profile_polyline(app, n)?.first().copied(),
         ClickTarget::Origin => {
             Some(crate::face::local_to_world(&sketch_frame(app)?, 0.0, 0.0))
@@ -380,11 +410,16 @@ fn constraint_needs_shift(app: &AppState, a: ClickTarget, b: ClickTarget) -> boo
 }
 
 /// Generates a step's orb-target and Shift-hint functions for a two-click pair (the step
-/// table needs plain `fn` pointers, so each pair gets its own pair of functions).
+/// table needs plain `fn` pointers, so each pair gets its own pair of functions). Once both
+/// picks are in hand the orb moves to the pane button that applies the constraint (#770) —
+/// the last thing left to do.
 macro_rules! constraint_step {
-    ($point:ident, $shift:ident, $a:expr, $b:expr) => {
-        fn $point(app: &AppState) -> Option<glam::Vec3> {
-            constraint_click_point(app, $a, $b)
+    ($point:ident, $shift:ident, $a:expr, $b:expr, $kind:expr) => {
+        fn $point(app: &AppState) -> Option<StepTarget> {
+            match constraint_click_point(app, $a, $b) {
+                Some(world) => Some(StepTarget::World(world)),
+                None => Some(StepTarget::Ui(UiAnchor::ConstraintButton($kind))),
+            }
         }
         fn $shift(app: &AppState) -> bool {
             constraint_needs_shift(app, $a, $b)
@@ -394,31 +429,48 @@ macro_rules! constraint_step {
 
 // The profile is drawn as six lines: 0 base bottom, 1 base end cap, 2 inner base,
 // 3 tilted leg outer, 4 tilted leg end cap, 5 tilted leg inner (back to the bend corner).
-constraint_step!(pin_click, pin_shift, ClickTarget::ProfileCorner(0), ClickTarget::Origin);
-constraint_step!(level_click, level_shift, ClickTarget::ProfileLine(0), ClickTarget::XAxis);
+use crate::geometric_constraints::GeometricConstraintType as GC;
+constraint_step!(
+    pin_click,
+    pin_shift,
+    ClickTarget::ProfileCorner(0),
+    ClickTarget::Origin,
+    GC::Coincident
+);
+constraint_step!(
+    level_click,
+    level_shift,
+    ClickTarget::ProfileLine(0),
+    ClickTarget::XAxis,
+    GC::Parallel
+);
 constraint_step!(
     base_strip_click,
     base_strip_shift,
     ClickTarget::ProfileLine(0),
-    ClickTarget::ProfileLine(2)
+    ClickTarget::ProfileLine(2),
+    GC::Parallel
 );
 constraint_step!(
     legs_click,
     legs_shift,
     ClickTarget::ProfileLine(3),
-    ClickTarget::ProfileLine(5)
+    ClickTarget::ProfileLine(5),
+    GC::Parallel
 );
 constraint_step!(
     cap_one_click,
     cap_one_shift,
     ClickTarget::ProfileLine(1),
-    ClickTarget::ProfileLine(0)
+    ClickTarget::ProfileLine(0),
+    GC::Perpendicular
 );
 constraint_step!(
     cap_two_click,
     cap_two_shift,
     ClickTarget::ProfileLine(4),
-    ClickTarget::ProfileLine(3)
+    ClickTarget::ProfileLine(3),
+    GC::Perpendicular
 );
 
 // The squaring-up steps, one constraint application each. Every predicate is cumulative
@@ -606,11 +658,8 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
     },
     Step {
-        narration: "I've brought us in over the drawing area. Now follow me around the \
-                    profile: click each glowing point in turn \u{2014} down the base leg, \
-                    a short end cap, back along the inside, up the tilted leg, and finally \
-                    back to the start to close the loop. Sloppy is fine \u{2014} we'll \
-                    square it up next!",
+        narration: "I've brought us in over the drawing area. Now click each glowing point \
+                    in turn to draw a loose sketch.",
         anchor: StepAnchor::World(next_profile_point),
         done: Some(profile_drawn),
         on_enter: Some(frame_profile_area),
@@ -628,7 +677,7 @@ static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "Pin the profile down: click the bend corner, Shift+click the origin, \
                     press `4` \u{2014} Coincident.",
-        anchor: StepAnchor::World(pin_click),
+        anchor: StepAnchor::Guided(pin_click),
         done: Some(bend_pinned),
         on_enter: None,
         assist: None,
@@ -637,7 +686,7 @@ static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "Level the base: click the bottom line, Shift+click the red X axis, \
                     press `1` \u{2014} Parallel.",
-        anchor: StepAnchor::World(level_click),
+        anchor: StepAnchor::Guided(level_click),
         done: Some(base_leveled),
         on_enter: None,
         assist: None,
@@ -645,7 +694,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Click the bottom line, Shift+click the inner base line, press `1`.",
-        anchor: StepAnchor::World(base_strip_click),
+        anchor: StepAnchor::Guided(base_strip_click),
         done: Some(base_strip_even),
         on_enter: None,
         assist: None,
@@ -654,7 +703,7 @@ static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "The tilted leg: click one long line, Shift+click the other, \
                     press `1`.",
-        anchor: StepAnchor::World(legs_click),
+        anchor: StepAnchor::Guided(legs_click),
         done: Some(legs_parallel),
         on_enter: None,
         assist: None,
@@ -663,7 +712,7 @@ static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "Click the base leg's end cap, Shift+click the bottom line, press `2` \
                     \u{2014} Perpendicular.",
-        anchor: StepAnchor::World(cap_one_click),
+        anchor: StepAnchor::Guided(cap_one_click),
         done: Some(first_cap_squared),
         on_enter: None,
         assist: None,
@@ -672,7 +721,7 @@ static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "Click the tilted leg's end cap, Shift+click its long line, \
                     press `2`. Squared up!",
-        anchor: StepAnchor::World(cap_two_click),
+        anchor: StepAnchor::Guided(cap_two_click),
         done: Some(profile_squared),
         on_enter: None,
         assist: None,
@@ -935,28 +984,38 @@ mod tests {
         let lines = profile_lines(&app);
         assert_eq!(lines.len(), 3);
 
-        // Nothing picked: point at the bottom line, no Shift yet.
-        let first = level_click(&app).expect("orb points at the first click");
+        let world = |app: &AppState| match level_click(app) {
+            Some(StepTarget::World(w)) => Some(w),
+            _ => None,
+        };
+
+        // Nothing picked: point at the *middle* of the bottom line (#769), no Shift yet.
+        let first = world(&app).expect("orb points at the first click");
         assert!(!level_shift(&app));
+        let poly = profile_polyline(&app, 0).unwrap();
         assert!(
-            (first - target_point(&app, ClickTarget::ProfileLine(0)).unwrap()).length() < 1e-3
+            (first - poly[0].lerp(poly[1], 0.5)).length() < 1e-3,
+            "the orb sits mid-line, not on an endpoint: {first:?}"
         );
 
         // A wrong pick doesn't count — the orb stays on the line still wanted.
         app.scene_selection.insert(SceneElement::Line(lines[2]));
-        assert!(level_click(&app).is_some_and(|p| (p - first).length() < 1e-3));
+        assert!(world(&app).is_some_and(|p| (p - first).length() < 1e-3));
         assert!(!level_shift(&app));
 
         // The right line: now the orb moves to the X axis and asks for Shift.
         app.scene_selection.insert(SceneElement::Line(lines[0]));
-        let second = level_click(&app).expect("orb points at the second click");
+        let second = world(&app).expect("orb points at the second click");
         assert!((second - first).length() > 1.0, "it moved");
         assert!(level_shift(&app), "the second click of a pair holds Shift");
 
-        // Both in hand: nothing left to point at.
+        // Both in hand: the orb moves to the pane button that applies it (#770).
         app.scene_selection
             .insert(SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X)));
-        assert!(level_click(&app).is_none());
+        assert!(matches!(
+            level_click(&app),
+            Some(StepTarget::Ui(UiAnchor::ConstraintButton(GC::Parallel)))
+        ));
         assert!(!level_shift(&app));
     }
 

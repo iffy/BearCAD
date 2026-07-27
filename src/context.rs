@@ -2897,6 +2897,22 @@ fn labeled_row_top<R>(
 
 /// One row of the extrude "into" picker (#32/#35): the mode's icon followed by a radio button.
 /// Selecting the radio mutates `current`, which the caller diffs to fire the change callback.
+/// Egui-memory key for where the pane drew the constraint button for `kind` this frame.
+fn constraint_button_rect_id(
+    kind: crate::geometric_constraints::GeometricConstraintType,
+) -> egui::Id {
+    egui::Id::new(("constraint_button_rect", kind.label()))
+}
+
+/// Where the Context pane's constraint button for `kind` sits on screen, if it drew one
+/// this frame (#770) — the tutorial points its orb there once a step's picks are made.
+pub fn constraint_button_rect(
+    ctx: &egui::Context,
+    kind: crate::geometric_constraints::GeometricConstraintType,
+) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(constraint_button_rect_id(kind)))
+}
+
 pub fn show_pane(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -3249,6 +3265,10 @@ pub fn show_pane(
                     ),
                 }
                 .on_hover_text(row.kind.label());
+                // Where the tutorial's orb points once both picks are made (#770).
+                ctx.data_mut(|d| {
+                    d.insert_temp(constraint_button_rect_id(row.kind), response.rect)
+                });
                 if enabled && response.clicked() {
                     on_constraint_clicked(row.kind);
                 }

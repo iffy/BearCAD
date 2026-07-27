@@ -3361,9 +3361,13 @@ document is millimeters, so the player is person-scale: eye height
   the profile-drawing step leads **vertex by vertex** around the sloppy outline
   (`next_profile_point`), pointing at the ground origin until the sketch opens. The
   squaring-up steps lead **click by click** too (#758/#761): each points the orb at the
-  first thing to click, then — once that's selected — at the second, and at nothing once
-  both are in hand; a stray pick leaves it pointing back at what's still wanted, which is
-  how a mis-click finds its way back. The second click of a pair floats a blue **Shift
+  first thing to click, then — once that's selected — at the second, and finally at the
+  **Context pane's constraint button** that applies it (#770; `StepAnchor::Guided` resolves
+  to a world point or a `UiAnchor::ConstraintButton` per frame, the pane reporting each
+  button's rect through egui memory). A stray pick leaves the orb pointing back at what's
+  still wanted, which is how a mis-click finds its way back. A line's orb sits at its
+  **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
+  polyline — for a straight line that was its end. The second click of a pair floats a blue **Shift
   keycap** beside the orb (#759, `Step::needs_shift`, `draw_shift_keycap`), since that
   click adds to the selection. Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going

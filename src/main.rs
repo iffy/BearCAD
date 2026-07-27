@@ -2625,15 +2625,27 @@ impl App {
 
         // The glowing orb: where to click next. It pulses blue and *glides* between
         // anchors, so the eye can follow it from one target to the next.
+        let ui_anchor = |anchor: tutorial::UiAnchor| -> Option<(egui::Pos2, f32)> {
+            let rect = match anchor {
+                // The pane's constraint buttons report themselves through egui memory
+                // rather than the per-frame anchor map (#770).
+                tutorial::UiAnchor::ConstraintButton(kind) => {
+                    context::constraint_button_rect(ctx, kind)
+                }
+                other => self.state.tutorial_anchor_rects.get(&other).copied(),
+            }?;
+            Some((rect.center(), rect.size().max_elem() * 0.5 + 6.0))
+        };
         let target = match step.anchor {
-            tutorial::StepAnchor::Ui(anchor) => self
-                .state
-                .tutorial_anchor_rects
-                .get(&anchor)
-                .map(|r| (r.center(), r.size().max_elem() * 0.5 + 6.0)),
+            tutorial::StepAnchor::Ui(anchor) => ui_anchor(anchor),
             tutorial::StepAnchor::World(point) => {
                 point(&self.state).and_then(&project).map(|p| (p, 26.0))
             }
+            tutorial::StepAnchor::Guided(resolve) => match resolve(&self.state) {
+                Some(tutorial::StepTarget::World(w)) => project(w).map(|p| (p, 26.0)),
+                Some(tutorial::StepTarget::Ui(anchor)) => ui_anchor(anchor),
+                None => None,
+            },
             tutorial::StepAnchor::None => None,
         };
         if let Some((goal, base)) = target {
