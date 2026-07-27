@@ -674,6 +674,24 @@ fn tilted_cap_dimensioned(app: &AppState) -> bool {
     base_cap_dimensioned(app) && line_has_length_dim(app, 4)
 }
 
+/// A dimension step's "Type …" badge waits for the value input (#786/#787): during picking
+/// and placement there's nowhere to type yet, so naming the words would just be noise.
+fn typed_value_hint(app: &AppState, text: &'static str) -> Option<String> {
+    app.editing_committed_dim
+        .is_some()
+        .then(|| text.to_string())
+}
+
+fn leg_value_hint(app: &AppState) -> Option<String> {
+    typed_value_hint(app, "leg")
+}
+fn thick_value_hint(app: &AppState) -> Option<String> {
+    typed_value_hint(app, "thick")
+}
+fn bend_angle_value_hint(app: &AppState) -> Option<String> {
+    typed_value_hint(app, "bend_angle")
+}
+
 fn base_leg_orb(app: &AppState) -> Option<StepTarget> {
     dimension_line_orb(app, 0)
 }
@@ -1004,7 +1022,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some(TypeHint::Fixed("leg")),
+        type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
     },
     Step {
         narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
@@ -1014,7 +1032,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some(TypeHint::Fixed("leg")),
+        type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
     },
     Step {
         narration: "Now an end cap \u{2014} that's the bracket's thickness: click, place, \
@@ -1025,7 +1043,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some(TypeHint::Fixed("thick")),
+        type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
     },
     Step {
         narration: "And the other end cap: `thick` again.",
@@ -1035,7 +1053,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some(TypeHint::Fixed("thick")),
+        type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
     },
     Step {
         narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
@@ -1046,7 +1064,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: Some(bend_angle_shift),
         key_hint: None,
-        type_hint: Some(TypeHint::Fixed("bend_angle")),
+        type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \

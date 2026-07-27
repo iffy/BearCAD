@@ -3398,7 +3398,9 @@ document is millimeters, so the player is person-scale: eye height
   (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
   ordinary font and the words themselves in the monospace blue the narration gives code.
   It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
-  parameter-list step names whichever parameter is still missing (#782).
+  parameter-list step names whichever parameter is still missing (#782), and a dimensioning
+  step holds its words back until the **value input is up** (#786/#787): during picking and
+  placement there's nowhere to type yet.
   All three badges are bounded by the **window**, not the viewport, since an orb can be
   pointing into a side pane. In the dimensioning steps the orb moves **off** the
   line once it's picked, onto the spot where the dimension will drop (#779) — the same side
