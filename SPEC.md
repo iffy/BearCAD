@@ -694,11 +694,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   ghost (#748), so a completed rotation previews too. The picked points are marked in the
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
-  a glance — and **both B points in candidate blue** with a blue connector between them once
-  the pair is complete (#748). A complete pair also draws the rotation's **road**: a white
-  arc swept from the translated start B about end point A onto end B
-  (`move_snap_rotation_axis_angle`, sampled into `colored_segments`), so the turn's actual
-  path through space reads before commit.
+  a glance — and **both B points in candidate blue** (#748). A complete pair draws the
+  point's **path**: a white curve from start B to end B tracing where the point travels
+  with the slide and the turn advancing **together** — half way through the translation it
+  is half way through its rotation (`move_b_path_points`:
+  `p(t) = startA + t·T + R(axis, t·angle)·(startB − startA)`, sampled into
+  `colored_segments`). The committed operation itself still translates then rotates; only
+  the drawn path blends them.
 
   **One focused picker, stepping through (#656/#658/#659):** exactly one Move picker is armed
   at a time — it's the one the pane rings and the one the viewport hover-highlights, so what

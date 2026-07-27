@@ -11541,6 +11541,28 @@ fn auto_zoom_should_frame(
     (offscreen && grew) || (too_small && shrank && deliberately_sized)
 }
 
+/// Sample the path start point B travels when the Move's translation and rotation advance
+/// **together** (#748): at parameter `t` the body has slid `t` of the way and turned `t`
+/// of the angle about its own travelling pivot (the point that lands on end point A), so
+/// `p(t) = startA + t·T + R(axis, t·angle) · (startB − startA)`. Starts exactly at start B
+/// and — because the full turn takes the moved start B onto end B — lands exactly on end B.
+fn move_b_path_points(
+    start_a: Vec3,
+    start_b: Vec3,
+    translation: Vec3,
+    axis: Vec3,
+    angle: f32,
+    segments: usize,
+) -> Vec<Vec3> {
+    let rel = start_b - start_a;
+    (0..=segments)
+        .map(|i| {
+            let t = i as f32 / segments.max(1) as f32;
+            start_a + translation * t + glam::Quat::from_axis_angle(axis, angle * t) * rel
+        })
+        .collect()
+}
+
 /// Order-independent fingerprint of the scene selection set, so auto-zoom's selection
 /// watch fires exactly once per selection change. `None` for an empty selection —
 /// clearing never frames. XOR-folded per-element hashes, since `SceneSelection` iterates
@@ -19516,25 +19538,10 @@ impl App {
                 .collect()
             })
             .unwrap_or_default();
-        // The B pair's connector (#748), in the same blue as its marks.
-        if let Some((a, b)) = self
-            .state
-            .creating_move
-            .as_ref()
-            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
-            .and_then(|cm| {
-                Some((
-                    extrude::move_point_world(&self.state.doc, &cm.start_point_b?)?,
-                    extrude::move_point_world(&self.state.doc, &cm.end_point_b?)?,
-                ))
-            })
-        {
-            move_connector.push((a, b, theme::MOVE_CANDIDATE, false));
-        }
-        // The rotation's road: with the B pair complete, a white arc sweeps from the
-        // translated start B about end point A onto end B — the path the point actually
-        // travels as the bodies turn.
-        if let Some((pivot, p0, axis, angle)) = self
+        // The B pair's path (#748): a white curve from start B to end B tracing where the
+        // point travels with the slide and the turn advancing together — half way through
+        // the translation it is half way through its rotation.
+        if let Some(path) = self
             .state
             .creating_move
             .as_ref()
@@ -19560,22 +19567,15 @@ impl App {
                 let translation = extrude::move_op_translation(&self.state.doc, &probe)?;
                 let (axis, angle) =
                     extrude::move_snap_rotation_axis_angle(&self.state.doc, &probe)?;
-                let pivot =
-                    extrude::move_point_world(&self.state.doc, &probe.end_point_a?)?;
-                let p0 = extrude::move_point_world(&self.state.doc, &probe.start_point_b?)?
-                    + translation;
-                Some((pivot, p0, axis, angle))
+                let start_a =
+                    extrude::move_point_world(&self.state.doc, &probe.start_point_a?)?;
+                let start_b =
+                    extrude::move_point_world(&self.state.doc, &probe.start_point_b?)?;
+                Some(move_b_path_points(start_a, start_b, translation, axis, angle, 32))
             })
-            .filter(|(_, _, _, angle)| angle.abs() > 1e-4)
         {
-            const ARC_SEGMENTS: usize = 32;
-            let mut prev = p0;
-            for i in 1..=ARC_SEGMENTS {
-                let q =
-                    glam::Quat::from_axis_angle(axis, angle * i as f32 / ARC_SEGMENTS as f32);
-                let p = pivot + q * (p0 - pivot);
-                move_connector.push((prev, p, egui::Color32::WHITE, false));
-                prev = p;
+            for pair in path.windows(2) {
+                move_connector.push((pair[0], pair[1], egui::Color32::WHITE, false));
             }
         }
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored
@@ -21952,6 +21952,34 @@ mod tests {
         let (_, too_small) =
             auto_zoom_screen_state(&cam, viewport, Vec3::splat(-2.0), Vec3::splat(2.0));
         assert!(too_small, "a sliver underfills the view");
+    }
+
+    /// #748: the B-pair path curve blends the slide and the turn together — it starts at
+    /// the original start B, lands exactly on end B, and half way along it has turned half
+    /// the angle about the travelling pivot.
+    #[test]
+    fn move_b_path_blends_translation_and_rotation() {
+        use glam::Vec3;
+        // Start A at origin slides to end A (10,0,0); start B at (10,0,0) turns a quarter
+        // about +Z, landing on end B (10,10,0).
+        let start_a = Vec3::ZERO;
+        let start_b = Vec3::new(10.0, 0.0, 0.0);
+        let translation = Vec3::new(10.0, 0.0, 0.0);
+        let (axis, angle) = (Vec3::Z, std::f32::consts::FRAC_PI_2);
+        let path = move_b_path_points(start_a, start_b, translation, axis, angle, 4);
+        assert_eq!(path.len(), 5);
+        assert!((path[0] - start_b).length() < 1e-5, "starts at start B");
+        assert!(
+            (path[4] - Vec3::new(10.0, 10.0, 0.0)).length() < 1e-4,
+            "lands on end B, got {:?}",
+            path[4]
+        );
+        // Half way: slid 5mm, turned 45° — the offset from the travelling pivot points
+        // along the diagonal.
+        let mid = path[2];
+        let expected = Vec3::new(5.0, 0.0, 0.0)
+            + glam::Quat::from_axis_angle(axis, angle * 0.5) * (start_b - start_a);
+        assert!((mid - expected).length() < 1e-4, "half slide, half turn, got {mid:?}");
     }
 
     /// #742: while a sketch is open, the selection-family pick filter admits only that
