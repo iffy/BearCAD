@@ -3391,8 +3391,10 @@ document is millimeters, so the player is person-scale: eye height
   fans out whatever is crowded, which is how the tutorial introduces the Selection
   Exploder (#777) — shown only while the orb points at something to *pick*, not while a
   dimension is being placed. A step can also name the **words to type**
-  (`Step::type_hint`, #778): they float beside the orb in the same blue the narration gives
-  code, right where the typing lands. In the dimensioning steps the orb moves **off** the
+  (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
+  ordinary font and the words themselves in the monospace blue the narration gives code.
+  All three badges are bounded by the **window**, not the viewport, since an orb can be
+  pointing into a side pane. In the dimensioning steps the orb moves **off** the
   line once it's picked, onto the spot where the dimension will drop (#779) — the same side
   the committed label takes, so "click away from the line" is shown rather than described. Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going

@@ -1820,47 +1820,54 @@ fn draw_shift_keycap(
     ctx: &egui::Context,
     orb: egui::Pos2,
     orb_radius: f32,
-    viewport: egui::Rect,
+    bounds: egui::Rect,
 ) {
     const KEY: egui::Vec2 = egui::vec2(58.0, 34.0);
     let gap = orb_radius + 14.0;
     let mut center = orb + egui::vec2(gap + KEY.x * 0.5, 0.0);
-    if center.x + KEY.x * 0.5 > viewport.right() - 6.0 {
+    if center.x + KEY.x * 0.5 > bounds.right() - 6.0 {
         center = orb - egui::vec2(gap + KEY.x * 0.5, 0.0);
     }
     center.y = center
         .y
-        .clamp(viewport.top() + KEY.y, viewport.bottom() - KEY.y);
+        .clamp(bounds.top() + KEY.y, bounds.bottom() - KEY.y);
     draw_keycap(painter, egui::Rect::from_center_size(center, KEY), "Shift");
     ctx.request_repaint();
 }
 
-/// The words to type, in the same blue the narration uses for code (#778): a pill above the
-/// orb — or below it, when the orb is near the top — so what to type is right where the
-/// typing happens.
+/// "Type `leg`" beside the orb (#778/#781): the instruction in the ordinary font, the words
+/// to type in the same monospace blue the narration gives code. Sits **right beside** the
+/// orb — to its right, or its left when that runs off the screen — and is bounded by the
+/// whole window, since the orb can be pointing at a side pane.
 fn draw_orb_type_hint(
     painter: &egui::Painter,
     ctx: &egui::Context,
     orb: egui::Pos2,
     orb_radius: f32,
-    viewport: egui::Rect,
+    bounds: egui::Rect,
     text: &str,
 ) {
-    let font = egui::FontId::monospace(13.0);
+    let label_font = egui::FontId::proportional(12.5);
+    let mono = egui::FontId::monospace(13.0);
     let blue = egui::Color32::from_rgb(140, 210, 255);
-    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), blue);
+    let grey = egui::Color32::from_gray(225);
+    let label = painter.layout_no_wrap("Type".to_string(), label_font.clone(), grey);
+    let typed = painter.layout_no_wrap(text.to_string(), mono.clone(), blue);
+    let gap = 6.0;
     let pad = egui::vec2(10.0, 6.0);
-    let size = galley.size() + pad * 2.0;
-    let above = orb.y - orb_radius - 14.0 - size.y * 0.5;
-    let below = orb.y + orb_radius + 14.0 + size.y * 0.5;
-    let cy = if above - size.y * 0.5 >= viewport.top() + 6.0 {
-        above
-    } else {
-        below
-    };
-    let cx = orb
-        .x
-        .clamp(viewport.left() + size.x * 0.5 + 6.0, viewport.right() - size.x * 0.5 - 6.0);
+    let size = egui::vec2(
+        label.size().x + gap + typed.size().x,
+        label.size().y.max(typed.size().y),
+    ) + pad * 2.0;
+    let clear = orb_radius + 14.0 + size.x * 0.5;
+    let mut cx = orb.x + clear;
+    if cx + size.x * 0.5 > bounds.right() - 6.0 {
+        cx = orb.x - clear;
+    }
+    let cx = cx.clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
+    let cy = orb
+        .y
+        .clamp(bounds.top() + size.y * 0.5 + 6.0, bounds.bottom() - size.y * 0.5 - 6.0);
     let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
     painter.rect_filled(rect, 7.0, egui::Color32::from_rgba_unmultiplied(20, 30, 44, 235));
     painter.rect_stroke(
@@ -1869,7 +1876,20 @@ fn draw_orb_type_hint(
         egui::Stroke::new(1.0, blue.gamma_multiply(0.7)),
         egui::StrokeKind::Inside,
     );
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, blue);
+    painter.text(
+        egui::pos2(rect.left() + pad.x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Type",
+        label_font,
+        grey,
+    );
+    painter.text(
+        egui::pos2(rect.left() + pad.x + label.size().x + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        mono,
+        blue,
+    );
     ctx.request_repaint();
 }
 
@@ -1882,7 +1902,7 @@ fn draw_orb_key_hint(
     ctx: &egui::Context,
     orb: egui::Pos2,
     orb_radius: f32,
-    viewport: egui::Rect,
+    bounds: egui::Rect,
     key: &str,
     text: &str,
 ) {
@@ -1900,14 +1920,14 @@ fn draw_orb_key_hint(
     let height = KEY_H + pad;
     let below = orb.y + orb_radius + 16.0 + height * 0.5;
     let above = orb.y - orb_radius - 16.0 - height * 0.5;
-    let cy = if below + height * 0.5 <= viewport.bottom() - 6.0 {
+    let cy = if below + height * 0.5 <= bounds.bottom() - 6.0 {
         below
     } else {
         above
     };
     let cx = orb
         .x
-        .clamp(viewport.left() + width * 0.5 + 6.0, viewport.right() - width * 0.5 - 6.0);
+        .clamp(bounds.left() + width * 0.5 + 6.0, bounds.right() - width * 0.5 - 6.0);
     let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(width, height));
     painter.rect_filled(rect, 8.0, egui::Color32::from_rgba_unmultiplied(24, 26, 34, 235));
     painter.rect_stroke(
@@ -2778,12 +2798,15 @@ impl App {
             );
             // This click adds to the selection, so it wants Shift held: float a keycap
             // beside the orb saying so (#759).
+            // Bounded by the window rather than the viewport: a step's orb can be pointing
+            // at a side pane, and its badges have to follow it there (#781).
+            let badge_bounds = ctx.screen_rect();
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
-                draw_shift_keycap(&painter, ctx, pos, base + pulse, viewport);
+                draw_shift_keycap(&painter, ctx, pos, base + pulse, badge_bounds);
             }
-            // What to type, where the typing happens (#778).
+            // What to type, right beside the orb (#778/#781).
             if let Some(text) = step.type_hint {
-                draw_orb_type_hint(&painter, ctx, pos, base + pulse, viewport, text);
+                draw_orb_type_hint(&painter, ctx, pos, base + pulse, badge_bounds, text);
             }
             // Crowded spot? Name the key that fans it out (#777) — but only while the orb
             // is pointing at something to *pick*; once a dimension is being placed or typed
@@ -2796,7 +2819,7 @@ impl App {
                     ctx,
                     pos,
                     base + pulse,
-                    viewport,
+                    badge_bounds,
                     hint.0,
                     hint.1,
                 );
