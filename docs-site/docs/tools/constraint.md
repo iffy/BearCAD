@@ -28,7 +28,11 @@ Select the geometry, then click a constraint button or press its number key:
 | Parallel to Y axis | a line | `7` |
 
 The last two are the one-click way to make a line **horizontal** or **vertical** — they
-constrain the selected line parallel to the sketch's X or Y axis.
+constrain the selected line parallel to the sketch's X or Y axis. Their buttons draw in
+the axis's own colour — X red, Y green — and the arrow tilts to match the axis's current
+direction on screen, so the button always shows exactly which way the line will snap. In
+the viewport, **LX** and **LY** labels at the edge mark the local axes in the same
+colours.
 
 Many constraints also happen automatically while drawing — snapping a line's end onto a
 point keeps them attached.

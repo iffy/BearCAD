@@ -2245,8 +2245,13 @@ modeled on SolveSpace (https://solvespace.com).
   - **Parallel to X axis / Parallel to Y axis (#583)** — `line`: one-click buttons (keys `6`/`7`)
     that constrain the single selected line parallel to the sketch's X or Y origin axis — the
     convenience form of "make this horizontal/vertical". They author a `Parallel` constraint against
-    `OriginAxis(X)`/`OriginAxis(Y)` and show the horizontal/vertical badge glyph; the scripting names
-    `horizontal`/`vertical` map to them for back-compat.
+    `OriginAxis(X)`/`OriginAxis(Y)`; the scripting names `horizontal`/`vertical` map to them for
+    back-compat. Their pane buttons are **hand-painted glyphs (#751)**: a double-headed arrow in the
+    axis's own colour (X red, Y green) drawn at the axis's **current on-screen direction**
+    (`ContextInput::sketch_axis_screen_dirs`, the projected local axes normalized — rotated with the
+    view, never skewed), so which way the line will snap always matches what the viewport shows.
+    The viewport itself labels the local axes at its edge (#751): **"LX"/"LY"** in the axis colours,
+    where each axis's positive direction leaves the view (`axis_label_edge_pos`).
   - **No separate Horizontal/Vertical constraint *kind* (#577/#580):** the old standalone constraints
     were removed entirely in favour of the general **parallel-to-axis** solution (the buttons above,
     or select a line **and a sketch axis** and apply **Parallel**/**Perpendicular** directly).

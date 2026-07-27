@@ -9059,6 +9059,22 @@ impl eframe::App for App {
                 draw_line_curve_mode: self.state.line_curve_mode(),
                 draw_line_tangent_constraint: self.state.line_tangent_constraint(),
                 in_sketch: self.state.sketch_session.is_some(),
+                // The local axes as they project on screen right now (#751): the
+                // axis-parallel constraint buttons draw their glyphs at these angles, in
+                // the axes' own colors, so "which way is X" matches what the user sees.
+                sketch_axis_screen_dirs: self.state.sketch_session.and_then(|session| {
+                    let frame = sketch_geometry_frame(&self.state.doc, session.sketch)?;
+                    let viewport = self.last_viewport?;
+                    let cam = &self.state.cam;
+                    let vp = cam.view_proj(viewport);
+                    let dir = |du: f32, dv: f32| -> Option<egui::Vec2> {
+                        let o = cam.project(local_to_world(&frame, 0.0, 0.0), viewport, &vp)?;
+                        let p = cam.project(local_to_world(&frame, du, dv), viewport, &vp)?;
+                        let d = p - o;
+                        (d.length() > 1e-3).then(|| d.normalized())
+                    };
+                    Some((dir(10.0, 0.0)?, dir(0.0, 10.0)?))
+                }),
                 snapping_enabled: self.state.snapping_enabled,
                 extrude_merge_candidate: self
                     .state
@@ -11179,7 +11195,7 @@ fn open_licenses_document() -> std::io::Result<()> {
 }
 
 /// Colours used in the viewport.
-mod col {
+pub(crate) mod col {
     use egui::Color32;
     pub const BG: Color32 = Color32::from_gray(28);
     pub const GRID: Color32 = Color32::from_gray(55);
@@ -11576,6 +11592,30 @@ fn move_ghost_target_transform(
 /// How quickly the Move ghost glides between destinations: the time constant of its
 /// exponential ease — quick, but smooth.
 const MOVE_GHOST_EASE_SECS: f32 = 0.06;
+
+/// Where a sketch-axis label sits (#751): march from the axis origin's screen position
+/// along its positive on-screen direction to the point where the ray leaves `rect`. The
+/// origin is clamped into the rect first (it may sit off-screen), and a degenerate
+/// direction (axis edge-on to the camera) yields `None`.
+fn axis_label_edge_pos(rect: egui::Rect, origin: egui::Pos2, dir: egui::Vec2) -> Option<egui::Pos2> {
+    if dir.length() < 1e-4 {
+        return None;
+    }
+    let d = dir.normalized();
+    let o = rect.clamp(origin);
+    let mut t = f32::INFINITY;
+    if d.x > 1e-6 {
+        t = t.min((rect.max.x - o.x) / d.x);
+    } else if d.x < -1e-6 {
+        t = t.min((rect.min.x - o.x) / d.x);
+    }
+    if d.y > 1e-6 {
+        t = t.min((rect.max.y - o.y) / d.y);
+    } else if d.y < -1e-6 {
+        t = t.min((rect.min.y - o.y) / d.y);
+    }
+    t.is_finite().then(|| o + d * t.max(0.0))
+}
 
 /// Sample the path start point B travels when the Move's translation and rotation advance
 /// **together** (#748): at parameter `t` the body has slid `t` of the way and turned `t`
@@ -21402,6 +21442,40 @@ impl App {
                 egui::StrokeKind::Middle,
             );
         }
+
+        // Label the sketch's local axes at the viewport edge (#751): "LX"/"LY" in each
+        // axis's own colour, sitting where its positive direction leaves the view — so
+        // which way is which never depends on remembering the colours.
+        if let Some(frame) = self
+            .state
+            .sketch_session
+            .and_then(|s| sketch_geometry_frame(&self.state.doc, s.sketch))
+        {
+            for (du, dv, label, color) in [
+                (10.0, 0.0, "LX", col::X_AXIS),
+                (0.0, 10.0, "LY", col::Y_AXIS),
+            ] {
+                let (Some(o), Some(p)) = (
+                    project(local_to_world(&frame, 0.0, 0.0)),
+                    project(local_to_world(&frame, du, dv)),
+                ) else {
+                    continue;
+                };
+                // Inset past the sketch border, and further off the bottom edge so the
+                // label never lands on the viewport hint text line.
+                let mut label_rect = viewport.shrink(16.0);
+                label_rect.max.y -= 16.0;
+                if let Some(pos) = axis_label_edge_pos(label_rect, o, p - o) {
+                    painter.text(
+                        pos,
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::proportional(12.0),
+                        color,
+                    );
+                }
+            }
+        }
     
         // Tutorial overlay: pulsing anchor ring + the bear's narration bubble (drawn last,
         // above everything in the viewport).
@@ -22049,6 +22123,27 @@ mod tests {
         let expected = Vec3::new(5.0, 0.0, 0.0)
             + glam::Quat::from_axis_angle(axis, angle * 0.5) * (start_b - start_a);
         assert!((mid - expected).length() < 1e-4, "half slide, half turn, got {mid:?}");
+    }
+
+    /// #751: the sketch-axis edge labels sit where each axis's positive direction leaves
+    /// the (inset) viewport, whatever way the view has the axes pointing.
+    #[test]
+    fn axis_label_edge_pos_walks_to_the_rect_edge() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 80.0));
+        // Straight right from the centre: lands on the right edge.
+        let p = axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::vec2(1.0, 0.0)).unwrap();
+        assert!((p - egui::pos2(100.0, 40.0)).length() < 1e-3, "{p:?}");
+        // Up-screen (negative y): lands on the top edge.
+        let p = axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::vec2(0.0, -1.0)).unwrap();
+        assert!((p - egui::pos2(50.0, 0.0)).length() < 1e-3, "{p:?}");
+        // Diagonal: leaves through whichever edge comes first.
+        let p = axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::vec2(1.0, 1.0)).unwrap();
+        assert!((p - egui::pos2(90.0, 80.0)).length() < 1e-3, "{p:?}");
+        // An off-screen origin clamps into the rect first.
+        let p = axis_label_edge_pos(rect, egui::pos2(-50.0, 40.0), egui::vec2(1.0, 0.0)).unwrap();
+        assert!((p - egui::pos2(100.0, 40.0)).length() < 1e-3, "{p:?}");
+        // Edge-on axis (no screen direction): no label.
+        assert!(axis_label_edge_pos(rect, egui::pos2(50.0, 40.0), egui::Vec2::ZERO).is_none());
     }
 
     /// #742: while a sketch is open, the selection-family pick filter admits only that

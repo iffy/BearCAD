@@ -38,6 +38,10 @@ pub struct ContextInput<'a> {
     pub draw_line_tangent_constraint: Option<bool>,
     /// Whether a sketch is open (snapping only applies inside a sketch).
     pub in_sketch: bool,
+    /// The open sketch's local X and Y axis directions as they currently project on
+    /// screen (#751), so the axis-parallel constraint buttons can draw their glyphs at
+    /// the angle the user actually sees. `None` outside a sketch (or edge-on views).
+    pub sketch_axis_screen_dirs: Option<(egui::Vec2, egui::Vec2)>,
     /// Current snapping on/off state (shown as a toggle for snapping tools).
     pub snapping_enabled: bool,
     /// Body an in-progress/edited extrusion would join by default, if any (#32).
@@ -777,6 +781,9 @@ pub struct ContextPaneContent {
     /// Circle anchor radio: `Some` while the Circle tool is active.
     pub circle_anchor: Option<crate::actions::CircleAnchor>,
     pub constraints: Option<Vec<ConstraintPaneRow>>,
+    /// On-screen directions of the sketch's local X/Y axes (#751), for the axis-parallel
+    /// constraint buttons' rotated glyphs.
+    pub constraint_axis_dirs: Option<(egui::Vec2, egui::Vec2)>,
     /// `Some(enabled)` when the current tool snaps; renders an enable/disable toggle.
     pub snapping: Option<bool>,
     /// New-body/merge-into choice for an in-progress or edited extrusion (#32).
@@ -1346,6 +1353,50 @@ fn unit_instance_control(doc: &Document, instance: usize) -> Option<UnitInstance
     })
 }
 
+/// The axis-parallel constraint buttons' hand-painted glyph (#751): a double-headed
+/// arrow in the axis's own colour, drawn along `dir` — the axis's current on-screen
+/// direction (already projected, so a tilted view rotates the glyph but never skews it).
+fn axis_constraint_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    dir: egui::Vec2,
+    color: egui::Color32,
+) -> egui::Response {
+    let padding = ui.spacing().button_padding;
+    let icon = crate::icons::ICON_DISPLAY_SIZE;
+    let size = egui::vec2(icon, icon) + padding * 2.0;
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        ui.painter()
+            .rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+        ui.painter().rect_stroke(
+            rect,
+            visuals.corner_radius,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let color = if enabled { color } else { color.gamma_multiply(0.35) };
+        let d = dir.normalized();
+        let half = icon / 2.0 - 1.5;
+        let (a, b) = (rect.center() - d * half, rect.center() + d * half);
+        let stroke = egui::Stroke::new(1.8, color);
+        let painter = ui.painter();
+        painter.line_segment([a, b], stroke);
+        // Arrowheads on both ends, so the glyph reads as the axis, not just a slash.
+        let barb = |tip: egui::Pos2, back: egui::Vec2| {
+            for angle in [0.5f32, -0.5] {
+                let wing = egui::emath::Rot2::from_angle(angle) * back;
+                painter.line_segment([tip, tip + wing * 4.5], stroke);
+            }
+        };
+        barb(b, -d);
+        barb(a, d);
+    }
+    response
+}
+
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let tool_title = tool_context_title(input);
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
@@ -1624,6 +1675,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 target_count: 1,
             }),
             constraints: None,
+            constraint_axis_dirs: None,
             snapping,
             extrude_body,
             extrude_faces: extrude_faces.clone(),
@@ -1680,6 +1732,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 target_count: 1,
             }),
             constraints: None,
+            constraint_axis_dirs: None,
             snapping,
             extrude_body,
             extrude_faces: extrude_faces.clone(),
@@ -1738,6 +1791,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 target_count: 1,
             }),
             constraints: None,
+            constraint_axis_dirs: None,
             snapping,
             extrude_body,
             extrude_faces: extrude_faces.clone(),
@@ -1803,6 +1857,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             target_count: targets.len(),
         }),
         constraints,
+        constraint_axis_dirs: input.sketch_axis_screen_dirs,
         snapping,
         extrude_body,
         extrude_faces: extrude_faces.clone(),
@@ -3163,16 +3218,37 @@ pub fn show_pane(
                     shortcuts::geometric_constraint_shortcut(row.kind),
                     enabled,
                 );
-                let response = ui
-                    .add_enabled(
+                // The axis-parallel buttons draw their own glyph (#751): an arrow in the
+                // axis's colour, rotated to the axis's current on-screen direction — so
+                // "which way will this line snap" always matches the view.
+                use crate::geometric_constraints::GeometricConstraintType as G;
+                let axis = match row.kind {
+                    G::AlongXAxis => Some((
+                        content.constraint_axis_dirs.map(|d| d.0),
+                        crate::col::X_AXIS,
+                        egui::vec2(1.0, 0.0),
+                    )),
+                    G::AlongYAxis => Some((
+                        content.constraint_axis_dirs.map(|d| d.1),
+                        crate::col::Y_AXIS,
+                        egui::vec2(0.0, -1.0),
+                    )),
+                    _ => None,
+                };
+                let response = match axis {
+                    Some((dir, color, fallback)) => {
+                        axis_constraint_button(ui, enabled, dir.unwrap_or(fallback), color)
+                    }
+                    None => ui.add_enabled(
                         enabled,
                         egui::ImageButton::new(crate::icons::sized_texture(
                             ui.ctx(),
                             icon_for_constraint(row.kind),
                         ))
                         .frame(true),
-                    )
-                    .on_hover_text(row.kind.label());
+                    ),
+                }
+                .on_hover_text(row.kind.label());
                 if enabled && response.clicked() {
                     on_constraint_clicked(row.kind);
                 }
@@ -5460,6 +5536,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -5633,6 +5710,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             tool: Tool::Dimension,
             in_sketch: true,
+            sketch_axis_screen_dirs: None,
             ..input(&doc, &selection)
         });
         let picker = content
@@ -5739,6 +5817,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -5823,6 +5902,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -5897,6 +5977,7 @@ mod tests {
         let input = ContextInput {
             tool: Tool::Constraint,
             in_sketch: true,
+            sketch_axis_screen_dirs: None,
             in_drawing_workbench: false,
             ..input(&doc, &selection)
         };
@@ -6195,6 +6276,7 @@ mod tests {
                 tangent_constraint: None,
                 construction: None,
                 constraints: None,
+                constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
@@ -6263,6 +6345,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -6321,6 +6404,7 @@ mod tests {
                     target_count: 1,
                 }),
                 constraints: None,
+                constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
@@ -6389,6 +6473,7 @@ mod tests {
             draw_line_curve_mode: Some(true),
             draw_line_tangent_constraint: Some(false),
             in_sketch: true,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -6460,6 +6545,7 @@ mod tests {
                     target_count: 1,
                 }),
                 constraints: None,
+                constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
@@ -6581,6 +6667,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -6649,6 +6736,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
@@ -6709,6 +6797,7 @@ mod tests {
                     target_count: 1,
                 }),
                 constraints: None,
+                constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
@@ -6768,6 +6857,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
