@@ -45,3 +45,4 @@ block.step
 /web/lua/
 /docs-site/static/app/
 .mcp.json
+.envrc
