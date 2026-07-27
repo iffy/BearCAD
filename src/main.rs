@@ -1779,6 +1779,9 @@ enum BubbleTail {
     Bottom,
     Left,
     Right,
+    /// No tail at all — the phone layout's bottom-of-screen bubble isn't pointing at
+    /// anything, it's just the narration.
+    None,
 }
 
 /// Where the tutorial speech bubble goes (#760/#767/#825).
@@ -1793,6 +1796,7 @@ fn tutorial_bubble_layout(
     hud: egui::Rect,
     size: egui::Vec2,
     bounds: egui::Rect,
+    phone_bottom: Option<f32>,
 ) -> (egui::Pos2, BubbleTail) {
     let clamp = |p: egui::Pos2| {
         egui::pos2(
@@ -1801,6 +1805,17 @@ fn tutorial_bubble_layout(
         )
     };
     let Some((orb, radius)) = orb else {
+        // Phones: park it along the bottom, out of the model's way, and with no tail —
+        // there's nothing for it to point at on a narration step.
+        if let Some(bottom) = phone_bottom {
+            return (
+                clamp(egui::pos2(
+                    bounds.center().x - size.x * 0.5,
+                    bottom - size.y - 8.0,
+                )),
+                BubbleTail::None,
+            );
+        }
         let x = hud.left() - size.x - TUTORIAL_BUBBLE_TAIL - TUTORIAL_BUBBLE_GAP;
         return (clamp(egui::pos2(x, hud.top())), BubbleTail::Right);
     };
@@ -2942,6 +2957,9 @@ impl App {
             hud,
             self.tutorial_bubble_size,
             ctx.screen_rect(),
+            // Phone layout: the default spot is the bottom of the viewport, above the
+            // status bar's pane buttons.
+            touch::compact(ctx).then_some(viewport.bottom()),
         );
         let mut next = false;
         let mut back = false;
@@ -3067,7 +3085,7 @@ impl App {
                 // The tail hangs off whichever edge faces what the bubble is pointing at.
                 let r = bubble.response.rect;
                 let toward = self.tutorial_orb_pos.unwrap_or(cube.center());
-                let (tip, base_top, base_bottom) = match tail_side {
+                let tail = (tail_side != BubbleTail::None).then(|| match tail_side {
                     BubbleTail::Right => {
                         let y = toward.y.clamp(r.top() + 24.0, r.bottom() - 24.0);
                         (
@@ -3092,7 +3110,7 @@ impl App {
                             egui::pos2(x + 14.0, r.top() + 2.0),
                         )
                     }
-                    BubbleTail::Bottom => {
+                    BubbleTail::Bottom | BubbleTail::None => {
                         let x = toward.x.clamp(r.left() + 24.0, r.right() - 24.0);
                         (
                             egui::pos2(x, r.bottom() + TUTORIAL_BUBBLE_TAIL),
@@ -3100,18 +3118,20 @@ impl App {
                             egui::pos2(x + 14.0, r.bottom() - 2.0),
                         )
                     }
-                };
+                });
                 // Fill first (covering the bubble's own border along the tail's base), then
                 // stroke **only the two outer sides** — stroking the closed polygon drew a
                 // line right across the join (#808).
-                painter.add(egui::Shape::convex_polygon(
-                    vec![base_top, tip, base_bottom],
-                    egui::Color32::from_rgb(38, 34, 26),
-                    egui::Stroke::NONE,
-                ));
-                let edge = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80));
-                painter.line_segment([base_top, tip], edge);
-                painter.line_segment([tip, base_bottom], edge);
+                if let Some((tip, base_top, base_bottom)) = tail {
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![base_top, tip, base_bottom],
+                        egui::Color32::from_rgb(38, 34, 26),
+                        egui::Stroke::NONE,
+                    ));
+                    let edge = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80));
+                    painter.line_segment([base_top, tip], edge);
+                    painter.line_segment([tip, base_bottom], edge);
+                }
                 measured_size = r.size();
             });
         // Next frame positions from what the bubble actually measured.
@@ -23248,7 +23268,7 @@ mod tests {
         let size = egui::vec2(352.0, 120.0);
 
         // No orb: left of the HUD, tail pointing right at Bear.
-        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds);
+        let (pos, tail) = tutorial_bubble_layout(None, hud, size, bounds, None);
         assert_eq!(tail, BubbleTail::Right);
         assert!(
             pos.x + size.x + TUTORIAL_BUBBLE_TAIL <= hud.left(),
@@ -23257,20 +23277,30 @@ mod tests {
 
         // An orb with room underneath: the bubble hangs below it, tail on top, centred.
         let orb = egui::pos2(500.0, 300.0);
-        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds);
+        let (pos, tail) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None);
         assert_eq!(tail, BubbleTail::Top);
         assert!(pos.y > orb.y, "below the orb: {pos:?}");
         assert!((pos.x + size.x * 0.5 - orb.x).abs() < 1.0, "centred: {pos:?}");
 
         // An orb near the bottom: it flips above, tail underneath.
         let low = egui::pos2(500.0, 760.0);
-        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds);
+        let (pos, tail) = tutorial_bubble_layout(Some((low, 26.0)), hud, size, bounds, None);
         assert_eq!(tail, BubbleTail::Bottom);
         assert!(pos.y + size.y < low.y, "above the orb: {pos:?}");
 
+        // Phones: the default (no-orb) spot is the bottom of the viewport, centred, tailless.
+        let phone = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(390.0, 844.0));
+        let phone_hud = view_cube::cube_rect_in_viewport(phone).expand(view_cube::HUD_PANEL_PAD);
+        let small = egui::vec2(330.0, 150.0);
+        let (pos, tail) = tutorial_bubble_layout(None, phone_hud, small, phone, Some(800.0));
+        assert_eq!(tail, BubbleTail::None, "no tail to point with");
+        assert!(pos.y + small.y <= 800.0, "sits above the status bar: {pos:?}");
+        assert!(pos.y + small.y > 700.0, "and near the bottom, not floating mid-screen");
+        assert!((pos.x + small.x * 0.5 - phone.center().x).abs() < 1.0, "centred: {pos:?}");
+
         // Whatever happens, it stays on screen.
         for orb in [egui::pos2(4.0, 4.0), egui::pos2(1196.0, 796.0)] {
-            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds);
+            let (pos, _) = tutorial_bubble_layout(Some((orb, 26.0)), hud, size, bounds, None);
             assert!(pos.x >= bounds.left() && pos.x + size.x <= bounds.right() + 0.01, "{pos:?}");
             assert!(pos.y >= bounds.top() && pos.y + size.y <= bounds.bottom() + 0.01, "{pos:?}");
         }

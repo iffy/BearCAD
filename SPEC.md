@@ -3490,6 +3490,9 @@ document is millimeters, so the player is person-scale: eye height
   second pick). Taking up the Dimension tool **clears the selection** the constraint steps
   left behind (#772) — under that tool a live selection is already a dimension in the
   making. The
+  On **phone-width layouts** the default spot (a narration step, no orb) is along the
+  **bottom** of the viewport, above the status bar, with **no tail** — nothing to point at,
+  and the top of a phone screen is where the model is (#827). Otherwise the
   bubble **follows the orb** (#825): below it by preference, above it when the bottom of the
   window is in the way, else to whichever side has room, with its tail on the edge facing the
   orb — so what to read and where to look are the same place, and the orb's glide carries the
