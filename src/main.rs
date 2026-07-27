@@ -1848,18 +1848,16 @@ fn draw_orb_type_hint(
     bounds: egui::Rect,
     text: &str,
 ) {
-    let label_font = egui::FontId::proportional(12.5);
+    let label_font = egui::FontId::proportional(11.0);
     let mono = egui::FontId::monospace(13.0);
     let blue = egui::Color32::from_rgb(140, 210, 255);
-    let grey = egui::Color32::from_gray(225);
+    let grey = egui::Color32::from_gray(200);
     let label = painter.layout_no_wrap("Type".to_string(), label_font.clone(), grey);
     let typed = painter.layout_no_wrap(text.to_string(), mono.clone(), blue);
-    let gap = 6.0;
+    // The box holds **only** what gets typed; "Type" is a caption above it (#818), so the
+    // box's edges delimit the exact characters.
     let pad = egui::vec2(10.0, 6.0);
-    let size = egui::vec2(
-        label.size().x + gap + typed.size().x,
-        label.size().y.max(typed.size().y),
-    ) + pad * 2.0;
+    let size = typed.size() + pad * 2.0;
     // Hug the marked field: one field-height above it, or below when the top is in the way.
     const CLEAR: f32 = 24.0;
     let above = orb.y - CLEAR - size.y * 0.5;
@@ -1880,20 +1878,15 @@ fn draw_orb_type_hint(
         egui::Stroke::new(1.0, blue.gamma_multiply(0.7)),
         egui::StrokeKind::Inside,
     );
-    painter.text(
-        egui::pos2(rect.left() + pad.x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        "Type",
-        label_font,
-        grey,
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, mono, blue);
+    // The caption sits just above the box on its own near-opaque backing, so it reads as a
+    // label rather than as part of what to type.
+    let caption = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.top() - label.size().y * 0.5 - 3.0),
+        label.size() + egui::vec2(8.0, 2.0),
     );
-    painter.text(
-        egui::pos2(rect.left() + pad.x + label.size().x + gap, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        text,
-        mono,
-        blue,
-    );
+    painter.rect_filled(caption, 4.0, egui::Color32::from_rgba_unmultiplied(10, 12, 18, 225));
+    painter.text(caption.center(), egui::Align2::CENTER_CENTER, "Type", label_font, grey);
     ctx.request_repaint();
 }
 
@@ -4959,6 +4952,7 @@ impl App {
             let mut edited = false;
             let mut focus_landed = false;
             let mut drop_pending = false;
+            let mut field_rect: Option<egui::Rect> = None;
             egui::Area::new(egui::Id::new("extrude_distance_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
@@ -4970,6 +4964,8 @@ impl App {
                         )
                         .width(64.0)
                         .show(ui, &mut text, &self.state.doc);
+                        // Where the tutorial's orb points for the extrude depth (#816).
+                        field_rect = Some(resp.rect);
                         if resp.changed() {
                             edited = true;
                         }
@@ -5013,6 +5009,11 @@ impl App {
                         }
                     });
                 });
+            if let Some(rect) = field_rect {
+                self.state
+                    .tutorial_anchor_rects
+                    .insert(tutorial::UiAnchor::ExtrudeDistance, rect);
+            }
             if let Some(ce) = self.state.creating_extrusion.as_mut() {
                 ce.text = text;
                 if edited {

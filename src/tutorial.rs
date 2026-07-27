@@ -26,6 +26,8 @@ pub enum UiAnchor {
     ExtrudeCut,
     /// The floating value field of the dimension being typed (#814).
     DimensionValue,
+    /// The extrude tool's floating **distance** field (#816).
+    ExtrudeDistance,
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -728,6 +730,10 @@ fn extrude_orb(app: &AppState) -> Option<StepTarget> {
     if app.tool != Tool::Extrude {
         return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Extrude)));
     }
+    // Face picked: the depth is what's left, so point at the field that takes it (#816).
+    if app.creating_extrusion.as_ref().is_some_and(|ce| !ce.faces.is_empty()) {
+        return Some(StepTarget::Ui(UiAnchor::ExtrudeDistance));
+    }
     // Halfway between the base leg's two rails: a spot that's actually **on** the face. The
     // profile's overall centroid falls in the L's notch, off the material (#815).
     let outer = profile_polyline(app, 0).as_deref().and_then(polyline_midpoint)?;
@@ -838,12 +844,14 @@ fn hole_cut_orb(app: &AppState) -> Option<StepTarget> {
     if picked < hole_circles(app).len() {
         return hole_point(app, picked, false).map(StepTarget::World);
     }
-    // Both faces in hand: point at the Output → Cut button.
-    (!matches!(
+    // Both faces in hand: the Output → Cut button, then the depth field (#816).
+    if !matches!(
         app.creating_extrusion.as_ref().map(|ce| ce.body_mode),
         Some(crate::actions::ExtrudeBodyMode::Cut(_))
-    ))
-    .then_some(StepTarget::Ui(UiAnchor::ExtrudeCut))
+    ) {
+        return Some(StepTarget::Ui(UiAnchor::ExtrudeCut));
+    }
+    Some(StepTarget::Ui(UiAnchor::ExtrudeDistance))
 }
 
 fn hole_cut_value_hint(app: &AppState) -> Option<String> {
@@ -1088,6 +1096,61 @@ fn sketch_tool_ready(app: &AppState) -> bool {
 
 fn sketch_tool_orb(app: &AppState) -> Option<StepTarget> {
     (!sketch_tool_ready(app)).then_some(StepTarget::Ui(UiAnchor::Tool(Tool::Sketch)))
+}
+
+/// The bracket's inside face looks away from the home view, so the tutorial spins the view
+/// round to it before asking for the click (#817). "Looking at it" means the camera sits on
+/// the same side of the face's plane as its outward normal.
+fn looking_at_flange_face(app: &AppState) -> bool {
+    if hole_sketch_open(app) {
+        return true;
+    }
+    let Some(frame) = profile_sketch(app).and_then(|sketch| {
+        crate::face::sketch_geometry_frame(&app.doc, sketch)
+    }) else {
+        return false;
+    };
+    // The inside face's outward normal points from the inner base line away from the profile.
+    let Some(spot) = flange_face_point(app, 0.5, 0.5) else {
+        return false;
+    };
+    let Some(mid_outer) = profile_polyline(app, 0).as_deref().and_then(polyline_midpoint) else {
+        return false;
+    };
+    let outward = {
+        let v = spot - mid_outer;
+        let n = frame.normal.normalize_or_zero();
+        (v - n * v.dot(n)).normalize_or_zero()
+    };
+    if outward.length_squared() < 1e-6 {
+        return false;
+    }
+    (app.cam.eye() - spot).normalize_or_zero().dot(outward) > 0.25
+}
+
+/// Swing the camera round to that face — what the assist (and the step's own hint) does.
+fn assist_spin_to_flange(app: &mut AppState) {
+    let Some(spot) = flange_face_point(app, 0.5, 0.5) else { return };
+    let Some(mid_outer) = profile_polyline(app, 0).as_deref().and_then(polyline_midpoint) else {
+        return;
+    };
+    let dir = (spot - mid_outer).normalize_or_zero();
+    if dir.length_squared() < 1e-6 {
+        return;
+    }
+    // Look back along the face's outward direction, from a little above it.
+    let eye_dir = (dir + glam::Vec3::Z * 0.35).normalize_or_zero();
+    let (yaw, pitch) = crate::camera::Camera::view_direction_to_yaw_pitch(-eye_dir);
+    app.cam.start_transition_to_view(
+        crate::camera::HomeView {
+            target: spot,
+            yaw,
+            pitch,
+            distance: app.cam.distance.max(120.0),
+            view_up: None,
+        },
+        0.5,
+    );
 }
 
 /// Point at the middle of the flange's inside face — the face to click.
@@ -1947,8 +2010,19 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: None,
     },
     Step {
-        narration: "The holes go on the inside face of the base flange. **Right-drag** to \
-                    spin the view until you can see it, then click the glowing face.",
+        narration: "The holes go on the **inside** of the base flange \u{2014} which is \
+                    facing away right now. **Right-drag** anywhere in the viewport to spin \
+                    the view around until you're looking at it.",
+        anchor: StepAnchor::None,
+        done: Some(looking_at_flange_face),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Spin it for me", run: assist_spin_to_flange }),
+        needs_shift: None,
+        key_hint: None,
+        type_hint: None,
+    },
+    Step {
+        narration: "There it is \u{2014} click the glowing face to sketch on it.",
         anchor: StepAnchor::Guided(flange_face_orb),
         done: Some(hole_sketch_open),
         on_enter: None,
