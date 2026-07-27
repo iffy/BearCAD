@@ -19,6 +19,9 @@ to drop it where you want it, then type the value and press **Enter**.
   angle and follows the cursor the same way.
 - A plain click always moves on to dimensioning whatever you clicked, so a change of mind
   costs one click.
+- While you're typing, the dimension stays drawn where you placed it — just without its
+  number, which is in the field under your cursor. The **Context pane** mirrors the same
+  value (**Span** for a length, **Angle** for an angle) with a blue **✓** to commit.
 - Value fields accept **expressions**: `25`, `2.5in`, `leg/2 + 5`, or a new parameter
   created on the spot by typing `name=value` — see [Parameters & units](/docs/parameters).
 - Dimension labels are draggable, and double-clicking one reopens it for editing.

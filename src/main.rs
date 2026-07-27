@@ -10104,6 +10104,13 @@ impl eframe::App for App {
                 .then(|| context::DimensionDeriveControl {
                     name_text: self.state.dimension_param_name.clone(),
                 }),
+                // The dimension being typed, mirrored into the pane (#775).
+                dimension_edit: self.state.editing_committed_dim.as_ref().map(|edit| {
+                    context::DimensionEditControl {
+                        text: edit.text.clone(),
+                        is_angle: edit.target.is_angle(&self.state.doc),
+                    }
+                }),
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -10130,6 +10137,7 @@ impl eframe::App for App {
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
             let mut dimension_derive_edit: Option<context::DimensionDeriveEdit> = None;
+            let mut dimension_edit: Option<context::DimensionEditEdit> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
@@ -10224,6 +10232,7 @@ impl eframe::App for App {
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                         &mut |edit| dimension_derive_edit = Some(edit),
+                        &mut |edit| dimension_edit = Some(edit),
                     );
                 });
             if !pane_kept_open {
@@ -10963,6 +10972,19 @@ impl eframe::App for App {
                             self.state.scene_selection.clear();
                         }
                     }
+                }
+                None => {}
+            }
+            // The pane's mirrored dimension value (#775): typing there feeds the same edit
+            // buffer the floating input uses, and Go commits it.
+            match dimension_edit {
+                Some(context::DimensionEditEdit::SetText(text)) => {
+                    if let Some(edit) = self.state.editing_committed_dim.as_mut() {
+                        edit.text = text;
+                    }
+                }
+                Some(context::DimensionEditEdit::Commit) => {
+                    self.state.apply(Action::CommitCommittedDim);
                 }
                 None => {}
             }
@@ -11916,6 +11938,36 @@ fn axis_label_edge_pos(rect: egui::Rect, origin: egui::Pos2, dir: egui::Vec2) ->
         t = t.min((rect.min.y - o.y) / d.y);
     }
     t.is_finite().then(|| o + d * t.max(0.0))
+}
+
+/// Nudge an axis-edge label off the axis line so the line doesn't run through the letters
+/// (#771): perpendicular to the axis, on whichever side has room inside `rect`.
+fn axis_label_offset_pos(
+    rect: egui::Rect,
+    pos: egui::Pos2,
+    dir: egui::Vec2,
+    pad: f32,
+) -> egui::Pos2 {
+    if dir.length() < 1e-4 {
+        return pos;
+    }
+    let d = dir.normalized();
+    let perp = egui::vec2(-d.y, d.x);
+    let plus = pos + perp * pad;
+    let minus = pos - perp * pad;
+    // Prefer the side that stays inside; when both do (or neither), take the one further
+    // from the nearest edge so the label doesn't crowd the frame.
+    let room = |p: egui::Pos2| {
+        (p.x - rect.left())
+            .min(rect.right() - p.x)
+            .min(p.y - rect.top())
+            .min(rect.bottom() - p.y)
+    };
+    if room(plus) >= room(minus) {
+        plus
+    } else {
+        minus
+    }
 }
 
 /// Sample the path start point B travels when the Move's translation and rotation advance
@@ -13655,6 +13707,7 @@ enum PlacingPreviewDraw {
         b: Vec3,
         offset: f32,
         label: String,
+        color: egui::Color32,
     },
 }
 
@@ -13688,21 +13741,21 @@ fn sketch_centroid_uv(doc: &model::Document, sketch: SketchId) -> Option<(f32, f
     (n > 0).then(|| (sum.0 / n as f32, sum.1 / n as f32))
 }
 
-/// Draw the length dimension being placed (#763): the same geometry a committed one gets,
-/// at the offset the cursor is currently choosing, in the preview colour.
-#[allow(clippy::too_many_arguments)]
-fn draw_placing_length_preview(
-    painter: &egui::Painter,
+/// The drawn geometry of a length dimension standing `pixel_offset` off its measured
+/// segment, on the side committed dimensions use — shared by the placement preview (#763),
+/// the value-entry drawing and the input's placement (#774), so all three agree.
+fn placed_length_dim_geom(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    label_view: &PlanarLabelView,
     frame: &face::SketchFrame,
     doc: &model::Document,
     session: SketchSession,
     a: Vec3,
     b: Vec3,
     pixel_offset: f32,
-    label: &str,
-) {
+) -> Option<(
+    dimensions::LinearDimensionWorldGeom,
+    dimensions::LinearDimensionGeom,
+)> {
     let (ua, va) = world_to_local(frame, a);
     let (ub, vb) = world_to_local(frame, b);
     let outward_uv = match sketch_centroid_uv(doc, session.sketch) {
@@ -13711,7 +13764,7 @@ fn draw_placing_length_preview(
     };
     let outward_world = uv_dir_to_world(frame.u_axis, frame.v_axis, outward_uv.0, outward_uv.1);
     if outward_world.length_squared() < 1e-8 {
-        return;
+        return None;
     }
     let anchor = a.lerp(b, 0.5);
     let offset_world = pixels_to_world_distance(&project, anchor, outward_world, pixel_offset);
@@ -13727,14 +13780,37 @@ fn draw_placing_length_preview(
         overshoot_world,
         label_outset_world,
     );
-    let Some(geom) = project_linear_dimension_geom(&world_geom, project) else {
+    let geom = project_linear_dimension_geom(&world_geom, project)?;
+    Some((world_geom, geom))
+}
+
+/// Draw a length dimension at its placed offset (#763/#774): the same geometry a committed
+/// one gets. An empty `label` draws the lines and arrows without a number — what value entry
+/// wants, since the number is being typed in the floating input instead.
+#[allow(clippy::too_many_arguments)]
+fn draw_placing_length_preview(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    label_view: &PlanarLabelView,
+    frame: &face::SketchFrame,
+    doc: &model::Document,
+    session: SketchSession,
+    a: Vec3,
+    b: Vec3,
+    pixel_offset: f32,
+    label: &str,
+    color: egui::Color32,
+) {
+    let Some((world_geom, geom)) =
+        placed_length_dim_geom(project, frame, doc, session, a, b, pixel_offset)
+    else {
         return;
     };
     dimensions::draw_linear_dimension(
         painter,
         &geom,
         label,
-        col::PREVIEW,
+        color,
         Some((&world_geom, label_view, project)),
     );
 }
@@ -19175,6 +19251,41 @@ impl App {
         // else that could be dimensioned, the preview stands down so that pick can be
         // hovered and clicked instead (#762).
         let mut placing_preview: Option<PlacingPreviewDraw> = None;
+        // While the value is being typed, the dimension it was just placed as stays drawn —
+        // lines and arrows, no number, because the number is in the floating input (#774).
+        if let (Some(edit), Some(session)) =
+            (&self.state.editing_committed_dim, self.state.sketch_session)
+        {
+            if matches!(edit.target, DimEditTarget::New(_)) {
+                match edit.target.dimension_target(&self.state.doc) {
+                    Some(model::DimensionTarget::Distance(target)) => {
+                        if let Some((a, b)) = crate::constraints::distance_target_segment_endpoints(
+                            &self.state.doc,
+                            session.sketch,
+                            target,
+                        ) {
+                            placing_preview = Some(PlacingPreviewDraw::Length {
+                                a,
+                                b,
+                                offset: effective_dim_offset(edit.dim_offset),
+                                label: String::new(),
+                                color: col::DIM_ANNOTATION,
+                            });
+                        }
+                    }
+                    Some(model::DimensionTarget::Angle { line_a, line_b, rotation_sign }) => {
+                        placing_preview = Some(PlacingPreviewDraw::Angle {
+                            line_a,
+                            line_b,
+                            rotation_sign,
+                            offset: edit.dim_offset,
+                            label: String::new(),
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
         if let Some(placing) = self.state.placing_dimension.clone() {
             let over_pickable = pointer_screen
                 .zip(self.state.sketch_session)
@@ -19286,6 +19397,7 @@ impl App {
                                         session.sketch,
                                         model::DimensionTarget::Distance(target.clone()),
                                     ),
+                                    color: col::PREVIEW,
                                 });
                             }
                             let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
@@ -20555,7 +20667,7 @@ impl App {
                         false,
                         false,
                     ),
-                    PlacingPreviewDraw::Length { a, b, offset, label } => {
+                    PlacingPreviewDraw::Length { a, b, offset, label, color } => {
                         if let Some(view) = planar_label_view {
                             draw_placing_length_preview(
                                 &painter,
@@ -20568,6 +20680,7 @@ impl App {
                                 *b,
                                 *offset,
                                 label,
+                                *color,
                             );
                         }
                     }
@@ -20866,12 +20979,44 @@ impl App {
                                 )
                             })
                     } else if let Some(target) = edit.target.distance_target(&self.state.doc) {
-                        distance_target_segment_endpoints(&self.state.doc, active_sketch, target)
+                        // Sit where the label will go, pushed further out along the same
+                        // direction so the field never covers the dimension line (#774).
+                        let placed = sketch_session.and_then(|session| {
+                            let frame = sketch_geometry_frame(&self.state.doc, session.sketch)?;
+                            let (a, b) = crate::constraints::distance_target_segment_endpoints(
+                                &self.state.doc,
+                                session.sketch,
+                                target.clone(),
+                            )?;
+                            let (_, geom) = placed_length_dim_geom(
+                                &project,
+                                &frame,
+                                &self.state.doc,
+                                session,
+                                a,
+                                b,
+                                effective_dim_offset(arc_dim_offset),
+                            )?;
+                            let size = dim_input_size_for_text(&edit.text);
+                            let center =
+                                geom.label_center + geom.outward * (size.y * 0.5 + LABEL_OUTSET);
+                            Some(dim_input_layout_centered_on(
+                                egui::Rect::from_center_size(center, size),
+                                &edit.text,
+                            ))
+                        });
+                        placed.or_else(|| {
+                            distance_target_segment_endpoints(
+                                &self.state.doc,
+                                active_sketch,
+                                target,
+                            )
                             .and_then(|(a, b)| {
-                                project(a).zip(project(b)).map(|(pa, pb)| {
-                                    line_dim_layout(pa, pb, &edit.text)
-                                })
+                                project(a)
+                                    .zip(project(b))
+                                    .map(|(pa, pb)| line_dim_layout(pa, pb, &edit.text))
                             })
+                        })
                     } else {
                         None
                     };
@@ -22007,7 +22152,7 @@ impl App {
                 label_rect.max.y -= 16.0;
                 if let Some(pos) = axis_label_edge_pos(label_rect, o, p - o) {
                     painter.text(
-                        pos,
+                        axis_label_offset_pos(label_rect, pos, p - o, 11.0),
                         egui::Align2::CENTER_CENTER,
                         label,
                         egui::FontId::proportional(12.0),
@@ -22702,6 +22847,26 @@ mod tests {
         let expected = Vec3::new(5.0, 0.0, 0.0)
             + glam::Quat::from_axis_angle(axis, angle * 0.5) * (start_b - start_a);
         assert!((mid - expected).length() < 1e-4, "half slide, half turn, got {mid:?}");
+    }
+
+    /// #771: the label sits *beside* its axis, never with the line running through the
+    /// letters, and stays inside the frame it was given.
+    #[test]
+    fn axis_label_sits_beside_the_line() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 80.0));
+        // A horizontal axis: the label moves vertically off it.
+        let on_line = egui::pos2(100.0, 40.0);
+        let placed = axis_label_offset_pos(rect, on_line, egui::vec2(1.0, 0.0), 11.0);
+        assert!((placed.y - on_line.y).abs() >= 11.0 - 1e-3, "{placed:?}");
+        assert!((placed.x - on_line.x).abs() < 1e-3);
+        // A vertical axis: sideways instead.
+        let on_line = egui::pos2(50.0, 0.0);
+        let placed = axis_label_offset_pos(rect, on_line, egui::vec2(0.0, -1.0), 11.0);
+        assert!((placed.x - on_line.x).abs() >= 11.0 - 1e-3, "{placed:?}");
+        // Near a corner it takes the side with room, not the one off the frame.
+        let corner = egui::pos2(100.0, 2.0);
+        let placed = axis_label_offset_pos(rect, corner, egui::vec2(1.0, 0.0), 11.0);
+        assert!(placed.y > corner.y, "pushed down into the frame: {placed:?}");
     }
 
     /// #751: the sketch-axis edge labels sit where each axis's positive direction leaves

@@ -2002,6 +2002,16 @@ modeled on SolveSpace (https://solvespace.com).
   that **already exists** skips placement and opens its value editor straight away — it
   already has a place on the sheet. The preview is painted **after** the GPU scene, so it
   isn't buried under it.
+- **While the value is typed (#774):** the dimension it was just placed as **stays drawn** —
+  extension lines, dimension line and arrows, or the angle's arc — but **without its number**,
+  since that's what's being typed. The floating value input sits where the label will land,
+  pushed one input-height further out along the same direction, so it never covers the
+  dimension line (angles keep `angle_dim_edit_input_layout`'s bisector placement). Committing
+  draws the finished label as normal.
+- **Context pane (#775):** while a dimension is being typed the pane shows the same value in a
+  mirrored `ValueInput` — labelled **"Angle"** for an angle and **"Span"** for a length — plus
+  the blue **Go** primary button every other tool commits with (`DimensionEditControl` /
+  `DimensionEditEdit`). Typing in either place feeds the same edit buffer.
 - **Picking stays live while placing (#762/#763):** hovering anything else dimensionable
   stands the preview down and hovers that instead, so the next click goes to the pick, not to
   dropping the dimension. A **plain click** switches to dimensioning what was clicked
@@ -2269,7 +2279,9 @@ modeled on SolveSpace (https://solvespace.com).
     (`ContextInput::sketch_axis_screen_dirs`, the projected local axes normalized — rotated with the
     view, never skewed), so which way the line will snap always matches what the viewport shows.
     The viewport itself labels the local axes at its edge (#751): **"LX"/"LY"** in the axis colours,
-    where each axis's positive direction leaves the view (`axis_label_edge_pos`).
+    where each axis's positive direction leaves the view (`axis_label_edge_pos`), nudged
+    **perpendicular** onto whichever side has room so the axis line never runs through the
+    letters (#771, `axis_label_offset_pos`).
   - **No separate Horizontal/Vertical constraint *kind* (#577/#580):** the old standalone constraints
     were removed entirely in favour of the general **parallel-to-axis** solution (the buttons above,
     or select a line **and a sketch axis** and apply **Parallel**/**Perpendicular** directly).

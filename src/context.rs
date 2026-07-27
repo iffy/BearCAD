@@ -137,6 +137,8 @@ pub struct ContextInput<'a> {
     pub calibrate_pending: Option<usize>,
     /// Dimension tool in 3D mode (#618): the derived-parameter name/value/commit block.
     pub dimension_derive: Option<DimensionDeriveControl>,
+    /// The in-progress dimension value (#775), mirrored into the pane.
+    pub dimension_edit: Option<DimensionEditControl>,
 }
 
 /// What the Revolve tool's context section shows (#revolve): the picked axis (if any),
@@ -806,6 +808,8 @@ pub struct ContextPaneContent {
     /// Dimension tool in 3D mode (#618): the derived-parameter name/value/commit block,
     /// rendered right under the selection picker.
     pub dimension_derive: Option<DimensionDeriveView>,
+    /// The dimension being typed right now (#775).
+    pub dimension_edit: Option<DimensionEditControl>,
     /// Tool-owned element pickers (#213): the sets a construction tool is gathering (e.g. the
     /// Revolve tool's cut bodies), each rendered by the same combo-box widget. Extensible: a
     /// tool may show several (Combine's A/B sides). Empty for tools not yet migrated.
@@ -1096,6 +1100,23 @@ pub struct DimensionDeriveControl {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DimensionDeriveEdit {
     SetName(String),
+    Commit,
+}
+
+/// The dimension being typed (#775): the pane mirrors the floating value input so a
+/// dimension can be set from either place, and offers the same blue **Go** button every
+/// other tool commits with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DimensionEditControl {
+    pub text: String,
+    /// Angles get an angle-flavoured input (and the "Angle" label); lengths get "Span".
+    pub is_angle: bool,
+}
+
+/// A user edit from the Dimension tool's value block (#775).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DimensionEditEdit {
+    SetText(String),
     Commit,
 }
 
@@ -1684,6 +1705,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
+            dimension_edit: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1741,6 +1763,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
+            dimension_edit: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1800,6 +1823,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
+            dimension_edit: None,
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
@@ -1866,6 +1890,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         edge_picker,
         selection_picker,
         dimension_derive,
+        dimension_edit: input.dimension_edit.clone(),
         tool_pickers,
         calibrate_image,
         revolve,
@@ -2967,6 +2992,7 @@ pub fn show_pane(
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
     on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),
+    on_dimension_edit: &mut impl FnMut(DimensionEditEdit),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -3058,6 +3084,39 @@ pub fn show_pane(
         // A labeled button (#629): the action's name should be readable, not a bare ✓.
         if primary_text_button(ui, controls_enabled && control.can_commit, "Derive parameter") {
             on_dimension_derive_edit(DimensionDeriveEdit::Commit);
+        }
+        ui.add_space(4.0);
+    }
+
+    // The dimension being typed (#775): the same value, editable here as well as in the
+    // floating input on the drawing, and the blue Go button every other tool commits with.
+    if let Some(control) = &content.dimension_edit {
+        any_control = true;
+        let label = if control.is_angle { "Angle" } else { "Span" };
+        let kind = if control.is_angle {
+            crate::expression_input::ValueKind::Angle
+        } else {
+            crate::expression_input::ValueKind::Length
+        };
+        let mut pending: Option<DimensionEditEdit> = None;
+        labeled_row(ui, label, |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                let mut text = control.text.clone();
+                crate::expression_input::ValueInput::new("dimension_value", kind)
+                    .width(110.0)
+                    .show(ui, &mut text, doc);
+                // Emit on any buffer difference, not just `changed()` — autocomplete
+                // rewrites the buffer behind egui's back (#517).
+                if text != control.text {
+                    pending = Some(DimensionEditEdit::SetText(text));
+                }
+            });
+        });
+        if let Some(edit) = pending {
+            on_dimension_edit(edit);
+        }
+        if primary_button(ui, controls_enabled, "Set dimension") {
+            on_dimension_edit(DimensionEditEdit::Commit);
         }
         ui.add_space(4.0);
     }
@@ -5598,6 +5657,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         }
     }
 
@@ -5879,6 +5939,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         };
         let content = context_pane_content(&base);
         let edges_picker = |rows: Vec<String>| EdgePickerControl {
@@ -5964,6 +6025,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         };
         let picker = context_pane_content(&input)
             .selection_picker
@@ -6289,6 +6351,7 @@ mod tests {
                 tool_title: None,
                 unit_instance: None,
                 dimension_derive: None,
+            dimension_edit: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -6407,6 +6470,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         });
         assert_eq!(
             content,
@@ -6414,6 +6478,7 @@ mod tests {
                 tool_title: None,
                 unit_instance: None,
                 dimension_derive: None,
+            dimension_edit: None,
                 name: None,
                 curve_mode: None,
             rect_anchor: None,
@@ -6535,6 +6600,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         });
         assert_eq!(content.curve_mode, Some(true));
         assert_eq!(content.tangent_constraint, Some(false));
@@ -6553,6 +6619,7 @@ mod tests {
                 tool_title: None,
                 unit_instance: None,
                 dimension_derive: None,
+            dimension_edit: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -6729,6 +6796,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -6798,6 +6866,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         });
         assert_eq!(
             content,
@@ -6805,6 +6874,7 @@ mod tests {
                 tool_title: None,
                 unit_instance: None,
                 dimension_derive: None,
+            dimension_edit: None,
                 name: Some(NameControl {
                     element: SceneElement::Line(0),
                 }),
@@ -6919,6 +6989,7 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
             dimension_derive: None,
+            dimension_edit: None,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),
