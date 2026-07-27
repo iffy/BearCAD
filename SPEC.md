@@ -3436,7 +3436,9 @@ document is millimeters, so the player is person-scale: eye height
   All three badges are bounded by the **window**, not the viewport, since an orb can be
   pointing into a side pane. In the dimensioning steps the orb moves **off** the
   line once it's picked, onto the spot where the dimension will drop (#779) — the same side
-  the committed label takes, so "click away from the line" is shown rather than described. Steps can
+  the committed label takes, so "click away from the line" is shown rather than described —
+  and then onto the **value field** it opened (`UiAnchor::DimensionValue`, the floating input
+  recording its own rect, #814), where the typing goes. Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going
   forward (never while reviewing with Back): the drawing step uses it to **glide the
   camera in over the profile area** (`frame_profile_area`), so a user who happened to be

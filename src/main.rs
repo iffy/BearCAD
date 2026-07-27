@@ -21304,6 +21304,11 @@ impl App {
                             &edit.text,
                         )
                     });
+                    // Where the tutorial's orb points while a value is being typed (#814).
+                    self.state.tutorial_anchor_rects.insert(
+                        tutorial::UiAnchor::DimensionValue,
+                        input_layout.rect,
+                    );
                     let ctx = ui.ctx();
                     let id = egui::Id::new(("committed_dim", format!("{:?}", edit.target)));
                     let mut commit_dim = false;

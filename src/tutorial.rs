@@ -24,6 +24,8 @@ pub enum UiAnchor {
     ConstraintButton(crate::geometric_constraints::GeometricConstraintType),
     /// The extrude Output row's **Cut** button (#804).
     ExtrudeCut,
+    /// The floating value field of the dimension being typed (#814).
+    DimensionValue,
 }
 
 /// What a step's glowing orb points at, once resolved against the live state.
@@ -669,10 +671,14 @@ fn dimensioning_line(app: &AppState, nth: usize) -> bool {
 }
 
 /// The orb for a "dimension this line" step: the line's middle until it's picked, then the
-/// spot to click to drop the dimension there (#779), and nothing once it's dimensioned.
+/// spot to drop the dimension (#779), then the value field it opened (#814), and nothing
+/// once it's dimensioned.
 fn dimension_line_orb(app: &AppState, nth: usize) -> Option<StepTarget> {
     if line_has_length_dim(app, nth) {
         return None;
+    }
+    if app.editing_committed_dim.is_some() {
+        return Some(StepTarget::Ui(UiAnchor::DimensionValue));
     }
     if dimensioning_line(app, nth) {
         return dimension_label_spot(app, nth).map(StepTarget::World);
@@ -722,20 +728,11 @@ fn extrude_orb(app: &AppState) -> Option<StepTarget> {
     if app.tool != Tool::Extrude {
         return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Extrude)));
     }
-    let lines = profile_lines(app);
-    if lines.is_empty() {
-        return None;
-    }
-    // The profile's middle: the average of its lines' midpoints.
-    let mut sum = glam::Vec3::ZERO;
-    let mut n = 0.0;
-    for nth in 0..lines.len() {
-        if let Some(mid) = profile_polyline(app, nth).as_deref().and_then(polyline_midpoint) {
-            sum += mid;
-            n += 1.0;
-        }
-    }
-    (n > 0.0).then(|| StepTarget::World(sum / n))
+    // Halfway between the base leg's two rails: a spot that's actually **on** the face. The
+    // profile's overall centroid falls in the L's notch, off the material (#815).
+    let outer = profile_polyline(app, 0).as_deref().and_then(polyline_midpoint)?;
+    let inner = profile_polyline(app, 2).as_deref().and_then(polyline_midpoint)?;
+    Some(StepTarget::World(outer.lerp(inner, 0.5)))
 }
 
 /// "Type width = 40mm" waits for the extrude's distance field (#789).
@@ -764,6 +761,10 @@ fn tilted_cap_orb(app: &AppState) -> Option<StepTarget> {
 /// The bend-angle step: the bottom line, then (with Shift) the inner leg line, then the
 /// spot to drop the arc (#779).
 fn bend_angle_orb(app: &AppState) -> Option<StepTarget> {
+    // Typing the value: the orb belongs on the field, not back on the line (#814).
+    if app.editing_committed_dim.is_some() {
+        return Some(StepTarget::Ui(UiAnchor::DimensionValue));
+    }
     if let Some(world) =
         constraint_click_point(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(3))
     {
@@ -1150,6 +1151,9 @@ fn holes_dimensioned(app: &AppState) -> bool {
 fn hole_dimension_orb(app: &AppState) -> Option<StepTarget> {
     if holes_dimensioned(app) {
         return None;
+    }
+    if app.editing_committed_dim.is_some() {
+        return Some(StepTarget::Ui(UiAnchor::DimensionValue));
     }
     let session = app.sketch_session?;
     let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
