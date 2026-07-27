@@ -54,9 +54,10 @@ pub enum StepAnchor {
 pub struct StepAssist {
     /// Button label in the bubble.
     pub label: &'static str,
-    /// What the button does, computed from the live state so it only fills in
-    /// whatever the user hasn't already done themselves.
-    pub actions: fn(&AppState) -> Vec<Action>,
+    /// What the button does. It runs against the live state, so it can look at what's
+    /// already there and only fill in the rest — and can apply a sequence of actions that
+    /// depend on each other (pick, then constrain).
+    pub run: fn(&mut AppState),
 }
 
 pub struct Step {
@@ -212,15 +213,26 @@ fn params_defined(app: &AppState) -> bool {
 
 /// The "Add them for me" button: adds whichever bracket parameters are still
 /// missing, leaving any the user already typed (or renamed the value of) alone.
-fn add_missing_params(app: &AppState) -> Vec<Action> {
-    BRACKET_PARAMS
-        .iter()
-        .filter(|(name, _)| !param_exists(app, name))
-        .map(|(name, expression)| Action::AddParameter {
+fn add_missing_params(app: &mut AppState) {
+    for (name, expression) in BRACKET_PARAMS {
+        ensure_param(app, name, expression);
+    }
+}
+
+/// Define `name` if it isn't defined yet — the assists lean on the parameters the tutorial
+/// asks for without clobbering values the user chose.
+fn ensure_param(app: &mut AppState, name: &str, expression: &str) {
+    if !param_exists(app, name) {
+        app.apply(Action::AddParameter {
             name: name.to_string(),
             expression: expression.to_string(),
-        })
-        .collect()
+        });
+    }
+}
+
+/// The first bracket parameter, which the four "type leg" steps all boil down to.
+fn add_leg_param(app: &mut AppState) {
+    ensure_param(app, "leg", "50mm");
 }
 
 /// The next bracket parameter still missing, as "name = value" (#782) — what the parameter
@@ -1178,6 +1190,476 @@ fn bend_angle_changed(app: &AppState) -> bool {
         .is_some_and(|rad| (rad.to_degrees() - 120.0).abs() > 1.0)
 }
 
+
+// --- "Do it for me" (#810) -------------------------------------------------------------
+//
+// Every step that *does* something offers to do it — the same document changes the user's
+// clicks would make, so the step's own predicate then advances the tutorial exactly as if
+// they'd done it themselves. (The two narration-only bookends have nothing to do; their
+// button is Next.)
+
+fn assist_line_tool(app: &mut AppState) {
+    app.apply(Action::SetTool(Tool::Line));
+}
+
+fn assist_constraint_tool(app: &mut AppState) {
+    app.apply(Action::SetTool(Tool::Constraint));
+}
+
+fn assist_dimension_tool(app: &mut AppState) {
+    clear_selection_for_dimensioning(app);
+    app.apply(Action::SetTool(Tool::Dimension));
+}
+
+fn assist_sketch_tool(app: &mut AppState) {
+    app.apply(Action::SetTool(Tool::Sketch));
+}
+
+fn assist_circle_tool(app: &mut AppState) {
+    app.apply(Action::SetTool(Tool::Circle));
+}
+
+/// Draw the sloppy profile: the same six chained segments the click-by-click step walks,
+/// with the corner coincidences the drawing snaps would have added.
+fn assist_draw_profile(app: &mut AppState) {
+    use crate::model::{ConstraintPoint, FaceId, LineEnd};
+    if app.sketch_session.is_none() {
+        app.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+    }
+    if profile_lines(app).len() >= PROFILE_POINTS.len() {
+        return;
+    }
+    for i in 0..PROFILE_POINTS.len() {
+        let (x0, y0) = PROFILE_POINTS[i];
+        let (x1, y1) = PROFILE_POINTS[(i + 1) % PROFILE_POINTS.len()];
+        app.apply(Action::CreateLineSegment { x0, y0, x1, y1, bezier: None, dimension: None });
+    }
+    let lines = profile_lines(app);
+    for i in 0..lines.len() {
+        let j = (i + 1) % lines.len();
+        select_pair(
+            app,
+            crate::hierarchy::SceneElement::Point(ConstraintPoint::LineEndpoint {
+                line: lines[i],
+                end: LineEnd::End,
+            }),
+            crate::hierarchy::SceneElement::Point(ConstraintPoint::LineEndpoint {
+                line: lines[j],
+                end: LineEnd::Start,
+            }),
+        );
+        app.apply(Action::AddGeometricConstraint(GC::Coincident));
+    }
+    app.scene_selection.clear();
+}
+
+/// Select exactly `a` and `b` — what a click and a Shift+click do.
+fn select_pair(
+    app: &mut AppState,
+    a: crate::hierarchy::SceneElement,
+    b: crate::hierarchy::SceneElement,
+) {
+    app.scene_selection.clear();
+    app.scene_selection.insert(a);
+    app.scene_selection.insert(b);
+}
+
+/// A constraint step's assist: pick the two things it asks for, apply the constraint.
+fn apply_constraint(app: &mut AppState, a: ClickTarget, b: ClickTarget, kind: GC) {
+    let (Some(ea), Some(eb)) = (target_element(app, a), target_element(app, b)) else {
+        return;
+    };
+    select_pair(app, ea, eb);
+    app.apply(Action::AddGeometricConstraint(kind));
+    app.scene_selection.clear();
+}
+
+/// The scene element a click target *is* — the assists select these directly.
+fn target_element(app: &AppState, target: ClickTarget) -> Option<crate::hierarchy::SceneElement> {
+    use crate::hierarchy::SceneElement;
+    use crate::model::{ConstraintLine, ConstraintPoint, LineEnd, SketchAxis};
+    match target {
+        ClickTarget::ProfileLine(n) => profile_lines(app).get(n).map(|i| SceneElement::Line(*i)),
+        ClickTarget::ProfileCorner(n) => profile_lines(app).get(n).map(|i| {
+            SceneElement::Point(ConstraintPoint::LineEndpoint { line: *i, end: LineEnd::Start })
+        }),
+        ClickTarget::Origin => Some(SceneElement::Origin),
+        ClickTarget::XAxis => Some(SceneElement::FaceEdge(ConstraintLine::OriginAxis(
+            SketchAxis::X,
+        ))),
+    }
+}
+
+fn assist_pin(app: &mut AppState) {
+    apply_constraint(app, ClickTarget::ProfileCorner(0), ClickTarget::Origin, GC::Coincident);
+}
+fn assist_level(app: &mut AppState) {
+    apply_constraint(app, ClickTarget::ProfileLine(0), ClickTarget::XAxis, GC::Parallel);
+}
+fn assist_base_strip(app: &mut AppState) {
+    apply_constraint(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(2), GC::Parallel);
+}
+fn assist_legs(app: &mut AppState) {
+    apply_constraint(app, ClickTarget::ProfileLine(3), ClickTarget::ProfileLine(5), GC::Parallel);
+}
+fn assist_cap_one(app: &mut AppState) {
+    apply_constraint(
+        app,
+        ClickTarget::ProfileLine(1),
+        ClickTarget::ProfileLine(0),
+        GC::Perpendicular,
+    );
+}
+fn assist_cap_two(app: &mut AppState) {
+    apply_constraint(
+        app,
+        ClickTarget::ProfileLine(4),
+        ClickTarget::ProfileLine(3),
+        GC::Perpendicular,
+    );
+}
+
+/// Dimension the nth profile line with `expression`, defining the parameter it names first
+/// when the tutorial hasn't introduced it yet (#788's `thick`).
+fn dimension_profile_line(app: &mut AppState, nth: usize, expression: &str) {
+    use crate::model::{DimensionTarget, DistanceTarget};
+    let Some(sketch) = profile_sketch(app) else { return };
+    let Some(&index) = profile_lines(app).get(nth) else { return };
+    if expression == "thick" {
+        ensure_param(app, "thick", "5mm");
+    }
+    let _ = crate::constraints::apply_dimension_expression(
+        &mut app.doc,
+        sketch,
+        DimensionTarget::Distance(DistanceTarget::LineLength(index)),
+        expression,
+    );
+    let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+    app.refresh_document_health();
+}
+
+fn assist_base_leg_dim(app: &mut AppState) {
+    dimension_profile_line(app, 0, "leg");
+}
+fn assist_tilted_leg_dim(app: &mut AppState) {
+    dimension_profile_line(app, 5, "leg");
+}
+fn assist_base_cap_dim(app: &mut AppState) {
+    dimension_profile_line(app, 1, "thick");
+}
+fn assist_tilted_cap_dim(app: &mut AppState) {
+    dimension_profile_line(app, 4, "thick");
+}
+
+fn assist_bend_angle_dim(app: &mut AppState) {
+    use crate::model::{ConstraintLine, DimensionTarget};
+    let Some(sketch) = profile_sketch(app) else { return };
+    let lines = profile_lines(app);
+    let (Some(&a), Some(&b)) = (lines.first(), lines.get(3)) else { return };
+    let sign = crate::constraints::angle_constraint_natural_sign(
+        &app.doc,
+        ConstraintLine::Line(a),
+        ConstraintLine::Line(b),
+    )
+    .unwrap_or(1);
+    let _ = crate::constraints::apply_dimension_expression(
+        &mut app.doc,
+        sketch,
+        DimensionTarget::Angle {
+            line_a: ConstraintLine::Line(a),
+            line_b: ConstraintLine::Line(b),
+            rotation_sign: sign,
+        },
+        "bend_angle",
+    );
+    let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+    app.refresh_document_health();
+}
+
+/// Extrude the profile `width` deep — leaving the sketch first, like the step says.
+fn assist_extrude(app: &mut AppState) {
+    use crate::actions::ExtrudeBodyChoice;
+    use crate::model::ExtrudeFace;
+    ensure_param(app, "width", "40mm");
+    let Some(sketch) = profile_sketch(app) else { return };
+    let lines = profile_lines(app);
+    if lines.len() < 3 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    let width = crate::value::eval_length_mm_in_doc("width", &app.doc).unwrap_or(40.0);
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: vec![ExtrudeFace::Polygon(lines)],
+        distance: width,
+        body: ExtrudeBodyChoice::New,
+        target: None,
+        expression: Some("width".to_string()),
+        symmetric: false,
+    });
+}
+
+/// Round one of the bend's vertical edges. `nth` is the profile vertex the edge stands on.
+fn fillet_vertical_edge(app: &mut AppState, edge: usize, expression: &str) {
+    use crate::model::{ExtrusionEdgeRef, VertexTreatmentKind};
+    let amount = crate::value::eval_length_mm_in_doc(expression, &app.doc).unwrap_or(4.0);
+    app.apply(Action::CommitEdgeTreatments {
+        edges: vec![(0, ExtrusionEdgeRef::Vertical { face: 0, edge })],
+        kind: VertexTreatmentKind::Fillet,
+        amount,
+    });
+}
+
+fn assist_inner_bend(app: &mut AppState) {
+    fillet_vertical_edge(app, 2, "bend");
+}
+fn assist_outer_bend(app: &mut AppState) {
+    fillet_vertical_edge(app, 5, "bend + thick");
+}
+
+/// Open a sketch on the inside face of the base flange (the face the holes go on).
+fn assist_flange_sketch(app: &mut AppState) {
+    use crate::model::{ExtrudeFace, FaceId};
+    if hole_sketch_open(app) {
+        return;
+    }
+    let lines = profile_lines(app);
+    if lines.len() < 3 {
+        return;
+    }
+    app.apply(Action::BeginSketch {
+        face: FaceId::ExtrudeSide {
+            extrusion: 0,
+            profile: ExtrudeFace::Polygon(lines),
+            edge: 2,
+        },
+        viewport: None,
+    });
+}
+
+/// Place one screw hole at the spot the step's orb points at.
+fn draw_hole(app: &mut AppState, v: f32) {
+    ensure_param(app, "hole", "5mm");
+    let r = crate::value::eval_length_mm_in_doc("hole", &app.doc).unwrap_or(5.0) * 0.5;
+    app.apply(Action::CreateCircle {
+        cx: 19.0,
+        cy: v,
+        r,
+        diameter_expr: Some("hole".to_string()),
+    });
+}
+
+fn assist_first_hole(app: &mut AppState) {
+    if !first_hole_drawn(app) {
+        draw_hole(app, 10.0);
+    }
+}
+fn assist_second_hole(app: &mut AppState) {
+    if !hole_circles_drawn(app) {
+        draw_hole(app, 30.0);
+    }
+}
+
+/// Cut both holes through the bracket.
+fn assist_cut_holes(app: &mut AppState) {
+    use crate::actions::ExtrudeBodyChoice;
+    use crate::model::ExtrudeFace;
+    let Some(session) = app.sketch_session else { return };
+    let circles: Vec<usize> = app
+        .doc
+        .circles
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .map(|(i, _)| i)
+        .collect();
+    if circles.is_empty() {
+        return;
+    }
+    let sketch = session.sketch;
+    app.apply(Action::ExitSketch);
+    let depth = crate::value::eval_length_mm_in_doc("thick + 1", &app.doc).unwrap_or(6.0);
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: circles.into_iter().map(ExtrudeFace::Circle).collect(),
+        distance: -depth,
+        body: ExtrudeBodyChoice::Cut,
+        target: None,
+        expression: Some("-(thick + 1)".to_string()),
+        symmetric: false,
+    });
+}
+
+/// Countersink both holes: a chamfer on each hole's rim.
+fn assist_countersink(app: &mut AppState) {
+    use crate::model::{ExtrusionEdgeRef, VertexTreatmentKind};
+    let cut = app
+        .doc
+        .extrusions
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, e)| !e.deleted)
+        .map(|(i, _)| i);
+    let Some(cut) = cut else { return };
+    let faces = app.doc.extrusions[cut].faces.len();
+    let edges = (0..faces)
+        .map(|face| (cut, ExtrusionEdgeRef::Cap { face, edge: 0, top: false }))
+        .collect::<Vec<_>>();
+    if edges.is_empty() {
+        return;
+    }
+    app.apply(Action::CommitEdgeTreatments {
+        edges,
+        kind: VertexTreatmentKind::Chamfer,
+        amount: 1.2,
+    });
+}
+
+/// Round the four flange-tip corners.
+fn assist_round_corners(app: &mut AppState) {
+    use crate::model::{ExtrusionEdgeRef, VertexTreatmentKind};
+    let edges = [0usize, 1, 3, 4]
+        .into_iter()
+        .map(|edge| (0, ExtrusionEdgeRef::Vertical { face: 0, edge }))
+        .collect::<Vec<_>>();
+    app.apply(Action::CommitEdgeTreatments {
+        edges,
+        kind: VertexTreatmentKind::Fillet,
+        amount: 2.0,
+    });
+}
+
+/// Space the holes evenly: each one the same distance from its own end of the flange.
+fn assist_position_holes(app: &mut AppState) {
+    use crate::model::{
+        ConstraintLine, ConstraintPoint, DimensionTarget, DistanceTarget,
+    };
+    let Some(session) = app.sketch_session else { return };
+    let Some(face) = app.doc.sketch_face(session.sketch) else { return };
+    let circles: Vec<usize> = app
+        .doc
+        .circles
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .map(|(i, _)| i)
+        .collect();
+    // The sketched-on face's own boundary edges: give hole 0 its distance from edge 0 and
+    // hole 1 the same distance from the opposite edge, so the pair sits evenly.
+    for (nth, &circle) in circles.iter().enumerate().take(2) {
+        let index = if nth == 0 { 1 } else { 3 };
+        let target = DimensionTarget::Distance(DistanceTarget::PointLineDistance {
+            point: ConstraintPoint::CircleCenter(circle),
+            line: ConstraintLine::FaceEdge { face: face.clone(), index },
+            side: 1,
+        });
+        let _ = crate::constraints::apply_dimension_expression(
+            &mut app.doc,
+            session.sketch,
+            target,
+            "10mm",
+        );
+    }
+    let _ = crate::constraints::solve_document_constraints(&mut app.doc);
+    app.refresh_document_health();
+}
+
+/// Engrave the label: text on the outer face of the base, cut a millimetre deep.
+fn assist_engrave(app: &mut AppState) {
+    use crate::actions::ExtrudeBodyChoice;
+    use crate::model::{ExtrudeFace, FaceId};
+    if app.doc.sketch_texts.iter().any(|t| !t.deleted) && cut_extrusion_count(app) >= 2 {
+        return;
+    }
+    let lines = profile_lines(app);
+    if lines.len() < 3 {
+        return;
+    }
+    if app.sketch_session.is_some() {
+        app.apply(Action::ExitSketch);
+    }
+    app.apply(Action::BeginSketch {
+        face: FaceId::ExtrudeSide {
+            extrusion: 0,
+            profile: ExtrudeFace::Polygon(lines),
+            edge: 0,
+        },
+        viewport: None,
+    });
+    let Some(session) = app.sketch_session else { return };
+    // Whatever font this machine has — the same fallback the Text tool picks (#282).
+    let font_family = ["Helvetica", "Arial", "Segoe UI", "DejaVu Sans", "Liberation Sans"]
+        .into_iter()
+        .find(|fam| crate::text::font_bytes(fam, false, false).is_some())
+        .map(|fam| fam.to_string())
+        .or_else(|| crate::text::system_font_families().into_iter().next())
+        .unwrap_or_default();
+    app.apply(Action::CreateSketchText {
+        sketch: session.sketch,
+        text: "BearCAD".to_string(),
+        font_family,
+        bold: false,
+        italic: false,
+        underline: false,
+        size: 5.0,
+        size_expr: "5mm".to_string(),
+        origin: (6.0, 17.0),
+        rotation: 0.0,
+        wrap_width: None,
+    });
+    let Some(text) = app
+        .doc
+        .sketch_texts
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, t)| !t.deleted)
+        .map(|(i, _)| i)
+    else {
+        return;
+    };
+    let sketch = session.sketch;
+    let glyphs = app
+        .doc
+        .sketch_texts
+        .get(text)
+        .map(|t| crate::text::group_glyphs(&t.contours).len())
+        .unwrap_or(0);
+    if glyphs == 0 {
+        return;
+    }
+    app.apply(Action::ExitSketch);
+    app.apply(Action::CreateExtrusion {
+        sketch,
+        faces: (0..glyphs)
+            .map(|glyph| ExtrudeFace::TextGlyph { text, glyph })
+            .collect(),
+        distance: -1.0,
+        body: ExtrudeBodyChoice::Cut,
+        target: None,
+        expression: None,
+        symmetric: false,
+    });
+}
+
+/// Change the bend angle — the payoff step.
+fn assist_change_angle(app: &mut AppState) {
+    let index = app
+        .doc
+        .parameters
+        .iter()
+        .position(|p| !p.deleted && p.name.eq_ignore_ascii_case("bend_angle"));
+    if let Some(index) = index {
+        app.apply(Action::CommitParameterExpression {
+            index,
+            expression: "150deg".to_string(),
+        });
+    }
+}
+
 static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "Hi, I'm Bear! Let's build a real part together: a 120\u{b0} angle \
@@ -1197,7 +1679,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_box_tapped),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1208,7 +1690,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_says_leg),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("leg")),
@@ -1218,7 +1700,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
         done: Some(value_says_50),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("50mm")),
@@ -1228,7 +1710,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(leg_added),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1240,7 +1722,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(params_defined),
         on_enter: None,
-        assist: Some(StepAssist { label: "Add them for me", actions: add_missing_params }),
+        assist: Some(StepAssist { label: "Add them for me", run: add_missing_params }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(next_missing_param)),
@@ -1250,7 +1732,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
         done: Some(line_tool_active),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_line_tool }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1261,7 +1743,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::World(next_profile_point),
         done: Some(profile_drawn),
         on_enter: Some(frame_profile_area),
-        assist: None,
+        assist: Some(StepAssist { label: "Draw it for me", run: assist_draw_profile }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1271,7 +1753,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Constraint)),
         done: Some(constraint_tool_active),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_constraint_tool }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1282,7 +1764,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(pin_click),
         done: Some(bend_pinned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_pin }),
         needs_shift: Some(pin_shift),
         key_hint: None,
         type_hint: None,
@@ -1293,7 +1775,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(level_click),
         done: Some(base_leveled),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_level }),
         needs_shift: Some(level_shift),
         key_hint: Some((
             "Space",
@@ -1306,7 +1788,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(base_strip_click),
         done: Some(base_strip_even),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_base_strip }),
         needs_shift: Some(base_strip_shift),
         key_hint: None,
         type_hint: None,
@@ -1317,7 +1799,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(legs_click),
         done: Some(legs_parallel),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_legs }),
         needs_shift: Some(legs_shift),
         key_hint: None,
         type_hint: None,
@@ -1328,7 +1810,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(cap_one_click),
         done: Some(first_cap_squared),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_cap_one }),
         needs_shift: Some(cap_one_shift),
         key_hint: None,
         type_hint: None,
@@ -1339,7 +1821,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(cap_two_click),
         done: Some(profile_squared),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_cap_two }),
         needs_shift: Some(cap_two_shift),
         key_hint: None,
         type_hint: None,
@@ -1350,7 +1832,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
         done: Some(dimension_tool_active),
         on_enter: Some(clear_selection_for_dimensioning),
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_dimension_tool }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1361,7 +1843,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(base_leg_orb),
         done: Some(base_leg_dimensioned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_base_leg_dim }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
@@ -1371,7 +1853,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(tilted_leg_orb),
         done: Some(tilted_leg_dimensioned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_tilted_leg_dim }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
@@ -1383,7 +1865,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(base_cap_orb),
         done: Some(base_cap_dimensioned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_base_cap_dim }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
@@ -1394,7 +1876,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(tilted_cap_orb),
         done: Some(tilted_cap_dimensioned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_tilted_cap_dim }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
@@ -1405,7 +1887,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(bend_angle_orb),
         done: Some(profile_dimensioned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_bend_angle_dim }),
         needs_shift: Some(bend_angle_shift),
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
@@ -1417,7 +1899,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(extrude_orb),
         done: Some(extruded),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_extrude }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
@@ -1428,7 +1910,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(inner_bend_orb),
         done: Some(inner_bend_rounded),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_inner_bend }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_value_hint)),
@@ -1439,7 +1921,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(outer_bend_orb),
         done: Some(bend_rounded),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_outer_bend }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_thick_value_hint)),
@@ -1450,7 +1932,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(sketch_tool_orb),
         done: Some(sketch_tool_ready),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_sketch_tool }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1461,7 +1943,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(flange_face_orb),
         done: Some(hole_sketch_open),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_flange_sketch }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1471,7 +1953,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(circle_tool_orb),
         done: Some(circle_tool_ready),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_circle_tool }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1482,7 +1964,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(first_hole_orb),
         done: Some(first_hole_drawn),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_first_hole }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
@@ -1492,7 +1974,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(second_hole_orb),
         done: Some(hole_circles_drawn),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_second_hole }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
@@ -1505,7 +1987,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(hole_dimension_orb),
         done: Some(holes_dimensioned),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_position_holes }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
@@ -1517,7 +1999,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(hole_cut_orb),
         done: Some(holes_cut),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_cut_holes }),
         needs_shift: None,
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_cut_value_hint)),
@@ -1528,7 +2010,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(countersink_orb),
         done: Some(holes_countersunk),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_countersink }),
         needs_shift: Some(countersink_shift),
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(countersink_value_hint)),
@@ -1539,7 +2021,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(corner_fillet_orb),
         done: Some(corners_rounded),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_round_corners }),
         needs_shift: Some(corner_fillet_shift),
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(corner_value_hint)),
@@ -1551,7 +2033,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Text)),
         done: Some(label_engraved),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_engrave }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1563,7 +2045,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(bend_angle_changed),
         on_enter: None,
-        assist: None,
+        assist: Some(StepAssist { label: "Do it for me", run: assist_change_angle }),
         needs_shift: None,
         key_hint: None,
         type_hint: None,
@@ -1670,11 +2152,12 @@ mod tests {
             name: "leg".to_string(),
             expression: "60mm".to_string(),
         });
-        app.apply(Action::TutorialAssist); // welcome/name steps have no assist: a no-op
-        assert!(!params_defined(&app), "no assist on the steps before the list");
 
-        // Walk to the step whose narration lists the five remaining parameters.
-        let step = BRACKET_STEPS.iter().position(|s| s.assist.is_some()).unwrap();
+        // The step listing the rest of the table (its assist adds them all).
+        let step = BRACKET_STEPS
+            .iter()
+            .position(|s| s.done.is_some_and(|d| std::ptr::fn_addr_eq(d, params_defined as fn(&AppState) -> bool)))
+            .unwrap();
         app.tutorial = Some(TutorialRun { tutorial: 0, step, hold: false });
         app.parameters_pane.new_name = "wid".to_string();
         app.apply(Action::TutorialAssist);
@@ -1684,6 +2167,39 @@ mod tests {
         let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
         assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
         assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
+    }
+
+    /// #810: every step that asks for work offers to do it, and pressing that button really
+    /// does satisfy the step — walk the whole tutorial on the buttons alone and it finishes.
+    /// (The two narration-only bookends have nothing to do; Next is their button.)
+    #[test]
+    fn every_working_step_can_do_itself() {
+        let mut app = AppState::default();
+        app.apply(Action::StartTutorial { index: 0 });
+        let steps = BRACKET_STEPS.len();
+        let mut guard = 0;
+        while let Some(run) = app.tutorial {
+            guard += 1;
+            assert!(guard < steps * 3, "the assists should walk forward, not loop");
+            let step = &BRACKET_STEPS[run.step];
+            match step.assist {
+                Some(_) => {
+                    let before = run.step;
+                    app.apply(Action::TutorialAssist);
+                    // A step whose work the assist did advances on its own predicate; if it
+                    // didn't, say which one so the failure names the step.
+                    assert!(
+                        app.tutorial.is_none_or(|r| r.step > before),
+                        "step {before} didn't advance after its own assist: {}",
+                        step.narration
+                    );
+                }
+                // Narration-only: Next is the button.
+                None => {
+                    app.apply(Action::TutorialNext);
+                }
+            }
+        }
     }
 
     /// Backticked runs come back marked as code, with the backticks stripped — and every

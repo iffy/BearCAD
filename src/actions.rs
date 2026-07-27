@@ -9888,12 +9888,10 @@ label_hidden: false,
                         .and_then(|t| t.steps.get(run.step))
                         .and_then(|s| s.assist.as_ref())
                 });
-                let Some(assist) = assist else {
+                let Some(run) = assist.map(|a| a.run) else {
                     return ActionResult::Ok;
                 };
-                for action in (assist.actions)(self) {
-                    self.apply(action);
-                }
+                run(self);
                 // The half-typed draft in the new-parameter row is exactly what the
                 // button just did for them — clear it so nothing stale sits there.
                 self.parameters_pane.new_name.clear();

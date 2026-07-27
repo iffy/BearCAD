@@ -3465,12 +3465,16 @@ document is millimeters, so the player is person-scale: eye height
   (#760). It's positioned from the bubble's **measured** width (frame margins make it wider
   than its content) plus the tail and a gap, so it never clips the HUD (#767,
   `tutorial_bubble_pos`).
-- A step that is **pure typing** can offer a **"do it for me" button** in the bubble
-  (`tutorial::StepAssist`, applied by `Action::TutorialAssist`): the bracket's
-  "five more parameters" step has **Add them for me**, which adds whichever of
-  `leg/width/thick/hole/bend/bend_angle` are still missing (values the user typed
-  themselves are left as they are) and clears the half-typed new-parameter row. The
-  step's done predicate then fires exactly as if they'd keyed it all in.
+- **Every step that asks for work offers to do it** (#810): a **"do it for me" button** in
+  the bubble (`tutorial::StepAssist { label, run: fn(&mut AppState) }`, applied by
+  `Action::TutorialAssist`) makes the same document changes the user's clicks would — add the
+  parameters, draw the profile with its corner coincidences, apply each constraint, each
+  dimension, the extrude, the fillets, the hole sketch and its circles, the cut, the
+  countersink, the corner rounds, the engraving, the angle change — so the step's own
+  predicate advances the tutorial exactly as if they'd done it. Only the two narration-only
+  bookends have none (Next is their button). An assist never clobbers work already done:
+  parameters keep values the user typed, and a step whose work exists is a no-op. A test
+  walks the whole tutorial on the buttons alone.
 - First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
   interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
   angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and
