@@ -13,6 +13,9 @@ use glam::Vec3;
 
 const CUBE_SIZE: f32 = 96.0;
 const CUBE_MARGIN: f32 = 12.0;
+/// How far the HUD's painted panel (and its gear/home buttons) extends beyond the cube rect
+/// — what a neighbour has to clear to not overlap the HUD (#767).
+pub const HUD_PANEL_PAD: f32 = 4.0;
 const HALF: f32 = 0.5;
 const DRAG_CLICK_THRESHOLD: f32 = 4.0;
 const EDGE_HIT_RADIUS: f32 = 6.0;
@@ -1681,7 +1684,7 @@ fn show(
         }
     }
 
-    let pad_rect = screen_rect.expand(4.0);
+    let pad_rect = screen_rect.expand(HUD_PANEL_PAD);
     {
         let painter = ui.painter();
         painter.rect_filled(pad_rect, 6.0, Color32::from_rgba_unmultiplied(18, 20, 26, 200));
@@ -2077,7 +2080,7 @@ mod tests {
     fn projection_mode_toggle_sits_in_hud_bottom_left() {
         let vp = Rect::from_min_size(Pos2::new(0.0, 40.0), Vec2::new(800.0, 600.0));
         let screen_rect = cube_rect_in_viewport(vp);
-        let pad_rect = screen_rect.expand(4.0);
+        let pad_rect = screen_rect.expand(HUD_PANEL_PAD);
         let toggle = view_preset_toggle_rect(pad_rect);
         assert!(pad_rect.contains(toggle.center()));
         assert!(toggle.max.x < screen_rect.center().x);
@@ -2088,7 +2091,7 @@ mod tests {
     fn home_button_sits_in_hud_bottom_right() {
         let vp = Rect::from_min_size(Pos2::new(0.0, 40.0), Vec2::new(800.0, 600.0));
         let screen_rect = cube_rect_in_viewport(vp);
-        let pad_rect = screen_rect.expand(4.0);
+        let pad_rect = screen_rect.expand(HUD_PANEL_PAD);
         let home = view_home_toggle_rect(pad_rect);
         assert!(pad_rect.contains(home.center()));
         assert!(home.min.x > screen_rect.center().x);

@@ -3374,9 +3374,12 @@ document is millimeters, so the player is person-scale: eye height
   *with the origin*, so the drawing phase's endpoint snaps don't satisfy it), level the
   base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
   every predicate cumulative so working ahead skips ahead. The
-  bubble hangs off the **left side** of the view cube's actual rect
-  (`view_cube::cube_rect_in_viewport`), tail pointing right at Bear — under it, the
-  bubble covered the Context pane controls a step was pointing at (#760).
+  bubble hangs off the **left side** of the view-cube **HUD panel** (the cube rect grown by
+  `view_cube::HUD_PANEL_PAD`, so the gear/home buttons count too), tail pointing right at
+  Bear — under it, the bubble covered the Context pane controls a step was pointing at
+  (#760). It's positioned from the bubble's **measured** width (frame margins make it wider
+  than its content) plus the tail and a gap, so it never clips the HUD (#767,
+  `tutorial_bubble_pos`).
 - A step that is **pure typing** can offer a **"do it for me" button** in the bubble
   (`tutorial::StepAssist`, applied by `Action::TutorialAssist`): the bracket's
   "five more parameters" step has **Add them for me**, which adds whichever of

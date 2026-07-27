@@ -1767,6 +1767,26 @@ fn draw_pick_target_loupe(
     }
 }
 
+/// How far the speech bubble's tail sticks out past its right edge.
+const TUTORIAL_BUBBLE_TAIL: f32 = 12.0;
+/// Clear space between that tail's tip and the view-cube HUD panel.
+const TUTORIAL_BUBBLE_GAP: f32 = 14.0;
+
+/// Top-left corner for the tutorial speech bubble (#760/#767): off the left of the
+/// view-cube HUD panel `hud`, with its tail and a gap clearing the panel (and its
+/// gear/home buttons) entirely, and never pushed out of `viewport`. `bubble_width` is the
+/// bubble's **drawn** width — measured last frame, since frame margins make it wider than
+/// its content.
+fn tutorial_bubble_pos(
+    viewport: egui::Rect,
+    hud: egui::Rect,
+    top: f32,
+    bubble_width: f32,
+) -> egui::Pos2 {
+    let x = hud.left() - bubble_width - TUTORIAL_BUBBLE_TAIL - TUTORIAL_BUBBLE_GAP;
+    egui::pos2(x.max(viewport.left() + 8.0), top)
+}
+
 /// A blue **Shift** keycap floating beside a tutorial orb (#759): the click the orb points
 /// at has to be Shift+clicked to add to the selection. Drawn like a real key — a rounded
 /// cap with a lighter top face — to the right of the orb, or to its left when the right
@@ -2066,6 +2086,9 @@ struct App {
     /// The tutorial orb's animated screen position: it glides between anchors so the
     /// eye can follow it.
     tutorial_orb_pos: Option<egui::Pos2>,
+    /// The tutorial bubble's drawn width, measured each frame so the next one can sit clear
+    /// of the view-cube HUD (#767). Seeded with the content width plus typical frame chrome.
+    tutorial_bubble_width: f32,
     /// Last frame's "focused text widget is a value field" — gates the touch keypad
     /// and mobile OS-keyboard suppression.
     keypad_serves_focus: bool,
@@ -2653,17 +2676,21 @@ impl App {
 
         // Bear's speech bubble, off the view cube's **left** side (#760) — under it,
         // the bubble hangs over the Context pane's controls, which is exactly where the
-        // tutorial is telling you to look.
+        // tutorial is telling you to look. Its *drawn* width is wider than its content
+        // width (frame margins + stroke) and the tail sticks out further still, so it's
+        // positioned from what the bubble actually measured last frame — sizing it from
+        // the content width alone clipped the HUD panel's corner (#767).
         const BUBBLE_W: f32 = 320.0;
         let cube = view_cube::cube_rect_in_viewport(viewport);
-        let anchor_pos = egui::pos2(
-            (cube.left() - BUBBLE_W - 18.0).max(viewport.left() + 8.0),
-            cube.top(),
-        );
+        // The HUD paints a padded panel around the cube; clear that, not just the cube.
+        let hud = cube.expand(view_cube::HUD_PANEL_PAD);
+        let anchor_pos =
+            tutorial_bubble_pos(viewport, hud, cube.top(), self.tutorial_bubble_width);
         let mut next = false;
         let mut back = false;
         let mut end = false;
         let mut assist = false;
+        let mut measured_width = self.tutorial_bubble_width;
         egui::Area::new(egui::Id::new("tutorial_bubble"))
             .fixed_pos(anchor_pos)
             .order(egui::Order::Foreground)
@@ -2784,7 +2811,7 @@ impl App {
                 // at Bear.
                 let r = bubble.response.rect;
                 let tail_y = cube.center().y.clamp(r.top() + 24.0, r.bottom() - 24.0);
-                let tip = egui::pos2(r.right() + 12.0, tail_y);
+                let tip = egui::pos2(r.right() + TUTORIAL_BUBBLE_TAIL, tail_y);
                 painter.add(egui::Shape::convex_polygon(
                     vec![
                         egui::pos2(r.right() - 2.0, tail_y - 14.0),
@@ -2794,7 +2821,10 @@ impl App {
                     egui::Color32::from_rgb(38, 34, 26),
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
                 ));
+                measured_width = r.width();
             });
+        // Next frame positions from what the bubble actually measured.
+        self.tutorial_bubble_width = measured_width;
         if assist {
             self.state.apply(Action::TutorialAssist);
         }
@@ -2995,6 +3025,7 @@ impl App {
             keypad_focus_gone_frames: 0,
             long_press_fired: false,
             tutorial_orb_pos: None,
+            tutorial_bubble_width: 352.0,
             keypad_serves_focus: false,
             debug_focus_requested: false,
             auto_zoom_last_extent: None,
@@ -22573,6 +22604,27 @@ fn draw_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #767: the speech bubble sits far enough left that its tail clears the view-cube
+    /// HUD panel — the bubble used to be placed from its *content* width and clipped the
+    /// panel's corner.
+    #[test]
+    fn tutorial_bubble_clears_the_view_cube_hud() {
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let hud = view_cube::cube_rect_in_viewport(viewport).expand(view_cube::HUD_PANEL_PAD);
+        let width = 352.0;
+        let pos = tutorial_bubble_pos(viewport, hud, hud.top(), width);
+        assert!(
+            pos.x + width + TUTORIAL_BUBBLE_TAIL <= hud.left(),
+            "bubble+tail overlaps the HUD: {pos:?}"
+        );
+        assert!(pos.x >= viewport.left());
+
+        // A viewport too narrow for both keeps the bubble on-screen rather than off it.
+        let narrow = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 400.0));
+        let hud = view_cube::cube_rect_in_viewport(narrow).expand(view_cube::HUD_PANEL_PAD);
+        assert!(tutorial_bubble_pos(narrow, hud, hud.top(), width).x >= narrow.left());
+    }
 
     /// #763: the placed dimension's offset is the cursor's distance from the measured
     /// segment's *line* — level with an endpoint still reads as "on the line" (zero), so
