@@ -1835,6 +1835,44 @@ fn draw_shift_keycap(
     ctx.request_repaint();
 }
 
+/// The words to type, in the same blue the narration uses for code (#778): a pill above the
+/// orb — or below it, when the orb is near the top — so what to type is right where the
+/// typing happens.
+fn draw_orb_type_hint(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    viewport: egui::Rect,
+    text: &str,
+) {
+    let font = egui::FontId::monospace(13.0);
+    let blue = egui::Color32::from_rgb(140, 210, 255);
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), blue);
+    let pad = egui::vec2(10.0, 6.0);
+    let size = galley.size() + pad * 2.0;
+    let above = orb.y - orb_radius - 14.0 - size.y * 0.5;
+    let below = orb.y + orb_radius + 14.0 + size.y * 0.5;
+    let cy = if above - size.y * 0.5 >= viewport.top() + 6.0 {
+        above
+    } else {
+        below
+    };
+    let cx = orb
+        .x
+        .clamp(viewport.left() + size.x * 0.5 + 6.0, viewport.right() - size.x * 0.5 - 6.0);
+    let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
+    painter.rect_filled(rect, 7.0, egui::Color32::from_rgba_unmultiplied(20, 30, 44, 235));
+    painter.rect_stroke(
+        rect,
+        7.0,
+        egui::Stroke::new(1.0, blue.gamma_multiply(0.7)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, blue);
+    ctx.request_repaint();
+}
+
 /// A hint under the orb naming a key that helps with the click it points at (#777): the
 /// **Space** keycap plus a line of text, for when the thing to click sits under something
 /// else and the Selection Exploder is the way in. Sits below the orb, or above it when the
@@ -2743,8 +2781,16 @@ impl App {
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
                 draw_shift_keycap(&painter, ctx, pos, base + pulse, viewport);
             }
-            // Crowded spot? Name the key that fans it out (#777).
-            if let Some(hint) = step.key_hint {
+            // What to type, where the typing happens (#778).
+            if let Some(text) = step.type_hint {
+                draw_orb_type_hint(&painter, ctx, pos, base + pulse, viewport, text);
+            }
+            // Crowded spot? Name the key that fans it out (#777) — but only while the orb
+            // is pointing at something to *pick*; once a dimension is being placed or typed
+            // there's nothing crowded left to sort out.
+            let picking = self.state.placing_dimension.is_none()
+                && self.state.editing_committed_dim.is_none();
+            if let (true, Some(hint)) = (picking, step.key_hint) {
                 draw_orb_key_hint(
                     &painter,
                     ctx,

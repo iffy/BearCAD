@@ -74,6 +74,9 @@ pub struct Step {
     /// A `(key, explanation)` badge under the orb (#777) — used to introduce **Space**, the
     /// Selection Exploder, on steps whose target sits under other geometry.
     pub key_hint: Option<(&'static str, &'static str)>,
+    /// The words this step wants typed (#778), shown in code blue beside the orb — right
+    /// where the typing lands.
+    pub type_hint: Option<&'static str>,
 }
 
 /// Split a step's narration into plain prose and **code** runs (#757): anything between
@@ -532,12 +535,67 @@ fn line_has_length_dim(app: &AppState, nth: usize) -> bool {
     })
 }
 
-/// The orb for a "dimension this line" step: the line's middle until it's dimensioned,
-/// then nothing (what's left is typing the value).
+/// Where the *label* of a line's dimension will land: off the line, away from the sketch's
+/// middle — the same side a committed dimension takes, so the orb points at the spot the
+/// next click should drop it (#779).
+fn dimension_label_spot(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let frame = sketch_frame(app)?;
+    let poly = profile_polyline(app, nth)?;
+    let (a, b) = (*poly.first()?, *poly.last()?);
+    let (ua, va) = crate::face::world_to_local(&frame, a);
+    let (ub, vb) = crate::face::world_to_local(&frame, b);
+    // The sketch's centroid in local mm — labels point away from it.
+    let mut sum = (0.0f32, 0.0f32);
+    let mut n = 0usize;
+    for index in profile_lines(app) {
+        if let Some(line) = app.doc.lines.get(index) {
+            sum.0 += line.x0 + line.x1;
+            sum.1 += line.y0 + line.y1;
+            n += 2;
+        }
+    }
+    let (cu, cv) = if n > 0 {
+        (sum.0 / n as f32, sum.1 / n as f32)
+    } else {
+        (0.0, 0.0)
+    };
+    let (ou, ov) = crate::dimensions::outward_perpendicular_uv(ua, va, ub, vb, cu, cv);
+    const AWAY_MM: f32 = 11.0;
+    Some(crate::face::local_to_world(
+        &frame,
+        (ua + ub) * 0.5 + ou * AWAY_MM,
+        (va + vb) * 0.5 + ov * AWAY_MM,
+    ))
+}
+
+/// Whether the tool is currently placing or typing a dimension for the nth profile line.
+fn dimensioning_line(app: &AppState, nth: usize) -> bool {
+    use crate::model::{DimensionTarget, DistanceTarget};
+    let Some(&index) = profile_lines(app).get(nth) else {
+        return false;
+    };
+    let is_this = |target: &DimensionTarget| {
+        matches!(target,
+            DimensionTarget::Distance(DistanceTarget::LineLength(i)) if *i == index)
+    };
+    app.placing_dimension.as_ref().is_some_and(|p| is_this(&p.target))
+        || app
+            .editing_committed_dim
+            .as_ref()
+            .and_then(|e| e.target.dimension_target(&app.doc))
+            .is_some_and(|t| is_this(&t))
+}
+
+/// The orb for a "dimension this line" step: the line's middle until it's picked, then the
+/// spot to click to drop the dimension there (#779), and nothing once it's dimensioned.
 fn dimension_line_orb(app: &AppState, nth: usize) -> Option<StepTarget> {
-    (!line_has_length_dim(app, nth))
-        .then(|| target_point(app, ClickTarget::ProfileLine(nth)).map(StepTarget::World))
-        .flatten()
+    if line_has_length_dim(app, nth) {
+        return None;
+    }
+    if dimensioning_line(app, nth) {
+        return dimension_label_spot(app, nth).map(StepTarget::World);
+    }
+    target_point(app, ClickTarget::ProfileLine(nth)).map(StepTarget::World)
 }
 
 fn base_leg_dimensioned(app: &AppState) -> bool {
@@ -569,10 +627,40 @@ fn tilted_cap_orb(app: &AppState) -> Option<StepTarget> {
     dimension_line_orb(app, 4)
 }
 
-/// The bend-angle step: the bottom line, then (with Shift) the inner leg line, then typing.
+/// The bend-angle step: the bottom line, then (with Shift) the inner leg line, then the
+/// spot to drop the arc (#779).
 fn bend_angle_orb(app: &AppState) -> Option<StepTarget> {
-    constraint_click_point(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(3))
-        .map(StepTarget::World)
+    if let Some(world) =
+        constraint_click_point(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(3))
+    {
+        return Some(StepTarget::World(world));
+    }
+    // Both picked: point into the wedge between them, a little way from the bend corner.
+    let frame = sketch_frame(app)?;
+    let corner = profile_polyline(app, 0)?.first().copied()?;
+    let (cu, cv) = crate::face::world_to_local(&frame, corner);
+    let toward = |nth: usize| -> Option<(f32, f32)> {
+        let mid = polyline_midpoint(&profile_polyline(app, nth)?)?;
+        let (mu, mv) = crate::face::world_to_local(&frame, mid);
+        let (du, dv) = (mu - cu, mv - cv);
+        let len = (du * du + dv * dv).sqrt();
+        (len > 1e-4).then_some((du / len, dv / len))
+    };
+    let (au, av) = toward(0)?;
+    let (bu, bv) = toward(3)?;
+    let (su, sv) = (au + bu, av + bv);
+    let len = (su * su + sv * sv).sqrt();
+    const ARC_MM: f32 = 16.0;
+    let (su, sv) = if len > 1e-4 {
+        (su / len, sv / len)
+    } else {
+        (au, av)
+    };
+    Some(StepTarget::World(crate::face::local_to_world(
+        &frame,
+        cu + su * ARC_MM,
+        cv + sv * ARC_MM,
+    )))
 }
 
 fn bend_angle_shift(app: &AppState) -> bool {
@@ -680,6 +768,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "First, a name for our first number. See the Parameters pane on the \
@@ -690,6 +779,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Type `leg` \u{2014} just those three letters. It's the length of each \
@@ -700,6 +790,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: Some("leg"),
     },
     Step {
         narration: "Now tap the value box beside it and type `50mm`.",
@@ -709,6 +800,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: Some("50mm"),
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
@@ -718,6 +810,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Five more, exactly the same moves:\n\
@@ -730,6 +823,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: Some(StepAssist { label: "Add them for me", actions: add_missing_params }),
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
@@ -739,6 +833,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "I've brought us in over the drawing area. Now click each glowing point \
@@ -749,6 +844,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Now the Constraint tool \u{2014} the glowing button, or press C.",
@@ -758,6 +854,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Pin the profile down: click the bend corner, Shift+click the origin, \
@@ -768,6 +865,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: Some(pin_shift),
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Level the base: click the bottom line, Shift+click the red X axis, \
@@ -781,6 +879,7 @@ static BRACKET_STEPS: &[Step] = &[
             "Space",
             "fans out whatever is crowded under the cursor",
         )),
+        type_hint: None,
     },
     Step {
         narration: "Click the bottom line, Shift+click the inner base line, press `1`.",
@@ -793,6 +892,7 @@ static BRACKET_STEPS: &[Step] = &[
             "Space",
             "fans out whatever is crowded under the cursor",
         )),
+        type_hint: None,
     },
     Step {
         narration: "The tilted leg: click one long line, Shift+click the other, \
@@ -803,6 +903,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: Some(legs_shift),
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Click the base leg's end cap, Shift+click the bottom line, press `2` \
@@ -816,6 +917,7 @@ static BRACKET_STEPS: &[Step] = &[
             "Space",
             "fans out whatever is crowded under the cursor",
         )),
+        type_hint: None,
     },
     Step {
         narration: "Click the tilted leg's end cap, Shift+click its long line, \
@@ -826,6 +928,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: Some(cap_two_shift),
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Now exact sizes. Grab the Dimension tool \u{2014} the glowing button, \
@@ -836,6 +939,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Click the glowing line, move the mouse to place the dimension, click \
@@ -849,6 +953,7 @@ static BRACKET_STEPS: &[Step] = &[
             "Space",
             "fans out whatever is crowded under the cursor",
         )),
+        type_hint: Some("leg"),
     },
     Step {
         narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
@@ -858,6 +963,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: Some("leg"),
     },
     Step {
         narration: "Now an end cap \u{2014} that's the bracket's thickness: click, place, \
@@ -868,6 +974,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: Some("thick"),
     },
     Step {
         narration: "And the other end cap: `thick` again.",
@@ -877,6 +984,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: Some("thick"),
     },
     Step {
         narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
@@ -890,6 +998,7 @@ static BRACKET_STEPS: &[Step] = &[
             "Space",
             "fans out whatever is crowded under the cursor",
         )),
+        type_hint: Some("bend_angle"),
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
@@ -900,6 +1009,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: Some("width"),
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
@@ -911,6 +1021,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Screw holes! Sketch (S) on the inside face of the base flange, then \
@@ -923,6 +1034,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Esc, then Extrude (E): click both circles, drag the handle into the \
@@ -933,6 +1045,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Countersink them: Chamfer (K), click one hole's rim where it meets the \
@@ -943,6 +1056,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Fillet (F) again: click a vertical edge at a flange tip, Shift+click the \
@@ -953,6 +1067,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type `BearCAD`. \
@@ -964,6 +1079,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "The best part: in the Parameters pane, change `bend_angle` from `120deg` \
@@ -975,6 +1091,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
     Step {
         narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
@@ -986,6 +1103,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
+        type_hint: None,
     },
 ];
 

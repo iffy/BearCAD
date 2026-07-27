@@ -3385,7 +3385,12 @@ document is millimeters, so the player is person-scale: eye height
   line lying along the X axis, once it's been levelled — carry a **key hint** badge below
   the orb (`Step::key_hint`, `draw_orb_key_hint`): a **Space** keycap and a line saying it
   fans out whatever is crowded, which is how the tutorial introduces the Selection
-  Exploder (#777). Steps can
+  Exploder (#777) — shown only while the orb points at something to *pick*, not while a
+  dimension is being placed. A step can also name the **words to type**
+  (`Step::type_hint`, #778): they float beside the orb in the same blue the narration gives
+  code, right where the typing lands. In the dimensioning steps the orb moves **off** the
+  line once it's picked, onto the spot where the dimension will drop (#779) — the same side
+  the committed label takes, so "click away from the line" is shown rather than described. Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going
   forward (never while reviewing with Back): the drawing step uses it to **glide the
   camera in over the profile area** (`frame_profile_area`), so a user who happened to be
