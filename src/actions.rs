@@ -11266,8 +11266,13 @@ label_hidden: false,
                     // way the placement preview restarts from the new selection.
                     if self.tool == Tool::Dimension
                         && self.sketch_session.is_some()
-                        && self.editing_committed_dim.is_none()
+                        // A **Shift**+click lands even mid-edit (#780): clicking an
+                        // already-dimensioned edge opens its value editor, and adding a
+                        // second edge from there is how you dimension the angle between
+                        // them. The half-typed value is dropped — the pick replaces it.
+                        && (self.editing_committed_dim.is_none() || additive)
                     {
+                        self.editing_committed_dim = None;
                         self.placing_dimension = None;
                         if additive {
                             click_scene_selection(
@@ -21533,6 +21538,57 @@ mod tests {
             })
         );
         assert!(!state.scene_selection.is_selected(SceneElement::Line(0)));
+    }
+
+    /// #780: an edge that already carries a dimension opens its value editor when clicked —
+    /// and Shift+clicking a second edge from there drops that edit and dimensions the angle
+    /// between the two instead of being swallowed.
+    #[test]
+    fn shift_click_while_typing_a_value_adds_to_the_selection() {
+        use crate::model::{ConstraintLine, DimensionTarget};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::SetTool(Tool::Dimension));
+
+        // Give line 0 a length, then click it: its value editor opens straight away.
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        state.apply(Action::BeginDimensionEdit {
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+        });
+        state.editing_committed_dim.as_mut().unwrap().text = "12".to_string();
+        state.apply(Action::CommitCommittedDim);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        assert!(state.editing_committed_dim.is_some(), "an existing dimension edits");
+
+        // Shift+click the other edge: the edit gives way to the angle between them.
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(1),
+            additive: true,
+        });
+        assert!(state.editing_committed_dim.is_none(), "the edit stood down");
+        assert!(state.scene_selection.is_selected(SceneElement::Line(0)));
+        assert!(state.scene_selection.is_selected(SceneElement::Line(1)));
+        assert_eq!(
+            state.placing_dimension.as_ref().map(|p| p.target.clone()),
+            Some(DimensionTarget::Angle {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+                rotation_sign: 1,
+            })
+        );
     }
 
     /// #763: clicking the already-selected edge again just re-places the same length —

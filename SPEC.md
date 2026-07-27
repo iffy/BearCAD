@@ -2012,6 +2012,10 @@ modeled on SolveSpace (https://solvespace.com).
   mirrored `ValueInput` — labelled **"Angle"** for an angle and **"Span"** for a length — plus
   the blue **Go** primary button every other tool commits with (`DimensionEditControl` /
   `DimensionEditEdit`). Typing in either place feeds the same edit buffer.
+- **Shift+click lands mid-edit (#780):** clicking an edge that already carries a dimension
+  opens its value editor — and a **Shift+click** from there still reaches the viewport: the
+  half-typed value stands down and the pick joins the selection, so a second edge turns it
+  into the angle between the two. (Plain clicks keep going to the editor.)
 - **Picking stays live while placing (#762/#763):** hovering anything else dimensionable
   stands the preview down and hovers that instead, so the next click goes to the pick, not to
   dropping the dimension. A **plain click** switches to dimensioning what was clicked

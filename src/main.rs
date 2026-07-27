@@ -18361,6 +18361,9 @@ impl App {
         let mut line_dragging = false;
         let mut bezier_handle_dragging = false;
         let mut text_width_dragging = false;
+        // Shift/⌘ held: an additive pick, which stays live even while a dimension value is
+        // being typed (#780).
+        let additive_modifiers_held = ui.input(|i| additive_click_modifiers(&i.modifiers));
         // Image calibration markers (#163/#424): while placing reference points (guided
         // flow) or with a calibrated image selected, the reference points and their span
         // draw on the image's host plane; points drag to move, click to select (Delete
@@ -18502,7 +18505,10 @@ impl App {
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
         ) && self.state.creating_calibration.is_none()
-            && self.state.editing_committed_dim.is_none()
+            // Typing a value normally owns the pointer, but Shift+click has to keep working
+            // so a second edge can join what's being dimensioned (#780).
+            && (self.state.editing_committed_dim.is_none()
+                || (self.state.tool == Tool::Dimension && additive_modifiers_held))
             // Placement leaves picking live under the Dimension tool (#762/#763): hovering
             // another target must be able to take over from the preview.
             && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
@@ -18758,7 +18764,8 @@ impl App {
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
         ) && !exploder_owns_press
-            && self.state.editing_committed_dim.is_none()
+            && (self.state.editing_committed_dim.is_none()
+                || (self.state.tool == Tool::Dimension && additive_modifiers_held))
             && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
