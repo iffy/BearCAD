@@ -3422,8 +3422,12 @@ document is millimeters, so the player is person-scale: eye height
   while a dimension is being placed (#783/#784/#785). A step can also name the **words to type**
   (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
   ordinary font and the words themselves in the monospace blue the narration gives code.
+  The badge hugs the field the orb marks — one field-height **above** it (below when the top
+  of the window is in the way), crossing the guide ring rather than clearing it, and at a
+  fixed offset so it doesn't bob with the ring's pulse (#811).
   It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
-  parameter-list step names whichever parameter is still missing (#782), and a step holds
+  parameter-list step names whichever parameter is still missing, one **box** at a time: its
+  name until that's typed, then its value (#782/#812) — and a step holds
   its words back until the field that takes them exists (#786/#787/#789): a dimension's
   value input after it's placed, the extrude's distance after a face is picked. The extrude
   step's orb likewise moves from the toolbar button to the **profile face** once the tool is

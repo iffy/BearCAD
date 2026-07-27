@@ -235,13 +235,18 @@ fn add_leg_param(app: &mut AppState) {
     ensure_param(app, "leg", "50mm");
 }
 
-/// The next bracket parameter still missing, as "name = value" (#782) — what the parameter
-/// list step wants typed next.
+/// What the parameter-list step wants typed **next** (#782/#812): the missing parameter's
+/// name while the name box is still empty, then its value once the name is in — one box at a
+/// time, since that's how it's typed.
 fn next_missing_param(app: &AppState) -> Option<String> {
-    BRACKET_PARAMS
+    let (name, value) = BRACKET_PARAMS
         .iter()
-        .find(|(name, _)| !param_exists(app, name))
-        .map(|(name, value)| format!("{name} = {value}"))
+        .find(|(name, _)| !param_exists(app, name))?;
+    if app.parameters_pane.new_name.trim().eq_ignore_ascii_case(name) {
+        Some(value.to_string())
+    } else {
+        Some(name.to_string())
+    }
 }
 
 fn line_tool_active(app: &AppState) -> bool {

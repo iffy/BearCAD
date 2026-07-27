@@ -1835,15 +1835,16 @@ fn draw_shift_keycap(
     ctx.request_repaint();
 }
 
-/// "Type `leg`" beside the orb (#778/#781): the instruction in the ordinary font, the words
-/// to type in the same monospace blue the narration gives code. Sits **right beside** the
-/// orb — to its right, or its left when that runs off the screen — and is bounded by the
-/// whole window, since the orb can be pointing at a side pane.
+/// "Type `leg`" by the orb (#778/#781): the instruction in the ordinary font, the words to
+/// type in the same monospace blue the narration gives code. Sits **just above** the thing
+/// the orb marks (below it when there's no room up there), close enough to read as belonging
+/// to that field even though it crosses the guide ring — and at a fixed offset, so it doesn't
+/// bob with the ring's pulse (#811). Bounded by the whole window, since the orb can be
+/// pointing at a side pane.
 fn draw_orb_type_hint(
     painter: &egui::Painter,
     ctx: &egui::Context,
     orb: egui::Pos2,
-    orb_radius: f32,
     bounds: egui::Rect,
     text: &str,
 ) {
@@ -1859,15 +1860,18 @@ fn draw_orb_type_hint(
         label.size().x + gap + typed.size().x,
         label.size().y.max(typed.size().y),
     ) + pad * 2.0;
-    let clear = orb_radius + 14.0 + size.x * 0.5;
-    let mut cx = orb.x + clear;
-    if cx + size.x * 0.5 > bounds.right() - 6.0 {
-        cx = orb.x - clear;
-    }
-    let cx = cx.clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
-    let cy = orb
-        .y
-        .clamp(bounds.top() + size.y * 0.5 + 6.0, bounds.bottom() - size.y * 0.5 - 6.0);
+    // Hug the marked field: one field-height above it, or below when the top is in the way.
+    const CLEAR: f32 = 24.0;
+    let above = orb.y - CLEAR - size.y * 0.5;
+    let below = orb.y + CLEAR + size.y * 0.5;
+    let cy = if above - size.y * 0.5 >= bounds.top() + 6.0 {
+        above
+    } else {
+        below
+    };
+    let cx = orb
+        .x
+        .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
     let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
     painter.rect_filled(rect, 7.0, egui::Color32::from_rgba_unmultiplied(20, 30, 44, 235));
     painter.rect_stroke(
@@ -2807,11 +2811,11 @@ impl App {
             // at a side pane, and its badges have to follow it there (#781).
             let badge_bounds = ctx.screen_rect();
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
-                draw_shift_keycap(&painter, ctx, pos, base + pulse, badge_bounds);
+                draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
             }
-            // What to type, right beside the orb (#778/#781).
+            // What to type, hugging the field the orb marks (#778/#781/#811).
             if let Some(text) = step.type_hint.and_then(|h| h.text(&self.state)) {
-                draw_orb_type_hint(&painter, ctx, pos, base + pulse, badge_bounds, &text);
+                draw_orb_type_hint(&painter, ctx, pos, badge_bounds, &text);
             }
             // Crowded spot? Name the key that fans it out (#777) — but only while the orb
             // is pointing at something to *pick*; once a dimension is being placed or typed
@@ -2826,7 +2830,7 @@ impl App {
                     &painter,
                     ctx,
                     pos,
-                    base + pulse,
+                    base,
                     badge_bounds,
                     hint.0,
                     hint.1,
