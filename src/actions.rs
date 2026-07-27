@@ -5308,27 +5308,39 @@ impl AppState {
     /// Advance the running tutorial past every step whose predicate is now satisfied
     /// (a user who worked ahead skips ahead), stopping at manual steps or the end.
     pub fn advance_tutorial(&mut self) {
+        let initial = self.tutorial.map(|r| (r.tutorial, r.step));
         loop {
-            let Some(run) = self.tutorial else { return };
+            let Some(run) = self.tutorial else { break };
             if run.hold {
-                return;
+                break;
             }
             let Some(step) = crate::tutorial::TUTORIALS
                 .get(run.tutorial)
                 .and_then(|t| t.steps.get(run.step))
             else {
-                return;
+                break;
             };
-            let Some(done) = step.done else { return };
+            let Some(done) = step.done else { break };
             if !done(self) {
-                return;
+                break;
             }
             let run = self.tutorial.as_mut().unwrap();
             run.step += 1;
             if run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len() {
                 self.tutorial = None;
                 self.status = "Tutorial complete — happy modeling!".to_string();
-                return;
+                break;
+            }
+        }
+        // Landing on a new step runs its on_enter hook — once, for the step actually
+        // arrived at (steps auto-skipped over on the way don't fire theirs).
+        if let Some(run) = self.tutorial {
+            if initial != Some((run.tutorial, run.step)) {
+                if let Some(enter) =
+                    crate::tutorial::TUTORIALS[run.tutorial].steps[run.step].on_enter
+                {
+                    enter(self);
+                }
             }
         }
     }
@@ -9855,6 +9867,14 @@ label_hidden: false,
                             }
                         }
                         self.tutorial = Some(run);
+                        // Going forward (not reviewing) runs the step's on_enter hook.
+                        if !run.hold {
+                            if let Some(enter) =
+                                crate::tutorial::TUTORIALS[run.tutorial].steps[run.step].on_enter
+                            {
+                                enter(self);
+                            }
+                        }
                     }
                 }
                 ActionResult::Ok

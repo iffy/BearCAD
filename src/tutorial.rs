@@ -38,6 +38,9 @@ pub struct Step {
     pub anchor: StepAnchor,
     /// Auto-advance when this returns true; `None` shows a Next button instead.
     pub done: Option<fn(&AppState) -> bool>,
+    /// Runs once when the tutorial lands on this step going forward (never while
+    /// reviewing with Back) — e.g. framing the camera on the area the step works in.
+    pub on_enter: Option<fn(&mut AppState)>,
 }
 
 pub struct Tutorial {
@@ -159,20 +162,66 @@ fn constraint_tool_active(app: &AppState) -> bool {
     app.tool == Tool::Constraint
 }
 
-fn profile_squared(app: &AppState) -> bool {
+/// Frame the camera over the region the sloppy profile occupies: drawn from way out, the
+/// glowing click-points crowd together — glide in so they sit comfortably apart.
+fn frame_profile_area(app: &mut AppState) {
+    app.cam.frame_bounds_animated(
+        glam::Vec3::new(-35.0, -10.0, 0.0),
+        glam::Vec3::new(60.0, 55.0, 10.0),
+        app.viewport_aspect,
+        0.35,
+    );
+}
+
+fn constraint_count(app: &AppState, f: fn(&ConstraintKind) -> bool) -> usize {
+    live_constraints(app).filter(|c| f(&c.kind)).count()
+}
+
+/// #577: "squaring up" a line means constraining it parallel to a sketch axis (the
+/// axis-based replacement for Horizontal/Vertical).
+fn axis_parallel_kind(k: &ConstraintKind) -> bool {
     use crate::model::ConstraintLine;
-    let count = |f: fn(&ConstraintKind) -> bool| live_constraints(app).filter(|c| f(&c.kind)).count();
-    // #577: "squaring up" a line means constraining it parallel to a sketch axis (the axis-based
-    // replacement for Horizontal/Vertical), so at least one Parallel-to-axis constraint is required.
-    let axis_parallel = |k: &ConstraintKind| {
-        matches!(k, ConstraintKind::Parallel { line_a, line_b }
-            if matches!(line_a, ConstraintLine::OriginAxis(_))
-                || matches!(line_b, ConstraintLine::OriginAxis(_)))
-    };
-    count(|k| matches!(k, ConstraintKind::Coincident { .. })) >= 1
-        && count(axis_parallel) >= 1
-        && count(|k| matches!(k, ConstraintKind::Parallel { .. })) >= 3
-        && count(|k| matches!(k, ConstraintKind::Perpendicular { .. })) >= 2
+    matches!(k, ConstraintKind::Parallel { line_a, line_b }
+        if matches!(line_a, ConstraintLine::OriginAxis(_))
+            || matches!(line_b, ConstraintLine::OriginAxis(_)))
+}
+
+// The squaring-up steps, one constraint application each. Every predicate is cumulative
+// (each includes the ones before it), so a user who works ahead skips ahead and Back
+// reviews hold their ground.
+
+fn bend_pinned(app: &AppState) -> bool {
+    // Specifically a coincidence WITH THE ORIGIN — the endpoint-joining coincidences the
+    // drawing phase snaps into place don't count as pinning the profile down.
+    use crate::model::ConstraintEntity;
+    constraint_count(app, |k| {
+        matches!(k, ConstraintKind::Coincident { a, b }
+            if matches!(a, ConstraintEntity::Origin) || matches!(b, ConstraintEntity::Origin))
+    }) >= 1
+}
+
+fn base_leveled(app: &AppState) -> bool {
+    bend_pinned(app) && constraint_count(app, axis_parallel_kind) >= 1
+}
+
+fn base_strip_even(app: &AppState) -> bool {
+    base_leveled(app)
+        && constraint_count(app, |k| matches!(k, ConstraintKind::Parallel { .. })) >= 2
+}
+
+fn legs_parallel(app: &AppState) -> bool {
+    base_strip_even(app)
+        && constraint_count(app, |k| matches!(k, ConstraintKind::Parallel { .. })) >= 3
+}
+
+fn first_cap_squared(app: &AppState) -> bool {
+    legs_parallel(app)
+        && constraint_count(app, |k| matches!(k, ConstraintKind::Perpendicular { .. })) >= 1
+}
+
+fn profile_squared(app: &AppState) -> bool {
+    first_cap_squared(app)
+        && constraint_count(app, |k| matches!(k, ConstraintKind::Perpendicular { .. })) >= 2
 }
 
 fn profile_dimensioned(app: &AppState) -> bool {
@@ -264,62 +313,108 @@ static BRACKET_STEPS: &[Step] = &[
                     glowing rings; you do the clicking. I've opened a fresh document for us.",
         anchor: StepAnchor::None,
         done: None,
+        on_enter: None,
     },
     Step {
         narration: "First, a name for our first number. See the Parameters pane on the \
                     right? Tap inside the name box \u{2014} the pulsing ring marks it.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_box_tapped),
+        on_enter: None,
     },
     Step {
         narration: "Type leg \u{2014} just those three letters. It's the length of each \
                     of the bracket's legs.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_says_leg),
+        on_enter: None,
     },
     Step {
         narration: "Now tap the value box beside it and type 50mm.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
         done: Some(value_says_50),
+        on_enter: None,
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(leg_added),
+        on_enter: None,
     },
     Step {
         narration: "Five more, exactly the same moves:\n\
                     width = 40mm\nthick = 5mm\nhole = 5mm\nbend = 4mm\nbend_angle = 120deg",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(params_defined),
+        on_enter: None,
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
         done: Some(line_tool_active),
+        on_enter: None,
     },
     Step {
-        narration: "Now follow me around the profile: click each glowing point in turn \
-                    \u{2014} down the base leg, a short end cap, back along the inside, up \
-                    the tilted leg, and finally back to the start to close the loop. \
-                    Sloppy is fine \u{2014} we'll square it up next!",
+        narration: "I've brought us in over the drawing area. Now follow me around the \
+                    profile: click each glowing point in turn \u{2014} down the base leg, \
+                    a short end cap, back along the inside, up the tilted leg, and finally \
+                    back to the start to close the loop. Sloppy is fine \u{2014} we'll \
+                    square it up next!",
         anchor: StepAnchor::World(next_profile_point),
         done: Some(profile_drawn),
+        on_enter: Some(frame_profile_area),
     },
     Step {
         narration: "Now the Constraint tool \u{2014} the glowing button, or press C.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Constraint)),
         done: Some(constraint_tool_active),
+        on_enter: None,
     },
     Step {
-        narration: "Square it up! Select things, then press a number:\n\
-                    \u{2022} bend corner + origin \u{2192} 4 (Coincident)\n\
-                    \u{2022} bottom base line + the X axis \u{2192} 1 (Parallel)\n\
-                    \u{2022} bottom + inner base lines \u{2192} 1 (Parallel)\n\
-                    \u{2022} the two leg lines \u{2192} 1 (Parallel)\n\
-                    \u{2022} each end cap + its leg \u{2192} 2 (Perpendicular)",
+        narration: "Time to square it up, one constraint at a time. First, pin the \
+                    profile down: click the bend corner (your very first click, at the \
+                    origin), Shift+click the origin point, then press 4 \u{2014} \
+                    Coincident. The sketch can't drift around any more.",
+        anchor: StepAnchor::None,
+        done: Some(bend_pinned),
+        on_enter: None,
+    },
+    Step {
+        narration: "Level the base: click the bottom base line, Shift+click the red X \
+                    axis, then press 1 \u{2014} Parallel. The whole base swings flat \
+                    along the axis.",
+        anchor: StepAnchor::None,
+        done: Some(base_leveled),
+        on_enter: None,
+    },
+    Step {
+        narration: "Make the base leg an even strip: click the bottom line again, \
+                    Shift+click the inner base line, press 1 \u{2014} Parallel. Two \
+                    rails, always the same distance apart.",
+        anchor: StepAnchor::None,
+        done: Some(base_strip_even),
+        on_enter: None,
+    },
+    Step {
+        narration: "Same trick for the tilted leg: click its two long lines, press 1 \
+                    \u{2014} Parallel. Now both legs have an even thickness.",
+        anchor: StepAnchor::None,
+        done: Some(legs_parallel),
+        on_enter: None,
+    },
+    Step {
+        narration: "Square off the base leg's end: click its short end cap, Shift+click \
+                    one of the base lines, press 2 \u{2014} Perpendicular.",
+        anchor: StepAnchor::None,
+        done: Some(first_cap_squared),
+        on_enter: None,
+    },
+    Step {
+        narration: "And the tilted leg's end: click its end cap, Shift+click one of the \
+                    tilted leg lines, press 2 \u{2014} Perpendicular. All squared up!",
         anchor: StepAnchor::None,
         done: Some(profile_squared),
+        on_enter: None,
     },
     Step {
         narration: "Exact sizes with the Dimension tool (D): click each outer leg and type \
@@ -327,12 +422,14 @@ static BRACKET_STEPS: &[Step] = &[
                     the inner leg line, press D, type bend_angle.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
         done: Some(profile_dimensioned),
+        on_enter: None,
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
                     width, press Enter. A solid!",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         done: Some(extruded),
+        on_enter: None,
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
@@ -340,6 +437,7 @@ static BRACKET_STEPS: &[Step] = &[
                     sheet metal.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
         done: Some(bend_rounded),
+        on_enter: None,
     },
     Step {
         narration: "Screw holes! Sketch (S) on the inside face of the base flange, then \
@@ -348,24 +446,28 @@ static BRACKET_STEPS: &[Step] = &[
                     edges.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
         done: Some(hole_circles_drawn),
+        on_enter: None,
     },
     Step {
         narration: "Esc, then Extrude (E): click both circles, drag the handle into the \
                     bracket (or type thick + 1), pick Cut, press Enter.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         done: Some(holes_cut),
+        on_enter: None,
     },
     Step {
         narration: "Countersink them: Chamfer (K), click one hole's rim where it meets the \
                     face, Shift+click the other, type 1.2, Enter.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)),
         done: Some(holes_countersunk),
+        on_enter: None,
     },
     Step {
         narration: "Fillet (F) again: click a vertical edge at a flange tip, Shift+click the \
                     other corners, type 2, Enter. Rounded corners!",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
         done: Some(corners_rounded),
+        on_enter: None,
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type BearCAD. \
@@ -373,6 +475,7 @@ static BRACKET_STEPS: &[Step] = &[
                     Cut \u{2014} engraved letters.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Text)),
         done: Some(label_engraved),
+        on_enter: None,
     },
     Step {
         narration: "The best part: in the Parameters pane, change bend_angle from 120deg to \
@@ -380,6 +483,7 @@ static BRACKET_STEPS: &[Step] = &[
                     all.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(bend_angle_changed),
+        on_enter: None,
     },
     Step {
         narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
@@ -387,6 +491,7 @@ static BRACKET_STEPS: &[Step] = &[
                     and parameters drive everything. See you around the viewport!",
         anchor: StepAnchor::None,
         done: None,
+        on_enter: None,
     },
 ];
 

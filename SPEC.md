@@ -3319,7 +3319,15 @@ document is millimeters, so the player is person-scale: eye height
   `UiAnchor::{ParametersName, ParametersValue, ParametersAdd}` recorded by the pane,
   the name-box tap detected via `ParametersPaneState::new_name_focused`), and
   the profile-drawing step leads **vertex by vertex** around the sloppy outline
-  (`next_profile_point`), pointing at the ground origin until the sketch opens. The
+  (`next_profile_point`), pointing at the ground origin until the sketch opens. Steps can
+  carry an **`on_enter` hook** that runs once when the tutorial lands on them going
+  forward (never while reviewing with Back): the drawing step uses it to **glide the
+  camera in over the profile area** (`frame_profile_area`), so a user who happened to be
+  zoomed way out gets comfortable click targets. The squaring-up stage is **one
+  constraint application per step** — pin the bend corner to the origin (a Coincident
+  *with the origin*, so the drawing phase's endpoint snaps don't satisfy it), level the
+  base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
+  every predicate cumulative so working ahead skips ahead. The
   bubble hangs directly under the view cube's actual rect
   (`view_cube::cube_rect_in_viewport`), tail pointing at the bear.
 - First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
