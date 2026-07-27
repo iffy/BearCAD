@@ -3389,7 +3389,12 @@ document is millimeters, so the player is person-scale: eye height
   constraint application per step** — pin the bend corner to the origin (a Coincident
   *with the origin*, so the drawing phase's endpoint snaps don't satisfy it), level the
   base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
-  every predicate cumulative so working ahead skips ahead. The
+  every predicate cumulative so working ahead skips ahead. **Dimensioning is one dimension
+  per step too** (#776): pick up the tool, then each outer leg, each end cap and finally the
+  bend angle, the orb on the line each step wants (and the Shift keycap for the angle's
+  second pick). Taking up the Dimension tool **clears the selection** the constraint steps
+  left behind (#772) — under that tool a live selection is already a dimension in the
+  making. The
   bubble hangs off the **left side** of the view-cube **HUD panel** (the cube rect grown by
   `view_cube::HUD_PANEL_PAD`, so the gear/home buttons count too), tail pointing right at
   Bear — under it, the bubble covered the Context pane controls a step was pointing at

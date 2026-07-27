@@ -247,6 +247,10 @@ fn constraint_tool_active(app: &AppState) -> bool {
     app.tool == Tool::Constraint
 }
 
+fn dimension_tool_active(app: &AppState) -> bool {
+    app.tool == Tool::Dimension
+}
+
 /// Frame the camera over the region the sloppy profile occupies: drawn from way out, the
 /// glowing click-points crowd together — glide in so they sit comfortably apart.
 fn frame_profile_area(app: &mut AppState) {
@@ -511,6 +515,75 @@ fn profile_squared(app: &AppState) -> bool {
         && constraint_count(app, |k| matches!(k, ConstraintKind::Perpendicular { .. })) >= 2
 }
 
+// --- Dimensioning steps (#773/#776): one dimension per step, the orb on the line to click.
+
+/// Whether the nth profile line already carries a length dimension.
+fn line_has_length_dim(app: &AppState, nth: usize) -> bool {
+    use crate::model::DistanceTarget;
+    let Some(&index) = profile_lines(app).get(nth) else {
+        return false;
+    };
+    live_constraints(app).any(|c| {
+        matches!(&c.kind,
+            ConstraintKind::Distance { target: DistanceTarget::LineLength(i) } if *i == index)
+    })
+}
+
+/// The orb for a "dimension this line" step: the line's middle until it's dimensioned,
+/// then nothing (what's left is typing the value).
+fn dimension_line_orb(app: &AppState, nth: usize) -> Option<StepTarget> {
+    (!line_has_length_dim(app, nth))
+        .then(|| target_point(app, ClickTarget::ProfileLine(nth)).map(StepTarget::World))
+        .flatten()
+}
+
+fn base_leg_dimensioned(app: &AppState) -> bool {
+    line_has_length_dim(app, 0)
+}
+
+fn tilted_leg_dimensioned(app: &AppState) -> bool {
+    base_leg_dimensioned(app) && line_has_length_dim(app, 5)
+}
+
+fn base_cap_dimensioned(app: &AppState) -> bool {
+    tilted_leg_dimensioned(app) && line_has_length_dim(app, 1)
+}
+
+fn tilted_cap_dimensioned(app: &AppState) -> bool {
+    base_cap_dimensioned(app) && line_has_length_dim(app, 4)
+}
+
+fn base_leg_orb(app: &AppState) -> Option<StepTarget> {
+    dimension_line_orb(app, 0)
+}
+fn tilted_leg_orb(app: &AppState) -> Option<StepTarget> {
+    dimension_line_orb(app, 5)
+}
+fn base_cap_orb(app: &AppState) -> Option<StepTarget> {
+    dimension_line_orb(app, 1)
+}
+fn tilted_cap_orb(app: &AppState) -> Option<StepTarget> {
+    dimension_line_orb(app, 4)
+}
+
+/// The bend-angle step: the bottom line, then (with Shift) the inner leg line, then typing.
+fn bend_angle_orb(app: &AppState) -> Option<StepTarget> {
+    constraint_click_point(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(3))
+        .map(StepTarget::World)
+}
+
+fn bend_angle_shift(app: &AppState) -> bool {
+    constraint_needs_shift(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(3))
+}
+
+/// A fresh start for the dimensioning stage (#772): the constraint steps leave their last
+/// pair selected, and under the Dimension tool a live selection is already a dimension in
+/// the making — so drop it before the tutorial asks for the first click.
+fn clear_selection_for_dimensioning(app: &mut AppState) {
+    app.scene_selection.clear();
+    app.placing_dimension = None;
+}
+
 fn profile_dimensioned(app: &AppState) -> bool {
     live_constraints(app)
         .filter(|c| matches!(c.kind, ConstraintKind::Distance { .. }))
@@ -728,14 +801,56 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(cap_two_shift),
     },
     Step {
-        narration: "Exact sizes with the Dimension tool (D): click each outer leg and type \
-                    `leg`; each end cap gets `thick`. For the bend: select the bottom line and \
-                    the inner leg line, press D, type `bend_angle`.",
+        narration: "Now exact sizes. Grab the Dimension tool \u{2014} the glowing button, \
+                    or press `D`.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
-        done: Some(profile_dimensioned),
+        done: Some(dimension_tool_active),
+        on_enter: Some(clear_selection_for_dimensioning),
+        assist: None,
+        needs_shift: None,
+    },
+    Step {
+        narration: "Click the glowing line, move the mouse to place the dimension, click \
+                    again to drop it there, then type `leg` and press Enter.",
+        anchor: StepAnchor::Guided(base_leg_orb),
+        done: Some(base_leg_dimensioned),
         on_enter: None,
         assist: None,
         needs_shift: None,
+    },
+    Step {
+        narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
+        anchor: StepAnchor::Guided(tilted_leg_orb),
+        done: Some(tilted_leg_dimensioned),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+    },
+    Step {
+        narration: "Now an end cap \u{2014} that's the bracket's thickness: click, place, \
+                    type `thick`, Enter.",
+        anchor: StepAnchor::Guided(base_cap_orb),
+        done: Some(base_cap_dimensioned),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+    },
+    Step {
+        narration: "And the other end cap: `thick` again.",
+        anchor: StepAnchor::Guided(tilted_cap_orb),
+        done: Some(tilted_cap_dimensioned),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+    },
+    Step {
+        narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
+                    line, place the arc, then type `bend_angle` and press Enter.",
+        anchor: StepAnchor::Guided(bend_angle_orb),
+        done: Some(profile_dimensioned),
+        on_enter: None,
+        assist: None,
+        needs_shift: Some(bend_angle_shift),
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
