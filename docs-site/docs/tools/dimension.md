@@ -10,11 +10,15 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 **Shortcut:** `D`
 
 Dimensions make geometry exact — and keep it that way. Click a line (or a rectangle edge,
-or a circle) to set its length or diameter; select two lines that cross and press **D** for
-the angle between them. Type the value, press **Enter**.
+or a circle): the dimension appears straight away and **follows your cursor**. Click again
+to drop it where you want it, then type the value and press **Enter**.
 
 ![Two lines with length dimensions and the angle between them dimensioned](/img/screenshots/dimension.png)
 
+- **Shift+click** a second line for the **angle** between them — the preview switches to the
+  angle and follows the cursor the same way.
+- A plain click always moves on to dimensioning whatever you clicked, so a change of mind
+  costs one click.
 - Value fields accept **expressions**: `25`, `2.5in`, `leg/2 + 5`, or a new parameter
   created on the spot by typing `name=value` — see [Parameters & units](/docs/parameters).
 - Dimension labels are draggable, and double-clicking one reopens it for editing.

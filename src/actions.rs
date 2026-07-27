@@ -2426,19 +2426,20 @@ pub struct EditingCommittedDim {
     pub dim_offset: Option<f32>,
 }
 
-/// Placement phase for a brand-new angle dimension: the preview follows the mouse,
-/// snapping `rotation_sign` to whichever of the angle's two distinct magnitudes
-/// (the natural one or its supplement) encloses the cursor; a click commits it and
-/// moves on to typing the value (#40).
+/// Placement phase for a brand-new dimension (#40, generalised to every kind in #763):
+/// the preview follows the mouse, and a click drops it there and moves on to typing the
+/// value. For an **angle** the cursor picks `rotation_sign` — whichever of the angle's two
+/// distinct magnitudes (the natural one or its supplement) encloses it — and sets the arc's
+/// radius; for a **length** it sets how far off the measured segment the dimension line
+/// sits. Either way the placed offset carries onto the constraint's `dim_offset`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PlacingAngleDimension {
-    pub line_a: ConstraintLine,
-    pub line_b: ConstraintLine,
-    pub rotation_sign: crate::model::ConstraintSign,
-    /// Arc radius (screen px) the preview is currently drawn at — the cursor's distance
-    /// from the vertex, so the arc grows/shrinks as you move the mouse (#188). Persisted to
-    /// the constraint's `dim_offset` on commit.
-    pub arc_offset: Option<f32>,
+pub struct PlacingDimension {
+    /// What's being measured. An angle's `rotation_sign` lives in here and is re-read from
+    /// the cursor every frame.
+    pub target: DimensionTarget,
+    /// Screen-pixel offset the preview is drawn at: the arc radius for an angle, the
+    /// perpendicular distance from the measured segment for a length.
+    pub offset: Option<f32>,
 }
 
 /// Expression text shown when editing a committed dimension.
@@ -2728,8 +2729,8 @@ pub struct AppState {
     pub scene_selection: SceneSelection,
     pub context_pane: crate::context::ContextPaneState,
     pub editing_committed_dim: Option<EditingCommittedDim>,
-    /// Active placement phase for a new angle dimension (#40); see [`PlacingAngleDimension`].
-    pub placing_angle_dimension: Option<PlacingAngleDimension>,
+    /// Active placement phase for a new dimension (#40/#763); see [`PlacingDimension`].
+    pub placing_dimension: Option<PlacingDimension>,
     pub status: String,
     pub command_log: Option<std::cell::RefCell<crate::command_log::CommandLog>>,
     /// Reframe sketch geometry once the viewport rect is known (e.g. hierarchy open before first paint).
@@ -2854,7 +2855,7 @@ impl Default for AppState {
             scene_selection: SceneSelection::default(),
             context_pane: crate::context::ContextPaneState::default(),
             editing_committed_dim: None,
-            placing_angle_dimension: None,
+            placing_dimension: None,
             status: String::new(),
             command_log: None,
             sketch_reframe_pending: false,
@@ -5145,20 +5146,14 @@ impl AppState {
 
     /// Start editing a dimension on the current selection, if applicable.
     pub fn try_begin_dimension_from_selection(&mut self) -> bool {
-        self.begin_dimension_from_selection(true)
+        self.begin_dimension_from_selection()
     }
 
-    /// After a viewport click while the Dimension tool is active (#486/#487): start
-    /// multi-target dimensions (angle, point-point, …) immediately, but leave a lone
-    /// line selected so a second edge can still be picked for an angle.
-    pub fn try_begin_dimension_from_selection_after_click(&mut self) -> bool {
-        self.begin_dimension_from_selection(false)
-    }
-
-    /// `include_single_line_length`: when true (tool activation / Enter / re-click), a
-    /// single selected line opens its length editor. When false (first pick under the
-    /// Dimension tool), single-line length is deferred so a second click can form an angle.
-    fn begin_dimension_from_selection(&mut self, include_single_line_length: bool) -> bool {
+    /// Take the selection into the dimension flow (#763): a dimension that **already
+    /// exists** opens its value editor straight away (it already has a place on the
+    /// sheet), while a brand-new one enters *placement* — the preview follows the cursor
+    /// until a click drops it and hands off to typing.
+    fn begin_dimension_from_selection(&mut self) -> bool {
         let Some(session) = self.sketch_session else {
             return false;
         };
@@ -5167,35 +5162,18 @@ impl AppState {
         else {
             return false;
         };
-        if !include_single_line_length {
-            if matches!(
-                &target,
-                DimensionTarget::Distance(DistanceTarget::LineLength(_))
-            ) {
-                self.status =
-                    "Dimension: click another edge for angle, or Enter to set length".to_string();
-                return false;
-            }
-        }
-        if let DimensionTarget::Angle {
-            line_a,
-            line_b,
-            rotation_sign,
-        } = &target
+        if find_dimension_constraint(&self.doc, target.clone()).is_none()
+            && require_dimension_target_editable(&self.document_health, &self.doc, target.clone())
+                .is_ok()
         {
-            if crate::constraints::find_angle_constraint(&self.doc, line_a.clone(), line_b.clone())
-                .is_none()
-            {
-                self.placing_angle_dimension = Some(PlacingAngleDimension {
-                    line_a: line_a.clone(),
-                    line_b: line_b.clone(),
-                    rotation_sign: *rotation_sign,
-                    arc_offset: None,
-                });
-                self.status =
-                    "Move the mouse to choose the angle, then click to place".to_string();
-                return true;
-            }
+            let angle = matches!(target, DimensionTarget::Angle { .. });
+            self.placing_dimension = Some(PlacingDimension { target, offset: None });
+            self.status = if angle {
+                "Move the mouse to choose the angle, then click to place".to_string()
+            } else {
+                "Move the mouse to place the dimension, then click to type it".to_string()
+            };
+            return true;
         }
         self.start_committed_dimension_edit(target);
         true
@@ -5457,7 +5435,7 @@ impl AppState {
     /// close a sketch session whose sketch no longer exists, and recompute health.
     fn after_history_restore(&mut self) {
         self.editing_committed_dim = None;
-        self.placing_angle_dimension = None;
+        self.placing_dimension = None;
         self.scene_selection.clear();
         if let Some(session) = self.sketch_session {
             let alive = self
@@ -6226,7 +6204,7 @@ impl AppState {
                     self.editing_committed_dim = None;
                 }
                 if tool != Tool::Dimension {
-                    self.placing_angle_dimension = None;
+                    self.placing_dimension = None;
                 }
                 self.tool = tool;
                 self.status = match tool {
@@ -6376,7 +6354,7 @@ impl AppState {
                 self.extension_anchors.clear();
                 self.normal_inference_anchor = None;
                 if self.editing_committed_dim.take().is_some()
-                    || self.placing_angle_dimension.take().is_some()
+                    || self.placing_dimension.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
                 } else if let Some(ce) = self.creating_extrusion.take() {
@@ -11280,23 +11258,32 @@ label_hidden: false,
                     if let SceneElement::Component(ci) = &element {
                         self.active_component = Some(*ci);
                     }
-                    // Dimension tool in a sketch (#486/#487): accumulate a second pick without
-                    // Shift so two edges form an angle; re-clicking the sole selected edge
-                    // opens its length editor.
-                    let mut additive = additive;
+                    // Dimension tool in a sketch (#486/#487, reworked by #762/#763): a plain
+                    // click always switches to dimensioning what was clicked — even mid
+                    // placement, where the old flow would have taken the click as "drop the
+                    // dimension here" — and Shift adds the pick to what's already selected
+                    // (a second edge for an angle, a second point for a distance). Either
+                    // way the placement preview restarts from the new selection.
                     if self.tool == Tool::Dimension
                         && self.sketch_session.is_some()
                         && self.editing_committed_dim.is_none()
-                        && self.placing_angle_dimension.is_none()
                     {
-                        let ordered = self.scene_selection.ordered();
-                        if ordered.len() == 1 && ordered[0] == element {
-                            self.try_begin_dimension_from_selection();
-                            return ActionResult::Ok;
+                        self.placing_dimension = None;
+                        if additive {
+                            click_scene_selection(
+                                &mut self.scene_selection,
+                                element.clone(),
+                                true,
+                            );
+                        } else {
+                            // A plain click *replaces* what's being dimensioned rather than
+                            // toggling — clicking the same edge again re-places its dimension
+                            // instead of dropping the selection on the floor.
+                            self.scene_selection.clear();
+                            self.scene_selection.insert(element.clone());
                         }
-                        if ordered.len() == 1 && ordered[0] != element {
-                            additive = true;
-                        }
+                        self.begin_dimension_from_selection();
+                        return ActionResult::Ok;
                     }
                     click_scene_selection(&mut self.scene_selection, element.clone(), additive);
                     if let Some((health_status, reason)) =
@@ -11308,13 +11295,7 @@ label_hidden: false,
                             reason
                         );
                     }
-                    if self.tool == Tool::Dimension
-                        && self.sketch_session.is_some()
-                        && self.editing_committed_dim.is_none()
-                        && self.placing_angle_dimension.is_none()
-                    {
-                        self.try_begin_dimension_from_selection_after_click();
-                    }
+
                     // Sketch / Text outside a sketch: selecting a construction plane
                     // opens a sketch on that face (#497).
                     if matches!(self.tool, Tool::Sketch | Tool::Text)
@@ -12153,7 +12134,7 @@ label_hidden: false,
         self.creating_sketch_slice = None;
         self.discard_creating_line();
         self.editing_committed_dim = None;
-        self.placing_angle_dimension = None;
+        self.placing_dimension = None;
         // Return to the pre-sketch camera pose; the transition restores world-orbit mode on
         // completion (its `view_up` is `None`). Fall back to a plain mode-leave if unknown.
         if let Some(pose) = self.pre_sketch_pose.take() {
@@ -14478,6 +14459,13 @@ mod tests {
         state.apply(Action::ClickSceneElement { element: SceneElement::Line(0), additive: false });
         assert!(!state.scene_selection.is_empty(), "the line is selected");
         assert!(state.try_begin_dimension_from_selection(), "a single line dimensions its length");
+        // That starts placement (#763); the placement click opens the editor.
+        state.tool = Tool::Dimension;
+        state.apply(Action::BeginDimensionEdit {
+            target: crate::model::DimensionTarget::Distance(
+                crate::model::DistanceTarget::LineLength(0),
+            ),
+        });
         assert!(state.editing_committed_dim.is_some());
         let r = state.apply(Action::CommitCommittedDim);
         assert!(matches!(r, ActionResult::Ok), "{r:?}");
@@ -21313,8 +21301,10 @@ mod tests {
         assert_eq!(dia_params[0].expression, "30", "existing parameter redefined");
     }
 
+    /// #763: picking up the Dimension tool with a line already selected goes straight into
+    /// *placing* its length — the preview follows the cursor until a click drops it.
     #[test]
-    fn dimension_tool_begins_edit_when_line_selected() {
+    fn dimension_tool_places_a_length_when_a_line_is_selected() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
@@ -21325,7 +21315,15 @@ mod tests {
             additive: false,
         });
         state.apply(Action::SetTool(Tool::Dimension));
-        assert!(state.editing_committed_dim.is_some());
+        assert!(state.editing_committed_dim.is_none());
+        assert_eq!(
+            state.placing_dimension.as_ref().map(|p| p.target.clone()),
+            Some(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
+        );
+        // The placement click (the viewport's job) opens the value editor.
+        state.apply(Action::BeginDimensionEdit {
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+        });
         assert_eq!(
             state.editing_committed_dim.as_ref().unwrap().target,
             DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
@@ -21346,6 +21344,9 @@ mod tests {
             additive: false,
         });
         state.apply(Action::SetTool(Tool::Dimension));
+        state.apply(Action::BeginDimensionEdit {
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+        });
         assert!(state.editing_committed_dim.is_some());
         // Select can still drag/edit dimension labels, so the edit survives it.
         state.apply(Action::SetTool(Tool::Select));
@@ -21436,12 +21437,14 @@ mod tests {
         // rather than jumping straight to editing the value (#40).
         assert!(state.editing_committed_dim.is_none());
         assert_eq!(
-            state.placing_angle_dimension,
-            Some(PlacingAngleDimension {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
-                rotation_sign: 1,
-                arc_offset: None,
+            state.placing_dimension,
+            Some(PlacingDimension {
+                target: DimensionTarget::Angle {
+                    line_a: ConstraintLine::Line(0),
+                    line_b: ConstraintLine::Line(1),
+                    rotation_sign: 1,
+                },
+                offset: None,
             })
         );
 
@@ -21450,7 +21453,7 @@ mod tests {
             line_b: ConstraintLine::Line(1),
             rotation_sign: 1,
         };
-        state.placing_angle_dimension = None;
+        state.placing_dimension = None;
         state.apply(Action::BeginDimensionEdit { target: target.clone() });
         assert_eq!(
             state.editing_committed_dim.as_ref().unwrap().target,
@@ -21458,11 +21461,12 @@ mod tests {
         );
     }
 
-    /// #487: while the Dimension tool is active, the first edge click only selects;
-    /// a second edge (without Shift) starts the angle placement phase.
+    /// #763: under the Dimension tool a plain click dimensions what it hits — the first
+    /// edge goes straight into placing its length — and **Shift**+click adds a second edge,
+    /// which turns the placement into the angle between them.
     #[test]
-    fn dimension_tool_click_two_edges_places_angle() {
-        use crate::model::ConstraintLine;
+    fn dimension_tool_click_places_length_then_shift_click_places_angle() {
+        use crate::model::{ConstraintLine, DimensionTarget};
 
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
@@ -21483,30 +21487,58 @@ mod tests {
         });
         assert!(
             state.editing_committed_dim.is_none(),
-            "first edge must not open a length editor"
+            "the value editor waits until the dimension is placed"
         );
-        assert!(state.placing_angle_dimension.is_none());
+        assert_eq!(
+            state.placing_dimension,
+            Some(PlacingDimension {
+                target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+                offset: None,
+            }),
+            "one edge places its length"
+        );
         assert!(state.scene_selection.is_selected(SceneElement::Line(0)));
 
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Line(1),
-            additive: false, // no Shift — tool accumulates the second edge
+            additive: true, // Shift adds the second edge
         });
         assert!(state.editing_committed_dim.is_none());
         assert_eq!(
-            state.placing_angle_dimension,
-            Some(PlacingAngleDimension {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
-                rotation_sign: 1,
-                arc_offset: None,
+            state.placing_dimension,
+            Some(PlacingDimension {
+                target: DimensionTarget::Angle {
+                    line_a: ConstraintLine::Line(0),
+                    line_b: ConstraintLine::Line(1),
+                    rotation_sign: 1,
+                },
+                offset: None,
             })
         );
+
+        // #762: a plain click on a third edge switches to dimensioning *that*, instead of
+        // dropping the angle where the click landed.
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 20.0, 10.0, 24.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(2),
+            additive: false,
+        });
+        assert_eq!(
+            state.placing_dimension,
+            Some(PlacingDimension {
+                target: DimensionTarget::Distance(DistanceTarget::LineLength(2)),
+                offset: None,
+            })
+        );
+        assert!(!state.scene_selection.is_selected(SceneElement::Line(0)));
     }
 
-    /// #486/#487: re-clicking the sole selected edge under Dimension opens length edit.
+    /// #763: clicking the already-selected edge again just re-places the same length —
+    /// the value editor still waits for the placement click.
     #[test]
-    fn dimension_tool_reclick_single_line_opens_length() {
+    fn dimension_tool_reclick_single_line_keeps_placing_its_length() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state
@@ -21524,10 +21556,10 @@ mod tests {
             element: SceneElement::Line(0),
             additive: false,
         });
-        assert!(state.editing_committed_dim.is_some());
+        assert!(state.editing_committed_dim.is_none());
         assert_eq!(
-            state.editing_committed_dim.as_ref().unwrap().target,
-            DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
+            state.placing_dimension.as_ref().map(|p| p.target.clone()),
+            Some(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
         );
     }
 

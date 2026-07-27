@@ -1988,12 +1988,28 @@ modeled on SolveSpace (https://solvespace.com).
 
 - **Tool:** Constraint, shortcut **`C`**. Distance/dimensional constraints remain on the
   **Dimension** tool (`D`).
-- **Angle dimensions — placement phase:** pressing `D` with two non-parallel lines selected
-  (and no existing angle constraint between them) does not commit a value immediately.
-  Instead the angle preview follows the mouse: two lines crossing have two distinct angle
-  magnitudes (supplementary, one on each pair of opposite wedges), and whichever wedge
-  encloses the cursor is the one previewed. Clicking commits that choice and moves to typing
-  the value, the same as other dimensions (#40).
+- **Dimension flow — place, then type (#40/#763):** a **new** dimension is never committed
+  the moment its geometry is picked. As soon as the selection describes something
+  dimensionable — a fresh pick, or a selection carried in when the Dimension tool is chosen —
+  the tool enters a **placement phase** (`AppState::placing_dimension`, a `PlacingDimension`
+  holding the target and the pixel offset): the dimension is previewed in the preview colour
+  and follows the cursor, and a **click drops it there and moves on to typing the value**,
+  carrying the placed offset onto the constraint's `dim_offset`. For an **angle**, two
+  crossing lines have two distinct magnitudes (supplementary, one on each pair of opposite
+  wedges) and whichever wedge encloses the cursor is previewed, with the arc's radius
+  tracking the cursor's distance from the vertex (#188). For a **length**, the dimension line
+  slides out to the cursor's perpendicular distance from what's being measured. A dimension
+  that **already exists** skips placement and opens its value editor straight away — it
+  already has a place on the sheet. The preview is painted **after** the GPU scene, so it
+  isn't buried under it.
+- **Picking stays live while placing (#762/#763):** hovering anything else dimensionable
+  stands the preview down and hovers that instead, so the next click goes to the pick, not to
+  dropping the dimension. A **plain click** switches to dimensioning what was clicked
+  (replacing the selection — clicking the same edge again just re-places it), and
+  **Shift+click** adds the pick to what's selected: a second edge turns a length into the
+  angle between the two, and the preview restarts for the new target. (This replaces #486/
+  #487's "second plain click accumulates an angle" rule, which made a click meant for a
+  different edge drop an angle dimension instead.)
 - **Selection:** Sketch points (line endpoints — including a rectangle's corners — and circle
   centres), lines (a rectangle's four edges are plain lines), and circles are selectable in the
   viewport. Point picks take precedence near vertices within the point pick tolerance.

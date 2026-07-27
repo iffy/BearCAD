@@ -13577,6 +13577,106 @@ fn push_arc_dim_layout(
     });
 }
 
+/// What the dimension being placed should draw this frame (#763). The placement logic runs
+/// with the rest of the tool handling, but the drawing has to wait until **after** the GPU
+/// scene is painted or it would be covered by it.
+enum PlacingPreviewDraw {
+    Angle {
+        line_a: model::ConstraintLine,
+        line_b: model::ConstraintLine,
+        rotation_sign: model::ConstraintSign,
+        offset: Option<f32>,
+        label: String,
+    },
+    Length {
+        a: Vec3,
+        b: Vec3,
+        offset: f32,
+        label: String,
+    },
+}
+
+/// Perpendicular distance from `p` to the **infinite line** through `a`/`b` (px). The
+/// dimension being placed slides out to whatever this reads (#763), so a cursor level with
+/// the segment's end still measures its distance from the segment's line, not its endpoint.
+fn point_to_segment_line_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let along = b - a;
+    let len = along.length();
+    if len < 1e-4 {
+        return (p - a).length();
+    }
+    let n = egui::vec2(-along.y, along.x) / len;
+    (p - a).dot(n).abs()
+}
+
+/// The open sketch's local-space centroid — default dimension labels point *away* from it,
+/// so they land outside the drawn outline. Shared by the committed layouts and the
+/// placement preview, so a dimension lands where its preview promised.
+fn sketch_centroid_uv(doc: &model::Document, sketch: SketchId) -> Option<(f32, f32)> {
+    let mut sum = (0.0f32, 0.0f32);
+    let mut n = 0usize;
+    for (li, line) in doc.lines.iter().enumerate() {
+        if line.sketch != sketch || !document_lifecycle::line_alive(doc, li) {
+            continue;
+        }
+        sum.0 += line.x0 + line.x1;
+        sum.1 += line.y0 + line.y1;
+        n += 2;
+    }
+    (n > 0).then(|| (sum.0 / n as f32, sum.1 / n as f32))
+}
+
+/// Draw the length dimension being placed (#763): the same geometry a committed one gets,
+/// at the offset the cursor is currently choosing, in the preview colour.
+#[allow(clippy::too_many_arguments)]
+fn draw_placing_length_preview(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    label_view: &PlanarLabelView,
+    frame: &face::SketchFrame,
+    doc: &model::Document,
+    session: SketchSession,
+    a: Vec3,
+    b: Vec3,
+    pixel_offset: f32,
+    label: &str,
+) {
+    let (ua, va) = world_to_local(frame, a);
+    let (ub, vb) = world_to_local(frame, b);
+    let outward_uv = match sketch_centroid_uv(doc, session.sketch) {
+        Some((cu, cv)) => outward_perpendicular_uv(ua, va, ub, vb, cu, cv),
+        None => preferred_outward_uv(ua, va, ub, vb),
+    };
+    let outward_world = uv_dir_to_world(frame.u_axis, frame.v_axis, outward_uv.0, outward_uv.1);
+    if outward_world.length_squared() < 1e-8 {
+        return;
+    }
+    let anchor = a.lerp(b, 0.5);
+    let offset_world = pixels_to_world_distance(&project, anchor, outward_world, pixel_offset);
+    let overshoot_world =
+        pixels_to_world_distance(&project, anchor, outward_world, EXTENSION_OVERSHOOT);
+    let label_outset_world =
+        pixels_to_world_distance(&project, anchor, outward_world, LABEL_OUTSET);
+    let world_geom = linear_dimension_world_geom(
+        a,
+        b,
+        outward_world,
+        offset_world,
+        overshoot_world,
+        label_outset_world,
+    );
+    let Some(geom) = project_linear_dimension_geom(&world_geom, project) else {
+        return;
+    };
+    dimensions::draw_linear_dimension(
+        painter,
+        &geom,
+        label,
+        col::PREVIEW,
+        Some((&world_geom, label_view, project)),
+    );
+}
+
 fn committed_dim_layout(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -18145,7 +18245,9 @@ impl App {
             Tool::Select | Tool::Constraint | Tool::Dimension
         ) && self.state.creating_calibration.is_none()
             && self.state.editing_committed_dim.is_none()
-            && self.state.placing_angle_dimension.is_none()
+            // Placement leaves picking live under the Dimension tool (#762/#763): hovering
+            // another target must be able to take over from the preview.
+            && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
             && !angle_gizmo_dragging
@@ -18297,7 +18399,8 @@ impl App {
             // already suspended.
             suppress_hover_highlight
                 || self.state.editing_committed_dim.is_some()
-                || self.state.placing_angle_dimension.is_some()
+                || (self.state.placing_dimension.is_some()
+                    && self.state.tool != Tool::Dimension)
                 || over_committed_dim_label
                 || self.dim_label_drag.is_some()
                 || self.state.creating_rect.is_some()
@@ -18398,7 +18501,7 @@ impl App {
             Tool::Select | Tool::Constraint | Tool::Dimension
         ) && !exploder_owns_press
             && self.state.editing_committed_dim.is_none()
-            && self.state.placing_angle_dimension.is_none()
+            && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
             && self.angle_gizmo_drag.is_none()
@@ -18980,7 +19083,7 @@ impl App {
         // (#190); non-GPU still paints a dimmable segment under the cursor here.
         if self.state.tool == Tool::Dimension
             && self.state.editing_committed_dim.is_none()
-            && self.state.placing_angle_dimension.is_none()
+            && self.state.placing_dimension.is_none()
             && !suppress_hover_highlight
             && !self.gpu_viewport
         {
@@ -19005,76 +19108,134 @@ impl App {
             }
         }
 
-        if let Some(placing) = self.state.placing_angle_dimension.clone() {
-            if let Some(session) = self.state.sketch_session {
-                if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
-                    if let Some(pp) = pointer_screen {
-                        if let Some(hover_world) =
-                            cam.ray_plane_hit(pp, viewport, &vp, frame.origin, frame.normal)
-                        {
-                            if let Some(sign) = angle_dimension_hover_sign(
-                                &self.state.doc,
-                                placing.line_a.clone(),
-                                placing.line_b.clone(),
-                                hover_world,
-                            ) {
-                                if let Some(p) = self.state.placing_angle_dimension.as_mut() {
-                                    p.rotation_sign = sign;
-                                }
-                            }
-                        }
-                        // The arc radius tracks the cursor's distance from the vertex, so the
-                        // preview grows/shrinks and clearly reads as an angle wedge (#188).
-                        if let Some(display) = crate::constraints::angle_constraint_display(
+        // Dimension placement (#40/#763): the preview follows the cursor until a click
+        // drops it and hands off to typing the value. While the cursor is over something
+        // else that could be dimensioned, the preview stands down so that pick can be
+        // hovered and clicked instead (#762).
+        let mut placing_preview: Option<PlacingPreviewDraw> = None;
+        if let Some(placing) = self.state.placing_dimension.clone() {
+            let over_pickable = pointer_screen
+                .zip(self.state.sketch_session)
+                .is_some_and(|(pp, session)| {
+                    nearest_sketch_point_in_sketch(pp, &project, &self.state.doc, session.sketch)
+                        .is_some()
+                        || nearest_sketch_line_in_sketch(
+                            pp,
+                            &project,
                             &self.state.doc,
-                            placing.line_a.clone(),
-                            placing.line_b.clone(),
-                            placing.rotation_sign,
-                        ) {
-                            if let Some(center_px) = project(display.center) {
-                                let px = (pp - center_px).length();
-                                if let Some(p) = self.state.placing_angle_dimension.as_mut() {
-                                    p.arc_offset = Some(px);
+                            session.sketch,
+                        )
+                        .is_some()
+                });
+            if let (false, Some(session)) = (over_pickable, self.state.sketch_session) {
+                if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
+                    let mut placed_offset = placing.offset;
+                    match placing.target.clone() {
+                        model::DimensionTarget::Angle { line_a, line_b, rotation_sign } => {
+                            let mut rotation_sign = rotation_sign;
+                            if let Some(pp) = pointer_screen {
+                                if let Some(hover_world) =
+                                    cam.ray_plane_hit(pp, viewport, &vp, frame.origin, frame.normal)
+                                {
+                                    if let Some(sign) = angle_dimension_hover_sign(
+                                        &self.state.doc,
+                                        line_a.clone(),
+                                        line_b.clone(),
+                                        hover_world,
+                                    ) {
+                                        rotation_sign = sign;
+                                    }
+                                }
+                                // The arc radius tracks the cursor's distance from the vertex, so
+                                // the preview grows/shrinks and reads as an angle wedge (#188).
+                                if let Some(display) = crate::constraints::angle_constraint_display(
+                                    &self.state.doc,
+                                    line_a.clone(),
+                                    line_b.clone(),
+                                    rotation_sign,
+                                ) {
+                                    if let Some(center_px) = project(display.center) {
+                                        placed_offset = Some((pp - center_px).length());
+                                    }
+                                }
+                            }
+                            if let Some(p) = self.state.placing_dimension.as_mut() {
+                                p.target = model::DimensionTarget::Angle {
+                                    line_a: line_a.clone(),
+                                    line_b: line_b.clone(),
+                                    rotation_sign,
+                                };
+                                p.offset = placed_offset;
+                            }
+                            let label = default_angle_expression(
+                                &self.state.doc,
+                                session.sketch,
+                                line_a.clone(),
+                                line_b.clone(),
+                                rotation_sign,
+                            );
+                            placing_preview = Some(PlacingPreviewDraw::Angle {
+                                line_a: line_a.clone(),
+                                line_b: line_b.clone(),
+                                rotation_sign,
+                                offset: placed_offset,
+                                label,
+                            });
+                            let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+                            if primary_pressed && !over_committed_dim_label {
+                                self.state.placing_dimension = None;
+                                self.state.apply(Action::BeginDimensionEdit {
+                                    target: model::DimensionTarget::Angle {
+                                        line_a,
+                                        line_b,
+                                        rotation_sign,
+                                    },
+                                });
+                                // Carry the previewed radius onto the edit so commit persists it.
+                                if let Some(edit) = self.state.editing_committed_dim.as_mut() {
+                                    edit.dim_offset = placed_offset;
                                 }
                             }
                         }
-                    }
-                    // Re-read: the hover update above may have just flipped the sign / resized.
-                    let placing = self.state.placing_angle_dimension.clone().unwrap_or(placing);
-                    let label = default_angle_expression(
-                        &self.state.doc,
-                        session.sketch,
-                        placing.line_a.clone(),
-                        placing.line_b.clone(),
-                        placing.rotation_sign,
-                    );
-                    draw_angle_dim_for_lines(
-                        &painter,
-                        &project,
-                        &frame,
-                        &self.state.doc,
-                        placing.line_a.clone(),
-                        placing.line_b.clone(),
-                        placing.rotation_sign,
-                        placing.arc_offset,
-                        &label,
-                        false,
-                        false,
-                    );
-                    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-                    if primary_pressed && !over_committed_dim_label {
-                        let arc_offset = placing.arc_offset;
-                        self.state.placing_angle_dimension = None;
-                        self.state.apply(Action::BeginDimensionEdit {
-                            target: model::DimensionTarget::Angle {
-                                line_a: placing.line_a,
-                                line_b: placing.line_b,
-                                rotation_sign: placing.rotation_sign,
-                            },
-                        });
-                        // Carry the previewed radius onto the edit so commit persists it.
-                        if let Some(edit) = self.state.editing_committed_dim.as_mut() {
-                            edit.dim_offset = arc_offset;
+                        // A length: the dimension line slides out to wherever the cursor is,
+                        // measured perpendicular to what's being dimensioned (#763).
+                        model::DimensionTarget::Distance(target) => {
+                            if let Some((a, b)) = crate::constraints::distance_target_segment_endpoints(
+                                &self.state.doc,
+                                session.sketch,
+                                target.clone(),
+                            ) {
+                                if let (Some(pp), Some(pa), Some(pb)) =
+                                    (pointer_screen, project(a), project(b))
+                                {
+                                    placed_offset = Some(effective_dim_offset(Some(
+                                        point_to_segment_line_distance(pp, pa, pb),
+                                    )));
+                                    if let Some(p) = self.state.placing_dimension.as_mut() {
+                                        p.offset = placed_offset;
+                                    }
+                                }
+                                placing_preview = Some(PlacingPreviewDraw::Length {
+                                    a,
+                                    b,
+                                    offset: effective_dim_offset(placed_offset),
+                                    label: crate::constraints::default_dimension_expression(
+                                        &self.state.doc,
+                                        session.sketch,
+                                        model::DimensionTarget::Distance(target.clone()),
+                                    ),
+                                });
+                            }
+                            let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+                            if primary_pressed && !over_committed_dim_label {
+                                self.state.placing_dimension = None;
+                                self.state.apply(Action::BeginDimensionEdit {
+                                    target: model::DimensionTarget::Distance(target),
+                                });
+                                if let Some(edit) = self.state.editing_committed_dim.as_mut() {
+                                    edit.dim_offset = placed_offset;
+                                }
+                            }
                         }
                     }
                 }
@@ -20308,6 +20469,49 @@ impl App {
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
             self.gpu_viewport && gpu_viewport::paint(render_state, &painter, viewport, scene);
+
+        // The dimension being placed, drawn on top of the scene (#763).
+        if let (Some(preview), Some(session)) = (&placing_preview, sketch_session) {
+            if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
+                match preview {
+                    PlacingPreviewDraw::Angle {
+                        line_a,
+                        line_b,
+                        rotation_sign,
+                        offset,
+                        label,
+                    } => draw_angle_dim_for_lines(
+                        &painter,
+                        &project,
+                        &frame,
+                        &self.state.doc,
+                        line_a.clone(),
+                        line_b.clone(),
+                        *rotation_sign,
+                        *offset,
+                        label,
+                        false,
+                        false,
+                    ),
+                    PlacingPreviewDraw::Length { a, b, offset, label } => {
+                        if let Some(view) = planar_label_view {
+                            draw_placing_length_preview(
+                                &painter,
+                                &project,
+                                &view,
+                                &frame,
+                                &self.state.doc,
+                                session,
+                                *a,
+                                *b,
+                                *offset,
+                                label,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         if !gpu_drawn {
             painter.rect_filled(viewport, 0.0, col::BG);
@@ -21600,12 +21804,19 @@ impl App {
             Tool::Dimension => {
                 if self.state.editing_committed_dim.is_some() {
                     "Edit dimension • Enter to commit • Esc to cancel"
-                } else if self.state.placing_angle_dimension.is_some() {
-                    "d: dimension  •  Move mouse to choose the angle side • click to set value"
+                } else if self
+                    .state
+                    .placing_dimension
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.target, model::DimensionTarget::Angle { .. }))
+                {
+                    "d: dimension  •  Move the mouse to choose the angle side • click to set value"
+                } else if self.state.placing_dimension.is_some() {
+                    "d: dimension  •  Move the mouse to place it • click to set value"
                 } else if self.state.sketch_session.is_none() {
                     "d: dimension  •  Pick a line (or two lines/vertices), then Derive parameter in the pane"
                 } else {
-                    "d: dimension  •  Click an edge (re-click or D for length) • second edge for angle"
+                    "d: dimension  •  Click an edge to dimension it • Shift+click a second for an angle"
                 }
             }
             Tool::ConstructionPlane => {
@@ -22343,6 +22554,24 @@ fn draw_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #763: the placed dimension's offset is the cursor's distance from the measured
+    /// segment's *line* — level with an endpoint still reads as "on the line" (zero), so
+    /// the preview doesn't jump when the cursor slides past the end.
+    #[test]
+    fn placement_offset_measures_from_the_segments_line() {
+        let a = egui::pos2(100.0, 100.0);
+        let b = egui::pos2(300.0, 100.0);
+        assert!((point_to_segment_line_distance(egui::pos2(200.0, 140.0), a, b) - 40.0).abs() < 1e-3);
+        // Past the end, but still level with the line.
+        assert!(point_to_segment_line_distance(egui::pos2(900.0, 100.0), a, b) < 1e-3);
+        // Either side reads the same distance — the sign isn't the offset's business.
+        assert!((point_to_segment_line_distance(egui::pos2(200.0, 60.0), a, b) - 40.0).abs() < 1e-3);
+        // A degenerate segment falls back to the plain distance.
+        assert!(
+            (point_to_segment_line_distance(egui::pos2(103.0, 104.0), a, a) - 5.0).abs() < 1e-3
+        );
+    }
 
     /// #438: the screen-state probe sees overflow and underfill; comfortable fits
     /// report neither.
