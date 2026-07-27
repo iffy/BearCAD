@@ -30,7 +30,8 @@ Move slides whole bodies to a new place, producing moved copies.
      picking it, every reachable spot is marked in **blue**: where surrounding edges cross
      that distance, and mid-air spots straight out along any edge running through end point
      A, each with a dashed guide line from it. The one under the cursor turns **gold** and
-     the preview shows the move you'd get.
+     the preview shows the move you'd get. With both B points picked, a **white arc** traces
+     the path start B swings along as the bodies turn.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
