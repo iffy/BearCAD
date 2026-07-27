@@ -534,7 +534,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Extrude** button. Typing in the Distance field drives the depth and clears any target; focusing
     the "Up to" picker arms **target-pick mode** so the next viewport click on a plane/face sets the
     target; dragging the gizmo onto a plane/face **sets that target in the picker and nulls the
-    Distance field** (the depth then comes from the target). Crucially, a gizmo release-click no
+    Distance field** (the depth then comes from the target). On **touch** the gizmo is a plain
+    press-drag-release instead (#829): a finger has no hover, so "grab, follow the cursor,
+    click to drop" leaves the handle stranded the moment the finger lifts — lifting is what
+    locks it in there. Crucially, a gizmo release-click no
     longer *commits* — it just locks in the current distance/target; the extrusion is **completed
     only on Enter or the Extrude button** (`context::ExtrudeControl`/`ExtrudeEdit`, wired through
     `App::extrude_target_pick`).

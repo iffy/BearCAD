@@ -4936,7 +4936,16 @@ impl App {
         // A click while following just **releases** the gizmo, locking in the current distance /
         // target (#584). The extrusion is completed on Enter or the context "Extrude" button, not
         // on this click, so the user can keep adjusting the distance field or target picker.
-        if following && primary_pressed {
+        //
+        // Touch has no hover, so "grab, follow the cursor, click to drop" can't work with a
+        // finger: the pointer only exists while it's down. There the gesture is the natural
+        // one — press the handle, drag, lift — so the **release** is what locks it in (#829).
+        let release = if touch::active() {
+            ui.input(|i| i.pointer.primary_released())
+        } else {
+            primary_pressed
+        };
+        if following && release {
             let target = self.pending_extrude_target.take();
             self.state.apply(Action::SetExtrudeTarget { target });
             self.extrude_gizmo_drag = None;
