@@ -2800,6 +2800,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     api.set(
+        "tutorial_assist",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::TutorialAssist) }
+        })?,
+    )?;
+    api.set(
         "tutorial_end",
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -4423,7 +4430,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom",
-            "tutorial", "tutorial_next", "tutorial_end", "tutorial_step", "touch",
+            "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
+            "touch",
             "move", "click", "move_ground", "click_ground",
             "drag", "drag_ground", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",

@@ -2040,6 +2040,9 @@ pub enum Action {
     /// Step the running tutorial back one step to review it (auto-advance stands
     /// down until Next catches back up to unfinished work).
     TutorialBack,
+    /// Run the current step's "do it for me" shortcut (`tutorial::StepAssist`), for
+    /// steps that are pure typing — the bubble's assist button.
+    TutorialAssist,
     /// End the running tutorial.
     EndTutorial,
     CreateSketchOffsetOperation {
@@ -9886,6 +9889,25 @@ label_hidden: false,
                         run.hold = true;
                     }
                 }
+                ActionResult::Ok
+            }
+            Action::TutorialAssist => {
+                let assist = self.tutorial.and_then(|run| {
+                    crate::tutorial::TUTORIALS
+                        .get(run.tutorial)
+                        .and_then(|t| t.steps.get(run.step))
+                        .and_then(|s| s.assist.as_ref())
+                });
+                let Some(assist) = assist else {
+                    return ActionResult::Ok;
+                };
+                for action in (assist.actions)(self) {
+                    self.apply(action);
+                }
+                // The half-typed draft in the new-parameter row is exactly what the
+                // button just did for them — clear it so nothing stale sits there.
+                self.parameters_pane.new_name.clear();
+                self.parameters_pane.new_value.clear();
                 ActionResult::Ok
             }
             Action::EndTutorial => {

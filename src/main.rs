@@ -2472,6 +2472,7 @@ impl App {
         let mut next = false;
         let mut back = false;
         let mut end = false;
+        let mut assist = false;
         egui::Area::new(egui::Id::new("tutorial_bubble"))
             .fixed_pos(anchor_pos)
             .order(egui::Order::Foreground)
@@ -2499,6 +2500,24 @@ impl App {
                                 .color(egui::Color32::from_gray(235))
                                 .size(13.0),
                         );
+                        // A step that's pure typing offers to do it for the user (#752).
+                        if let Some(a) = &step.assist {
+                            ui.add_space(6.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(a.label)
+                                            .color(egui::Color32::BLACK)
+                                            .size(12.0),
+                                    )
+                                    .fill(egui::Color32::from_rgb(255, 200, 80))
+                                    .corner_radius(4.0),
+                                )
+                                .clicked()
+                            {
+                                assist = true;
+                            }
+                        }
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             if run.step > 0 && ui.button("Back").clicked() {
@@ -2540,6 +2559,9 @@ impl App {
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
                 ));
             });
+        if assist {
+            self.state.apply(Action::TutorialAssist);
+        }
         if next {
             self.state.apply(Action::TutorialNext);
         }

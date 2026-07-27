@@ -13,7 +13,8 @@ Draw it sloppily, let the constraint solver square it up, then change the bend a
 afterward without redrawing.
 
 Prefer being shown? Press **Tutorial** (bottom right, in the app) — the bear walks you
-through this same bracket interactively, pointing at each click with a glowing ring.
+through this same bracket interactively, pointing at each click with a glowing ring. On
+the parameters step, **Add them for me** fills the whole table in with one press.
 
 ![The finished 120-degree bracket: rounded bend, rounded corners, two countersunk screw holes](/img/screenshots/quickstart.png)
 

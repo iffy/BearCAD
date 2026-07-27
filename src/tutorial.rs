@@ -4,7 +4,7 @@
 //! is a list of [`Step`]s that either auto-advance when a document predicate is
 //! satisfied or wait for the bubble's Next button.
 
-use crate::actions::{AppState, Tool};
+use crate::actions::{Action, AppState, Tool};
 use crate::model::{ConstraintKind, VertexTreatmentKind};
 
 /// A UI element a tutorial step can point at with a glowing ring. The frame's
@@ -32,6 +32,18 @@ pub enum StepAnchor {
     None,
 }
 
+/// A one-click shortcut the speech bubble offers for a step that is pure typing:
+/// the button does the step's work so the user doesn't have to key a whole list in
+/// by hand. Filling it in still satisfies the step's `done` predicate, so the
+/// tutorial carries on exactly as if they had typed it.
+pub struct StepAssist {
+    /// Button label in the bubble.
+    pub label: &'static str,
+    /// What the button does, computed from the live state so it only fills in
+    /// whatever the user hasn't already done themselves.
+    pub actions: fn(&AppState) -> Vec<Action>,
+}
+
 pub struct Step {
     /// What the bear says for this step.
     pub narration: &'static str,
@@ -41,6 +53,8 @@ pub struct Step {
     /// Runs once when the tutorial lands on this step going forward (never while
     /// reviewing with Back) — e.g. framing the camera on the area the step works in.
     pub on_enter: Option<fn(&mut AppState)>,
+    /// Optional "do it for me" button (see [`StepAssist`]).
+    pub assist: Option<StepAssist>,
 }
 
 pub struct Tutorial {
@@ -104,13 +118,31 @@ fn leg_added(app: &AppState) -> bool {
     param_exists(app, "leg")
 }
 
+/// Every number the bracket is built from, in the order the tutorial introduces them.
+const BRACKET_PARAMS: [(&str, &str); 6] = [
+    ("leg", "50mm"),
+    ("width", "40mm"),
+    ("thick", "5mm"),
+    ("hole", "5mm"),
+    ("bend", "4mm"),
+    ("bend_angle", "120deg"),
+];
+
 fn params_defined(app: &AppState) -> bool {
-    ["leg", "width", "thick", "hole", "bend", "bend_angle"].iter().all(|name| {
-        app.doc
-            .parameters
-            .iter()
-            .any(|p| !p.deleted && p.name.eq_ignore_ascii_case(name))
-    })
+    BRACKET_PARAMS.iter().all(|(name, _)| param_exists(app, name))
+}
+
+/// The "Add them for me" button: adds whichever bracket parameters are still
+/// missing, leaving any the user already typed (or renamed the value of) alone.
+fn add_missing_params(app: &AppState) -> Vec<Action> {
+    BRACKET_PARAMS
+        .iter()
+        .filter(|(name, _)| !param_exists(app, name))
+        .map(|(name, expression)| Action::AddParameter {
+            name: name.to_string(),
+            expression: expression.to_string(),
+        })
+        .collect()
 }
 
 fn line_tool_active(app: &AppState) -> bool {
@@ -314,6 +346,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: None,
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "First, a name for our first number. See the Parameters pane on the \
@@ -321,6 +354,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_box_tapped),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Type leg \u{2014} just those three letters. It's the length of each \
@@ -328,31 +362,37 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_says_leg),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Now tap the value box beside it and type 50mm.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
         done: Some(value_says_50),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(leg_added),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Five more, exactly the same moves:\n\
-                    width = 40mm\nthick = 5mm\nhole = 5mm\nbend = 4mm\nbend_angle = 120deg",
+                    width = 40mm\nthick = 5mm\nhole = 5mm\nbend = 4mm\nbend_angle = 120deg\n\
+                    \u{2014} or let me type them in for you.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(params_defined),
         on_enter: None,
+        assist: Some(StepAssist { label: "Add them for me", actions: add_missing_params }),
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
         done: Some(line_tool_active),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "I've brought us in over the drawing area. Now follow me around the \
@@ -363,12 +403,14 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::World(next_profile_point),
         done: Some(profile_drawn),
         on_enter: Some(frame_profile_area),
+        assist: None,
     },
     Step {
         narration: "Now the Constraint tool \u{2014} the glowing button, or press C.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Constraint)),
         done: Some(constraint_tool_active),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Time to square it up, one constraint at a time. First, pin the \
@@ -378,6 +420,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: Some(bend_pinned),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Level the base: click the bottom base line, Shift+click the red X \
@@ -386,6 +429,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: Some(base_leveled),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Make the base leg an even strip: click the bottom line again, \
@@ -394,6 +438,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: Some(base_strip_even),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Same trick for the tilted leg: click its two long lines, press 1 \
@@ -401,6 +446,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: Some(legs_parallel),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Square off the base leg's end: click its short end cap, Shift+click \
@@ -408,6 +454,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: Some(first_cap_squared),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "And the tilted leg's end: click its end cap, Shift+click one of the \
@@ -415,6 +462,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: Some(profile_squared),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Exact sizes with the Dimension tool (D): click each outer leg and type \
@@ -423,6 +471,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
         done: Some(profile_dimensioned),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
@@ -430,6 +479,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         done: Some(extruded),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
@@ -438,6 +488,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
         done: Some(bend_rounded),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Screw holes! Sketch (S) on the inside face of the base flange, then \
@@ -447,6 +498,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
         done: Some(hole_circles_drawn),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Esc, then Extrude (E): click both circles, drag the handle into the \
@@ -454,6 +506,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         done: Some(holes_cut),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Countersink them: Chamfer (K), click one hole's rim where it meets the \
@@ -461,6 +514,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)),
         done: Some(holes_countersunk),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Fillet (F) again: click a vertical edge at a flange tip, Shift+click the \
@@ -468,6 +522,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
         done: Some(corners_rounded),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type BearCAD. \
@@ -476,6 +531,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Text)),
         done: Some(label_engraved),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "The best part: in the Parameters pane, change bend_angle from 120deg to \
@@ -484,6 +540,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(bend_angle_changed),
         on_enter: None,
+        assist: None,
     },
     Step {
         narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
@@ -492,6 +549,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::None,
         done: None,
         on_enter: None,
+        assist: None,
     },
 ];
 
@@ -571,6 +629,32 @@ mod tests {
         assert!(!run.hold, "caught up to live work — auto-advance resumes");
         app.apply(Action::SetTool(Tool::Line));
         assert_eq!(app.tutorial.unwrap().step, 7, "auto-advance is live again");
+    }
+
+    /// The parameters step's assist button fills in the whole table in one press —
+    /// and adding only what's missing, so a user who typed a couple by hand keeps them.
+    #[test]
+    fn assist_button_adds_the_remaining_parameters() {
+        let mut app = AppState::default();
+        app.apply(Action::StartTutorial { index: 0 });
+        app.apply(Action::AddParameter {
+            name: "leg".to_string(),
+            expression: "60mm".to_string(),
+        });
+        app.apply(Action::TutorialAssist); // welcome/name steps have no assist: a no-op
+        assert!(!params_defined(&app), "no assist on the steps before the list");
+
+        // Walk to the step whose narration lists the five remaining parameters.
+        let step = BRACKET_STEPS.iter().position(|s| s.assist.is_some()).unwrap();
+        app.tutorial = Some(TutorialRun { tutorial: 0, step, hold: false });
+        app.parameters_pane.new_name = "wid".to_string();
+        app.apply(Action::TutorialAssist);
+
+        assert!(params_defined(&app));
+        assert!(app.parameters_pane.new_name.is_empty(), "the draft row is cleared");
+        let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
+        assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
+        assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
     }
 
     #[test]

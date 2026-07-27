@@ -3335,11 +3335,18 @@ document is millimeters, so the player is person-scale: eye height
   every predicate cumulative so working ahead skips ahead. The
   bubble hangs directly under the view cube's actual rect
   (`view_cube::cube_rect_in_viewport`), tail pointing at the bear.
+- A step that is **pure typing** can offer a **"do it for me" button** in the bubble
+  (`tutorial::StepAssist`, applied by `Action::TutorialAssist`): the bracket's
+  "five more parameters" step has **Add them for me**, which adds whichever of
+  `leg/width/thick/hole/bend/bend_angle` are still missing (values the user typed
+  themselves are left as they are) and clears the half-typed new-parameter row. The
+  step's done predicate then fires exactly as if they'd keyed it all in.
 - First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
   interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
   angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and
   the parametric angle change.
 - Scriptable: `bearcad.ui.tutorial("bracket")`, `bearcad.ui.tutorial_next()`,
+  `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).
 
 ### 11.x Auto-update (#427)

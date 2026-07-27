@@ -453,6 +453,8 @@ pub enum Instruction {
     /// Start / advance / end an interactive tutorial.
     StartTutorial { index: usize },
     TutorialNext,
+    /// Press the current tutorial step's "do it for me" button.
+    TutorialAssist,
     EndTutorial,
     SetDim { axis: RectAxis, value: String },
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
@@ -1179,6 +1181,7 @@ impl Instruction {
                 )
             }
             Instruction::TutorialNext => "bearcad.ui.tutorial_next()".to_string(),
+            Instruction::TutorialAssist => "bearcad.ui.tutorial_assist()".to_string(),
             Instruction::EndTutorial => "bearcad.ui.tutorial_end()".to_string(),
             Instruction::SetDim { axis, value } => {
                 format!(
@@ -4599,6 +4602,10 @@ impl ScriptRunner {
             }
             Instruction::TutorialNext => {
                 let _ = state.apply(Action::TutorialNext);
+                StepResult::Continue
+            }
+            Instruction::TutorialAssist => {
+                let _ = state.apply(Action::TutorialAssist);
                 StepResult::Continue
             }
             Instruction::EndTutorial => {
