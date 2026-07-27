@@ -695,7 +695,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
   a glance — and **both B points in candidate blue** with a blue connector between them once
-  the pair is complete (#748).
+  the pair is complete (#748). A complete pair also draws the rotation's **road**: a white
+  arc swept from the translated start B about end point A onto end B
+  (`move_snap_rotation_axis_angle`, sampled into `colored_segments`), so the turn's actual
+  path through space reads before commit.
 
   **One focused picker, stepping through (#656/#658/#659):** exactly one Move picker is armed
   at a time — it's the one the pane rings and the one the viewport hover-highlights, so what

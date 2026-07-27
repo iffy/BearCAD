@@ -892,6 +892,20 @@ pub fn move_snap_rotation(
     doc: &Document,
     op: &crate::model::MoveOperation,
 ) -> Option<glam::Mat3> {
+    let (axis, angle) = move_snap_rotation_axis_angle(doc, op)?;
+    if angle.abs() < 1e-9 {
+        return Some(glam::Mat3::IDENTITY);
+    }
+    Some(glam::Mat3::from_axis_angle(axis, angle))
+}
+
+/// The unit axis and angle behind [`move_snap_rotation`], exposed so the preview can sweep
+/// the **arc** the rotation drags start B along — the actual road the point travels about
+/// end point A. An aligned pair reports a zero angle (with an arbitrary valid axis).
+pub fn move_snap_rotation_axis_angle(
+    doc: &Document,
+    op: &crate::model::MoveOperation,
+) -> Option<(Vec3, f32)> {
     if !op.has_snap_rotation() {
         return None;
     }
@@ -909,7 +923,7 @@ pub fn move_snap_rotation(
     // Already aligned: no turn. Exactly opposed: any perpendicular axis is a half turn, so
     // pick a stable one rather than leaving the cross product degenerate.
     if dot > 1.0 - 1e-9 {
-        return Some(glam::Mat3::IDENTITY);
+        return Some((from.any_orthonormal_vector(), 0.0));
     }
     let axis = if dot < -1.0 + 1e-9 {
         from.any_orthonormal_vector()
@@ -917,9 +931,9 @@ pub fn move_snap_rotation(
         from.cross(to).normalize_or_zero()
     };
     if axis.length_squared() < 0.5 {
-        return Some(glam::Mat3::IDENTITY);
+        return Some((from.any_orthonormal_vector(), 0.0));
     }
-    Some(glam::Mat3::from_axis_angle(axis, dot.acos()))
+    Some((axis, dot.acos()))
 }
 
 pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
@@ -5028,6 +5042,55 @@ mod tests {
         assert!(snap_rotation_candidates(&doc, &[], Vec3::new(0.0, 0.0, 100.0), 5.0).is_empty());
         // A degenerate radius offers nothing rather than dividing by zero.
         assert!(snap_rotation_candidates(&doc, &[], Vec3::ZERO, 0.0).is_empty());
+    }
+
+    /// The rotation's axis+angle drive the white preview arc: sweeping the translated
+    /// start B by the reported angle about the reported axis lands it exactly on end B.
+    #[test]
+    fn snap_rotation_axis_angle_sweeps_start_b_onto_end_b() {
+        use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
+        let q = crate::hierarchy::quantize_body_point;
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                Vec3::ZERO,
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 10.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let op = MoveOperation {
+            targets: vec![0],
+            translate_mode: MoveTranslateMode::Snap,
+            start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::ZERO) }),
+            end_point_a: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::new(10.0, 0.0, 0.0)) }),
+            start_point_b: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::new(10.0, 0.0, 0.0)) }),
+            end_point_b: Some(MovePointRef::OnEdge { body: 0, p: q(Vec3::new(10.0, 10.0, 0.0)) }),
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        let (axis, angle) = move_snap_rotation_axis_angle(&doc, &op).unwrap();
+        assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "quarter turn, got {angle}");
+        let pivot = Vec3::new(10.0, 0.0, 0.0);
+        let p0 = Vec3::new(10.0, 0.0, 0.0) + move_op_translation(&doc, &op).unwrap();
+        let swept = pivot + glam::Quat::from_axis_angle(axis, angle) * (p0 - pivot);
+        assert!(
+            (swept - Vec3::new(10.0, 10.0, 0.0)).length() < 1e-3,
+            "the full sweep lands on end B, got {swept:?}"
+        );
     }
 
     /// #745: edges whose line passes through end point A extend straight out to the

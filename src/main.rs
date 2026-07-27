@@ -19531,6 +19531,53 @@ impl App {
         {
             move_connector.push((a, b, theme::MOVE_CANDIDATE, false));
         }
+        // The rotation's road: with the B pair complete, a white arc sweeps from the
+        // translated start B about end point A onto end B — the path the point actually
+        // travels as the bodies turn.
+        if let Some((pivot, p0, axis, angle)) = self
+            .state
+            .creating_move
+            .as_ref()
+            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
+            .and_then(|cm| {
+                let probe = model::MoveOperation {
+                    targets: cm.targets.clone(),
+                    translate_mode: cm.translate_mode,
+                    start_point_a: cm.start_point_a,
+                    end_point_a: cm.end_point_a,
+                    start_point_b: cm.start_point_b,
+                    end_point_b: cm.end_point_b,
+                    plane_targets: Vec::new(),
+                    image_targets: Vec::new(),
+                    instance_targets: Vec::new(),
+                    tx: cm.tx.clone(),
+                    ty: cm.ty.clone(),
+                    tz: cm.tz.clone(),
+                    outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                };
+                let translation = extrude::move_op_translation(&self.state.doc, &probe)?;
+                let (axis, angle) =
+                    extrude::move_snap_rotation_axis_angle(&self.state.doc, &probe)?;
+                let pivot =
+                    extrude::move_point_world(&self.state.doc, &probe.end_point_a?)?;
+                let p0 = extrude::move_point_world(&self.state.doc, &probe.start_point_b?)?
+                    + translation;
+                Some((pivot, p0, axis, angle))
+            })
+            .filter(|(_, _, _, angle)| angle.abs() > 1e-4)
+        {
+            const ARC_SEGMENTS: usize = 32;
+            let mut prev = p0;
+            for i in 1..=ARC_SEGMENTS {
+                let q =
+                    glam::Quat::from_axis_angle(axis, angle * i as f32 / ARC_SEGMENTS as f32);
+                let p = pivot + q * (p0 - pivot);
+                move_connector.push((prev, p, egui::Color32::WHITE, false));
+                prev = p;
+            }
+        }
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored
         // at the picked vertex and pointing along the inward bisector of its two lines. Shares
         // one gizmo slot between the 2D (sketch vertex) and 3D (extrusion edge, #77) cases,
