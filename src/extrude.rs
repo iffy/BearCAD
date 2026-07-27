@@ -3248,7 +3248,18 @@ pub fn preview_cut_body_mesh(doc: &Document, body_index: usize, cut: &Extrusion)
             clone.extrusions.push(cut.clone());
             let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
             cut_indices.push(cut_index);
-            let mesh = occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices);
+            let mesh = occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices)
+                // That path rebuilds the body from its extrusions, which only works for
+                // extrusion-sourced bodies. A body that came out of a fillet, a boolean, a
+                // move… has no add list, so the preview used to vanish exactly where cuts are
+                // most common: drilling into an already-finished part (#805). Fall back to
+                // subtracting the tool from whatever solid the body actually is.
+                .or_else(|| {
+                    let target = occt_body_shape(doc, body_index)?;
+                    let result = occt_subtract_cut_extrusions(&clone, target, &[cut_index])?;
+                    let tris = result.tessellate(OCCT_DEFLECTION as f64);
+                    (!tris.is_empty()).then_some(SolidMesh { triangles: tris })
+                });
             *cache.borrow_mut() = Some((key, mesh.clone()));
             mesh
         })

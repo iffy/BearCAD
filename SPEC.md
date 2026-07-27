@@ -478,7 +478,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     it's the target body *with the cut already subtracted*, rendered semi-transparently in
     place of the intact body, so the ghost looks like the finished cut. This needs the kernel
     to build the subtraction; if it can't, the intact body and the additive-block preview are
-    kept. **Preview performance (#386):** both live previews are cached per
+    kept. The preview **flips a cut that currently points out of the body inward**, exactly as
+    the commit does (`resolve_cut_direction`), and — when the target body isn't
+    extrusion-sourced (a fillet's output, a boolean's, a move's) — subtracts the tool from the
+    body's own solid rather than rebuilding it from extrusions, so drilling into a finished
+    part previews like anything else (#805). **Preview performance (#386):** both live previews are cached per
     (document, in-progress extrusion) so unchanged frames rebuild nothing, and **text**
     extrusions preview through the fast tessellated mesher instead of the kernel — a
     per-glyph boolean chain per frame made dragging an engraving's gizmo unusably laggy (a

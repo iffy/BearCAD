@@ -12992,6 +12992,25 @@ fn build_viewport_scene_input<'a>(
         crate::actions::ExtrudeBodyMode::Cut(bi) => Some(bi),
         _ => None,
     });
+    // A cut whose distance currently points *away* from the body is flipped inward at commit
+    // (`resolve_cut_direction`); the preview has to do the same or it shows an additive block
+    // sticking out of the part and never previews the hole at all (#805).
+    let preview_extrusion = match (preview_cut_body, preview_extrusion) {
+        (Some(bi), Some(ext)) if ext.target.is_none() => {
+            if extrude::cut_tool_bites(doc, bi, &ext) == Some(false) {
+                let mut flipped = ext.clone();
+                flipped.distance = -flipped.distance;
+                if extrude::cut_tool_bites(doc, bi, &flipped) == Some(true) {
+                    Some(flipped)
+                } else {
+                    Some(ext)
+                }
+            } else {
+                Some(ext)
+            }
+        }
+        (_, other) => other,
+    };
 
     // #223: while the Repeat tool is collecting bodies and its count/spacing change, ghost the
     // would-be instances — each picked body's mesh translated to every instance offset along the
