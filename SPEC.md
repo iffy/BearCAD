@@ -3381,7 +3381,10 @@ document is millimeters, so the player is person-scale: eye height
   **Context pane's constraint button** that applies it (#770; `StepAnchor::Guided` resolves
   to a world point or a `UiAnchor::ConstraintButton` per frame, the pane reporting each
   button's rect through egui memory). A stray pick leaves the orb pointing back at what's
-  still wanted, which is how a mis-click finds its way back. A line's orb sits at its
+  still wanted, which is how a mis-click finds its way back — and while **anything the pair
+  doesn't include** is selected (the previous step's picks, most often) the orb points at
+  the first target with **no Shift keycap**, since that click has to replace the selection
+  rather than add a third thing to it (#785). A line's orb sits at its
   **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
   polyline — for a straight line that was its end. The second click of a pair floats a blue **Shift
   keycap** beside the orb (#759, `Step::needs_shift`, `draw_shift_keycap`), since that
@@ -3389,10 +3392,13 @@ document is millimeters, so the player is person-scale: eye height
   line lying along the X axis, once it's been levelled — carry a **key hint** badge below
   the orb (`Step::key_hint`, `draw_orb_key_hint`): a **Space** keycap and a line saying it
   fans out whatever is crowded, which is how the tutorial introduces the Selection
-  Exploder (#777) — shown only while the orb points at something to *pick*, not while a
-  dimension is being placed. A step can also name the **words to type**
+  Exploder (#777). It appears **once**, on the step where the base line first hides under
+  the axis, and only while the orb is on that first pick — not on the axis pick, and not
+  while a dimension is being placed (#783/#784/#785). A step can also name the **words to type**
   (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
   ordinary font and the words themselves in the monospace blue the narration gives code.
+  It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
+  parameter-list step names whichever parameter is still missing (#782).
   All three badges are bounded by the **window**, not the viewport, since an orb can be
   pointing into a side pane. In the dimensioning steps the orb moves **off** the
   line once it's picked, onto the spot where the dimension will drop (#779) — the same side

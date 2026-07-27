@@ -2805,14 +2805,17 @@ impl App {
                 draw_shift_keycap(&painter, ctx, pos, base + pulse, badge_bounds);
             }
             // What to type, right beside the orb (#778/#781).
-            if let Some(text) = step.type_hint {
-                draw_orb_type_hint(&painter, ctx, pos, base + pulse, badge_bounds, text);
+            if let Some(text) = step.type_hint.and_then(|h| h.text(&self.state)) {
+                draw_orb_type_hint(&painter, ctx, pos, base + pulse, badge_bounds, &text);
             }
             // Crowded spot? Name the key that fans it out (#777) — but only while the orb
             // is pointing at something to *pick*; once a dimension is being placed or typed
             // there's nothing crowded left to sort out.
+            // ...and only on the *first* pick of a pair: once the Shift keycap is up the
+            // orb is on an axis or a second line that isn't the crowded one (#783/#784).
             let picking = self.state.placing_dimension.is_none()
-                && self.state.editing_committed_dim.is_none();
+                && self.state.editing_committed_dim.is_none()
+                && !step.needs_shift.is_some_and(|f| f(&self.state));
             if let (true, Some(hint)) = (picking, step.key_hint) {
                 draw_orb_key_hint(
                     &painter,

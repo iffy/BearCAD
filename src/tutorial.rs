@@ -76,7 +76,24 @@ pub struct Step {
     pub key_hint: Option<(&'static str, &'static str)>,
     /// The words this step wants typed (#778), shown in code blue beside the orb — right
     /// where the typing lands.
-    pub type_hint: Option<&'static str>,
+    pub type_hint: Option<TypeHint>,
+}
+
+/// What a step's "Type …" badge says: either fixed words, or a line computed from the live
+/// state — the parameter list names whichever one is still missing (#782).
+#[derive(Clone, Copy)]
+pub enum TypeHint {
+    Fixed(&'static str),
+    Dynamic(fn(&AppState) -> Option<String>),
+}
+
+impl TypeHint {
+    pub fn text(self, app: &AppState) -> Option<String> {
+        match self {
+            Self::Fixed(text) => Some(text.to_string()),
+            Self::Dynamic(f) => f(app),
+        }
+    }
 }
 
 /// Split a step's narration into plain prose and **code** runs (#757): anything between
@@ -202,6 +219,15 @@ fn add_missing_params(app: &AppState) -> Vec<Action> {
             expression: expression.to_string(),
         })
         .collect()
+}
+
+/// The next bracket parameter still missing, as "name = value" (#782) — what the parameter
+/// list step wants typed next.
+fn next_missing_param(app: &AppState) -> Option<String> {
+    BRACKET_PARAMS
+        .iter()
+        .find(|(name, _)| !param_exists(app, name))
+        .map(|(name, value)| format!("{name} = {value}"))
 }
 
 fn line_tool_active(app: &AppState) -> bool {
@@ -398,6 +424,37 @@ fn target_selected(app: &AppState, target: ClickTarget) -> bool {
     }
 }
 
+/// Whether `element` is one of the two things this step asks for.
+fn element_is_target(app: &AppState, element: &crate::hierarchy::SceneElement, target: ClickTarget) -> bool {
+    use crate::hierarchy::SceneElement;
+    use crate::model::{ConstraintLine, SketchAxis};
+    match target {
+        ClickTarget::ProfileLine(n) => matches!(element, SceneElement::Line(i)
+            if profile_lines(app).get(n) == Some(i)),
+        ClickTarget::ProfileCorner(_) | ClickTarget::Origin => match element {
+            SceneElement::Origin => matches!(target, ClickTarget::Origin),
+            SceneElement::Point(cp) => target_point(app, target).is_some_and(|w| {
+                crate::construction::point_world_position(&app.doc, cp.clone())
+                    .is_some_and(|p| (p - w).length() < 0.5)
+            }),
+            _ => false,
+        },
+        ClickTarget::XAxis => matches!(
+            element,
+            SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
+        ),
+    }
+}
+
+/// Something is selected that this step's pair doesn't include — the previous step's picks,
+/// most often. The step then starts over with a **plain** click on its first target, which
+/// replaces the selection instead of adding a third thing to it (#785).
+fn selection_has_strays(app: &AppState, a: ClickTarget, b: ClickTarget) -> bool {
+    app.scene_selection
+        .iter()
+        .any(|element| !element_is_target(app, &element, a) && !element_is_target(app, &element, b))
+}
+
 /// The orb's target for a two-click constraint step: the first thing until it's picked,
 /// then the second — and nothing once both are in hand (the key press is all that's left).
 fn constraint_click_point(
@@ -405,7 +462,9 @@ fn constraint_click_point(
     a: ClickTarget,
     b: ClickTarget,
 ) -> Option<glam::Vec3> {
-    if !target_selected(app, a) {
+    // Anything else still selected has to go first: point back at the first target, whose
+    // plain click clears the strays (#785).
+    if selection_has_strays(app, a, b) || !target_selected(app, a) {
         target_point(app, a)
     } else if !target_selected(app, b) {
         target_point(app, b)
@@ -414,9 +473,10 @@ fn constraint_click_point(
     }
 }
 
-/// Shift belongs to the *second* click of a pair — it adds to the selection.
+/// Shift belongs to the *second* click of a pair — it adds to the selection. Not while
+/// strays are selected: that first click has to replace them, so it's Shift-free (#785).
 fn constraint_needs_shift(app: &AppState, a: ClickTarget, b: ClickTarget) -> bool {
-    target_selected(app, a) && !target_selected(app, b)
+    !selection_has_strays(app, a, b) && target_selected(app, a) && !target_selected(app, b)
 }
 
 /// Generates a step's orb-target and Shift-hint functions for a two-click pair (the step
@@ -790,7 +850,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some("leg"),
+        type_hint: Some(TypeHint::Fixed("leg")),
     },
     Step {
         narration: "Now tap the value box beside it and type `50mm`.",
@@ -800,7 +860,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some("50mm"),
+        type_hint: Some(TypeHint::Fixed("50mm")),
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
@@ -823,7 +883,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: Some(StepAssist { label: "Add them for me", actions: add_missing_params }),
         needs_shift: None,
         key_hint: None,
-        type_hint: None,
+        type_hint: Some(TypeHint::Dynamic(next_missing_param)),
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
@@ -888,10 +948,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(base_strip_shift),
-        key_hint: Some((
-            "Space",
-            "fans out whatever is crowded under the cursor",
-        )),
+        key_hint: None,
         type_hint: None,
     },
     Step {
@@ -913,10 +970,7 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(cap_one_shift),
-        key_hint: Some((
-            "Space",
-            "fans out whatever is crowded under the cursor",
-        )),
+        key_hint: None,
         type_hint: None,
     },
     Step {
@@ -949,11 +1003,8 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: None,
-        key_hint: Some((
-            "Space",
-            "fans out whatever is crowded under the cursor",
-        )),
-        type_hint: Some("leg"),
+        key_hint: None,
+        type_hint: Some(TypeHint::Fixed("leg")),
     },
     Step {
         narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
@@ -963,7 +1014,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some("leg"),
+        type_hint: Some(TypeHint::Fixed("leg")),
     },
     Step {
         narration: "Now an end cap \u{2014} that's the bracket's thickness: click, place, \
@@ -974,7 +1025,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some("thick"),
+        type_hint: Some(TypeHint::Fixed("thick")),
     },
     Step {
         narration: "And the other end cap: `thick` again.",
@@ -984,7 +1035,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some("thick"),
+        type_hint: Some(TypeHint::Fixed("thick")),
     },
     Step {
         narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
@@ -994,11 +1045,8 @@ static BRACKET_STEPS: &[Step] = &[
         on_enter: None,
         assist: None,
         needs_shift: Some(bend_angle_shift),
-        key_hint: Some((
-            "Space",
-            "fans out whatever is crowded under the cursor",
-        )),
-        type_hint: Some("bend_angle"),
+        key_hint: None,
+        type_hint: Some(TypeHint::Fixed("bend_angle")),
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
@@ -1009,7 +1057,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some("width"),
+        type_hint: Some(TypeHint::Fixed("width")),
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
@@ -1279,10 +1327,18 @@ mod tests {
             "the orb sits mid-line, not on an endpoint: {first:?}"
         );
 
-        // A wrong pick doesn't count — the orb stays on the line still wanted.
+        // A wrong pick doesn't count — the orb stays on the line still wanted, and the
+        // click that clears it is Shift-free (#785).
         app.scene_selection.insert(SceneElement::Line(lines[2]));
         assert!(world(&app).is_some_and(|p| (p - first).length() < 1e-3));
         assert!(!level_shift(&app));
+
+        // Even with the *right* line picked, a stray from an earlier step means starting
+        // over with a plain click on the first target.
+        app.scene_selection.insert(SceneElement::Line(lines[0]));
+        assert!(world(&app).is_some_and(|p| (p - first).length() < 1e-3), "back to the first pick");
+        assert!(!level_shift(&app), "no Shift while a stray is selected");
+        app.scene_selection.clear();
 
         // The right line: now the orb moves to the X axis and asks for Shift.
         app.scene_selection.insert(SceneElement::Line(lines[0]));
