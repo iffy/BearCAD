@@ -3334,12 +3334,13 @@ document is millimeters, so the player is person-scale: eye height
 
 ### 11.x Interactive tutorials
 
-- **Tutorial mode**: guided, in-app walkthroughs narrated by the view-cube bear. A
+- **Tutorial mode**: guided, in-app walkthroughs narrated by **Bear** (the view cube — the
+  narration calls him by name, #766). A
   **Tutorial** button in the bottom-right status bar (beside the update badge) lists every
   registered tutorial (`tutorial::TUTORIALS` — a registry designed to hold more than one);
   starting one opens a fresh document.
-- Each tutorial is a list of **steps**: the bear's narration in a cartoon **speech
-  bubble** tucked under the view cube (with a tail pointing at the bear), a **pulsing
+- Each tutorial is a list of **steps**: Bear's narration in a cartoon **speech
+  bubble** tucked under the view cube (with a tail pointing at Bear), a **pulsing
   gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected
   viewport point — anchors recorded per frame in `AppState::tutorial_anchor_rects`), and
   either a **done predicate** on the app state (the step auto-advances the moment any
@@ -3374,7 +3375,7 @@ document is millimeters, so the player is person-scale: eye height
   base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
   every predicate cumulative so working ahead skips ahead. The
   bubble hangs off the **left side** of the view cube's actual rect
-  (`view_cube::cube_rect_in_viewport`), tail pointing right at the bear — under it, the
+  (`view_cube::cube_rect_in_viewport`), tail pointing right at Bear — under it, the
   bubble covered the Context pane controls a step was pointing at (#760).
 - A step that is **pure typing** can offer a **"do it for me" button** in the bubble
   (`tutorial::StepAssist`, applied by `Action::TutorialAssist`): the bracket's
@@ -3386,6 +3387,11 @@ document is millimeters, so the player is person-scale: eye height
   interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
   angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and
   the parametric angle change.
+- **Linkable (#765):** the web build reads **`?tutorial=<name>`** from the page URL at boot
+  (`tutorial::tutorial_from_query`) and starts that walkthrough, so the docs' Quickstart can
+  link straight into "show me" — `…/app/?tutorial=bracket`. The desktop twin is
+  **`bearcad --tutorial <name>`** (`ScriptOptions::tutorial`). An unknown name just opens
+  the app normally.
 - Scriptable: `bearcad.ui.tutorial("bracket")`, `bearcad.ui.tutorial_next()`,
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).

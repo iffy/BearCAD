@@ -274,20 +274,29 @@ fn main() {
             .expect("page must have a canvas with id bearcad_canvas")
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .expect("bearcad_canvas must be a canvas element");
+        // `?tutorial=<name>` starts that walkthrough on load (#765), so a docs page can
+        // link straight into "show me".
+        let query = web_sys::window()
+            .and_then(|w| w.location().search().ok())
+            .unwrap_or_default();
         eframe::WebRunner::new()
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|cc| {
+                Box::new(move |cc| {
                     theme::apply(&cc.egui_ctx);
-                    Ok(Box::new(App::new(
+                    let mut app = App::new(
                         cc,
                         None,
                         None,
                         false,
                         false,
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    )))
+                    );
+                    if let Some(index) = tutorial::tutorial_from_query(&query) {
+                        app.state.apply(Action::StartTutorial { index });
+                    }
+                    Ok(Box::new(app))
                 }),
             )
             .await
@@ -355,7 +364,7 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
                     e.to_string(),
                 )))
             })?;
-            Ok(Box::new(App::new(
+            let mut app = App::new(
                 cc,
                 script,
                 script_opts.document_path,
@@ -363,7 +372,17 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
                 script_opts.show_commands,
                 native_menu,
                 script_failed_for_app,
-            )) as Box<dyn eframe::App>)
+            );
+            // `--tutorial <name>` starts that walkthrough on launch (#765), the desktop
+            // twin of the web build's `?tutorial=` link.
+            if let Some(index) = script_opts
+                .tutorial
+                .as_deref()
+                .and_then(tutorial::tutorial_index)
+            {
+                app.state.apply(Action::StartTutorial { index });
+            }
+            Ok(Box::new(app) as Box<dyn eframe::App>)
         }),
     );
     // A script that errored under `--exit` closed the window cleanly (#125) — that must
@@ -2349,7 +2368,7 @@ impl App {
         }
         let btn = ui
             .add(egui::Button::new(egui::RichText::new("Tutorial").size(12.0)))
-            .on_hover_text("Learn BearCAD hands-on, guided by the bear");
+            .on_hover_text("Learn BearCAD hands-on, guided by Bear");
         egui::Popup::menu(&btn).show(|ui| {
             for (index, tut) in tutorial::TUTORIALS.iter().enumerate() {
                 if ui.button(tut.title).clicked() {
@@ -2558,7 +2577,7 @@ impl App {
         }
     }
 
-    /// The tutorial overlay: a pulsing ring on the current step's anchor and the bear's
+    /// The tutorial overlay: a pulsing ring on the current step's anchor and Bear's
     /// narration bubble under the view cube.
     fn draw_tutorial_overlay(
         &mut self,
@@ -2632,7 +2651,7 @@ impl App {
             self.tutorial_orb_pos = None;
         }
 
-        // The bear's speech bubble, off the view cube's **left** side (#760) — under it,
+        // Bear's speech bubble, off the view cube's **left** side (#760) — under it,
         // the bubble hangs over the Context pane's controls, which is exactly where the
         // tutorial is telling you to look.
         const BUBBLE_W: f32 = 320.0;
@@ -2762,7 +2781,7 @@ impl App {
                         });
                     });
                 // The tail: a little triangle off the bubble's right edge, pointing across
-                // at the bear.
+                // at Bear.
                 let r = bubble.response.rect;
                 let tail_y = cube.center().y.clamp(r.top() + 24.0, r.bottom() - 24.0);
                 let tip = egui::pos2(r.right() + 12.0, tail_y);
@@ -21955,7 +21974,7 @@ impl App {
             }
         }
     
-        // Tutorial overlay: pulsing anchor ring + the bear's narration bubble (drawn last,
+        // Tutorial overlay: pulsing anchor ring + Bear's narration bubble (drawn last,
         // above everything in the viewport).
         self.draw_tutorial_overlay(ui, viewport, &project);
 }

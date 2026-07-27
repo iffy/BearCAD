@@ -1,4 +1,4 @@
-//! Interactive tutorial mode: the view-cube bear walks a first-time user through
+//! Interactive tutorial mode: Bear (the view cube) walks a first-time user through
 //! building a real part, pointing with glowing rings and narrating in a speech
 //! bubble. Tutorials live in a registry ([`TUTORIALS`]) so more can be added; each
 //! is a list of [`Step`]s that either auto-advance when a document predicate is
@@ -45,7 +45,7 @@ pub struct StepAssist {
 }
 
 pub struct Step {
-    /// What the bear says for this step.
+    /// What Bear says for this step.
     pub narration: &'static str,
     pub anchor: StepAnchor,
     /// Auto-advance when this returns true; `None` shows a Next button instead.
@@ -107,6 +107,22 @@ pub static TUTORIALS: &[Tutorial] = &[Tutorial {
 
 pub fn tutorial_index(name: &str) -> Option<usize> {
     TUTORIALS.iter().position(|t| t.name == name)
+}
+
+/// The tutorial named by a page URL's query string, if it names a real one (#765):
+/// `?tutorial=bracket` opens the web app with that walkthrough already running, so a docs
+/// page can link straight into it. Unknown names and missing parameters give `None`.
+///
+/// Only the web entry point calls it; the native build has `--tutorial <name>` instead and
+/// reaches this from its tests.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn tutorial_from_query(query: &str) -> Option<usize> {
+    query
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == "tutorial")
+        .and_then(|(_, value)| tutorial_index(value))
 }
 
 // --- Bracket predicates -----------------------------------------------------------
@@ -527,7 +543,7 @@ fn bend_angle_changed(app: &AppState) -> bool {
 
 static BRACKET_STEPS: &[Step] = &[
     Step {
-        narration: "Hi, I'm the bear! Let's build a real part together: a 120\u{b0} angle \
+        narration: "Hi, I'm Bear! Let's build a real part together: a 120\u{b0} angle \
                     bracket with a rounded bend and countersunk screw holes. I'll point with \
                     glowing rings; you do the clicking. I've opened a fresh document for us.",
         anchor: StepAnchor::None,
@@ -942,6 +958,17 @@ mod tests {
             .insert(SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X)));
         assert!(level_click(&app).is_none());
         assert!(!level_shift(&app));
+    }
+
+    /// #765: the web app's `?tutorial=` parameter names a registered tutorial.
+    #[test]
+    fn tutorial_from_query_picks_a_registered_tutorial() {
+        assert_eq!(tutorial_from_query("?tutorial=bracket"), Some(0));
+        assert_eq!(tutorial_from_query("tutorial=bracket"), Some(0));
+        assert_eq!(tutorial_from_query("?foo=1&tutorial=bracket&bar=2"), Some(0));
+        assert_eq!(tutorial_from_query("?tutorial=nope"), None);
+        assert_eq!(tutorial_from_query("?other=bracket"), None);
+        assert_eq!(tutorial_from_query(""), None);
     }
 
     #[test]

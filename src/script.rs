@@ -5296,6 +5296,9 @@ pub struct ScriptOptions {
     pub timeout_secs: Option<u64>,
     /// Run an interactive Lua REPL on stdin against the live app (`--repl`).
     pub repl: bool,
+    /// Start a tutorial by registry name on launch (`--tutorial bracket`, #765) — the same
+    /// thing the web build's `?tutorial=` parameter does.
+    pub tutorial: Option<String>,
 }
 
 /// Parsed command-line outcome.
@@ -5331,6 +5334,7 @@ Options:
   --exit, --exit-on-complete
                         Exit after startup, or after the script finishes
   --show-commands       Print each user action as a script line on stdout
+  --tutorial <name>     Start a guided tutorial on launch (e.g. `bracket`)
   --timeout <seconds>   Force-exit with an error if the app hasn't closed on
                         its own within this many seconds
   -h, --help            Show this help and exit
@@ -5342,6 +5346,7 @@ Examples:
   bearcad --script demo.lua
   bearcad demo.lua --exit
   bearcad --repl
+  bearcad --tutorial bracket
   bearcad --exit --timeout 30
   bearcad install-cli
 "
@@ -5398,6 +5403,12 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
             }
             "--show-commands" => {
                 opts.show_commands = true;
+            }
+            "--tutorial" => {
+                i += 1;
+                if i < args.len() {
+                    opts.tutorial = Some(args[i].clone());
+                }
             }
             "--timeout" => {
                 i += 1;
@@ -5973,6 +5984,7 @@ mod tests {
                 show_commands: false,
                 timeout_secs: None,
                 repl: false,
+                tutorial: None,
             })
         );
     }
@@ -5981,6 +5993,14 @@ mod tests {
     fn parse_args_finds_timeout_flag() {
         let opts = parse_args(["bearcad", "--exit", "--timeout", "30"]);
         assert_eq!(opts.timeout_secs, Some(30));
+    }
+
+    /// #765: `--tutorial <name>` is the desktop twin of the web `?tutorial=` link.
+    #[test]
+    fn parse_args_finds_the_tutorial_flag() {
+        let opts = parse_args(["bearcad", "--tutorial", "bracket"]);
+        assert_eq!(opts.tutorial.as_deref(), Some("bracket"));
+        assert_eq!(parse_args(["bearcad"]).tutorial, None);
     }
 
     #[test]

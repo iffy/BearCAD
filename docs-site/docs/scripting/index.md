@@ -63,6 +63,9 @@ Other flags:
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed in time.
 - `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout. **Help → Export
   Session Commands…** does the same into a replayable `.lua` file.
+- `--tutorial <name>` — start a guided tutorial on launch, e.g. `bearcad --tutorial
+  bracket`. The browser app takes the same thing as a URL parameter:
+  [`?tutorial=bracket`](https://www.iffycan.com/BearCAD/app/?tutorial=bracket).
 
 ## Interactive REPL
 
