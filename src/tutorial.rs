@@ -194,11 +194,11 @@ fn leg_added(app: &AppState) -> bool {
     param_exists(app, "leg")
 }
 
-/// Every number the bracket is built from, in the order the tutorial introduces them.
-const BRACKET_PARAMS: [(&str, &str); 6] = [
+/// The numbers the tutorial enters **up front**, in the order it introduces them. `thick`
+/// and `width` are deliberately missing: they're defined later, from a dimension field, to
+/// teach the `name = value` shorthand (#788).
+const BRACKET_PARAMS: [(&str, &str); 4] = [
     ("leg", "50mm"),
-    ("width", "40mm"),
-    ("thick", "5mm"),
     ("hole", "5mm"),
     ("bend", "4mm"),
     ("bend_angle", "120deg"),
@@ -335,14 +335,20 @@ fn sketch_frame(app: &AppState) -> Option<crate::face::SketchFrame> {
 
 /// Document indices of the open sketch's drawn lines, in creation order.
 fn profile_lines(app: &AppState) -> Vec<usize> {
-    let Some(session) = app.sketch_session else {
-        return Vec::new();
+    // The open sketch normally — but the extrude step has already left it, and still needs
+    // the profile to point at (#790), so fall back to the sketch the profile was drawn in.
+    let sketch = match app.sketch_session {
+        Some(session) => session.sketch,
+        None => match app.doc.lines.iter().find(|l| !l.deleted && !l.construction) {
+            Some(line) => line.sketch,
+            None => return Vec::new(),
+        },
     };
     app.doc
         .lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| !l.deleted && l.sketch == session.sketch && !l.construction)
+        .filter(|(_, l)| !l.deleted && l.sketch == sketch && !l.construction)
         .map(|(i, _)| i)
         .collect()
 }
@@ -686,7 +692,41 @@ fn leg_value_hint(app: &AppState) -> Option<String> {
     typed_value_hint(app, "leg")
 }
 fn thick_value_hint(app: &AppState) -> Option<String> {
-    typed_value_hint(app, "thick")
+    // Until `thick` exists it's defined right in the field (#788).
+    if param_exists(app, "thick") {
+        typed_value_hint(app, "thick")
+    } else {
+        typed_value_hint(app, "thick = 5mm")
+    }
+}
+
+/// The extrude step's orb (#790): the toolbar button until the tool is up, then the profile
+/// **face** it wants clicked, and it stays there while the distance is typed.
+fn extrude_orb(app: &AppState) -> Option<StepTarget> {
+    if app.tool != Tool::Extrude {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Extrude)));
+    }
+    let lines = profile_lines(app);
+    if lines.is_empty() {
+        return None;
+    }
+    // The profile's middle: the average of its lines' midpoints.
+    let mut sum = glam::Vec3::ZERO;
+    let mut n = 0.0;
+    for nth in 0..lines.len() {
+        if let Some(mid) = profile_polyline(app, nth).as_deref().and_then(polyline_midpoint) {
+            sum += mid;
+            n += 1.0;
+        }
+    }
+    (n > 0.0).then(|| StepTarget::World(sum / n))
+}
+
+/// "Type width = 40mm" waits for the extrude's distance field (#789).
+fn extrude_value_hint(app: &AppState) -> Option<String> {
+    app.creating_extrusion
+        .is_some()
+        .then(|| "width = 40mm".to_string())
 }
 fn bend_angle_value_hint(app: &AppState) -> Option<String> {
     typed_value_hint(app, "bend_angle")
@@ -891,9 +931,8 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: None,
     },
     Step {
-        narration: "Five more, exactly the same moves:\n\
-                    `width` = `40mm`\n`thick` = `5mm`\n`hole` = `5mm`\n`bend` = `4mm`\n\
-                    `bend_angle` = `120deg`\n\
+        narration: "Three more, exactly the same moves:\n\
+                    `hole` = `5mm`\n`bend` = `4mm`\n`bend_angle` = `120deg`\n\
                     \u{2014} or let me type them in for you.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(params_defined),
@@ -1035,8 +1074,9 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
     },
     Step {
-        narration: "Now an end cap \u{2014} that's the bracket's thickness: click, place, \
-                    type `thick`, Enter.",
+        narration: "Now an end cap \u{2014} the bracket's thickness. We never entered that \
+                    one: type `thick = 5mm` in the value box and it becomes a parameter \
+                    right there. Click, place, type, Enter.",
         anchor: StepAnchor::Guided(base_cap_orb),
         done: Some(base_cap_dimensioned),
         on_enter: None,
@@ -1046,7 +1086,8 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
     },
     Step {
-        narration: "And the other end cap: `thick` again.",
+        narration: "And the other end cap \u{2014} now that `thick` exists, just type its \
+                    name.",
         anchor: StepAnchor::Guided(tilted_cap_orb),
         done: Some(tilted_cap_dimensioned),
         on_enter: None,
@@ -1067,15 +1108,16 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
     },
     Step {
-        narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
-                    `width`, press Enter. A solid!",
-        anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
+        narration: "Esc to leave the sketch, then Extrude (E). Click the glowing face, and \
+                    for the distance type `width = 40mm` \u{2014} another parameter defined \
+                    where it's used. Enter. A solid!",
+        anchor: StepAnchor::Guided(extrude_orb),
         done: Some(extruded),
         on_enter: None,
         assist: None,
         needs_shift: None,
         key_hint: None,
-        type_hint: Some(TypeHint::Fixed("width")),
+        type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
