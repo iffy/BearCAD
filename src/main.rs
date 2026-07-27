@@ -2765,14 +2765,23 @@ impl App {
             }?;
             Some((rect.center(), rect.size().max_elem() * 0.5 + 6.0))
         };
+        // Whether the orb is on a pane/toolbar button rather than on geometry: the
+        // crowded-pick hint has nothing to say about a button (#813).
+        let mut orb_on_ui = false;
         let target = match step.anchor {
-            tutorial::StepAnchor::Ui(anchor) => ui_anchor(anchor),
+            tutorial::StepAnchor::Ui(anchor) => {
+                orb_on_ui = true;
+                ui_anchor(anchor)
+            }
             tutorial::StepAnchor::World(point) => {
                 point(&self.state).and_then(&project).map(|p| (p, 26.0))
             }
             tutorial::StepAnchor::Guided(resolve) => match resolve(&self.state) {
                 Some(tutorial::StepTarget::World(w)) => project(w).map(|p| (p, 26.0)),
-                Some(tutorial::StepTarget::Ui(anchor)) => ui_anchor(anchor),
+                Some(tutorial::StepTarget::Ui(anchor)) => {
+                    orb_on_ui = true;
+                    ui_anchor(anchor)
+                }
                 None => None,
             },
             tutorial::StepAnchor::None => None,
@@ -2822,7 +2831,8 @@ impl App {
             // there's nothing crowded left to sort out.
             // ...and only on the *first* pick of a pair: once the Shift keycap is up the
             // orb is on an axis or a second line that isn't the crowded one (#783/#784).
-            let picking = self.state.placing_dimension.is_none()
+            let picking = !orb_on_ui
+                && self.state.placing_dimension.is_none()
                 && self.state.editing_committed_dim.is_none()
                 && !step.needs_shift.is_some_and(|f| f(&self.state));
             if let (true, Some(hint)) = (picking, step.key_hint) {

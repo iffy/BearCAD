@@ -3418,8 +3418,9 @@ document is millimeters, so the player is person-scale: eye height
   the orb (`Step::key_hint`, `draw_orb_key_hint`): a **Space** keycap and a line saying it
   fans out whatever is crowded, which is how the tutorial introduces the Selection
   Exploder (#777). It appears **once**, on the step where the base line first hides under
-  the axis, and only while the orb is on that first pick — not on the axis pick, and not
-  while a dimension is being placed (#783/#784/#785). A step can also name the **words to type**
+  the axis, and only while the orb is on that first pick — not on the axis pick, not while a
+  dimension is being placed, and never while the orb is on a **button** rather than geometry
+  (#783/#784/#785/#813). A step can also name the **words to type**
   (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
   ordinary font and the words themselves in the monospace blue the narration gives code.
   The badge hugs the field the orb marks — one field-height **above** it (below when the top
