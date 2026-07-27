@@ -1897,6 +1897,10 @@ struct App {
     /// fires once per selection change: picking something that pokes off-screen (e.g.
     /// a face half in view) glides the camera out to take the whole thing in.
     auto_zoom_selection: Option<u64>,
+    /// The Move ghost's displayed rigid pose (translation, rotation), easing toward the
+    /// live probe's pose so hopping the hover between candidate end points reads as the
+    /// body sweeping over — not teleporting.
+    move_ghost_pose: Option<(Vec3, glam::Quat)>,
     /// The last `inputmode` applied to eframe's hidden text agent (web).
     #[cfg(target_arch = "wasm32")]
     agent_inputmode_none: Option<bool>,
@@ -2738,6 +2742,7 @@ impl App {
             auto_zoom_last_extent: None,
             auto_zoom_doc_extent: None,
             auto_zoom_selection: None,
+            move_ghost_pose: None,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
             gpu_viewport: gpu_viewport::install(cc),
@@ -11541,6 +11546,37 @@ fn auto_zoom_should_frame(
     (offscreen && grew) || (too_small && shrank && deliberately_sized)
 }
 
+/// The transform the Move preview ghost draws with (#660/#748): the in-progress move as a
+/// probe operation, resolved against the document. `None` when it comes out as the
+/// identity (a ghost there would just double-draw the bodies) or doesn't resolve.
+fn move_ghost_target_transform(
+    doc: &model::Document,
+    cm: &actions::CreatingMove,
+) -> Option<glam::Mat4> {
+    let probe = model::MoveOperation {
+        targets: cm.targets.clone(),
+        translate_mode: cm.translate_mode,
+        start_point_a: cm.start_point_a,
+        end_point_a: cm.end_point_a,
+        start_point_b: cm.start_point_b,
+        end_point_b: cm.end_point_b,
+        plane_targets: Vec::new(),
+        image_targets: Vec::new(),
+        instance_targets: Vec::new(),
+        tx: cm.tx.clone(),
+        ty: cm.ty.clone(),
+        tz: cm.tz.clone(),
+        outputs: Vec::new(),
+        name: None,
+        deleted: false,
+    };
+    extrude::move_op_transform(doc, &probe).filter(|m| *m != glam::Mat4::IDENTITY)
+}
+
+/// How quickly the Move ghost glides between destinations: the time constant of its
+/// exponential ease — quick, but smooth.
+const MOVE_GHOST_EASE_SECS: f32 = 0.06;
+
 /// Sample the path start point B travels when the Move's translation and rotation advance
 /// **together** (#748): at parameter `t` the body has slid `t` of the way and turned `t`
 /// of the angle about its own travelling pivot (the point that lands on end point A), so
@@ -12117,6 +12153,8 @@ fn build_viewport_scene_input<'a>(
     creating_repeat: Option<&actions::CreatingRepeat>,
     creating_mirror: Option<&actions::CreatingMirror>,
     creating_move: Option<&actions::CreatingMove>,
+    // The eased ghost pose while it glides between destinations; `None` draws the live one.
+    move_ghost_override: Option<glam::Mat4>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
@@ -12441,26 +12479,10 @@ fn build_viewport_scene_input<'a>(
     // a snap translation shows its destination before commit like everything else. The B
     // pair carries through (#748), so a completed rotation previews too.
     if let Some(cm) = creating_move.filter(|c| !c.targets.is_empty()) {
-        let probe = model::MoveOperation {
-            targets: cm.targets.clone(),
-            translate_mode: cm.translate_mode,
-            start_point_a: cm.start_point_a,
-            end_point_a: cm.end_point_a,
-            start_point_b: cm.start_point_b,
-            end_point_b: cm.end_point_b,
-            plane_targets: Vec::new(),
-            image_targets: Vec::new(),
-            instance_targets: Vec::new(),
-            tx: cm.tx.clone(),
-            ty: cm.ty.clone(),
-            tz: cm.tz.clone(),
-            outputs: Vec::new(),
-            name: None,
-            deleted: false,
-        };
-        // An identity transform would just double-draw the bodies where they already are.
-        if let Some(m) = extrude::move_op_transform(doc, &probe)
-            .filter(|m| *m != glam::Mat4::IDENTITY)
+        // The displayed transform: the caller's eased pose while the ghost glides between
+        // destinations, else the probe's own.
+        if let Some(m) =
+            move_ghost_override.or_else(|| move_ghost_target_transform(doc, cm))
         {
             for &bi in &cm.targets {
                 if let Some(base) = extrude::body_solid_mesh(doc, bi) {
@@ -19454,18 +19476,32 @@ impl App {
             (found, hovered, guides)
         };
         self.move_b_hover = move_b_hover;
-        // Hovering a candidate previews the move you'd get by clicking it (#670): the ghost is
-        // built from a copy of the in-progress move with that candidate as end point B.
-        let move_hover_preview = move_b_hover.and_then(|(body, world)| {
-            let cm = self.state.creating_move.as_ref()?;
-            Some(actions::CreatingMove {
-                end_point_b: Some(model::MovePointRef::OnEdge {
-                    body,
-                    p: hierarchy::quantize_body_point(world),
-                }),
-                ..cm.clone()
+        // Hovering a candidate previews the move you'd get by clicking it (#670, and end
+        // point A too): the ghost is built from a copy of the in-progress move with the
+        // hovered point filled into whichever end picker is armed.
+        let move_hover_preview = move_b_hover
+            .and_then(|(body, world)| {
+                let cm = self.state.creating_move.as_ref()?;
+                Some(actions::CreatingMove {
+                    end_point_b: Some(model::MovePointRef::OnEdge {
+                        body,
+                        p: hierarchy::quantize_body_point(world),
+                    }),
+                    ..cm.clone()
+                })
             })
-        });
+            .or_else(|| {
+                if !(self.state.tool == Tool::Move
+                    && self.state.sketch_session.is_none()
+                    && self.move_focus() == MoveFocus::EndPointA)
+                {
+                    return None;
+                }
+                let pp = pointer_screen?;
+                let point = self.pick_move_point(pp, &project, pick_occlusion, Some(false))?;
+                let cm = self.state.creating_move.as_ref()?;
+                Some(actions::CreatingMove { end_point_a: Some(point), ..cm.clone() })
+            });
         // Candidates render through the same coloured-mark channel as the A points (#660):
         // blue for reachable, gold for the one a click would take.
         let move_b_marks: Vec<(construction::PickTargetKind, egui::Color32)> = move_b_candidates
@@ -19901,6 +19937,37 @@ impl App {
         } else {
             self.state.element_visibility.with_hidden(&rollback_hidden)
         };
+        // The ghost glides between destinations: its pose eases toward the live (or
+        // hovered) probe transform — quick, but smooth — so hopping the hover between
+        // candidate points reads as the body sweeping over, not teleporting.
+        let move_ghost_override = {
+            let target = move_hover_preview
+                .as_ref()
+                .or(self.state.creating_move.as_ref())
+                .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
+                .and_then(|cm| move_ghost_target_transform(doc, cm));
+            match target {
+                Some(m) => {
+                    let (_, t_rot, t_pos) = m.to_scale_rotation_translation();
+                    let pose = self.move_ghost_pose.get_or_insert((t_pos, t_rot));
+                    let dt = ui.input(|i| i.stable_dt).min(0.05);
+                    let k = 1.0 - (-dt / MOVE_GHOST_EASE_SECS).exp();
+                    pose.0 = pose.0.lerp(t_pos, k);
+                    pose.1 = pose.1.slerp(t_rot, k).normalize();
+                    if (pose.0 - t_pos).length() > 0.05 || pose.1.angle_between(t_rot) > 1e-3
+                    {
+                        ui.ctx().request_repaint();
+                    } else {
+                        *pose = (t_pos, t_rot);
+                    }
+                    Some(glam::Mat4::from_rotation_translation(pose.1, pose.0))
+                }
+                None => {
+                    self.move_ghost_pose = None;
+                    None
+                }
+            }
+        };
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -19922,6 +19989,7 @@ impl App {
             self.state.creating_repeat.as_ref(),
             self.state.creating_mirror.as_ref(),
             move_hover_preview.as_ref().or(self.state.creating_move.as_ref()),
+            move_ghost_override,
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -22235,6 +22303,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -22326,6 +22395,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Vec::new(),
             None,
             None,
@@ -22397,6 +22467,7 @@ mod tests {
                 None,
                 None,
                 cm,
+                None,
                 None,
                 None,
                 None,
@@ -22592,6 +22663,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Vec::new(),
                 None,
                 None,
@@ -22684,6 +22756,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             None,

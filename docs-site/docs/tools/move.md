@@ -21,8 +21,9 @@ Move slides whole bodies to a new place, producing moved copies.
    - **Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
      second. Either point can be a corner, the midpoint of an edge, or the middle of a flat
-     face; hovering marks the exact point a click would take, and a **yellow line** connects
-     the two once both are picked.
+     face; hovering marks the exact point a click would take — and while an end picker is
+     armed, the preview glides over to show the move that point would make, before you
+     click. A **yellow line** connects the two once both are picked.
      To **turn** the bodies as well, pick a second pair: **Start point B** on a moving body
      and **End point B** on something that isn't. The bodies then rotate about end point A
      until start B lands on end B. End point B has to be somewhere start B can actually reach

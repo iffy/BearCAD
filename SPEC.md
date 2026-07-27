@@ -734,6 +734,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     quantized world position) instead of being re-found by matching. The generic
     corner/edge/face hover stands down entirely while this picker is armed (#744) — only the
     candidates are pickable, and they mark and glow on their own (`MovePickHover::EndB`).
+    **Hover previews both end pickers:** with End point A or End point B armed, hovering a
+    valid point shows the ghost as if that point had been chosen (`move_hover_preview` — a
+    probe copy of the in-progress move with the hovered point filled in). The ghost's pose
+    **eases** toward its target (`move_ghost_pose`, exponential glide,
+    `MOVE_GHOST_EASE_SECS`), so hopping the hover between candidates reads as the body
+    sweeping over — quick, but smooth — never teleporting.
     The **Selection Exploder** follows suit (#746/#747): with End point B armed its fan
     offers exactly the sphere candidates — each loupe a blue dot — never faces, edges, or
     corners the picker can't take; and a loupe whose content is bare point dots skips the
