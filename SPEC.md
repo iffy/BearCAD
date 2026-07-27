@@ -3418,7 +3418,14 @@ document is millimeters, so the player is person-scale: eye height
   constraint application per step** — pin the bend corner to the origin (a Coincident
   *with the origin*, so the drawing phase's endpoint snaps don't satisfy it), level the
   base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
-  every predicate cumulative so working ahead skips ahead. **Dimensioning is one dimension
+  every predicate cumulative so working ahead skips ahead. The **bend fillets** are a step each, the orb on the
+  body's bend edge (`bend_edge_point` picks the extrusion-direction feature edge nearest the
+  inner or outer bend corner, #791), and the **screw-hole stage** is six: the Sketch tool,
+  the flange's inside face (with the narration naming right-drag to spin the view, #795),
+  the Circle tool, each hole's centre, and positioning them — each step's predicate also
+  satisfied by having done it already, so a user who opened the sketch themselves isn't told
+  to open it again (#796), and each circle's `hole` hint waits for its diameter field (#798).
+  **Dimensioning is one dimension
   per step too** (#776): pick up the tool, then each outer leg, each end cap and finally the
   bend angle, the orb on the line each step wants (and the Shift keycap for the angle's
   second pick). Taking up the Dimension tool **clears the selection** the constraint steps

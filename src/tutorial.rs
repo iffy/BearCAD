@@ -335,14 +335,11 @@ fn sketch_frame(app: &AppState) -> Option<crate::face::SketchFrame> {
 
 /// Document indices of the open sketch's drawn lines, in creation order.
 fn profile_lines(app: &AppState) -> Vec<usize> {
-    // The open sketch normally — but the extrude step has already left it, and still needs
-    // the profile to point at (#790), so fall back to the sketch the profile was drawn in.
-    let sketch = match app.sketch_session {
-        Some(session) => session.sketch,
-        None => match app.doc.lines.iter().find(|l| !l.deleted && !l.construction) {
-            Some(line) => line.sketch,
-            None => return Vec::new(),
-        },
+    // Always the sketch the profile was drawn in — not whichever sketch happens to be open.
+    // Later stages open *other* sketches (the screw holes) and still point at the profile
+    // (#790/#796).
+    let Some(sketch) = profile_sketch(app) else {
+        return Vec::new();
     };
     app.doc
         .lines
@@ -841,8 +838,200 @@ fn bend_rounded(app: &AppState) -> bool {
     fillet_count(app) >= 2
 }
 
+fn inner_bend_rounded(app: &AppState) -> bool {
+    fillet_count(app) >= 1
+}
+
+/// The sketch the bracket profile lives in — identified by its lines, so it stays the
+/// profile's even when another sketch (the screw holes) is the open one.
+fn profile_sketch(app: &AppState) -> Option<crate::model::SketchId> {
+    app.doc
+        .lines
+        .iter()
+        .find(|l| !l.deleted && !l.construction)
+        .map(|l| l.sketch)
+}
+
+/// A point on the body's **vertical** feature edge (the one running along the extrusion)
+/// nearest profile vertex `nth` — the bend edges the fillet steps point at (#791).
+fn bend_edge_point(app: &AppState, nth: usize) -> Option<glam::Vec3> {
+    let frame = crate::face::sketch_geometry_frame(&app.doc, profile_sketch(app)?)?;
+    let corner = profile_polyline(app, nth)?.first().copied()?;
+    let body = app.doc.bodies.iter().position(|b| !b.deleted)?;
+    let solid = crate::extrude::body_solid_mesh(&app.doc, body)?;
+    let normal = frame.normal.normalize_or_zero();
+    let mut best: Option<(f32, glam::Vec3)> = None;
+    for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(&solid) {
+        let dir = (b - a).normalize_or_zero();
+        // Only edges running along the extrusion — the corner's own vertical edge.
+        if dir.dot(normal).abs() < 0.9 {
+            continue;
+        }
+        // Distance from the corner to that edge's line, measured in the sketch plane.
+        let mid = a.lerp(b, 0.5);
+        let offset = mid - corner;
+        let in_plane = offset - normal * offset.dot(normal);
+        let d = in_plane.length();
+        if best.as_ref().is_none_or(|(best_d, _)| d < *best_d) {
+            best = Some((d, mid));
+        }
+    }
+    best.map(|(_, mid)| mid)
+}
+
+/// The bend's **inside** corner is where the two inner profile lines meet (profile vertex 3);
+/// the **outside** one is the pinned corner at the origin (vertex 0).
+fn inner_bend_orb(app: &AppState) -> Option<StepTarget> {
+    if app.tool != Tool::Fillet {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Fillet)));
+    }
+    bend_edge_point(app, 3).map(StepTarget::World)
+}
+
+fn outer_bend_orb(app: &AppState) -> Option<StepTarget> {
+    if app.tool != Tool::Fillet {
+        return Some(StepTarget::Ui(UiAnchor::Tool(Tool::Fillet)));
+    }
+    bend_edge_point(app, 0).map(StepTarget::World)
+}
+
+/// A fillet/chamfer amount is typed into a floating field that only exists once an edge is
+/// picked (#789's rule, applied to the treatment tools).
+fn treatment_value_hint(app: &AppState, text: &'static str) -> Option<String> {
+    (app.creating_edge_treatment.is_some() || app.creating_vertex_treatment.is_some())
+        .then(|| text.to_string())
+}
+
+fn bend_value_hint(app: &AppState) -> Option<String> {
+    treatment_value_hint(app, "bend")
+}
+
+fn bend_thick_value_hint(app: &AppState) -> Option<String> {
+    treatment_value_hint(app, "bend + thick")
+}
+
 fn hole_circles_drawn(app: &AppState) -> bool {
     app.doc.circles.iter().filter(|c| !c.deleted && !c.construction).count() >= 2
+}
+
+fn first_hole_drawn(app: &AppState) -> bool {
+    app.doc.circles.iter().filter(|c| !c.deleted && !c.construction).count() >= 1
+}
+
+// --- The screw-hole stage (#795/#796/#798/#799): sketch on the flange's inside face, two
+// circles, then dimension them — one click per step, each with the orb on it.
+
+/// How deep the body runs along the sketch normal (the extrusion's `width`).
+fn body_depth(app: &AppState) -> Option<(glam::Vec3, f32)> {
+    let frame = crate::face::sketch_geometry_frame(&app.doc, profile_sketch(app)?)?;
+    let body = app.doc.bodies.iter().position(|b| !b.deleted)?;
+    let (min, max) = crate::extrude::body_solid_mesh(&app.doc, body)?.bounds()?;
+    let n = frame.normal.normalize_or_zero();
+    let depth = (max - min).dot(n).abs();
+    (depth > 1e-3).then_some((n, depth))
+}
+
+/// A point on the **inside face of the base flange** — the face swept by the inner base line
+/// (profile line 2) — at `t` along that line (0 = the flange tip end) and `s` of the way
+/// through the body's depth.
+fn flange_face_point(app: &AppState, t: f32, s: f32) -> Option<glam::Vec3> {
+    let poly = profile_polyline(app, 2)?;
+    let (a, b) = (*poly.first()?, *poly.last()?);
+    let (n, depth) = body_depth(app)?;
+    Some(a.lerp(b, t) + n * (depth * s))
+}
+
+/// The sketch the holes are drawn in: an open sketch that isn't the profile's.
+fn hole_sketch_open(app: &AppState) -> bool {
+    match (app.sketch_session, profile_sketch(app)) {
+        (Some(session), Some(profile)) => session.sketch != profile,
+        _ => false,
+    }
+}
+
+fn sketch_tool_ready(app: &AppState) -> bool {
+    // Already in a fresh sketch counts too — the step is done either way (#796).
+    app.tool == Tool::Sketch || hole_sketch_open(app)
+}
+
+fn sketch_tool_orb(app: &AppState) -> Option<StepTarget> {
+    (!sketch_tool_ready(app)).then_some(StepTarget::Ui(UiAnchor::Tool(Tool::Sketch)))
+}
+
+/// Point at the middle of the flange's inside face — the face to click.
+fn flange_face_orb(app: &AppState) -> Option<StepTarget> {
+    if hole_sketch_open(app) {
+        return None;
+    }
+    flange_face_point(app, 0.5, 0.5).map(StepTarget::World)
+}
+
+fn circle_tool_ready(app: &AppState) -> bool {
+    app.tool == Tool::Circle || first_hole_drawn(app)
+}
+
+fn circle_tool_orb(app: &AppState) -> Option<StepTarget> {
+    (!circle_tool_ready(app)).then_some(StepTarget::Ui(UiAnchor::Tool(Tool::Circle)))
+}
+
+fn first_hole_orb(app: &AppState) -> Option<StepTarget> {
+    (!first_hole_drawn(app))
+        .then(|| flange_face_point(app, 0.18, 0.35).map(StepTarget::World))
+        .flatten()
+}
+
+fn second_hole_orb(app: &AppState) -> Option<StepTarget> {
+    (!hole_circles_drawn(app))
+        .then(|| flange_face_point(app, 0.18, 0.68).map(StepTarget::World))
+        .flatten()
+}
+
+/// "Type hole" waits for the circle's diameter field.
+fn hole_value_hint(app: &AppState) -> Option<String> {
+    app.creating_circle.is_some().then(|| "hole".to_string())
+}
+
+/// Positioning dimensions in the holes sketch (#799) — a hole's own **diameter** doesn't
+/// count, that's the `hole` value typed while drawing it.
+fn hole_position_dims(app: &AppState) -> usize {
+    use crate::model::DistanceTarget;
+    let Some(session) = app.sketch_session else {
+        return 0;
+    };
+    live_constraints(app)
+        .filter(|c| {
+            c.sketch == session.sketch
+                && matches!(&c.kind, ConstraintKind::Distance { target }
+                    if !matches!(target, DistanceTarget::CircleDiameter(_)))
+        })
+        .count()
+}
+
+fn holes_dimensioned(app: &AppState) -> bool {
+    if app.sketch_session.is_none() {
+        // Left the sketch: the cut step's predicate takes over anyway.
+        return hole_circles_drawn(app);
+    }
+    hole_position_dims(app) >= 2
+}
+
+/// Point at each hole's centre in turn while they're being positioned.
+fn hole_dimension_orb(app: &AppState) -> Option<StepTarget> {
+    if holes_dimensioned(app) {
+        return None;
+    }
+    let session = app.sketch_session?;
+    let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
+    let placed = hole_position_dims(app);
+    let circle = app
+        .doc
+        .circles
+        .iter()
+        .filter(|c| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .nth(placed.min(1))?;
+    Some(StepTarget::World(crate::face::local_to_world(
+        &frame, circle.cx, circle.cy,
+    )))
 }
 
 fn cut_extrusion_count(app: &AppState) -> usize {
@@ -1120,11 +1309,32 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
     },
     Step {
-        narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
-                    type `bend`. Then the outside edge: `bend + thick`. Concentric, like bent \
-                    sheet metal.",
-        anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
+        narration: "Round the bend with Fillet (F): click the glowing edge \u{2014} the \
+                    inside of the bend \u{2014} and type `bend`, Enter.",
+        anchor: StepAnchor::Guided(inner_bend_orb),
+        done: Some(inner_bend_rounded),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        key_hint: None,
+        type_hint: Some(TypeHint::Dynamic(bend_value_hint)),
+    },
+    Step {
+        narration: "Now the outside edge, one bracket thickness bigger: type \
+                    `bend + thick`. Concentric, like bent sheet metal.",
+        anchor: StepAnchor::Guided(outer_bend_orb),
         done: Some(bend_rounded),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        key_hint: None,
+        type_hint: Some(TypeHint::Dynamic(bend_thick_value_hint)),
+    },
+    Step {
+        narration: "Screw holes next. Grab the Sketch tool \u{2014} the glowing button, or \
+                    press `S`.",
+        anchor: StepAnchor::Guided(sketch_tool_orb),
+        done: Some(sketch_tool_ready),
         on_enter: None,
         assist: None,
         needs_shift: None,
@@ -1132,12 +1342,53 @@ static BRACKET_STEPS: &[Step] = &[
         type_hint: None,
     },
     Step {
-        narration: "Screw holes! Sketch (S) on the inside face of the base flange, then \
-                    Circle (O): place two circles near the flange tip, typing `hole` for each \
-                    diameter. Position them with the Dimension tool (D) against the face \
-                    edges.",
-        anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
+        narration: "The holes go on the inside face of the base flange. **Right-drag** to \
+                    spin the view until you can see it, then click the glowing face.",
+        anchor: StepAnchor::Guided(flange_face_orb),
+        done: Some(hole_sketch_open),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        key_hint: None,
+        type_hint: None,
+    },
+    Step {
+        narration: "Circle tool now \u{2014} the glowing button, or press `O`.",
+        anchor: StepAnchor::Guided(circle_tool_orb),
+        done: Some(circle_tool_ready),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        key_hint: None,
+        type_hint: None,
+    },
+    Step {
+        narration: "Click the glowing spot for the first hole's centre, then type `hole` for \
+                    its diameter and press Enter.",
+        anchor: StepAnchor::Guided(first_hole_orb),
+        done: Some(first_hole_drawn),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        key_hint: None,
+        type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
+    },
+    Step {
+        narration: "And the second hole, the same way: `hole` again.",
+        anchor: StepAnchor::Guided(second_hole_orb),
         done: Some(hole_circles_drawn),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        key_hint: None,
+        type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
+    },
+    Step {
+        narration: "Pin them down with the Dimension tool (`D`): click the glowing centre, \
+                    Shift+click a face edge, place the dimension and type a distance. Then \
+                    the same for the other hole.",
+        anchor: StepAnchor::Guided(hole_dimension_orb),
+        done: Some(holes_dimensioned),
         on_enter: None,
         assist: None,
         needs_shift: None,
