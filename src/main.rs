@@ -52,6 +52,7 @@ mod offset;
 mod tutorial;
 mod units;
 mod touch;
+mod touch_loupe;
 mod menu_command;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_menu;
@@ -1745,6 +1746,127 @@ fn draw_pick_target_loupe(
             }
         }
     }
+}
+
+/// Draw the touch drawing loupe (#755): while a finger drags a sketch shape out, a round
+/// magnifier floats beside the fingertip showing what the finger itself is covering — the
+/// open sketch's geometry, the shape in progress, and the snap the next tap would take —
+/// so exact points can still be aimed at on a touch screen.
+#[allow(clippy::too_many_arguments)]
+fn draw_touch_draw_loupe(
+    painter: &egui::Painter,
+    state: &AppState,
+    session: SketchSession,
+    frame: &face::SketchFrame,
+    viewport: egui::Rect,
+    finger: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let radius = touch_loupe::RADIUS;
+    let center = touch_loupe::center(finger, viewport, radius);
+    let lp = |w: Vec3| project(w).map(|p| touch_loupe::magnify(finger, center, p));
+    let seg = |a: Vec3, b: Vec3, stroke: egui::Stroke| {
+        if let (Some(pa), Some(pb)) = (lp(a), lp(b)) {
+            if let Some((ca, cb)) = clip_segment_to_disc(pa, pb, center, radius) {
+                painter.line_segment([ca, cb], stroke);
+            }
+        }
+    };
+    let dot = |w: Vec3, r: f32, color: egui::Color32| {
+        if let Some(p) = lp(w) {
+            if (p - center).length() <= radius - r {
+                painter.circle_filled(p, r, color);
+            }
+        }
+    };
+    let chain = |pts: &[Vec3], stroke: egui::Stroke| {
+        for w in pts.windows(2) {
+            seg(w[0], w[1], stroke);
+        }
+    };
+
+    // The glass: opaque, so magnified geometry reads clearly over whatever is behind it.
+    painter.circle_filled(center, radius, col::BG);
+
+    let doc = &state.doc;
+    for line in doc.lines.iter().filter(|l| !l.deleted && l.sketch == session.sketch) {
+        let color = if line.projection.is_some() {
+            col::PROJECTION
+        } else if line.construction {
+            col::CONSTRUCTION
+        } else {
+            col::RECT_LINE
+        };
+        if let Some(poly) = face::line_world_polyline(doc, line) {
+            chain(&poly, egui::Stroke::new(1.6, color));
+            // Endpoints are the snap targets that matter most, so they get a dot each.
+            if let (Some(&a), Some(&b)) = (poly.first(), poly.last()) {
+                dot(a, 3.0, color);
+                dot(b, 3.0, color);
+            }
+        }
+    }
+    for circle in doc.circles.iter().filter(|c| !c.deleted && c.sketch == session.sketch) {
+        let color = if circle.construction { col::CONSTRUCTION } else { col::RECT_LINE };
+        if let Some(poly) = face::circle_world_perimeter(doc, circle, 64) {
+            chain(&poly, egui::Stroke::new(1.6, color));
+        }
+    }
+    dot(face::local_to_world(frame, 0.0, 0.0), 3.0, egui::Color32::from_gray(210));
+
+    // The shape being drawn right now, in the same preview colour the viewport uses.
+    let preview = egui::Stroke::new(1.8, col::PREVIEW);
+    if let Some(cl) = &state.creating_line {
+        seg(cl.origin, cl.end_point(frame, doc), preview);
+    }
+    if let Some(cr) = &state.creating_rect {
+        let (a, b) = cr.corners(frame, doc);
+        let (au, av) = world_to_local(frame, a);
+        let (bu, bv) = world_to_local(frame, b);
+        let corners = [(au, av), (bu, av), (bu, bv), (au, bv)]
+            .map(|(u, v)| face::local_to_world(frame, u, v));
+        for i in 0..4 {
+            seg(corners[i], corners[(i + 1) % 4], preview);
+        }
+    }
+    if let Some(cc) = &state.creating_circle {
+        let (cu, cv) = cc.center_local(frame, doc);
+        let r = cc.radius(frame, doc);
+        let pts: Vec<Vec3> = (0..=48)
+            .map(|i| {
+                let a = i as f32 / 48.0 * std::f32::consts::TAU;
+                face::local_to_world(frame, cu + r * a.cos(), cv + r * a.sin())
+            })
+            .collect();
+        chain(&pts, preview);
+    }
+
+    // The snap the finger is currently holding: the same cyan ring the viewport draws.
+    if let Some((world, target)) = active_snap(state, session.sketch, frame) {
+        if let Some(p) = lp(world) {
+            if (p - center).length() <= radius {
+                let color = egui::Color32::from_rgb(120, 215, 230);
+                painter.circle_stroke(p, 9.0, egui::Stroke::new(2.0, color));
+                if matches!(target, snapping::SnapTarget::Vertex(_) | snapping::SnapTarget::Origin) {
+                    painter.circle_filled(p, 4.0, color);
+                }
+            }
+        }
+    }
+
+    // Crosshair: exactly where the fingertip is, at the centre of the glass.
+    let cross = egui::Stroke::new(1.0, egui::Color32::from_gray(150));
+    painter.line_segment([center - egui::vec2(9.0, 0.0), center - egui::vec2(3.0, 0.0)], cross);
+    painter.line_segment([center + egui::vec2(3.0, 0.0), center + egui::vec2(9.0, 0.0)], cross);
+    painter.line_segment([center - egui::vec2(0.0, 9.0), center - egui::vec2(0.0, 3.0)], cross);
+    painter.line_segment([center + egui::vec2(0.0, 3.0), center + egui::vec2(0.0, 9.0)], cross);
+
+    // The frame, drawn last so nothing spills over it.
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(2.0, egui::Color32::from_gray(190)),
+    );
 }
 
 /// What the viewport's right-click context menu should offer (#54/#75).
@@ -21170,6 +21292,34 @@ impl App {
                             egui::vec2(16.0, 16.0),
                         );
                         icons::paint_icon(&painter, ui.ctx(), snap_icon(target), icon_rect, color);
+                    }
+                }
+            }
+        }
+
+        // Touch drawing loupe (#755): a finger covers the very point it's aiming at, so while
+        // one drags a shape (or a vertex) around, magnify the geometry under it beside the
+        // fingertip. Only while the finger is actually on the glass — a touch pointer exists
+        // only then.
+        if touch::active() {
+            let dragging_geometry = self.state.creating_line.is_some()
+                || self.state.creating_rect.is_some()
+                || self.state.creating_circle.is_some()
+                || self.vertex_drag.is_some();
+            if let (true, Some(session), Some(pp)) =
+                (dragging_geometry, self.state.sketch_session, pointer_screen)
+            {
+                if viewport.contains(pp) {
+                    if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
+                        draw_touch_draw_loupe(
+                            &painter,
+                            &self.state,
+                            session,
+                            &frame,
+                            viewport,
+                            pp,
+                            &project,
+                        );
                     }
                 }
             }

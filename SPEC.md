@@ -3295,6 +3295,17 @@ document is millimeters, so the player is person-scale: eye height
   OS virtual keyboard never covers the viewport. The keypad follows the last focused
   field and tolerates the focus blip a key tap causes; it hides via Hide or ~30 frames
   with no focused field.
+- **Drawing loupe (#755):** a fingertip covers the very point it's aiming at, so while a
+  finger drags a sketch shape out (`creating_line`/`creating_rect`/`creating_circle`) or
+  drags a vertex, a round **magnifier** floats beside it (`touch_loupe`, radius 64 px,
+  ×2.6). It paints the open sketch's own geometry (lines, circles, their endpoints and the
+  sketch origin), the shape in progress in the preview colour, and the live snap ring —
+  all projected, blown up about the fingertip, and clipped to the disc
+  (`draw_touch_draw_loupe`, sharing the exploder's `clip_segment_to_disc`). A crosshair at
+  the disc's centre marks the fingertip itself. It sits **above** the finger, and moves to
+  the **side** (whichever has room) when the finger is too near the top of the view to fit
+  — always fully inside the viewport and never over the fingertip (`touch_loupe::center`).
+  It shows only while the finger is actually down: a touch pointer exists only then.
 - **Long-press = right-click**: a touch press held ≥0.6 s within an 8 px slop
   (`touch::long_press_fires`, fires once per press) injects a synthetic secondary
   click at the finger, opening the same context menus.
