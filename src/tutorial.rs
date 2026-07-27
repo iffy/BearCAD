@@ -57,6 +57,27 @@ pub struct Step {
     pub assist: Option<StepAssist>,
 }
 
+/// Split a step's narration into plain prose and **code** runs (#757): anything between
+/// backticks — parameter names, values, the exact letters to type — which the bubble draws
+/// in monospace and its own colour so it stands out from the sentence around it.
+/// Backticks never survive into the drawn text; an unclosed one just ends the string.
+pub fn narration_spans(text: &str) -> Vec<(&str, bool)> {
+    let mut spans = Vec::new();
+    let mut rest = text;
+    let mut code = false;
+    while let Some(tick) = rest.find('`') {
+        if tick > 0 {
+            spans.push((&rest[..tick], code));
+        }
+        rest = &rest[tick + 1..];
+        code = !code;
+    }
+    if !rest.is_empty() {
+        spans.push((rest, code));
+    }
+    spans
+}
+
 pub struct Tutorial {
     /// Stable name for scripting (`bearcad.ui.tutorial("bracket")`).
     pub name: &'static str,
@@ -357,7 +378,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
     },
     Step {
-        narration: "Type leg \u{2014} just those three letters. It's the length of each \
+        narration: "Type `leg` \u{2014} just those three letters. It's the length of each \
                     of the bracket's legs.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_says_leg),
@@ -365,7 +386,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
     },
     Step {
-        narration: "Now tap the value box beside it and type 50mm.",
+        narration: "Now tap the value box beside it and type `50mm`.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
         done: Some(value_says_50),
         on_enter: None,
@@ -380,7 +401,8 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Five more, exactly the same moves:\n\
-                    width = 40mm\nthick = 5mm\nhole = 5mm\nbend = 4mm\nbend_angle = 120deg\n\
+                    `width` = `40mm`\n`thick` = `5mm`\n`hole` = `5mm`\n`bend` = `4mm`\n\
+                    `bend_angle` = `120deg`\n\
                     \u{2014} or let me type them in for you.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(params_defined),
@@ -466,8 +488,8 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Exact sizes with the Dimension tool (D): click each outer leg and type \
-                    leg; each end cap gets thick. For the bend: select the bottom line and \
-                    the inner leg line, press D, type bend_angle.",
+                    `leg`; each end cap gets `thick`. For the bend: select the bottom line and \
+                    the inner leg line, press D, type `bend_angle`.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
         done: Some(profile_dimensioned),
         on_enter: None,
@@ -475,7 +497,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E): click the profile face, type \
-                    width, press Enter. A solid!",
+                    `width`, press Enter. A solid!",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         done: Some(extruded),
         on_enter: None,
@@ -483,7 +505,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Round the bend with Fillet (F): click the inside edge of the bend and \
-                    type bend. Then the outside edge: bend + thick. Concentric, like bent \
+                    type `bend`. Then the outside edge: `bend + thick`. Concentric, like bent \
                     sheet metal.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
         done: Some(bend_rounded),
@@ -492,7 +514,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Screw holes! Sketch (S) on the inside face of the base flange, then \
-                    Circle (O): place two circles near the flange tip, typing hole for each \
+                    Circle (O): place two circles near the flange tip, typing `hole` for each \
                     diameter. Position them with the Dimension tool (D) against the face \
                     edges.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Sketch)),
@@ -502,7 +524,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Esc, then Extrude (E): click both circles, drag the handle into the \
-                    bracket (or type thick + 1), pick Cut, press Enter.",
+                    bracket (or type `thick + 1`), pick Cut, press Enter.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Extrude)),
         done: Some(holes_cut),
         on_enter: None,
@@ -510,7 +532,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Countersink them: Chamfer (K), click one hole's rim where it meets the \
-                    face, Shift+click the other, type 1.2, Enter.",
+                    face, Shift+click the other, type `1.2`, Enter.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Chamfer)),
         done: Some(holes_countersunk),
         on_enter: None,
@@ -518,15 +540,15 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Fillet (F) again: click a vertical edge at a flange tip, Shift+click the \
-                    other corners, type 2, Enter. Rounded corners!",
+                    other corners, type `2`, Enter. Rounded corners!",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Fillet)),
         done: Some(corners_rounded),
         on_enter: None,
         assist: None,
     },
     Step {
-        narration: "Sign your work: Text (T) on the outer face of the base, type BearCAD. \
-                    Then Extrude (E) the text, push the handle into the face (type 1), pick \
+        narration: "Sign your work: Text (T) on the outer face of the base, type `BearCAD`. \
+                    Then Extrude (E) the text, push the handle into the face (type `1`), pick \
                     Cut \u{2014} engraved letters.",
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Text)),
         done: Some(label_engraved),
@@ -534,9 +556,9 @@ static BRACKET_STEPS: &[Step] = &[
         assist: None,
     },
     Step {
-        narration: "The best part: in the Parameters pane, change bend_angle from 120deg to \
-                    150deg. The whole part rebuilds \u{2014} bend, holes, countersinks and \
-                    all.",
+        narration: "The best part: in the Parameters pane, change `bend_angle` from `120deg` \
+                    to `150deg`. The whole part rebuilds \u{2014} bend, holes, countersinks \
+                    and all.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(bend_angle_changed),
         on_enter: None,
@@ -655,6 +677,29 @@ mod tests {
         let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
         assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
         assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
+    }
+
+    /// Backticked runs come back marked as code, with the backticks stripped — and every
+    /// step's narration is balanced, so no step ends up half in monospace.
+    #[test]
+    fn narration_spans_split_code_from_prose() {
+        assert_eq!(
+            narration_spans("Type `leg` — three letters."),
+            vec![("Type ", false), ("leg", true), (" — three letters.", false)]
+        );
+        assert_eq!(narration_spans("plain"), vec![("plain", false)]);
+        assert_eq!(narration_spans("`code`"), vec![("code", true)]);
+
+        for step in BRACKET_STEPS {
+            assert!(
+                step.narration.matches('`').count() % 2 == 0,
+                "unbalanced backticks: {}",
+                step.narration
+            );
+            let rebuilt: String =
+                narration_spans(step.narration).iter().map(|(t, _)| *t).collect();
+            assert_eq!(rebuilt, step.narration.replace('`', ""));
+        }
     }
 
     #[test]

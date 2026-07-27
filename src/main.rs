@@ -2606,22 +2606,64 @@ impl App {
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.set_width(BUBBLE_W);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} — step {} of {}",
-                                tut.title,
-                                run.step + 1,
-                                tut.steps.len()
-                            ))
-                            .color(egui::Color32::from_rgb(255, 200, 80))
-                            .size(11.0),
-                        );
+                        // Title on the left, a close ✕ in the top right (#756) — the way
+                        // every other dismissible panel closes.
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} — step {} of {}",
+                                    tut.title,
+                                    run.step + 1,
+                                    tut.steps.len()
+                                ))
+                                .color(egui::Color32::from_rgb(255, 200, 80))
+                                .size(11.0),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    // The bundled ✕ SVG, never a font glyph — that renders
+                                    // as an empty box on some platforms (#325).
+                                    if icons::tinted_icon_button(
+                                        ui,
+                                        icons::IconId::Close,
+                                        egui::Color32::from_rgb(255, 200, 80),
+                                        egui::Color32::from_rgb(255, 230, 160),
+                                        "End tutorial",
+                                    )
+                                    .clicked()
+                                    {
+                                        end = true;
+                                    }
+                                },
+                            );
+                        });
                         ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(step.narration)
-                                .color(egui::Color32::from_gray(235))
-                                .size(13.0),
-                        );
+                        // Parameter names, values and the exact letters to type are drawn
+                        // as code — monospace, in their own colour — so they stand out
+                        // from the sentence around them (#757).
+                        let mut job = egui::text::LayoutJob::default();
+                        for (text, code) in tutorial::narration_spans(step.narration) {
+                            job.append(
+                                text,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: if code {
+                                        egui::FontId::monospace(12.5)
+                                    } else {
+                                        egui::FontId::proportional(13.0)
+                                    },
+                                    color: if code {
+                                        egui::Color32::from_rgb(140, 210, 255)
+                                    } else {
+                                        egui::Color32::from_gray(235)
+                                    },
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        job.wrap.max_width = BUBBLE_W;
+                        ui.label(job);
                         // A step that's pure typing offers to do it for the user (#752).
                         if let Some(a) = &step.assist {
                             ui.add_space(6.0);
@@ -2641,27 +2683,29 @@ impl App {
                             }
                         }
                         ui.add_space(6.0);
+                        // Back on the left, Next on the right — the direction each one
+                        // moves you (#756).
                         ui.horizontal(|ui| {
                             if run.step > 0 && ui.button("Back").clicked() {
                                 back = true;
                             }
-                            if step.done.is_none() || run.hold {
-                                let last = run.step + 1 == tut.steps.len();
-                                if ui.button(if last { "Finish" } else { "Next" }).clicked() {
-                                    next = true;
-                                }
-                            } else {
-                                ui.label(
-                                    egui::RichText::new("I'll notice when it's done…")
-                                        .color(egui::Color32::from_gray(150))
-                                        .size(11.0),
-                                );
-                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.small_button("End tutorial").clicked() {
-                                        end = true;
+                                    if step.done.is_none() || run.hold {
+                                        let last = run.step + 1 == tut.steps.len();
+                                        if ui
+                                            .button(if last { "Finish" } else { "Next" })
+                                            .clicked()
+                                        {
+                                            next = true;
+                                        }
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new("I'll notice when it's done…")
+                                                .color(egui::Color32::from_gray(150))
+                                                .size(11.0),
+                                        );
                                     }
                                 },
                             );

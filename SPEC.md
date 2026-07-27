@@ -3330,7 +3330,12 @@ document is millimeters, so the player is person-scale: eye height
   action satisfies it — worked-ahead users skip ahead, `AppState::advance_tutorial`) or a
   manual **Next** button, and a **Back** button reviews earlier steps (auto-advance
   stands down while reviewing and resumes when Next reaches unfinished work,
-  `TutorialRun::hold`). **End tutorial** exits any time. The ring is a **pulsing blue
+  `TutorialRun::hold`). The bubble's buttons sit where they lead: **Back** on the left,
+  **Next/Finish** on the right, and a **✕ in the title row's top right** (the bundled
+  `IconId::Close` SVG, never a font glyph) ends the tutorial any time (#756). Narration is
+  drawn as a `LayoutJob`: runs wrapped in **backticks** — parameter names, values, the
+  exact letters to type — come out **monospace in their own blue** so they stand out from
+  the prose (`tutorial::narration_spans`, #757). The ring is a **pulsing blue
   orb that glides** between anchors so the eye can follow it; the bracket's
   parameter stage is guided literally click by click (tap the name box, type leg,
   tap the value box, press + — each with its own anchor,
