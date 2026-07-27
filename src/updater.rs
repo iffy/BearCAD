@@ -47,7 +47,7 @@ pub fn spawn_check(state: SharedUpdateState) {
     std::thread::spawn(move || {
         cleanup_leftovers();
         if let Some(latest) = fetch_latest_version() {
-            if is_newer(&latest, &update_check_version()) {
+            if !is_dev_build() && is_newer(&latest, &update_check_version()) {
                 if let Ok(mut s) = state.lock() {
                     s.available = Some(latest);
                 }
@@ -116,6 +116,14 @@ fn fetch_latest_version() -> Option<String> {
 
 /// Whether `candidate` is a strictly newer version than `current` (dotted numeric
 /// compare; non-numeric segments compare as 0).
+/// A build that isn't a published artifact: a debug build, or a `git describe` carrying
+/// commits past the latest tag (`-N-g<sha>`). Whatever a dev build contains is by
+/// definition ahead of what's released, so the update check treats it as newer than any
+/// tag and never offers to "update" it backwards (#764).
+pub fn is_dev_build() -> bool {
+    cfg!(debug_assertions) || env!("BEARCAD_GIT_DESCRIBE").contains("-g")
+}
+
 /// The version string the update check compares against release tags: the baked
 /// `git describe` when available (so a release build knows its own build number and
 /// the badge never claims its own version is an update), else the crate version.
@@ -373,6 +381,19 @@ mod tests_release_identity {
     fn dev_build_past_the_latest_tag_is_not_an_update() {
         assert!(!is_newer("0.1.0-build.299", "0.1.0-build.299-3-gabc1234"));
         assert!(is_newer("0.1.0-build.300", "0.1.0-build.299-3-gabc1234"));
+    }
+
+    /// #764: and once releases march past that tag, the dev build is *still* ahead — it
+    /// carries unreleased work, so no update badge, whatever the numbers say.
+    #[test]
+    fn dev_builds_never_see_an_update() {
+        assert!(
+            is_dev_build(),
+            "the test binary is a dev build (debug assertions, untagged describe)"
+        );
+        // The comparison that the badge is gated on: a much newer release still can't
+        // reach a dev build, because the gate is `!is_dev_build()`.
+        assert!(is_newer("0.1.0-build.999", "0.1.0-build.299-3-gabc1234"));
     }
 }
 
