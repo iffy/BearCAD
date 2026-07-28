@@ -943,6 +943,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   hands Distance back to its expression. Scripting:
   `bearcad.repeat_bodies{ bodies, axis, mode, count?, spacing?, length?, to?, name? }` /
   `bearcad.edit_repeat{ index, … }`, where `to` is the same target table Extrude's `to` takes.
+  - **Around the path (#839):** the **Path** picker (formerly Axis) is followed by a two-icon
+    toggle — lay the copies out **along** the path, or turn them **around** it as an axis of
+    rotation (`RepeatOperation::around_axis`). Turning reads `spacing`/`length` as **angles**
+    (degrees, `extrude::repeat_angles`) and the copies are rotated about the axis rather than
+    slid along it (`extrude::repeat_instance_transform` / `repeat_step_transform`, shared by
+    body meshes, kernel shapes, plane and sketch instances, and the ghost preview). In the
+    pane the **Distance** row becomes **Angle** (default 360°, no start/end measure toggle),
+    the **Distance to** picker and the distance drag handle stand down, and the section title
+    reads *Rotational repeat*. Scriptable as `bearcad.repeat_bodies{ …, around = true,
+    spacing = "60deg" }`.
   - **Repeating construction planes (#221):** a repeat can also target construction planes
     (`RepeatOperation::plane_targets`), picked from the Elements pane / viewport with the tool
     active. Each further instance is a generated `ConstructionPlane` carrying a

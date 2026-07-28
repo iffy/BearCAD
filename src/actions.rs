@@ -640,8 +640,10 @@ pub struct CreatingRepeat {
     pub extrusion_targets: Vec<usize>,
     /// Picked source sketches to repeat as offset copies (#226).
     pub sketch_targets: Vec<usize>,
-    /// `None` until picked (#439): the axis picker starts empty and focused.
+    /// `None` until picked (#439): the path picker starts empty and focused.
     pub axis: Option<crate::model::RevolveAxis>,
+    /// Repeat **around** the picked path rather than along it (#839).
+    pub around_axis: bool,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     pub spacing: String,
@@ -668,6 +670,7 @@ impl Default for CreatingRepeat {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: None,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),
@@ -2042,6 +2045,8 @@ pub enum Action {
         extrusion_targets: Vec<usize>,
         sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
+        /// Turn the copies about the axis instead of sliding them along it (#839).
+        around_axis: bool,
         mode: crate::model::RepeatMode,
         count: String,
         spacing: String,
@@ -2057,6 +2062,7 @@ pub enum Action {
         extrusion_targets: Vec<usize>,
         sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
+        around_axis: bool,
         mode: crate::model::RepeatMode,
         count: String,
         spacing: String,
@@ -9609,6 +9615,7 @@ label_hidden: false,
                         extrusion_targets: cr.extrusion_targets.clone(),
                         sketch_targets: cr.sketch_targets.clone(),
                         axis,
+                        around_axis: cr.around_axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
@@ -9621,6 +9628,7 @@ label_hidden: false,
                         extrusion_targets: cr.extrusion_targets.clone(),
                         sketch_targets: cr.sketch_targets.clone(),
                         axis,
+                        around_axis: cr.around_axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
@@ -9635,7 +9643,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length, length_target } => {
+            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, around_axis, mode, count, spacing, length, length_target } => {
                 if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets, &sketch_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -9647,6 +9655,7 @@ label_hidden: false,
                     extrusion_targets: extrusion_targets.clone(),
                     sketch_targets: sketch_targets.clone(),
                     axis,
+                    around_axis,
                     mode,
                     count,
                     spacing,
@@ -9724,7 +9733,7 @@ label_hidden: false,
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length, length_target } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, around_axis, mode, count, spacing, length, length_target } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
@@ -9742,6 +9751,7 @@ label_hidden: false,
                     entry.targets = targets.clone();
                     entry.plane_targets = plane_targets.clone();
                     entry.axis = axis;
+                    entry.around_axis = around_axis;
                     entry.mode = mode;
                     entry.count = count;
                     entry.spacing = spacing;
@@ -12716,16 +12726,16 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
 /// before its instances copy it.
 pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
     // Precompute each op's axis direction and instance offsets (immutable borrow before mutating).
-    let op_data: Vec<Option<(glam::Vec3, Vec<f32>)>> = doc
+    let op_data: Vec<Option<(glam::Vec3, glam::Vec3, Vec<f32>)>> = doc
         .repeat_ops
         .iter()
         .map(|op| {
             if op.deleted || op.plane_targets.is_empty() {
                 return None;
             }
-            let (_, dir) = crate::extrude::axis_world(doc, op.axis)?;
+            let (origin, dir) = crate::extrude::axis_world(doc, op.axis)?;
             let offsets = crate::extrude::repeat_offsets(doc, op)?;
-            Some((dir, offsets))
+            Some((origin, dir, offsets))
         })
         .collect();
     let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
@@ -12736,7 +12746,8 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
         let Some(inst) = plane.repeat_instance else {
             continue;
         };
-        let Some((dir, offsets)) = op_data.get(inst.op).and_then(|d| d.as_ref()) else {
+        let Some((axis_origin, dir, offsets)) = op_data.get(inst.op).and_then(|d| d.as_ref())
+        else {
             continue;
         };
         let op = &doc.repeat_ops[inst.op];
@@ -12754,8 +12765,15 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
         let Some(source) = doc.construction_planes.get(src).filter(|p| !p.deleted) else {
             continue;
         };
-        let o = source.origin + *dir * offset;
-        updates.push((pi, o, source.normal, source.u_axis, source.v_axis));
+        // A rotational repeat turns the plane about the axis instead of sliding it (#839).
+        let m = crate::extrude::repeat_step_transform(*axis_origin, *dir, op.around_axis, offset);
+        updates.push((
+            pi,
+            m.transform_point3(source.origin),
+            m.transform_vector3(source.normal).normalize_or_zero(),
+            m.transform_vector3(source.u_axis).normalize_or_zero(),
+            m.transform_vector3(source.v_axis).normalize_or_zero(),
+        ));
     }
     for (i, o, n, u, v) in updates {
         let p = &mut doc.construction_planes[i];
@@ -13930,7 +13948,7 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) 
     if op.sketch_targets.is_empty() {
         return;
     }
-    let (Some((_, dir)), Some(offsets)) =
+    let (Some((axis_origin, dir)), Some(offsets)) =
         (crate::extrude::axis_world(doc, op.axis), crate::extrude::repeat_offsets(doc, &op))
     else {
         return;
@@ -13953,10 +13971,12 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) 
             };
             let mut plane =
                 crate::construction::plane_from_face(0.0, frame.origin, frame.normal);
-            plane.origin = frame.origin + dir * off;
-            plane.u_axis = frame.u_axis;
-            plane.v_axis = frame.v_axis;
-            plane.normal = frame.normal;
+            // A rotational repeat turns the copy's frame about the axis (#839).
+            let m = crate::extrude::repeat_step_transform(axis_origin, dir, op.around_axis, off);
+            plane.origin = m.transform_point3(frame.origin);
+            plane.u_axis = m.transform_vector3(frame.u_axis).normalize_or_zero();
+            plane.v_axis = m.transform_vector3(frame.v_axis).normalize_or_zero();
+            plane.normal = m.transform_vector3(frame.normal).normalize_or_zero();
             plane.parent = crate::model::ConstructionPlaneParent::Root;
             plane.repeat_instance = None;
             plane.name = None;
@@ -18874,6 +18894,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "5".to_string(),
@@ -18915,6 +18936,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::FillMaxPitch,
             count: String::new(),
             spacing: "40".to_string(),
@@ -18940,6 +18962,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
             spacing: "5".to_string(),
@@ -18954,6 +18977,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "5".to_string(),
             spacing: "5".to_string(),
@@ -18978,6 +19002,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "n".to_string(),
             spacing: "5".to_string(),
@@ -19795,6 +19820,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),
@@ -19834,6 +19860,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
             spacing: "10".to_string(),
@@ -19875,6 +19902,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
             spacing: "10".to_string(),
@@ -19889,6 +19917,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "4".to_string(),
             spacing: "10".to_string(),

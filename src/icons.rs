@@ -96,6 +96,9 @@ pub enum IconId {
     RepeatDistStart,
     RepeatGapBetween,
     RepeatGapOffset,
+    /// Repeat tool along-the-path / around-the-axis toggle (#839).
+    RepeatAlongPath,
+    RepeatAroundAxis,
     /// Elements-pane filter funnel (#275/#291).
     Filter,
     /// Drawing workbench "Back to the 3D model" toolbar action (#325): a left arrow SVG (never
@@ -115,7 +118,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 77] = [
+    pub const ALL: [Self; 79] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -185,6 +188,8 @@ impl IconId {
         Self::RepeatDistStart,
         Self::RepeatGapBetween,
         Self::RepeatGapOffset,
+        Self::RepeatAlongPath,
+        Self::RepeatAroundAxis,
         Self::Filter,
         Self::Back,
         Self::Export,
@@ -269,6 +274,8 @@ impl IconId {
             Self::RepeatDistStart => include_str!("assets/icons/repeat_dist_start.svg"),
             Self::RepeatGapBetween => include_str!("assets/icons/repeat_gap_between.svg"),
             Self::RepeatGapOffset => include_str!("assets/icons/repeat_gap_offset.svg"),
+            Self::RepeatAlongPath => include_str!("assets/icons/repeat_along_path.svg"),
+            Self::RepeatAroundAxis => include_str!("assets/icons/repeat_around_axis.svg"),
             Self::Filter => include_str!("assets/icons/filter.svg"),
             Self::Back => include_str!("assets/icons/back.svg"),
             Self::Export => include_str!("assets/icons/export.svg"),
@@ -353,6 +360,8 @@ impl IconId {
             Self::RepeatDistStart => "Distance to start",
             Self::RepeatGapBetween => "Gap between",
             Self::RepeatGapOffset => "Start-to-start offset",
+            Self::RepeatAlongPath => "Along the path",
+            Self::RepeatAroundAxis => "Around the path",
             Self::Filter => "Filter",
             Self::Back => "Back",
             Self::Export => "Export",

@@ -333,8 +333,11 @@ pub struct RepeatControl {
     pub sketch_targets: Vec<usize>,
     /// Picked cut/add extrusions whose effect is replayed at each offset (#220/#235).
     pub extrusion_targets: Vec<usize>,
-    /// Picked axis label; `None` until an axis is picked (#439).
+    /// Picked path label; `None` until a path is picked (#439).
     pub axis_label: Option<String>,
+    /// Repeat **around** the path instead of along it (#839). While set, Distance becomes an
+    /// Angle and the distance-target picker stands down.
+    pub around_axis: bool,
     /// Label of the picked distance target (#645), if any — the face/plane/vertex the fill
     /// length is measured to. Empty means the Distance expression governs.
     pub length_target_rows: Vec<String>,
@@ -485,6 +488,8 @@ pub enum RepeatEdit {
     ToggleGapOffset,
     /// Toggle the distance field between start-to-end and start-to-start.
     ToggleDistanceEnd,
+    /// Repeat along the picked path, or around it as an axis of rotation (#839).
+    SetAroundAxis(bool),
     Commit,
 }
 
@@ -1375,6 +1380,10 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
         Tool::Repeat => match (input.in_sketch, editing) {
             (true, _) => "Repeat (in sketch)",
             (false, true) => "Edit repeat",
+            // The title says which way the copies run (#839).
+            (false, false) if input.repeat_op.as_ref().is_some_and(|r| r.around_axis) => {
+                "Rotational repeat"
+            }
             (false, false) => "Linear repeat",
         },
         Tool::Slice => match (input.in_sketch, editing) {
@@ -2752,9 +2761,15 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Repeat), "Cuts") => Some(
             "How many cut operations are replayed at each step — a row of holes from one.",
         ),
-        (Some(Tool::Repeat), "Axis") => Some(
-            "The direction the pattern runs — a straight edge, a sketch line, or a \
-             global axis.",
+        (Some(Tool::Repeat), "Path") => Some(
+            "What the pattern follows — a straight edge, a sketch line, or a global axis.",
+        ),
+        (Some(Tool::Repeat), "Repeat") => Some(
+            "Lay the copies out along the path, or turn them around it as an axis.",
+        ),
+        (Some(Tool::Repeat), "Angle") => Some(
+            "How far around the axis the pattern sweeps. The green lock marks the value \
+             computed from the other two.",
         ),
         (Some(Tool::Repeat), "Count") => Some(
             "How many copies. The green lock marks the value computed from the other two.",
@@ -4264,7 +4279,13 @@ pub fn show_pane(
         let axis_rows: Vec<String> = control
             .axis_label
             .iter()
-            .map(|l| format!("Along {l}"))
+            .map(|l| {
+                if control.around_axis {
+                    format!("Around {l}")
+                } else {
+                    format!("Along {l}")
+                }
+            })
             .collect();
         let has_targets = !control.targets.is_empty()
             || !control.plane_targets.is_empty()
@@ -4272,7 +4293,7 @@ pub fn show_pane(
             || !control.extrusion_targets.is_empty();
         let axis_focused =
             control.axis_label.is_none() && has_targets && !control.value_field_focused;
-        labeled_row_top(ui, "Axis", |ui| {
+        labeled_row_top(ui, "Path", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "repeat_axis",
@@ -4288,6 +4309,38 @@ pub fn show_pane(
                 pending = Some(RepeatEdit::ClearAxis);
             }
         }
+        });
+        // Along the path, or around it as an axis of rotation (#839) — the same segmented
+        // icon pair the other tools' mode choices use.
+        labeled_row(ui, "Repeat", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                ui.horizontal(|ui| {
+                    for (around, icon, tip) in [
+                        (
+                            false,
+                            crate::icons::IconId::RepeatAlongPath,
+                            "Along the path",
+                        ),
+                        (
+                            true,
+                            crate::icons::IconId::RepeatAroundAxis,
+                            "Around the path, as an axis of rotation",
+                        ),
+                    ] {
+                        if crate::icons::selectable_icon_button(
+                            ui,
+                            icon,
+                            control.around_axis == around,
+                            tip.to_string(),
+                        )
+                        .clicked()
+                            && control.around_axis != around
+                        {
+                            pending = Some(RepeatEdit::SetAroundAxis(around));
+                        }
+                    }
+                });
+            });
         });
         // Count / gap / distance (#257/#443/#444): two fields are editable, the third is
         // computed. A **green lock** marks the computed one and grey locks the other two
@@ -4424,24 +4477,32 @@ pub fn show_pane(
             } else {
                 crate::icons::IconId::RepeatDistStart
             };
-            var_row(
-                ui,
-                RepeatVar::Distance,
-                "Distance",
-                &control.length,
-                Some((dist_icon, RepeatEdit::ToggleDistanceEnd)),
-                &RepeatEdit::Distance,
-            );
+            // Turning about the axis measures a sweep, not a length (#839): the row becomes
+            // **Angle** and loses the start/end measure toggle, which means nothing for a turn.
+            if control.around_axis {
+                var_row(ui, RepeatVar::Distance, "Angle", &control.length, None, &RepeatEdit::Distance);
+            } else {
+                var_row(
+                    ui,
+                    RepeatVar::Distance,
+                    "Distance",
+                    &control.length,
+                    Some((dist_icon, RepeatEdit::ToggleDistanceEnd)),
+                    &RepeatEdit::Distance,
+                );
+            }
         }
         // Distance-target picker (#645): a face, construction plane, or vertex the pattern
         // runs out to, so the distance follows that geometry instead of a typed number —
         // the Repeat tool's version of the Extrude tool's "Up to" picker. Focus it, then
         // click the target in the viewport; the ✕ hands Distance back to its expression.
+        // A sweep has nothing to measure to, so the distance-target picker stands down (#839).
         labeled_row_top(ui, "Distance to", |ui| {
+            ui.add_enabled_ui(!control.around_axis, |ui| {
             if let Some(event) = crate::element_picker::show_labeled(
                 ui,
                 "repeat_length_target",
-                control.length_target_focused,
+                control.length_target_focused && !control.around_axis,
                 true,
                 crate::icons::IconId::Plane,
                 &control.length_target_rows,
@@ -4452,6 +4513,7 @@ pub fn show_pane(
                     | crate::element_picker::PickerEvent::Clear => RepeatEdit::ClearLengthTarget,
                 });
             }
+            });
         });
         if let Some(edit) = pending {
             on_repeat_edit(edit);
@@ -6580,6 +6642,7 @@ mod tests {
             tool: Tool::Repeat,
             in_drawing_workbench: false,
             repeat_op: Some(RepeatControl {
+                around_axis: false,
                 targets: vec![7],
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
@@ -6615,6 +6678,7 @@ mod tests {
         let doc = Document::default();
         let selection = SceneSelection::default();
         let control = |value_field_focused, axis_label: Option<&str>| RepeatControl {
+            around_axis: false,
             targets: vec![7],
             plane_targets: Vec::new(),
             sketch_targets: Vec::new(),

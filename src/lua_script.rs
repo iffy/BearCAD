@@ -835,6 +835,7 @@ fn parse_repeat_op_args(
 ) -> mlua::Result<(
     Vec<usize>,
     crate::model::RevolveAxis,
+    bool,
     crate::model::RepeatMode,
     String,
     String,
@@ -888,7 +889,19 @@ fn parse_repeat_op_args(
             ))
         }
     };
-    Ok((targets, axis, mode, expr("count")?, spacing, expr("length")?, length_target))
+    // `around = true` turns the copies about the axis instead of sliding them along it
+    // (#839); `spacing`/`length` are then angles in degrees.
+    let around_axis: bool = opts.get::<Option<bool>>("around")?.unwrap_or(false);
+    Ok((
+        targets,
+        axis,
+        around_axis,
+        mode,
+        expr("count")?,
+        spacing,
+        expr("length")?,
+        length_target,
+    ))
 }
 
 /// Parses `bearcad.offset_sketch{}`/`bearcad.edit_sketch_offset{}` arguments: the host
@@ -3453,12 +3466,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "repeat_bodies",
-                &["bodies", "axis", "mode", "count", "spacing", "gap", "length", "to", "name"],
+                &["bodies", "axis", "around", "mode", "count", "spacing", "gap", "length", "to", "name"],
             )?;
-            let (targets, axis, mode, count, spacing, length, length_target) =
+            let (targets, axis, around_axis, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateRepeatOp {
+                    around_axis,
                     targets,
                     axis,
                     mode,
@@ -3483,13 +3497,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_repeat",
-                &["index", "bodies", "axis", "mode", "count", "spacing", "gap", "length", "to"],
+                &["index", "bodies", "axis", "around", "mode", "count", "spacing", "gap", "length", "to"],
             )?;
             let op: usize = opts.get("index")?;
-            let (targets, axis, mode, count, spacing, length, length_target) =
+            let (targets, axis, around_axis, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditRepeatOp {
+                    around_axis,
                     op,
                     targets,
                     axis,
@@ -3686,10 +3701,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let cuts: Vec<usize> = opts.get::<Option<Vec<usize>>>("cuts")?.unwrap_or_default();
-            let (_targets, axis, mode, count, spacing, length, length_target) =
+            let (_targets, axis, around_axis, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
+                    around_axis,
                     targets: Vec::new(),
                     plane_targets: Vec::new(),
                     extrusion_targets: cuts,
@@ -3717,10 +3733,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let sketches: Vec<usize> = opts.get::<Option<Vec<usize>>>("sketches")?.unwrap_or_default();
-            let (_targets, axis, mode, count, spacing, length, length_target) =
+            let (_targets, axis, around_axis, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
+                    around_axis,
                     targets: Vec::new(),
                     plane_targets: Vec::new(),
                     extrusion_targets: Vec::new(),
@@ -5268,6 +5285,32 @@ mod tests {
             "the start point should be pinned to the X axis (v = 0), got y0={}",
             state.doc.lines[0].y0
         );
+    }
+
+    /// #839: `around = true` turns the copies about the axis; the copies land on the circle.
+    #[test]
+    fn lua_repeat_around_the_axis_turns_the_copies() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 20, y = -3, width = 8, height = 6 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 4 }
+            bearcad.exit_sketch()
+            bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
+                                   mode = "count_gap", count = 4, spacing = "90deg" }
+        "#,
+        );
+        let op = &state.doc.repeat_ops[0];
+        assert!(op.around_axis);
+        assert_eq!(op.outputs.len(), 3, "4 instances = the original plus 3 copies");
+        // The first copy is a quarter turn round: its bounds swap x for y.
+        let source = crate::extrude::body_solid_mesh(&state.doc, 0).expect("source mesh");
+        let copy = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]).expect("copy mesh");
+        let (smin, smax) = source.bounds().unwrap();
+        let (cmin, cmax) = copy.bounds().unwrap();
+        assert!(smin.x > 0.0 && smax.x > 0.0, "the source sits out along +X");
+        assert!(cmin.y > 0.0 && cmax.y > 0.0, "the quarter-turn copy sits out along +Y");
+        assert!(cmax.x.abs() < 4.0, "and no longer along X, got {}", cmax.x);
     }
 
     /// #834: materials from scripts — created with a colour, handed to bodies, reassigned.

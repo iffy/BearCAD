@@ -366,6 +366,8 @@ pub enum Instruction {
     CreateRepeatOp {
         targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
+        /// Turn the copies about the axis instead of sliding them along it (#839).
+        around_axis: bool,
         mode: crate::model::RepeatMode,
         count: String,
         spacing: String,
@@ -378,6 +380,7 @@ pub enum Instruction {
         op: usize,
         targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
+        around_axis: bool,
         mode: crate::model::RepeatMode,
         count: String,
         spacing: String,
@@ -1083,11 +1086,11 @@ impl Instruction {
             Instruction::EditMirrorOp { op, plane, targets, mode } => {
                 mirror_op_lua("bearcad.edit_mirror", Some(*op), plane, targets, *mode)
             }
-            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length, length_target } => {
-                repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *mode, count, spacing, length, length_target.as_ref())
+            Instruction::CreateRepeatOp { targets, axis, around_axis, mode, count, spacing, length, length_target } => {
+                repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *around_axis, *mode, count, spacing, length, length_target.as_ref())
             }
-            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length, length_target } => {
-                repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *mode, count, spacing, length, length_target.as_ref())
+            Instruction::EditRepeatOp { op, targets, axis, around_axis, mode, count, spacing, length, length_target } => {
+                repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *around_axis, *mode, count, spacing, length, length_target.as_ref())
             }
             Instruction::CreateSliceOp { targets, cutters, extend_infinite } => {
                 slice_op_lua("bearcad.slice", None, targets, cutters, *extend_infinite)
@@ -1896,10 +1899,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
         // the Move op's plane/image targets — they replay as body-only operations.
-        Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length, length_target } => {
+        Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, around_axis, mode, count, spacing, length, length_target } => {
             Some(Instruction::CreateRepeatOp {
                 targets: targets.clone(),
                 axis: *axis,
+                around_axis: *around_axis,
                 mode: *mode,
                 count: count.clone(),
                 spacing: spacing.clone(),
@@ -1907,11 +1911,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 length_target: length_target.clone(),
             })
         }
-        Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length, length_target } => {
+        Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, around_axis, mode, count, spacing, length, length_target } => {
             Some(Instruction::EditRepeatOp {
                 op: *op,
                 targets: targets.clone(),
                 axis: *axis,
+                around_axis: *around_axis,
                 mode: *mode,
                 count: count.clone(),
                 spacing: spacing.clone(),
@@ -2514,6 +2519,7 @@ fn repeat_op_lua(
     op: Option<usize>,
     targets: &[usize],
     axis: crate::model::RevolveAxis,
+    around_axis: bool,
     mode: crate::model::RepeatMode,
     count: &str,
     spacing: &str,
@@ -2529,6 +2535,9 @@ fn repeat_op_lua(
         targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
     ));
     parts.push(format!("axis = {}", revolve_axis_lua(axis)));
+    if around_axis {
+        parts.push("around = true".to_string());
+    }
     parts.push(format!("mode = \"{}\"", match mode {
         crate::model::RepeatMode::CountGap => "count_gap",
         crate::model::RepeatMode::CountFitEnds => "count_fit_ends",
@@ -4520,8 +4529,9 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length, length_target } => {
+            Instruction::CreateRepeatOp { targets, axis, around_axis, mode, count, spacing, length, length_target } => {
                 let result = state.apply(Action::CreateRepeatOperation {
+                    around_axis,
                     targets,
                     plane_targets: Vec::new(),
                     extrusion_targets: Vec::new(),
@@ -4536,7 +4546,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length, length_target } => {
+            Instruction::EditRepeatOp { op, targets, axis, around_axis, mode, count, spacing, length, length_target } => {
                 let result = state.apply(Action::EditRepeatOperation {
                     op,
                     targets,
@@ -4544,6 +4554,7 @@ impl ScriptRunner {
                     extrusion_targets: Vec::new(),
                     sketch_targets: Vec::new(),
                     axis,
+                    around_axis,
                     mode,
                     count,
                     spacing,

@@ -16,8 +16,8 @@ wall, teeth on a rack.
 
 1. Pick the **Repeat** tool and click one or more bodies (a body selected beforehand is
    picked automatically).
-2. Pick the **axis**: click any body edge, sketch line, or origin axis in the viewport — each
-   lights up under the cursor while the axis is what you're picking.
+2. Pick the **path**: click any body edge, sketch line, or origin axis in the viewport — each
+   lights up under the cursor while the path is what you're picking.
 3. Choose a spacing mode and fill in the values — every value is an expression, so
    parameters work. Ghost previews show the pattern.
 4. Press **Enter**.
@@ -35,6 +35,18 @@ A **green lock** marks the computed one; click a grey lock to move it there. Cli
 
 The originals stay put as the first instance; every copy is a real body nested under the
 repeat element. **Edit repeat** on the element changes anything later.
+
+## Around the path
+
+Under the **Path** picker, two icons choose how the copies run: **along** the path, or
+**around** it as an axis of rotation. Turning replaces **Distance** with **Angle** (360° by
+default) — Count, Gap and Angle interlink exactly as Count, Gap and Distance do — and the
+distance handle and **Distance to** picker stand down.
+
+```lua
+bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
+                       mode = "count_gap", count = 6, spacing = "60deg" }
+```
 
 ## Spacing modes
 

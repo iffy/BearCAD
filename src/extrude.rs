@@ -460,11 +460,11 @@ fn occt_fused_extrusions(
             if op.deleted || !op.extrusion_targets.contains(&ei) {
                 continue;
             }
-            if let (Some((_, dir)), Some(offsets)) =
+            if let (Some((origin, dir)), Some(offsets)) =
                 (axis_world(doc, op.axis), repeat_offsets(doc, op))
             {
                 for off in offsets {
-                    placements.push(glam::Mat4::from_translation(dir * off));
+                    placements.push(repeat_step_transform(origin, dir, op.around_axis, off));
                 }
             }
         }
@@ -566,11 +566,11 @@ fn occt_subtract_cut_extrusions(
             if op.deleted || !op.extrusion_targets.contains(&ei) {
                 continue;
             }
-            if let (Some((_, dir)), Some(offsets)) =
+            if let (Some((origin, dir)), Some(offsets)) =
                 (axis_world(doc, op.axis), repeat_offsets(doc, op))
             {
                 for off in offsets {
-                    let m = glam::Mat4::from_translation(dir * off);
+                    let m = repeat_step_transform(origin, dir, op.around_axis, off);
                     let moved = cut.transformed(&mat4_to_rows_3x4(&m))?;
                     solid = solid.boolean(&moved, BoolOp::Cut)?;
                 }
@@ -1346,7 +1346,58 @@ pub fn repeat_extent(doc: &Document, op: &crate::model::RepeatOperation) -> Opti
     Some((max_p - min_p).max(0.0))
 }
 
+/// The world transform one repeat instance applies to its source (#839): a slide along the
+/// axis, or — when the op repeats **around** the path — a turn about it. `instance` counts
+/// from 1; instance 0 is the original.
+pub fn repeat_instance_transform(
+    doc: &Document,
+    op: &crate::model::RepeatOperation,
+    instance: usize,
+) -> Option<glam::Mat4> {
+    let (origin, dir) = axis_world(doc, op.axis)?;
+    let step = *repeat_offsets(doc, op)?.get(instance.checked_sub(1)?)?;
+    Some(repeat_step_transform(origin, dir, op.around_axis, step))
+}
+
+/// One repeat step as a transform: `step` millimetres along `dir`, or `step` **degrees**
+/// about the axis through `origin` when `around` (#839).
+pub fn repeat_step_transform(origin: Vec3, dir: Vec3, around: bool, step: f32) -> glam::Mat4 {
+    if around {
+        glam::Mat4::from_translation(origin)
+            * glam::Mat4::from_axis_angle(dir.normalize_or_zero(), step.to_radians())
+            * glam::Mat4::from_translation(-origin)
+    } else {
+        glam::Mat4::from_translation(dir * step)
+    }
+}
+
+/// The angles (degrees) of a rotational repeat's copies (#839): the same count/gap/span maths
+/// the linear one uses, with the items treated as points on the circle.
+fn repeat_angles(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
+    let angle = |expr: &str| -> Option<f32> {
+        (!expr.trim().is_empty())
+            .then(|| crate::value::eval_angle_rad_in_doc(expr, doc).map(f32::to_degrees))
+            .flatten()
+    };
+    let count = repeat_count(doc, op);
+    spacing_offsets(op.mode, 0.0, count, angle(&op.spacing), angle(&op.length))
+}
+
+/// The op's instance count expression, evaluated and clamped.
+fn repeat_count(doc: &Document, op: &crate::model::RepeatOperation) -> Option<usize> {
+    let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
+        crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
+        crate::value::EvaluatedParameter::AngleRad(_) => None,
+    })?;
+    (n >= 1.0).then_some((n.round() as usize).min(MAX_REPEAT_INSTANCES))
+}
+
 pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
+    // Turning about the axis measures in degrees, and the items have no angular extent of
+    // their own to space around (#839).
+    if op.around_axis {
+        return repeat_angles(doc, op);
+    }
     let (_, dir) = axis_world(doc, op.axis)?;
     // The targets' combined extent along the axis (end-to-start measurements need it).
     let mut min_p = f32::INFINITY;
@@ -1417,12 +1468,8 @@ fn occt_repeated_output_shape(
 ) -> Option<crate::kernel::Shape> {
     let op = doc.repeat_ops.get(op_index).filter(|o| !o.deleted)?;
     let &input = op.targets.get(target)?;
-    let (_, dir) = axis_world(doc, op.axis)?;
-    let offsets = repeat_offsets(doc, op)?;
-    let offset = *offsets.get(instance.checked_sub(1)?)?;
+    let m = repeat_instance_transform(doc, op, instance)?;
     let shape = occt_body_shape(doc, input)?;
-    let t = dir * offset;
-    let m = glam::Mat4::from_translation(t);
     shape.transformed(&mat4_to_rows_3x4(&m))
 }
 
@@ -2995,15 +3042,18 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         if input == body_index {
             return None;
         }
-        let (_, dir) = axis_world(doc, rp.axis)?;
-        let offsets = repeat_offsets(doc, rp)?;
-        let offset = *offsets.get(instance.checked_sub(1)?)?;
+        let m = repeat_instance_transform(doc, rp, instance)?;
         let source = body_solid_mesh_uncached(doc, input)?;
-        let t = dir * offset;
         let triangles = source
             .triangles
             .iter()
-            .map(|tri| [tri[0] + t, tri[1] + t, tri[2] + t])
+            .map(|tri| {
+                [
+                    m.transform_point3(tri[0]),
+                    m.transform_point3(tri[1]),
+                    m.transform_point3(tri[2]),
+                ]
+            })
             .collect();
         return Some(SolidMesh { triangles });
     }
@@ -3499,12 +3549,10 @@ pub fn repeated_face_plane(
     instance: usize,
 ) -> Option<(Vec3, Vec3)> {
     let rep = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
-    let (_, dir) = axis_world(doc, rep.axis)?;
     // `repeat_offsets` lists the copies only; instance 0 is the original body.
-    let offsets = repeat_offsets(doc, rep)?;
-    let offset = *offsets.get(instance.checked_sub(1)?)?;
+    let m = repeat_instance_transform(doc, rep, instance)?;
     let (p, n) = body_face_plane(doc, face)?;
-    Some((p + dir * offset, n))
+    Some((m.transform_point3(p), m.transform_vector3(n).normalize_or_zero()))
 }
 
 /// Distance along `dir` from `base` to the plane (`point`, `plane_normal`).
@@ -5425,6 +5473,47 @@ mod tests {
         (doc, sketch)
     }
 
+    /// #839: a rotational repeat turns its copies about the axis — six 60° steps put the
+    /// last copy at 300°, and the transform rotates rather than slides.
+    #[test]
+    fn a_rotational_repeat_turns_its_copies_about_the_axis() {
+        use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
+        let doc = Document::default();
+        let op = |around: bool, spacing: &str| RepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis: RevolveAxis::Z,
+            around_axis: around,
+            mode: RepeatMode::CountGap,
+            count: "6".to_string(),
+            spacing: spacing.to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        let angles = repeat_offsets(&doc, &op(true, "60deg")).expect("angles");
+        assert_eq!(angles.len(), 5, "6 instances = the original plus 5 copies");
+        assert!((angles[0] - 60.0).abs() < 1e-3, "{angles:?}");
+        assert!((angles[4] - 300.0).abs() < 1e-3, "{angles:?}");
+
+        // The instance transform is a turn about the axis, not a slide along it.
+        let m = repeat_instance_transform(&doc, &op(true, "90deg"), 1).expect("transform");
+        let p = m.transform_point3(Vec3::new(10.0, 0.0, 0.0));
+        assert!((p - Vec3::new(0.0, 10.0, 0.0)).length() < 1e-3, "got {p:?}");
+
+        // The same op along the axis still slides.
+        let m = repeat_instance_transform(&doc, &op(false, "10"), 1).expect("transform");
+        let p = m.transform_point3(Vec3::new(10.0, 0.0, 0.0));
+        assert!((p - Vec3::new(10.0, 0.0, 10.0)).length() < 1e-3, "got {p:?}");
+    }
+
     /// #837: an extrude's faces split into the solids they make — profiles that touch (nested
     /// or overlapping) stay together, ones that share nothing come apart.
     #[test]
@@ -5705,6 +5794,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
+            around_axis: false,
             mode: RepeatMode::FillPitch,
             count: String::new(),
             spacing: "10".to_string(),
@@ -6025,6 +6115,7 @@ mod tests {
             extrusion_targets: vec![1],
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
+            around_axis: false,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "6".to_string(),
@@ -6069,6 +6160,7 @@ mod tests {
             extrusion_targets: vec![0],
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
+            around_axis: false,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),

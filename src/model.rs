@@ -2112,6 +2112,10 @@ pub struct RepeatOperation {
     #[serde(default)]
     pub sketch_outputs: Vec<usize>,
     pub axis: RevolveAxis,
+    /// Repeat **around** the path instead of along it (#839): copies turn about the axis
+    /// rather than sliding along it, and `spacing`/`length` are read as angles (degrees).
+    #[serde(default)]
+    pub around_axis: bool,
     pub mode: RepeatMode,
     /// Instance count expression (count modes).
     #[serde(default)]

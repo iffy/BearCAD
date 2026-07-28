@@ -7084,6 +7084,7 @@ impl App {
                         extrusion_targets: existing.extrusion_targets,
                         sketch_targets: existing.sketch_targets,
                         axis: Some(existing.axis),
+                        around_axis: existing.around_axis,
                         mode: existing.mode,
                         count: existing.count,
                         spacing: existing.spacing,
@@ -7894,8 +7895,14 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
     ) -> bool {
-        // The gizmo can't outlive the repeat it belongs to.
-        if self.state.creating_repeat.is_none() {
+        // The gizmo can't outlive the repeat it belongs to, and it drags a *distance* — a
+        // turn about the axis has none (#839).
+        if self
+            .state
+            .creating_repeat
+            .as_ref()
+            .is_none_or(|c| c.around_axis)
+        {
             self.repeat_gizmo_drag = None;
             return false;
         }
@@ -8000,6 +8007,7 @@ impl App {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             axis: cr.axis?,
+            around_axis: false,
             mode: cr.mode,
             count: cr.count.clone(),
             spacing: cr.spacing.clone(),
@@ -10121,6 +10129,21 @@ impl eframe::App for App {
                     let computed_value = cr.and_then(|c| {
                         let probe = self.repeat_probe_op(c)?;
                         let offsets = crate::extrude::repeat_offsets(&self.state.doc, &probe)?;
+                        // Turning about the axis measures in degrees, and the items have no
+                        // angular extent to subtract (#839).
+                        if c.around_axis {
+                            let angle_unit = self.state.doc.default_angle_unit;
+                            let deg = |v: f32| {
+                                crate::value::format_angle_display_in(v.to_radians(), angle_unit)
+                            };
+                            return Some(match c.computed_var() {
+                                model::RepeatVar::Count => (offsets.len() + 1).to_string(),
+                                model::RepeatVar::Gap => deg(offsets.first().copied().unwrap_or(0.0)),
+                                model::RepeatVar::Distance => {
+                                    deg(offsets.last().copied().unwrap_or(0.0))
+                                }
+                            });
+                        }
                         let l = crate::extrude::repeat_extent(&self.state.doc, &probe)?;
                         let unit = self.state.doc.default_length_unit;
                         let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
@@ -10137,6 +10160,7 @@ impl eframe::App for App {
                         })
                     });
                     context::RepeatControl {
+                        around_axis: cr.is_some_and(|c| c.around_axis),
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
@@ -11079,6 +11103,17 @@ impl eframe::App for App {
                             context::RepeatEdit::ToggleDistanceEnd => {
                                 cr.distance_is_end = !cr.distance_is_end;
                                 cr.recompute_mode();
+                            }
+                            context::RepeatEdit::SetAroundAxis(around) => {
+                                cr.around_axis = around;
+                                // A sweep has no target to measure to (#839), and the angle
+                                // starts at a full turn.
+                                if around {
+                                    cr.length_target = None;
+                                    if cr.length.trim().is_empty() {
+                                        cr.length = "360".to_string();
+                                    }
+                                }
                             }
                             context::RepeatEdit::Commit => unreachable!(),
                         }
@@ -13477,6 +13512,7 @@ fn build_viewport_scene_input<'a>(
                 sketch_plane_outputs: Vec::new(),
                 sketch_outputs: Vec::new(),
                 axis: c.axis?,
+                around_axis: c.around_axis,
                 mode: c.mode,
                 count: c.count.clone(),
                 spacing: c.spacing.clone(),
@@ -13487,18 +13523,24 @@ fn build_viewport_scene_input<'a>(
                 name: None,
                 deleted: false,
             };
-            let (_, dir) = extrude::axis_world(doc, c.axis?)?;
+            let (origin, dir) = extrude::axis_world(doc, c.axis?)?;
             let offsets = extrude::repeat_offsets(doc, &probe)?;
             let mut ghosts = Vec::new();
             for &bi in &c.targets {
                 if let Some(base) = extrude::body_solid_mesh(doc, bi) {
                     for &off in &offsets {
-                        let t = dir * off;
+                        let m = extrude::repeat_step_transform(origin, dir, c.around_axis, off);
                         ghosts.push(extrude::SolidMesh {
                             triangles: base
                                 .triangles
                                 .iter()
-                                .map(|[a, b, c]| [*a + t, *b + t, *c + t])
+                                .map(|[a, b, c]| {
+                                    [
+                                        m.transform_point3(*a),
+                                        m.transform_point3(*b),
+                                        m.transform_point3(*c),
+                                    ]
+                                })
                                 .collect(),
                         });
                     }
