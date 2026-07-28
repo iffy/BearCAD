@@ -3385,7 +3385,9 @@ document is millimeters, so the player is person-scale: eye height
 - **Long-press = right-click**: a touch press held ≥0.6 s within an 8 px slop
   (`touch::long_press_fires`, fires once per press) injects a synthetic secondary
   click at the finger, opening the same context menus.
-- **Compact layout** below 700 logical px width (phones): the three side panes render
+- **Compact layout** below 700 logical px width (phones): the view-cube HUD drops to the
+  **background** layer so an open pane covers it rather than the other way round (#830), and
+  the three side panes render
   as **closable floating windows** over the viewport instead of docked panels
   (`show_pane_shell`), hidden by default (one-shot on first compact frame), toggled
   from always-visible **Elements/Context/Params** buttons in the status bar; the

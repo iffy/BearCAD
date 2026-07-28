@@ -1611,9 +1611,17 @@ pub fn show_hud(
     command_log: Option<std::cell::RefMut<'_, crate::command_log::CommandLog>>,
 ) {
     let screen_rect = cube_rect_in_viewport(viewport);
+    // Phone layout: the panes are floating windows over the viewport, and the HUD belongs
+    // *under* them — otherwise it covers whichever pane is open (#830). Areas in
+    // `Background` always sort below `Window`'s `Middle`, whatever order they're built in.
+    let order = if crate::touch::compact(ctx) {
+        egui::Order::Background
+    } else {
+        egui::Order::Foreground
+    };
     egui::Area::new(egui::Id::new("view_cube_hud"))
         .fixed_pos(screen_rect.min)
-        .order(egui::Order::Foreground)
+        .order(order)
         .interactable(true)
         .constrain(false)
         .show(ctx, |ui| {
