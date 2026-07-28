@@ -1898,49 +1898,106 @@ fn tutorial_bubble_layout(
     )
 }
 
-/// Draw a keyboard key at `rect` with `label` on its face — the tutorial's way of naming a
-/// key you have to hold or press (#759/#777).
-fn draw_keycap(painter: &egui::Painter, rect: egui::Rect, label: &str) {
-    // The cap's body, then a lighter top face inset above it — enough shading to read as a key.
-    painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(40, 78, 150));
-    painter.rect_filled(
-        egui::Rect::from_min_max(rect.min + egui::vec2(3.0, 3.0), rect.max - egui::vec2(3.0, 6.0)),
-        5.0,
-        egui::Color32::from_rgb(70, 125, 220),
-    );
-    painter.rect_stroke(
-        rect,
-        6.0,
-        egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 195, 255)),
-        egui::StrokeKind::Inside,
-    );
-    painter.text(
-        egui::pos2(rect.center().x, rect.center().y - 1.5),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(14.0),
-        egui::Color32::WHITE,
-    );
-}
-
-/// A blue **Shift** keycap floating beside a tutorial orb (#759): the click the orb points
-/// at has to be Shift+clicked to add to the selection. Sits to the right of the orb, or to
-/// its left when the right side runs out of viewport.
-fn draw_shift_keycap(
+/// What a tutorial click needs held alongside it (#759/#851/#877): the same select-arrow
+/// the orb carries, a `+`, and the thing to hold — clear of the ring, so it never covers
+/// the spot being pointed at.
+fn draw_shift_hint(
     painter: &egui::Painter,
     ctx: &egui::Context,
     orb: egui::Pos2,
     orb_radius: f32,
     bounds: egui::Rect,
 ) {
-    // Blue words, not a keycap (#851): a keycap reads as something to click, and the one
-    // thing this must not say is "click me".
-    orb_word_hint(painter, ctx, orb, orb_radius, bounds, "Hold Shift", true);
+    draw_orb_pointer_combo(painter, ctx, orb, orb_radius, bounds, "Shift");
 }
 
-/// A line of blue words riding with the orb (#851/#853): the guide's own colour on a rounded
-/// backing that echoes the ring, so it reads as part of the guide rather than as a control.
-/// `over` puts it across the orb's middle; otherwise it floats just above the ring.
+/// Blue text drawn heavy enough to read as bold — egui's default family has one weight, so
+/// the glyphs are painted twice a hair apart.
+fn paint_bold_text(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+) {
+    painter.text(pos, align, text, font.clone(), color);
+    painter.text(pos + egui::vec2(0.7, 0.0), align, text, font, color);
+}
+
+/// The pointer icon, a `+`, and what to hold with it — big, bold, and blue, sitting
+/// **outside** the orb (#877/#882). Above the ring by preference, below it when the top of
+/// the viewport is in the way.
+fn draw_orb_pointer_combo(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    bounds: egui::Rect,
+    label: &str,
+) {
+    const ICON: f32 = 22.0;
+    const PAD: egui::Vec2 = egui::vec2(14.0, 7.0);
+    let blue = egui::Color32::from_rgb(150, 205, 255);
+    let font = egui::FontId::proportional(17.0);
+    let plus = painter.layout_no_wrap("+".to_string(), font.clone(), blue);
+    let words = painter.layout_no_wrap(label.to_string(), font.clone(), blue);
+    let inner = egui::vec2(
+        ICON + 8.0 + plus.size().x + 8.0 + words.size().x,
+        ICON.max(words.size().y),
+    );
+    let size = inner + PAD * 2.0;
+
+    // Clear of the ring: above it, or below when there's no room up there.
+    let clear = orb_radius + 16.0 + size.y * 0.5;
+    let cy = if orb.y - clear - size.y * 0.5 >= bounds.top() {
+        orb.y - clear
+    } else {
+        orb.y + clear
+    };
+    let cx = orb
+        .x
+        .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
+    let cy = cy.clamp(bounds.top() + size.y * 0.5 + 6.0, bounds.bottom() - size.y * 0.5 - 6.0);
+    let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
+    painter.rect_filled(
+        rect,
+        size.y * 0.5,
+        egui::Color32::from_rgba_unmultiplied(16, 26, 40, 225),
+    );
+
+    let mut x = rect.left() + PAD.x;
+    icons::paint_icon(
+        painter,
+        ctx,
+        icons::IconId::Select,
+        egui::Rect::from_min_size(egui::pos2(x, rect.center().y - ICON * 0.5), egui::Vec2::splat(ICON)),
+        blue,
+    );
+    x += ICON + 8.0;
+    paint_bold_text(
+        painter,
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "+",
+        font.clone(),
+        blue,
+    );
+    x += plus.size().x + 8.0;
+    paint_bold_text(
+        painter,
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font,
+        blue,
+    );
+    ctx.request_repaint();
+}
+
+/// A line of blue words riding just above the orb (#851/#853): the guide's own colour on a
+/// rounded backing that echoes the ring, so it reads as part of the guide rather than as a
+/// control.
 fn orb_word_hint(
     painter: &egui::Painter,
     ctx: &egui::Context,
@@ -1948,17 +2005,12 @@ fn orb_word_hint(
     orb_radius: f32,
     bounds: egui::Rect,
     text: &str,
-    over: bool,
 ) {
     let font = egui::FontId::proportional(13.0);
     let blue = egui::Color32::from_rgb(140, 200, 255);
     let galley = painter.layout_no_wrap(text.to_string(), font.clone(), blue);
     let size = galley.size() + egui::vec2(18.0, 8.0);
-    let cy = if over {
-        orb.y
-    } else {
-        orb.y - orb_radius - 14.0 - size.y * 0.5
-    };
+    let cy = orb.y - orb_radius - 14.0 - size.y * 0.5;
     let cx = orb
         .x
         .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
@@ -2094,9 +2146,9 @@ fn draw_orb_typing_guide(
     ctx.request_repaint();
 }
 
-/// A mouse-button badge and a looping drag animation beside the orb (#819): the step wants
-/// a **drag**, so a ghost dot slides away from the orb and fades, over and over, next to a
-/// keycap naming the button to hold.
+/// A button badge and a looping drag animation beside the orb (#819/#882): the step wants a
+/// **drag**, so the pointer-plus-button badge names what to hold, and below the ring a
+/// pointer is blown sideways by cartoon wind lines that gust in and fade.
 fn draw_orb_drag_hint(
     painter: &egui::Painter,
     ctx: &egui::Context,
@@ -2105,31 +2157,44 @@ fn draw_orb_drag_hint(
     bounds: egui::Rect,
     label: &str,
 ) {
-    let font = egui::FontId::proportional(13.0);
-    let galley = painter.layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE);
-    let key = egui::vec2(galley.size().x + 22.0, 30.0);
-    let gap = orb_radius + 16.0;
-    let mut center = orb + egui::vec2(gap + key.x * 0.5, 0.0);
-    if center.x + key.x * 0.5 > bounds.right() - 6.0 {
-        center = orb - egui::vec2(gap + key.x * 0.5, 0.0);
-    }
-    center.y = center.y.clamp(bounds.top() + key.y, bounds.bottom() - key.y);
-    draw_keycap(painter, egui::Rect::from_center_size(center, key), label);
+    draw_orb_pointer_combo(painter, ctx, orb, orb_radius, bounds, label);
 
-    // The drag itself: a dot that travels a short way and fades, on a loop.
+    // The drag itself: the pointer slides a short way and the wind streaks trailing it gust
+    // in and out, so the loop reads as "push it that way" rather than "a dot moved".
     const TRAVEL: f32 = 64.0;
     const PERIOD: f64 = 1.6;
-    let t = (ctx.input(|i| i.time) % PERIOD) / PERIOD;
-    let eased = (t as f32 * std::f32::consts::PI * 0.5).sin();
-    let from = orb + egui::vec2(-TRAVEL * 0.5, orb_radius + 26.0);
+    const ICON: f32 = 20.0;
+    let t = ((ctx.input(|i| i.time) % PERIOD) / PERIOD) as f32;
+    let eased = (t * std::f32::consts::PI * 0.5).sin();
+    let from = orb + egui::vec2(-TRAVEL * 0.5, orb_radius + 30.0);
     let pos = from + egui::vec2(TRAVEL * eased, 0.0);
-    let fade = (1.0 - t as f32).clamp(0.0, 1.0);
-    let blue = egui::Color32::from_rgba_unmultiplied(140, 190, 255, (220.0 * fade) as u8);
-    painter.line_segment(
-        [from, pos],
-        egui::Stroke::new(2.0, blue.gamma_multiply(0.5)),
+    let fade = (1.0 - t).clamp(0.0, 1.0);
+    let blue = egui::Color32::from_rgba_unmultiplied(140, 190, 255, (230.0 * fade) as u8);
+
+    // Three flurries at staggered heights and phases: each streak grows out of nothing
+    // behind the pointer, stretches, then thins away — cartoon wind.
+    for (i, dy) in [-9.0_f32, 0.0, 9.0].into_iter().enumerate() {
+        let phase = (t + i as f32 * 0.22).fract();
+        let gust = (phase * std::f32::consts::PI).sin();
+        let len = 10.0 + 22.0 * gust;
+        let tail = pos + egui::vec2(-8.0 - len, dy);
+        let head = pos + egui::vec2(-8.0, dy);
+        let alpha = (200.0 * gust * fade) as u8;
+        painter.line_segment(
+            [tail, head],
+            egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(140, 190, 255, alpha)),
+        );
+    }
+
+    // The pointer being blown: the same select arrow the orb carries, tip at `pos`.
+    let tip = egui::vec2(ICON * 8.0 / 32.0, ICON * 5.0 / 32.0);
+    icons::paint_icon(
+        painter,
+        ctx,
+        icons::IconId::Select,
+        egui::Rect::from_min_size(pos - tip, egui::Vec2::splat(ICON)),
+        blue,
     );
-    painter.circle_filled(pos, 6.0, blue);
     ctx.request_repaint();
 }
 
@@ -3072,7 +3137,7 @@ impl App {
                 }
                 // This click adds to the selection, so it wants Shift held (#759/#851).
                 if step.needs_shift.is_some_and(|f| f(&self.state)) {
-                    draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
+                    draw_shift_hint(&painter, ctx, pos, base, badge_bounds);
                 }
                 // A drag, not a click: name the button and animate the motion (#819).
                 if let Some(label) = step.drag_hint {
@@ -3090,7 +3155,7 @@ impl App {
                 && !step.needs_shift.is_some_and(|f| f(&self.state));
             if let (true, Some(hint)) = (picking, step.key_hint) {
                 // Blue words above the ring, not a keycap (#853) — nothing here is clickable.
-                orb_word_hint(&painter, ctx, pos, base, badge_bounds, hint.1, false);
+                orb_word_hint(&painter, ctx, pos, base, badge_bounds, hint.1);
             }
             ctx.request_repaint(); // keep the pulse and glide animating
         } else {

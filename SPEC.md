@@ -3541,15 +3541,18 @@ document is millimeters, so the player is person-scale: eye height
   the first target with **no Shift hint**, since that click has to replace the selection
   rather than add a third thing to it (#785). A line's orb sits at its
   **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
-  polyline — for a straight line that was its end. A step that wants a **drag** rather than a click shows the
-  mouse button as a keycap plus a looping drag animation beside the orb (`Step::drag_hint`,
-  #819) — the spin-the-view step uses it. The second click of a pair reads **"Hold Shift"** in
-  blue across the orb (#759/#851, `Step::needs_shift`, `orb_word_hint`), since that click
-  adds to the selection. Steps whose target sits **under other geometry** — the base line
+  polyline — for a straight line that was its end. A step that wants a **drag** rather than a click names the
+  button in the pointer badge below and animates it (`Step::drag_hint`, #819/#882) — a
+  pointer blown sideways by cartoon wind gusts under the ring; the spin-the-view step uses
+  it. Anything to be **held with the click** — the Shift of a second pick, the right button
+  of a drag — reads as the orb's own select-arrow, a `+`, and the thing to hold, in big bold
+  blue on a pill sitting **clear of the ring** (#759/#851/#877/#882,
+  `Step::needs_shift`/`Step::drag_hint`, `draw_orb_pointer_combo`), above it when there's
+  room and below it otherwise, so it never covers the spot being pointed at. Steps whose target sits **under other geometry** — the base line
   lying along the X axis, once it's been levelled — say **"Press space if it's too crowded to
   pick"** in the same blue just above the ring (`Step::key_hint`, #777/#853), which is how the
-  tutorial introduces the Selection Exploder. Neither is a keycap: a key-shaped badge reads as
-  something to click, and these are things to hold or press on the keyboard. A step whose work
+  tutorial introduces the Selection Exploder. None of them is a keycap: a key-shaped badge
+  reads as something to click, and these are things to hold or press on the keyboard. A step whose work
   is a short **sequence** — click this, Shift+click that, press the button — shows **every mark
   at once, numbered** (`Step::marks`, `tutorial::GuideMark`, #854): the active one is the orb
   with its pointer, the rest are quieter rings, and each turns **green** as its part lands, so
@@ -3614,13 +3617,13 @@ document is millimeters, so the player is person-scale: eye height
   The **cut**, **countersink** and **corner-rounding** steps lead click by click too
   (#803/#804/#806): each hole face in turn and then the pane's **Output → Cut** button
   (`UiAnchor::ExtrudeCut`, the pane reporting its rect like the constraint buttons), each
-  hole's rim with the Shift keycap on the second, and each flange-tip edge in turn — with
+  hole's rim with the Shift badge on the second, and each flange-tip edge in turn — with
   the depth (`-(thick + 1)`), countersink (`1.2`) and corner radius (`2`) named as type
   hints once their fields exist. The hole-positioning step asks for the **same distance from
   each end** so the pair sits evenly (#801).
   **Dimensioning is one dimension
   per step too** (#776): pick up the tool, then each outer leg, each end cap and finally the
-  bend angle, the orb on the line each step wants (and the Shift keycap for the angle's
+  bend angle, the orb on the line each step wants (and the Shift badge for the angle's
   second pick). Taking up the Dimension tool **clears the selection** the constraint steps
   left behind (#772) — under that tool a live selection is already a dimension in the
   making. The
