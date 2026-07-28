@@ -15,14 +15,9 @@ to drop it where you want it, then type the value and press **Enter**.
 
 ![Two lines with length dimensions and the angle between them dimensioned](/img/screenshots/dimension.png)
 
-- **Shift+click** a second line for the **angle** between them — the preview switches to the
-  angle and follows the cursor the same way.
-- A plain click always moves on to dimensioning whatever you clicked, so a change of mind
-  costs one click. Something that's **already dimensioned** still selects — clicking it
-  doesn't reopen its value; **double-click** to change that.
-- While you're typing, the dimension stays drawn where you placed it — just without its
-  number, which is in the field under your cursor. The **Context pane** mirrors the same
-  value (**Span** for a length, **Angle** for an angle) with a blue **✓** to commit.
+- **Shift+click** a second line for the **angle** between them.
+- A plain click re-targets; **double-click** an already-dimensioned thing to change its value.
+- The Context pane mirrors the value (**Span** or **Angle**) with a **✓** to commit.
 - Value fields accept **expressions**: `25`, `2.5in`, `leg/2 + 5`, or a new parameter
   created on the spot by typing `name=value` — see [Parameters & units](/docs/parameters).
 - Dimension labels are draggable, and double-clicking one reopens it for editing.

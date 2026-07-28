@@ -28,10 +28,8 @@ which is why the camera bindings live on the *right* mouse button.
 
 Touch mode switches on at the first touch: pick targets grow to finger size, and on
 phone-width screens the side panes become floating windows, toggled from the bottom bar.
-While a finger drags a sketch shape (or a vertex) around, a **magnifier** floats just
-above the fingertip showing the geometry underneath it — the shape in progress and the
-snap the next tap would take — so exact points are aimable even under a finger. Near the
-top of the view it moves to the side, where there's room.
+While a finger drags a shape or vertex, a **magnifier** floats beside it showing what the
+finger covers, so snap points stay aimable.
 A trackpad pinch zooms the same way. Focusing any value field floats an **on-screen
 keypad** — digits, units, operators, and your parameter names as one-tap chips — and a
 **long press** opens the same menus a right-click does.

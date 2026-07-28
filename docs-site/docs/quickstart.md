@@ -8,20 +8,13 @@ title: Quickstart
 Don't have BearCAD yet? [Run it in your browser](https://www.iffycan.com/BearCAD/app/)
 or [download it here](https://github.com/iffy/BearCAD/releases/latest).
 
-**Prefer being shown?** **Bear** — the cube in the corner of the viewport — can walk you
-through this very bracket inside the app. He narrates each step in a speech bubble, points
-at the next thing to click with a glowing orb, and notices when you've done it and moves
-on by himself. Every step can also do itself — press **Do it for me** and Bear makes the
-change your clicks would — and you can go **Back** over any step or close the tutorial with
-the **✕** at any time.
+Prefer being shown? **Bear** can walk you through this very bracket inside the app:
+**[start the tutorial](https://www.iffycan.com/BearCAD/app/?tutorial=bracket)**, or press
+**Tutorial** in the status bar.
 
-👉 **[Start the bracket tutorial in your browser](https://www.iffycan.com/BearCAD/app/?tutorial=bracket)**
-— it opens the web app with the tutorial already running. In a desktop build, press
-**Tutorial** in the bottom-right status bar (or launch `bearcad --tutorial bracket`).
-
-Or follow along here. A 120-degree angle bracket: rounded bend, rounded corners, two
-countersunk screw holes. Draw it sloppily, let the constraint solver square it up, then
-change the bend angle afterward without redrawing.
+A 120-degree angle bracket: rounded bend, rounded corners, two countersunk screw holes.
+Draw it sloppily, let the constraint solver square it up, then change the bend angle
+afterward without redrawing.
 
 ![The finished 120-degree bracket: rounded bend, rounded corners, two countersunk screw holes](/img/screenshots/quickstart.png)
 

@@ -2980,12 +2980,14 @@ impl App {
                         // Title on the left, a close ✕ in the top right (#756) — the way
                         // every other dismissible panel closes.
                         ui.horizontal(|ui| {
+                            // Counted as this device sees it: phone-only pane steps don't
+                            // pad a desktop reader's numbering (#828).
+                            let (position, total) =
+                                tutorial::step_position(&self.state, run.tutorial, run.step);
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{} — step {} of {}",
+                                    "{} — step {position} of {total}",
                                     tut.title,
-                                    run.step + 1,
-                                    tut.steps.len()
                                 ))
                                 .color(egui::Color32::from_rgb(255, 200, 80))
                                 .size(11.0),

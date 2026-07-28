@@ -92,6 +92,10 @@ pub struct Step {
     /// Narration for the **phone** layout (#828), where the panes are floating windows
     /// toggled from the status bar rather than columns down the sides.
     pub phone_narration: Option<&'static str>,
+    /// A step that only exists on the phone layout (opening and tucking away the floating
+    /// panes). It passes straight through on a desktop, and is left out of the step
+    /// numbering there so the count isn't padded with steps that never show.
+    pub only_on_phone: bool,
 }
 
 impl Step {
@@ -102,6 +106,32 @@ impl Step {
             _ => self.narration,
         }
     }
+
+    /// Whether this step is part of the walkthrough on this device — phone-only steps
+    /// aren't, on anything wider.
+    pub fn shown_on(&self, app: &AppState) -> bool {
+        app.compact_layout || !self.only_on_phone
+    }
+}
+
+/// Where this step sits in the walkthrough **as this device sees it** (#828): `(position,
+/// total)`, counting only the steps that show here, so a desktop reader never sees a count
+/// padded by phone-only pane steps. A step that isn't shown here (transiently, while it
+/// auto-advances) reports the position of the one before it.
+pub fn step_position(app: &AppState, tutorial: usize, step: usize) -> (usize, usize) {
+    let Some(tut) = TUTORIALS.get(tutorial) else {
+        return (step + 1, step + 1);
+    };
+    let shown = |s: &Step| s.shown_on(app);
+    let total = tut.steps.iter().filter(|s| shown(s)).count();
+    let position = tut
+        .steps
+        .iter()
+        .take(step + 1)
+        .filter(|s| shown(s))
+        .count()
+        .max(1);
+    (position, total.max(position))
 }
 
 /// What a step's "Type …" badge says: either fixed words, or a line computed from the live
@@ -1856,6 +1886,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "On a phone the panes hide away. Tap `Params` in the bar at the bottom to bring the Parameters pane out.",
@@ -1868,6 +1899,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: true,
     },
     Step {
         narration: "First, a name for our first number. See the Parameters pane on the \
@@ -1881,6 +1913,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: Some("The Parameters pane is open now. Tap inside the `name` box \u{2014} the pulsing ring marks it."),
+        only_on_phone: false,
     },
     Step {
         narration: "Type `leg` \u{2014} just those three letters. It's the length of each \
@@ -1894,6 +1927,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("leg")),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Now tap the value box beside it and type `50mm`.",
@@ -1906,6 +1940,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Fixed("50mm")),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Press + to add it. Your first parameter!",
@@ -1918,6 +1953,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Three more, exactly the same moves:\n\
@@ -1932,6 +1968,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(next_missing_param)),
         phone_narration: Some("Three more, the same moves:\n`hole` = `5mm`\n`bend` = `4mm`\n`bend_angle` = `120deg`\n\u{2014} or let me type them in for you."),
+        only_on_phone: false,
     },
     Step {
         narration: "Tap `Params` again to tuck the pane away \u{2014} you'll want the whole screen for drawing.",
@@ -1944,6 +1981,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: true,
     },
     Step {
         narration: "Grab the Line tool \u{2014} the glowing button up top, or press L.",
@@ -1956,6 +1994,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: Some("Grab the Line tool \u{2014} the glowing button in the toolbar along the top."),
+        only_on_phone: false,
     },
     Step {
         narration: "I've brought us in over the drawing area. Now click each glowing point \
@@ -1969,6 +2008,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Now the Constraint tool \u{2014} the glowing button, or press C.",
@@ -1981,6 +2021,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: Some("Now the Constraint tool \u{2014} the glowing button in the toolbar."),
+        only_on_phone: false,
     },
     Step {
         narration: "The constraint buttons live in the Context pane \u{2014} tap `Context` at the bottom to open it.",
@@ -1993,6 +2034,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: true,
     },
     Step {
         narration: "Pin the profile down: click the bend corner, Shift+click the origin, \
@@ -2006,6 +2048,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Level the base: click the bottom line, Shift+click the red X axis, \
@@ -2022,6 +2065,7 @@ static BRACKET_STEPS: &[Step] = &[
         )),
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Click the bottom line, Shift+click the inner base line, press `1`.",
@@ -2034,6 +2078,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "The tilted leg: click one long line, Shift+click the other, \
@@ -2047,6 +2092,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Click the base leg's end cap, Shift+click the bottom line, press `2` \
@@ -2060,6 +2106,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Click the tilted leg's end cap, Shift+click its long line, \
@@ -2073,6 +2120,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Tap `Context` to tuck that pane away again \u{2014} the next steps are all out on the model.",
@@ -2085,6 +2133,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: true,
     },
     Step {
         narration: "Now exact sizes. Grab the Dimension tool \u{2014} the glowing button, \
@@ -2098,6 +2147,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: Some("Now exact sizes. Grab the Dimension tool \u{2014} the glowing button in the toolbar."),
+        only_on_phone: false,
     },
     Step {
         narration: "Click the glowing line, move the mouse to place the dimension, click \
@@ -2111,6 +2161,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "The other outer leg, the same way: click, place, type `leg`, Enter.",
@@ -2123,6 +2174,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Now an end cap \u{2014} the bracket's thickness. We never entered that \
@@ -2137,6 +2189,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "And the other end cap \u{2014} now that `thick` exists, just type its \
@@ -2150,6 +2203,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Last one, the bend: click the bottom line, Shift+click the inner leg \
@@ -2163,6 +2217,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E). Click the glowing face, and \
@@ -2177,6 +2232,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Round the bend with Fillet (F): click the glowing edge \u{2014} the \
@@ -2190,6 +2246,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Now the outside edge, one bracket thickness bigger: type \
@@ -2203,6 +2260,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(bend_thick_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Screw holes next. Grab the Sketch tool \u{2014} the glowing button, or \
@@ -2216,6 +2274,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "The holes go on the `inside` of the base flange \u{2014} which is \
@@ -2230,6 +2289,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "There it is \u{2014} click the glowing face to sketch on it.",
@@ -2242,6 +2302,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Circle tool now \u{2014} the glowing button, or press `O`.",
@@ -2254,6 +2315,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Click the glowing spot for the first hole's centre, then type `hole` for \
@@ -2267,6 +2329,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "And the second hole, the same way: `hole` again.",
@@ -2279,6 +2342,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Pin them down with the Dimension tool (`D`): click the glowing centre, \
@@ -2294,6 +2358,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "This one needs the `Output` row: tap `Context` to open that pane again.",
@@ -2306,6 +2371,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: true,
     },
     Step {
         narration: "Esc, then Extrude (E). Click each glowing hole face, pick `Cut` in the \
@@ -2320,6 +2386,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(hole_cut_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Tap `Context` once more to tuck the pane away \u{2014} back to the model.",
@@ -2332,6 +2399,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: true,
     },
     Step {
         narration: "Countersink them: Chamfer (K), click the glowing rim, Shift+click the \
@@ -2345,6 +2413,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(countersink_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Fillet (F) again: click the glowing corner edge, Shift+click the other \
@@ -2358,6 +2427,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: Some(TypeHint::Dynamic(corner_value_hint)),
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "Sign your work: Text (T) on the outer face of the base, type `BearCAD`. \
@@ -2372,6 +2442,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "The best part: in the Parameters pane, change `bend_angle` from `120deg` \
@@ -2386,6 +2457,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
     Step {
         narration: "You built it! Export via File \u{2192} Export \u{2192} STL or STEP. \
@@ -2400,6 +2472,7 @@ static BRACKET_STEPS: &[Step] = &[
         key_hint: None,
         type_hint: None,
         phone_narration: None,
+        only_on_phone: false,
     },
 ];
 
@@ -2506,6 +2579,34 @@ mod tests {
         let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
         assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
         assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
+    }
+
+    /// #828: the phone-only steps are left out of the numbering on anything wider, so a
+    /// desktop reader's "step N of M" counts only the steps they'll actually see.
+    #[test]
+    fn phone_steps_stay_out_of_the_desktop_numbering() {
+        let mut app = AppState::default();
+        let phone_steps = BRACKET_STEPS.iter().filter(|s| s.only_on_phone).count();
+        assert!(phone_steps > 0, "there are phone-only steps to leave out");
+
+        let last = BRACKET_STEPS.len() - 1;
+        let (_, desktop_total) = step_position(&app, 0, last);
+        assert_eq!(desktop_total, BRACKET_STEPS.len() - phone_steps);
+
+        app.compact_layout = true;
+        let (_, phone_total) = step_position(&app, 0, last);
+        assert_eq!(phone_total, BRACKET_STEPS.len(), "a phone sees them all");
+
+        // A step after some phone-only ones counts lower on a desktop than on a phone.
+        let after = BRACKET_STEPS
+            .iter()
+            .position(|s| s.done.is_some_and(|d| std::ptr::fn_addr_eq(d, line_tool_active as fn(&AppState) -> bool)))
+            .unwrap();
+        app.compact_layout = false;
+        let (desktop_pos, _) = step_position(&app, 0, after);
+        app.compact_layout = true;
+        let (phone_pos, _) = step_position(&app, 0, after);
+        assert!(desktop_pos < phone_pos, "{desktop_pos} vs {phone_pos}");
     }
 
     /// #828: the phone-only steps (open/tuck the floating panes) are already satisfied on a

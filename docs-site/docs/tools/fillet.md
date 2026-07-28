@@ -22,9 +22,8 @@ edge where a wall meets the top or bottom face, or the **round rim** of a cylind
 drilled hole. Shift+click more edges to round several with one radius, then drag or type
 and press **Enter** — like the rounded bend in the
 [Quickstart bracket](/docs/quickstart#5-round-the-bend).
-The picked edges are listed in the Context pane, where individual ones
-can be removed before committing — and the **Radius** is there too, with a blue ✓ to
-commit, so the whole thing can be driven from the pane.
+The Context pane lists the picked edges (each removable) and the **Radius**, with a ✓ to
+commit.
 
 ![A box with its four vertical edges rounded](/img/screenshots/fillet.png)
 
