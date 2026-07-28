@@ -800,6 +800,11 @@ fn consider_face_pick_sized(best: &mut Option<FacePick>, candidate: FacePick) {
                 // #822): the **smaller** one is what the cursor is aiming at. Depth can't
                 // tell them apart — they're coplanar.
                 candidate.area < b.area
+            } else if candidate.face.is_construction_plane() != b.face.is_construction_plane() {
+                // Real geometry beats a datum plane under the same cursor, even when the
+                // plane is nearer the camera (#844): the planes are translucent references,
+                // and a click on a body's face means that face.
+                !candidate.face.is_construction_plane()
             } else {
                 // Essentially the same screen distance (e.g. cursor inside both the
                 // front and back face of a solid): prefer the one nearer the camera.
@@ -865,6 +870,41 @@ fn centroid(points: &[Vec3]) -> Vec3 {
     points.iter().copied().sum::<Vec3>() / points.len() as f32
 }
 
+/// The world point on a planar face that lands under the cursor (#844): the polygon is
+/// triangulated, the triangle the cursor sits in is found in screen space, and its world
+/// corners are blended by the same weights. Falls back to the centroid when the cursor is
+/// outside the face (a near miss picked up by the edge distance).
+///
+/// This is what depth comparisons need: the *centroid's* distance says nothing about which
+/// face is in front under the cursor, and a big datum plane's centroid could beat a small
+/// body face the cursor was actually over.
+fn face_point_under_cursor(
+    screen: eframe::egui::Pos2,
+    projected: &[eframe::egui::Pos2],
+    poly: &[Vec3],
+) -> Option<Vec3> {
+    if poly.len() < 3 || projected.len() != poly.len() {
+        return None;
+    }
+    let normal = (poly[1] - poly[0]).cross(poly[2] - poly[0]).normalize_or_zero();
+    for [a, b, c] in crate::polygon::triangulate_planar(poly, normal) {
+        let (pa, pb, pc) = (projected[a], projected[b], projected[c]);
+        let area = (pb.x - pa.x) * (pc.y - pa.y) - (pc.x - pa.x) * (pb.y - pa.y);
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        let w0 = ((pb.x - screen.x) * (pc.y - screen.y) - (pc.x - screen.x) * (pb.y - screen.y))
+            / area;
+        let w1 = ((pc.x - screen.x) * (pa.y - screen.y) - (pa.x - screen.x) * (pc.y - screen.y))
+            / area;
+        let w2 = 1.0 - w0 - w1;
+        if w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4 {
+            return Some(poly[a] * w0 + poly[b] * w1 + poly[c] * w2);
+        }
+    }
+    None
+}
+
 fn quad_face_pick_distance(
     screen: eframe::egui::Pos2,
     project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
@@ -878,7 +918,10 @@ fn quad_face_pick_distance(
     } else {
         dist_point_to_quad_edges(screen, quad)
     };
-    Some((dist, centroid(&corners)))
+    // The point under the cursor, not the middle of the face — that's what decides which of
+    // two overlapping faces is in front (#844).
+    let at = face_point_under_cursor(screen, &pts, &corners).unwrap_or_else(|| centroid(&corners));
+    Some((dist, at))
 }
 
 /// Pick a sketchable face (rectangle, circle, or construction plane) under the cursor.
@@ -1352,7 +1395,8 @@ fn polygon_face_pick_distance(
     if pts.len() < 3 {
         return None;
     }
-    let c = centroid(poly);
+    // The point under the cursor when there is one, else the middle of the face (#844).
+    let c = face_point_under_cursor(screen, &pts, poly).unwrap_or_else(|| centroid(poly));
     let normal = (poly[1] - poly[0]).cross(poly[2] - poly[0]).normalize_or_zero();
     let inside = crate::polygon::triangulate_planar(poly, normal)
         .into_iter()
@@ -1527,6 +1571,30 @@ mod tests {
         let p = local_to_world(&frame, 2.0, 3.0);
         assert!((p.x - 12.0).abs() < 1e-4);
         assert!((p.y - 13.0).abs() < 1e-4);
+    }
+
+    /// #844: a datum plane between the camera and a body doesn't steal the click — the
+    /// body's face is what a click on the body means.
+    #[test]
+    fn a_body_face_beats_a_datum_plane_in_front_of_it() {
+        let mut doc = doc_with_extruded_box();
+        // A plane parked *nearer the camera* than the box, covering it on screen.
+        let mut plane = crate::construction::plane_from_face(0.0, Vec3::ZERO, Vec3::Z);
+        plane.origin = Vec3::new(0.0, 0.0, 40.0);
+        doc.construction_planes.truncate(1);
+        doc.construction_planes.push(plane);
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let eye = Vec3::new(5.0, 5.0, 500.0);
+
+        let face = pick_sketch_face(eframe::egui::pos2(10.0, 10.0), &project, &doc, eye);
+        assert!(
+            matches!(face, Some(FaceId::ExtrudeCap { .. }) | Some(FaceId::Polygon(_))),
+            "expected the body's own face, got {face:?}"
+        );
+
+        // Away from the body, the plane is still perfectly pickable.
+        let off = pick_sketch_face(eframe::egui::pos2(-40.0, -40.0), &project, &doc, eye);
+        assert_eq!(off, Some(FaceId::ConstructionPlane(1)), "got {off:?}");
     }
 
     #[test]

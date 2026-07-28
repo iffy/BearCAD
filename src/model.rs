@@ -62,6 +62,12 @@ impl Default for FaceId {
 }
 
 impl FaceId {
+    /// Whether this face is a datum plane rather than real geometry (#844): a click that
+    /// could mean either means the geometry.
+    pub fn is_construction_plane(&self) -> bool {
+        matches!(self, FaceId::ConstructionPlane(_))
+    }
+
     pub fn from_script(kind: &str, index: usize) -> Option<Self> {
         match kind.to_ascii_lowercase().as_str() {
             "circle" => Some(FaceId::Circle(index)),
