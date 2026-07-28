@@ -3539,7 +3539,12 @@ document is millimeters, so the player is person-scale: eye height
   lying along the X axis, once it's been levelled — say **"Press space if it's too crowded to
   pick"** in the same blue just above the ring (`Step::key_hint`, #777/#853), which is how the
   tutorial introduces the Selection Exploder. Neither is a keycap: a key-shaped badge reads as
-  something to click, and these are things to hold or press on the keyboard. It appears **once**, on the step where the base line first hides under
+  something to click, and these are things to hold or press on the keyboard. A step whose work
+  is a short **sequence** — click this, Shift+click that, press the button — shows **every mark
+  at once, numbered** (`Step::marks`, `tutorial::GuideMark`, #854): the active one is the orb
+  with its pointer, the rest are quieter rings, and each turns **green** as its part lands, so
+  the whole move is visible from the start. The narration is then one short sentence naming the
+  goal rather than a list of clicks (#846), and each parameter gets its own step (#849). It appears **once**, on the step where the base line first hides under
   the axis, and only while the orb is on that first pick — not on the axis pick, not while a
   dimension is being placed, and never while the orb is on a **button** rather than geometry
   (#783/#784/#785/#813). A step can also name the **words to type**
