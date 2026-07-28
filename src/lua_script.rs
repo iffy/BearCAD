@@ -3334,6 +3334,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
                 Some("merge") => crate::actions::ExtrudeBodyChoice::Merge,
                 Some("cut") => crate::actions::ExtrudeBodyChoice::Cut,
+                Some("join") => crate::actions::ExtrudeBodyChoice::JoinNew,
                 _ => crate::actions::ExtrudeBodyChoice::New,
             };
             // Sketch from the first face's geometry (all faces should be coplanar).
@@ -3389,6 +3390,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let body = match opts.get::<Option<String>>("body")?.as_deref() {
                 Some("merge") => crate::actions::ExtrudeBodyChoice::Merge,
                 Some("cut") => crate::actions::ExtrudeBodyChoice::Cut,
+                Some("join") => crate::actions::ExtrudeBodyChoice::JoinNew,
                 _ => crate::actions::ExtrudeBodyChoice::New,
             };
             unsafe {
@@ -5227,6 +5229,27 @@ mod tests {
             "the start point should be pinned to the X axis (v = 0), got y0={}",
             state.doc.lines[0].y0
         );
+    }
+
+    /// #837: a new-body extrude of profiles that don't touch makes one body each; `body =
+    /// "join"` puts them all in one.
+    #[test]
+    fn lua_extrude_splits_unconnected_profiles_into_bodies() {
+        let source = r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 5 }
+            bearcad.circle{ x = 30, y = 0, r = 5 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ circles = {0, 1}, distance = 4BODY }
+        "#;
+        let split = run_lua(&source.replace("BODY", ""));
+        assert_eq!(split.doc.extrusions.iter().filter(|e| !e.deleted).count(), 2);
+        assert_eq!(split.doc.bodies.iter().filter(|b| !b.deleted).count(), 2);
+
+        let joined = run_lua(&source.replace("BODY", r#", body = "join""#));
+        assert_eq!(joined.doc.extrusions.iter().filter(|e| !e.deleted).count(), 1);
+        assert_eq!(joined.doc.bodies.iter().filter(|b| !b.deleted).count(), 1);
+        assert_eq!(joined.doc.extrusions[0].faces.len(), 2, "both profiles in the one solid");
     }
 
     /// #797: a dimension value of `name = value` defines the parameter on the spot and

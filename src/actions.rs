@@ -450,7 +450,11 @@ impl CreatingCircle {
 /// and its attach logic exist in every build so documents round-trip regardless.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtrudeBodyMode {
+    /// One new body per disjoint profile (#837): profiles that don't touch are separate solids.
     NewBody,
+    /// One new body holding **every** profile, touching or not (#837) — the "join" output when
+    /// the sketch has no host body to merge into.
+    JoinNew,
     MergeInto(usize),
     Cut(usize),
 }
@@ -467,6 +471,8 @@ pub enum ExtrudeBodyChoice {
     New,
     Merge,
     Cut,
+    /// One body for every profile in the extrude, touching or not (#837) — `body = "join"`.
+    JoinNew,
 }
 
 /// In-progress (or being-edited) extrusion: selected faces + live signed distance.
@@ -3089,7 +3095,9 @@ impl AppState {
                 bi == target && !is_cut_in(&self.doc, bi)
             }
             (Some(bi), ExtrudeBodyMode::Cut(target)) => bi == target && is_cut_in(&self.doc, bi),
-            (Some(bi), ExtrudeBodyMode::NewBody) => solely_owns(&self.doc, bi),
+            (Some(bi), ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew) => {
+                solely_owns(&self.doc, bi)
+            }
             (None, _) => true,
         };
         if already_there {
@@ -3130,7 +3138,7 @@ impl AppState {
             }
         }
         match mode {
-            ExtrudeBodyMode::NewBody => {
+            ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {
                 self.doc.bodies.push(crate::model::Body {
                     source: crate::model::BodySource::single(ei),
                     name: None,
@@ -3370,7 +3378,7 @@ impl AppState {
                     return bi;
                 }
             }
-            ExtrudeBodyMode::NewBody => {}
+            ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {}
         }
         self.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::single(ei),
@@ -8435,6 +8443,7 @@ impl AppState {
                 // holes and raised nothing, hiding the mistake — so it's a hard error instead.
                 let body_mode = match (body, candidate) {
                     (ExtrudeBodyChoice::New, _) => ExtrudeBodyMode::NewBody,
+                    (ExtrudeBodyChoice::JoinNew, _) => ExtrudeBodyMode::JoinNew,
                     (ExtrudeBodyChoice::Merge, Some(bi)) => ExtrudeBodyMode::MergeInto(bi),
                     (ExtrudeBodyChoice::Cut, Some(bi)) => ExtrudeBodyMode::Cut(bi),
                     (ExtrudeBodyChoice::Merge, None) => {
@@ -8448,26 +8457,38 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 };
-                let mut ext = Extrusion {
-                    sketch,
-                    faces,
-                    distance,
-                    target,
-                    expression: expression.unwrap_or_default(),
-                    symmetric,
-                    name: None,
-                    deleted: false,
-                    edge_treatments: Vec::new(),
+                // A new-body extrude of profiles that don't touch makes one body each (#837);
+                // every other output puts them all in the one body.
+                let groups = match body_mode {
+                    ExtrudeBodyMode::NewBody => {
+                        crate::extrude::disjoint_face_groups(&self.doc, &faces)
+                    }
+                    _ => vec![faces.clone()],
                 };
-                // #380: a cut must actually bite — flip an outward cut inward, or warn.
-                let cut_note = match body_mode {
-                    ExtrudeBodyMode::Cut(bi) => self.resolve_cut_direction(&mut ext, bi),
-                    _ => None,
-                };
-                self.doc.extrusions.push(ext);
-                self.doc.shape_order.push(ShapeKind::Extrusion);
-                let extrusion_index = self.doc.extrusions.len() - 1;
-                self.attach_new_extrusion_to_body(extrusion_index, body_mode);
+                let expression = expression.unwrap_or_default();
+                let mut cut_note = None;
+                let mut extrusion_index = 0;
+                for group in &groups {
+                    let mut ext = Extrusion {
+                        sketch,
+                        faces: group.clone(),
+                        distance,
+                        target: target.clone(),
+                        expression: expression.clone(),
+                        symmetric,
+                        name: None,
+                        deleted: false,
+                        edge_treatments: Vec::new(),
+                    };
+                    // #380: a cut must actually bite — flip an outward cut inward, or warn.
+                    if let ExtrudeBodyMode::Cut(bi) = body_mode {
+                        cut_note = self.resolve_cut_direction(&mut ext, bi).or(cut_note);
+                    }
+                    self.doc.extrusions.push(ext);
+                    self.doc.shape_order.push(ShapeKind::Extrusion);
+                    extrusion_index = self.doc.extrusions.len() - 1;
+                    self.attach_new_extrusion_to_body(extrusion_index, body_mode);
+                }
                 self.refresh_document_health();
                 // A target-snapped extrusion stores a placeholder distance; report the
                 // depth the target actually resolves to (#404).
@@ -8475,15 +8496,14 @@ impl AppState {
                     &self.doc,
                     &self.doc.extrusions[extrusion_index],
                 );
-                self.status = match cut_note {
-                    Some(note) => note.to_string(),
-                    None => format!(
-                        "Added extrusion ({})",
-                        crate::value::format_length_display_in(
-                            distance,
-                            crate::model::effective_length_unit(&self.doc, sketch)
-                        )
-                    ),
+                let shown = crate::value::format_length_display_in(
+                    distance,
+                    crate::model::effective_length_unit(&self.doc, sketch),
+                );
+                self.status = match (cut_note, groups.len()) {
+                    (Some(note), _) => note.to_string(),
+                    (None, 1) => format!("Added extrusion ({shown})"),
+                    (None, n) => format!("Added {n} extrusions ({shown})"),
                 };
                 ActionResult::Ok
             }
@@ -8684,7 +8704,8 @@ impl AppState {
                 // Only the precomputed candidate (or plain NewBody) is a valid choice — an
                 // arbitrary body index could point at an unrelated or deleted body.
                 let allowed = match mode {
-                    ExtrudeBodyMode::NewBody => true,
+                    // Joining unconnected profiles into one body needs no host body (#837).
+                    ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => true,
                     ExtrudeBodyMode::MergeInto(bi) | ExtrudeBodyMode::Cut(bi) => {
                         ce.merge_candidate == Some(bi)
                     }
@@ -8816,35 +8837,45 @@ impl AppState {
                     );
                 } else {
                     let unit = crate::model::effective_length_unit(&self.doc, ce.sketch);
-                    let mut ext = Extrusion {
-                        sketch: ce.sketch,
-                        faces: ce.faces.clone(),
-                        distance,
-                        target: ce.target,
-                        expression: distance_expr,
-                        symmetric: ce.symmetric,
-                        name: None,
-                        deleted: false,
-                        edge_treatments: Vec::new(),
+                    // Profiles that don't touch each make their own body under **New body**
+                    // (#837); Add-to-touching and Cut keep them together in the one body.
+                    let groups = match ce.body_mode {
+                        ExtrudeBodyMode::NewBody => {
+                            crate::extrude::disjoint_face_groups(&self.doc, &ce.faces)
+                        }
+                        _ => vec![ce.faces.clone()],
                     };
-                    // #380: a cut must actually bite — flip an outward cut inward, or warn.
-                    let cut_note = match ce.body_mode {
-                        ExtrudeBodyMode::Cut(bi) => self.resolve_cut_direction(&mut ext, bi),
-                        _ => None,
-                    };
-                    self.doc.extrusions.push(ext);
-                    self.doc.shape_order.push(ShapeKind::Extrusion);
-                    let ei = self.doc.extrusions.len() - 1;
-                    self.attach_new_extrusion_to_body(ei, ce.body_mode);
+                    let mut cut_note = None;
+                    let mut ei = 0;
+                    for group in &groups {
+                        let mut ext = Extrusion {
+                            sketch: ce.sketch,
+                            faces: group.clone(),
+                            distance,
+                            target: ce.target.clone(),
+                            expression: distance_expr.clone(),
+                            symmetric: ce.symmetric,
+                            name: None,
+                            deleted: false,
+                            edge_treatments: Vec::new(),
+                        };
+                        // #380: a cut must actually bite — flip an outward cut inward, or warn.
+                        if let ExtrudeBodyMode::Cut(bi) = ce.body_mode {
+                            cut_note = self.resolve_cut_direction(&mut ext, bi).or(cut_note);
+                        }
+                        self.doc.extrusions.push(ext);
+                        self.doc.shape_order.push(ShapeKind::Extrusion);
+                        ei = self.doc.extrusions.len() - 1;
+                        self.attach_new_extrusion_to_body(ei, ce.body_mode);
+                    }
                     // Report the target-resolved depth, not the stored placeholder (#404).
                     let distance =
                         crate::extrude::effective_distance(&self.doc, &self.doc.extrusions[ei]);
-                    self.status = match cut_note {
-                        Some(note) => note.to_string(),
-                        None => format!(
-                            "Added extrusion ({})",
-                            crate::value::format_length_display_in(distance, unit)
-                        ),
+                    let shown = crate::value::format_length_display_in(distance, unit);
+                    self.status = match (cut_note, groups.len()) {
+                        (Some(note), _) => note.to_string(),
+                        (None, 1) => format!("Added extrusion ({shown})"),
+                        (None, n) => format!("Added {n} extrusions ({shown})"),
                     };
                 }
                 self.refresh_document_health();

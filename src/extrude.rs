@@ -3609,6 +3609,101 @@ fn text_glyph_region_uv(
 }
 
 /// World-space boundary loop (CCW in the face frame) and outward normal of a face.
+/// Split an extrude's faces into the solids they actually make (#837): profiles that touch —
+/// one nested inside another (a hole in its own wall) or overlapping — belong to one solid;
+/// profiles sharing nothing are separate solids. Faces whose profile no longer resolves are
+/// kept in the first group so nothing is silently dropped.
+pub fn disjoint_face_groups(doc: &Document, faces: &[ExtrudeFace]) -> Vec<Vec<ExtrudeFace>> {
+    let profiles: Vec<Option<(Vec<Vec3>, Vec3)>> = faces
+        .iter()
+        .map(|f| face_profile_world(doc, f))
+        .collect();
+    // Union-find over "these two profiles touch".
+    let mut parent: Vec<usize> = (0..faces.len()).collect();
+    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+        if parent[i] != i {
+            let root = find(parent, parent[i]);
+            parent[i] = root;
+        }
+        parent[i]
+    }
+    for i in 0..faces.len() {
+        for j in (i + 1)..faces.len() {
+            // Every glyph of one sketch text is part of the same label, however far apart
+            // the letters sit — a label extrudes as one thing.
+            let same_text = matches!(
+                (&faces[i], &faces[j]),
+                (
+                    ExtrudeFace::TextGlyph { text: a, .. },
+                    ExtrudeFace::TextGlyph { text: b, .. },
+                ) if a == b
+            );
+            let touch = same_text
+                || match (&profiles[i], &profiles[j]) {
+                    (Some((a, normal)), Some((b, _))) => profiles_touch(a, b, *normal),
+                    // An unresolvable profile joins its neighbours rather than splitting off.
+                    _ => true,
+                };
+            if touch {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+    let mut groups: Vec<(usize, Vec<ExtrudeFace>)> = Vec::new();
+    for (i, face) in faces.iter().enumerate() {
+        let root = find(&mut parent, i);
+        match groups.iter_mut().find(|(r, _)| *r == root) {
+            Some((_, set)) => set.push(face.clone()),
+            None => groups.push((root, vec![face.clone()])),
+        }
+    }
+    groups.into_iter().map(|(_, set)| set).collect()
+}
+
+/// Whether two coplanar profiles share any area or boundary: either encloses a vertex of the
+/// other, or their edges cross.
+fn profiles_touch(a: &[Vec3], b: &[Vec3], normal: Vec3) -> bool {
+    let (u, v) = crate::construction::plane_basis(normal.normalize_or_zero());
+    let flat = |p: &[Vec3]| -> Vec<(f32, f32)> {
+        p.iter().map(|w| (w.dot(u), w.dot(v))).collect()
+    };
+    let (a, b) = (flat(a), flat(b));
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    if a.iter().any(|p| crate::polygon::point_in_polygon_2d(*p, &b))
+        || b.iter().any(|p| crate::polygon::point_in_polygon_2d(*p, &a))
+    {
+        return true;
+    }
+    for i in 0..a.len() {
+        let a0 = a[i];
+        let a1 = a[(i + 1) % a.len()];
+        for j in 0..b.len() {
+            let b0 = b[j];
+            let b1 = b[(j + 1) % b.len()];
+            if segments_cross(a0, a1, b0, b1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn segments_cross(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
+    let cross = |o: (f32, f32), p: (f32, f32), q: (f32, f32)| {
+        (p.0 - o.0) * (q.1 - o.1) - (p.1 - o.1) * (q.0 - o.0)
+    };
+    let d1 = cross(a, b, c);
+    let d2 = cross(a, b, d);
+    let d3 = cross(c, d, a);
+    let d4 = cross(c, d, b);
+    ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
+}
+
 pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3>, Vec3)> {
     match face {
         ExtrudeFace::Circle(index) => {
@@ -5321,6 +5416,36 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
+    }
+
+    /// #837: an extrude's faces split into the solids they make — profiles that touch (nested
+    /// or overlapping) stay together, ones that share nothing come apart.
+    #[test]
+    fn disjoint_face_groups_splits_profiles_that_dont_touch() {
+        let (mut doc, sketch) = sketch_doc();
+        // Two circles far apart, plus one nested inside the first (a hole in its wall).
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 40.0, 0.0, 5.0, 0.0));
+        let faces = vec![
+            ExtrudeFace::Circle(0),
+            ExtrudeFace::Circle(1),
+            ExtrudeFace::Circle(2),
+        ];
+        let groups = disjoint_face_groups(&doc, &faces);
+        assert_eq!(groups.len(), 2, "the ring is one solid, the far circle another: {groups:?}");
+        assert!(groups.iter().any(|g| g.len() == 2), "the nested pair stays together");
+        assert!(groups.iter().any(|g| g == &[ExtrudeFace::Circle(2)]));
+
+        // One profile alone is one group, and overlapping profiles are one solid.
+        assert_eq!(disjoint_face_groups(&doc, &faces[..1]).len(), 1);
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 44.0, 0.0, 5.0, 0.0));
+        let overlapping = vec![ExtrudeFace::Circle(2), ExtrudeFace::Circle(3)];
+        assert_eq!(disjoint_face_groups(&doc, &overlapping).len(), 1, "overlapping profiles fuse");
     }
 
     /// #835: the extent the in-sketch repeat measures its gap/distance from — how far the

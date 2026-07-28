@@ -9868,6 +9868,15 @@ impl eframe::App for App {
                     .creating_extrusion
                     .as_ref()
                     .and_then(|ce| ce.merge_candidate),
+                // More than one disjoint profile means New body and Join differ (#837): one
+                // body each, or one body for the lot.
+                extrude_disjoint_profiles: self
+                    .state
+                    .creating_extrusion
+                    .as_ref()
+                    .is_some_and(|ce| {
+                        extrude::disjoint_face_groups(&self.state.doc, &ce.faces).len() > 1
+                    }),
                 // "Extrude into" and "Symmetric" show for the whole Extrude tool, even before a face
                 // is picked (#587): default to New body / the sticky symmetric preference until an
                 // extrusion is in progress. (Add/Cut stay disabled until a host body is known.)

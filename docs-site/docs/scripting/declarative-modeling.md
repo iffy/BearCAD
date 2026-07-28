@@ -146,6 +146,7 @@ bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
 pulling it with the Extrude tool. Give the face the same way `begin_sketch` names one,
 plus a `distance` (or a `to` target to snap onto another surface). `body = "cut"`
 subtracts; `body = "merge"` joins — both error if there's no body to cut or merge into.
+Profiles that don't touch make one body each; `body = "join"` puts them in a single body.
 Positive `distance` extrudes along the face's outward normal; a cut that would miss the
 body is flipped inward. A side wall's `edge` is the profile **line index**, stable even
 when filleted edges sit between walls.

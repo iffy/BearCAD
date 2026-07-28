@@ -587,6 +587,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     to sit on a body face: with no such body it is a hard error (#178), never a silent
     fall-through to a new body. Omitted or any other value always creates a new body, matching
     the declarative/OpenSCAD-style default.
+  - **One extrude, several solids (#837):** an extrude's picked profiles are grouped into the
+    solids they actually make (`extrude::disjoint_face_groups`) — profiles that touch (nested,
+    like a hole in its own wall, or overlapping) stay in one solid; profiles sharing nothing
+    are separate ones, and every glyph of one sketch text counts as one label. Under **New
+    body** each group becomes its own extrusion and body; **Join** (`ExtrudeBodyMode::JoinNew`,
+    `body = "join"`) keeps them in a single extrusion and body. The Output picker's second
+    button is *Join <host body>* when the sketch sits on a body face and *Join the profiles
+    into one body* when it doesn't (enabled only when there is more than one group).
   - **Boolean-region face picking (#16/#62)**: when exactly two coplanar sketch shapes overlap
     with nonzero area (and no third shape also overlaps that pair — see scope below), clicking
     inside their combined footprint with the Extrude tool resolves to the specific atomic region

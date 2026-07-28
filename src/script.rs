@@ -784,6 +784,7 @@ impl Instruction {
                     crate::actions::ExtrudeBodyChoice::New => "",
                     crate::actions::ExtrudeBodyChoice::Merge => ", body = \"merge\"",
                     crate::actions::ExtrudeBodyChoice::Cut => ", body = \"cut\"",
+                    crate::actions::ExtrudeBodyChoice::JoinNew => ", body = \"join\"",
                 };
                 let to = target
                     .as_ref()
@@ -804,6 +805,7 @@ impl Instruction {
                     crate::actions::ExtrudeBodyChoice::New => "",
                     crate::actions::ExtrudeBodyChoice::Merge => ", body = \"merge\"",
                     crate::actions::ExtrudeBodyChoice::Cut => ", body = \"cut\"",
+                    crate::actions::ExtrudeBodyChoice::JoinNew => ", body = \"join\"",
                 };
                 let to = target
                     .as_ref()

@@ -46,6 +46,8 @@ pub struct ContextInput<'a> {
     pub snapping_enabled: bool,
     /// Body an in-progress/edited extrusion would join by default, if any (#32).
     pub extrude_merge_candidate: Option<usize>,
+    /// Whether the in-progress extrusion's profiles form more than one disjoint solid (#837).
+    pub extrude_disjoint_profiles: bool,
     /// Current new-body/merge-into choice for the in-progress/edited extrusion.
     pub extrude_body_mode: Option<ExtrudeBodyMode>,
     /// Symmetric extrude toggle while an extrusion is in progress (#504).
@@ -962,6 +964,9 @@ pub struct ExtrudeBodyControl {
     /// Host body for Add/Cut when the sketch sits on a body face; `None` disables those modes.
     pub merge_body: Option<usize>,
     pub merge_body_label: String,
+    /// Whether the picked profiles fall into more than one disjoint solid (#837). With no host
+    /// body, that's what **Join** joins: one body instead of one per profile.
+    pub can_join_profiles: bool,
     /// Symmetric extrude (#504).
     pub symmetric: bool,
 }
@@ -1490,6 +1495,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             mode,
             merge_body,
             merge_body_label,
+            can_join_profiles: input.extrude_disjoint_profiles,
             symmetric: input.extrude_symmetric.unwrap_or(false),
         }
     });
@@ -2508,7 +2514,7 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         ),
         (Some(Tool::Extrude), "Output") => Some(
             "Whether this becomes a new body, fuses into the body it grows from, or cuts into \
-             it.",
+             it. Profiles that don't touch make a body each; Join puts them in one.",
         ),
         (Some(Tool::Extrude), "Symmetric") => {
             Some("Grows the same depth either side of the sketch plane instead of one way.")
@@ -2984,7 +2990,7 @@ fn constraint_button_rect_id(
 fn extrude_output_button_rect_id(mode: &ExtrudeBodyMode) -> egui::Id {
     let kind = match mode {
         ExtrudeBodyMode::NewBody => "new",
-        ExtrudeBodyMode::MergeInto(_) => "join",
+        ExtrudeBodyMode::JoinNew | ExtrudeBodyMode::MergeInto(_) => "join",
         ExtrudeBodyMode::Cut(_) => "cut",
     };
     egui::Id::new(("extrude_output_button_rect", kind))
@@ -5369,22 +5375,41 @@ pub fn show_pane(
             ui.add_enabled_ui(controls_enabled, |ui| {
                 ui.horizontal(|ui| {
                     let add_cut_enabled = control.merge_body.is_some();
+                    // Join means "into the host body" when the sketch sits on one, and
+                    // "into a single body" when it doesn't and there's more than one
+                    // profile to join (#837).
+                    let (join_mode, join_tooltip, join_enabled) = match control.merge_body {
+                        Some(bi) => (
+                            ExtrudeBodyMode::MergeInto(bi),
+                            format!("Join {}", control.merge_body_label),
+                            true,
+                        ),
+                        None => (
+                            ExtrudeBodyMode::JoinNew,
+                            if control.can_join_profiles {
+                                "Join the profiles into one body".to_string()
+                            } else {
+                                "Join body (sketch must sit on a body face)".to_string()
+                            },
+                            control.can_join_profiles,
+                        ),
+                    };
                     for (value, icon, tooltip, enabled) in [
                         (
                             ExtrudeBodyMode::NewBody,
                             crate::icons::IconId::NewBody,
-                            "New body".to_string(),
+                            if control.can_join_profiles {
+                                "One new body per profile".to_string()
+                            } else {
+                                "New body".to_string()
+                            },
                             true,
                         ),
                         (
-                            ExtrudeBodyMode::MergeInto(control.merge_body.unwrap_or(0)),
+                            join_mode,
                             crate::icons::IconId::AddToBody,
-                            if add_cut_enabled {
-                                format!("Join {}", control.merge_body_label)
-                            } else {
-                                "Join body (sketch must sit on a body face)".to_string()
-                            },
-                            add_cut_enabled,
+                            join_tooltip,
+                            join_enabled,
                         ),
                         (
                             ExtrudeBodyMode::Cut(control.merge_body.unwrap_or(0)),
@@ -5806,6 +5831,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -6059,6 +6085,7 @@ mod tests {
             extrude_body_mode: Some(crate::actions::ExtrudeBodyMode::NewBody),
             extrude_symmetric: Some(false),
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_faces: Some(Vec::new()),
             ..input(&doc, &selection)
         });
@@ -6089,6 +6116,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -6176,6 +6204,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -6623,6 +6652,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -6755,6 +6785,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -6953,6 +6984,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -7024,6 +7056,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -7149,6 +7182,7 @@ mod tests {
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
@@ -7207,6 +7241,7 @@ mod tests {
             tool: Tool::Extrude,
             extrude_body_mode: Some(ExtrudeBodyMode::NewBody),
             extrude_merge_candidate: None,
+            extrude_disjoint_profiles: false,
             extrude_symmetric: Some(false),
             ..input(&doc, &selection)
         });

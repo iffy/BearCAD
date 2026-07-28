@@ -55,6 +55,11 @@ Extruding from a face of an existing body offers three choices:
   automatically. This is how holes are drilled: sketch a circle on a face, extrude it
   through, Cut.
 
+## Extruding several profiles at once
+
+Pick as many profiles as you like. Ones that don't touch each become their own body under
+**New body**; **Join** puts them all in a single body instead.
+
 ## Overlapping shapes
 
 Clicking inside an overlap picks just that region — the intersection, or one shape minus
