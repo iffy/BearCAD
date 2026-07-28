@@ -18682,9 +18682,9 @@ impl App {
                 }
             }
         }
-        // Touch navigation: two fingers pan, a pinch zooms about the gesture centre,
-        // and with the Select tool in 3D a one-finger drag orbits — fingers have no
-        // right button.
+        // Touch navigation (#754): **two fingers** pan and pinch-zoom, **three fingers**
+        // orbit. One finger never navigates — it belongs to the tool, so drawing in a
+        // sketch isn't fighting the camera.
         if touch::active() && ui.input(|i| i.pointer.primary_pressed()) {
             self.last_touch_press_time = ui.input(|i| i.time);
         }
@@ -18705,9 +18705,16 @@ impl App {
                     self.state.apply(Action::CancelOperation);
                 }
                 if mt.translation_delta != egui::Vec2::ZERO {
-                    self.state.cam.pan(mt.translation_delta, viewport.height());
-                    if let Some(log) = &self.state.command_log {
-                        log.borrow_mut().note_pan(mt.translation_delta);
+                    if touch::drag_gesture(mt.num_touches) == touch::DragGesture::Orbit {
+                        self.state.cam.orbit(mt.translation_delta);
+                        if let Some(log) = &self.state.command_log {
+                            log.borrow_mut().note_orbit(mt.translation_delta);
+                        }
+                    } else {
+                        self.state.cam.pan(mt.translation_delta, viewport.height());
+                        if let Some(log) = &self.state.command_log {
+                            log.borrow_mut().note_pan(mt.translation_delta);
+                        }
                     }
                 }
                 if (mt.zoom_delta - 1.0).abs() > 1e-4 {
@@ -18732,17 +18739,6 @@ impl App {
                     if let Some(log) = &self.state.command_log {
                         log.borrow_mut().note_zoom(scroll);
                     }
-                }
-            } else if touch::active()
-                && self.state.tool == Tool::Select
-                && self.state.sketch_session.is_none()
-                && response.dragged_by(egui::PointerButton::Primary)
-            {
-                touch_navigating = true;
-                let delta = response.drag_delta();
-                self.state.cam.orbit(delta);
-                if let Some(log) = &self.state.command_log {
-                    log.borrow_mut().note_orbit(delta);
                 }
             }
         }
@@ -22825,12 +22821,7 @@ impl App {
         // On touch devices the mouse wording is wrong: swap the navigation clauses
         // for the gesture equivalents at display time.
         let hint = if touch::active() {
-            hint.replace("Right-drag: orbit", "One finger (Select) orbits")
-                .replace("Right-drag orbits", "One finger (Select) orbits")
-                .replace("Shift+right-drag pans", "two fingers pan")
-                .replace("Shift-right or middle-drag: pan", "Two fingers: pan")
-                .replace("Wheel: zoom", "Pinch: zoom")
-                .replace("wheel zooms", "pinch zooms")
+            touch::gesture_hint(hint)
         } else {
             hint.to_string()
         };

@@ -1,4 +1,4 @@
-//! Touch-device support: gesture navigation (pinch zoom, two-finger pan, one-finger
+//! Touch-device support: gesture navigation (pinch zoom, two-finger pan, three-finger
 //! orbit), finger-sized pick targets, and the compact phone layout.
 //!
 //! Touch mode flips on automatically the first time a touch arrives (and can be
@@ -46,6 +46,39 @@ pub fn compact(ctx: &eframe::egui::Context) -> bool {
     ctx.screen_rect().width() < COMPACT_WIDTH
 }
 
+/// Fingers a viewport drag needs to **orbit** (#754). Two fingers pan and pinch-zoom; a
+/// third turns the same drag into an orbit, so one finger is always the tool's — drawing in
+/// a sketch never fights the camera.
+pub const ORBIT_FINGERS: usize = 3;
+
+/// What a multi-finger viewport drag does (#754).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragGesture {
+    Pan,
+    Orbit,
+}
+
+/// Which camera move a drag of `num_touches` fingers is: two fingers pan, three or more
+/// orbit. (One finger never gets here — it belongs to the active tool.)
+pub fn drag_gesture(num_touches: usize) -> DragGesture {
+    if num_touches >= ORBIT_FINGERS {
+        DragGesture::Orbit
+    } else {
+        DragGesture::Pan
+    }
+}
+
+/// The status-bar tool hint with its mouse wording swapped for the gesture equivalents —
+/// touch devices have no right button or wheel.
+pub fn gesture_hint(hint: &str) -> String {
+    hint.replace("Right-drag: orbit", "Three fingers: orbit")
+        .replace("Right-drag orbits", "Three fingers orbit")
+        .replace("Shift+right-drag pans", "two fingers pan")
+        .replace("Shift-right or middle-drag: pan", "Two fingers: pan")
+        .replace("Wheel: zoom", "Pinch: zoom")
+        .replace("wheel zooms", "pinch zooms")
+}
+
 /// Convert a proportional zoom factor (pinch / trackpad, `>1` = zoom in) into the
 /// scroll-pixel units [`crate::camera::Camera::zoom`] expects, so a pinch of factor
 /// `f` lands the camera exactly at `distance / f`.
@@ -81,6 +114,26 @@ pub fn long_press_fires(held_secs: f64, moved_px: f32, already_fired: bool) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #754: one finger belongs to the tool; two pan, three orbit.
+    #[test]
+    fn two_fingers_pan_and_three_orbit() {
+        assert_eq!(drag_gesture(2), DragGesture::Pan);
+        assert_eq!(drag_gesture(3), DragGesture::Orbit);
+        assert_eq!(drag_gesture(4), DragGesture::Orbit);
+    }
+
+    /// The status-bar hints say what a finger does, not what a mouse would.
+    #[test]
+    fn gesture_hint_swaps_the_mouse_wording() {
+        let hint = gesture_hint("Click to select • Right-drag: orbit • Wheel: zoom");
+        assert!(hint.contains("Three fingers: orbit"), "{hint}");
+        assert!(hint.contains("Pinch: zoom"), "{hint}");
+        assert!(!hint.contains("Right-drag"), "{hint}");
+        assert!(!hint.contains("Wheel"), "{hint}");
+        // Wording it doesn't know is left alone.
+        assert_eq!(gesture_hint("d: dimension"), "d: dimension");
+    }
 
     #[test]
     fn hit_radius_grows_only_in_touch_mode() {

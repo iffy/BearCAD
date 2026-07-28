@@ -22,9 +22,9 @@ which is why the camera bindings live on the *right* mouse button.
 
 | Gesture | Action |
 |---|---|
-| One-finger drag (Select tool, 3D) | Orbit |
 | Two-finger drag | Pan |
 | Pinch | Zoom |
+| Three-finger drag | Orbit |
 
 Touch mode switches on at the first touch: pick targets grow to finger size, and on
 phone-width screens the side panes become floating windows, toggled from the bottom bar.

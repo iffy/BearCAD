@@ -3374,8 +3374,9 @@ document is millimeters, so the player is person-scale: eye height
   widget interact sizes/padding (`theme::apply`).
 - **Gestures** (viewport): two-finger drag pans, pinch zooms about the gesture centre
   (converted to the camera's scroll units by `touch::zoom_factor_to_scroll`, exact
-  round-trip), and with the **Select tool in 3D** a one-finger drag orbits — fingers
-  have no right button. Trackpad pinches (`Event::Zoom`, incl. browser ctrl+wheel) zoom
+  round-trip), and a **three-finger** drag orbits (`touch::ORBIT_FINGERS`) — fingers have
+  no right button. **One finger never navigates (#754):** it belongs to the active tool, so
+  drawing and dragging geometry in a sketch don't fight the camera. Trackpad pinches (`Event::Zoom`, incl. browser ctrl+wheel) zoom
   identically. Touch navigation owns the pointer (no hover/pick churn mid-gesture), and
   the status-bar tool hints swap their mouse wording for gesture wording at display
   time.
