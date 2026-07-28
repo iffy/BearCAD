@@ -1111,6 +1111,10 @@ fn exploder_tool_accepts(tool: Tool, kind: &construction::PickTargetKind) -> boo
         Tool::Extrude => {
             matches!(kind, K::SketchFace(face) if !matches!(face, FaceId::ConstructionPlane(_)))
         }
+        // The Sketch and Text tools open a sketch on a face, so they fan the analytic
+        // sketchable faces — **including** construction planes (#860), which is the whole
+        // point when the plane you want is behind a body.
+        Tool::Sketch | Tool::Text => matches!(kind, K::SketchFace(_)),
         // A constraint badge can only be *selected*, so only the tools that act on a picked scene
         // element accept one from the fan (#568); every other tool ignores it.
         _ if matches!(kind, K::Constraint(_)) => {
@@ -19423,6 +19427,18 @@ impl App {
                         exploder_owns_press = true;
                     }
                 }
+                // The Sketch tool opens the sketch on exactly the face the handle stands for
+                // (#860) — re-picking at the redirected anchor would land back on whatever is
+                // in front of it, which is the crowd the exploder was opened to get past.
+                if self.state.tool == Tool::Sketch {
+                    if let construction::PickTargetKind::SketchFace(face) = &target {
+                        self.state.apply(Action::BeginSketch {
+                            face: face.clone(),
+                            viewport: Some(viewport),
+                        });
+                        exploder_owns_press = true;
+                    }
+                }
             }
         }
 
@@ -26049,6 +26065,30 @@ mod tests {
         assert!(exploder_tool_accepts(Tool::Select, &vertex));
         assert!(exploder_tool_accepts(Tool::Select, &face));
         assert!(!exploder_tool_accepts(Tool::Select, &sketch_face));
+    }
+
+    /// #860: the Sketch tool's fan is the analytic sketchable faces — construction planes
+    /// included, which is the whole point when the plane you want is behind a body.
+    #[test]
+    fn exploder_offers_the_sketch_tool_its_faces_planes_and_all() {
+        use construction::PickTargetKind as K;
+        let plane = K::SketchFace(FaceId::ConstructionPlane(1));
+        let cap = K::SketchFace(FaceId::Circle(0));
+        let body_face = K::BodyFace {
+            body: 0,
+            triangles: Vec::new(),
+            normal: Vec3::Z,
+        };
+
+        for tool in [Tool::Sketch, Tool::Text] {
+            assert!(exploder_tool_accepts(tool, &plane), "{tool:?} should offer datum planes");
+            assert!(exploder_tool_accepts(tool, &cap));
+            // Raw mesh facet groups aren't what these tools sketch on.
+            assert!(!exploder_tool_accepts(tool, &body_face));
+        }
+        // Extrude keeps its own rule: analytic faces, never a datum plane.
+        assert!(exploder_tool_accepts(Tool::Extrude, &cap));
+        assert!(!exploder_tool_accepts(Tool::Extrude, &plane));
     }
 
     #[test]

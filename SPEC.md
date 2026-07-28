@@ -2200,7 +2200,11 @@ modeled on SolveSpace (https://solvespace.com).
   extrusion caps/side walls, revolve flat faces, construction planes — via
   `face::sketch_faces_near`. The Extrude tool fans **exactly these** (minus construction
   planes) instead of raw mesh facet groups, so its fan matches its own pick path: the sketch
-  profile buried under a body appears, a curved surface it can't use doesn't. A revolve side's
+  profile buried under a body appears, a curved surface it can't use doesn't. The **Sketch and
+  Text** tools fan the same analytic faces **including construction planes** (#860) — a datum
+  plane behind a body is exactly what the fan is for — and a click applies the chosen face
+  directly (`Action::BeginSketch`) rather than re-picking at the redirected anchor, which
+  would land back on whatever is in front of it. A revolve side's
   crowd anchor is the unrotated edge midpoint — always on the face, unlike a full washer's
   boundary centroid, which sits in its hole. It activates **on demand**: over a crowd it fans several handles, over a
   single thing just one, and over nothing it freezes the hitbox circle at the cursor with no
