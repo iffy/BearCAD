@@ -5250,61 +5250,37 @@ impl App {
                 }
             }
         }
-        if let Some((mut text, want_focus)) = self
+        if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_extrusion
             .as_ref()
-            .map(|ce| (ce.text.clone(), ce.pending_focus))
+            .map(|ce| (ce.text.clone(), ce.pending_focus, ce.user_edited))
         {
-            let mut edited = false;
-            let mut focus_landed = false;
-            let mut drop_pending = false;
-            let mut field_rect: Option<egui::Rect> = None;
+            // Never steal the keyboard back from another field the user moved to (#506).
+            if want_focus && ctx.memory(|m| m.focused().is_some_and(|f| f != id)) {
+                want_focus = false;
+            }
+            // #881: the very same field the line/dimension inputs use — amber frame, the
+            // typed expression in monospace, its computed value underneath.
+            let mut result = SketchDimFieldResult::default();
+            let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("extrude_distance_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let resp = crate::expression_input::ValueInput::from_id(
+                        result = show_sketch_dimension_field(
+                            ui,
+                            ctx,
                             id,
-                            crate::expression_input::ValueKind::Length,
-                        )
-                        .width(64.0)
-                        .show(ui, &mut text, &self.state.doc);
-                        // Where the tutorial's orb points for the extrude depth (#816).
-                        field_rect = Some(resp.rect);
-                        if resp.changed() {
-                            edited = true;
-                        }
-                        let other_focused = ctx.memory(|m| {
-                            m.focused().is_some_and(|f| f != id)
-                        });
-                        if should_request_pending_tool_focus(want_focus, other_focused) {
-                            // Clicking a face focuses the field with the default distance
-                            // selected (#437), so typing `4ft` replaces it immediately.
-                            // Focus can take a frame to land (the face click itself clears
-                            // focus), so keep requesting until it does, then select-all.
-                            resp.request_focus();
-                            if resp.has_focus() {
-                                let len = text.chars().count();
-                                let mut st = egui::TextEdit::load_state(ctx, id)
-                                    .unwrap_or_default();
-                                st.cursor.set_char_range(Some(
-                                    egui::text::CCursorRange::two(
-                                        egui::text::CCursor::default(),
-                                        egui::text::CCursor::new(len),
-                                    ),
-                                ));
-                                st.store(ctx, id);
-                                focus_landed = true;
-                            }
-                        } else if want_focus && other_focused {
-                            // User moved focus to the parameter pane / another field (#506).
-                            drop_pending = true;
-                        }
-                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            commit = true;
-                        }
+                            &mut text,
+                            doc,
+                            None,
+                            true,
+                            &mut want_focus,
+                            user_edited,
+                            false,
+                        );
                         // Flip which side of the sketch plane the profile extrudes to (#354):
                         // negating the distance reverses the direction while keeping the depth.
                         if ui
@@ -5316,20 +5292,21 @@ impl App {
                         }
                     });
                 });
-            if let Some(rect) = field_rect {
+            if let Some(rect) = result.rect {
+                // Where the tutorial's orb points for the extrude depth (#816).
                 self.state
                     .tutorial_anchor_rects
                     .insert(tutorial::UiAnchor::ExtrudeDistance, rect);
             }
+            commit |= result.enter_commit;
             if let Some(ce) = self.state.creating_extrusion.as_mut() {
                 ce.text = text;
-                if edited {
+                if result.changed {
                     ce.user_edited = true;
                 }
-                if focus_landed || drop_pending {
-                    ce.pending_focus = false;
-                }
+                ce.pending_focus = want_focus;
             }
+            apply_dimension_field_feedback(&mut self.state, &result);
         }
         if flip {
             if let Some(d) = self
@@ -14115,11 +14092,13 @@ fn should_request_pending_tool_focus(pending_focus: bool, other_widget_focused: 
     pending_focus && !other_widget_focused
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct SketchDimFieldResult {
     changed: bool,
     enter_commit: bool,
     lost_focus: bool,
+    /// Where the field landed, for the tutorial's orb to point at.
+    rect: Option<egui::Rect>,
     inline_parameter_added: Option<crate::parameters::InlineParameterCommit>,
     inline_parameter_error: Option<String>,
 }
@@ -14324,6 +14303,7 @@ fn show_sketch_dimension_field(
         changed: resp.changed(),
         enter_commit,
         lost_focus,
+        rect: Some(frame_output.response.rect),
         inline_parameter_added,
         inline_parameter_error,
     }

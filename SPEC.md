@@ -519,6 +519,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     multi-face extrusion, unlike coplanar sketch profiles. Sketching on an existing body's
     face merges into that body by default (§3.2's `body?` choice, #32), so pushing/pulling a
     face this way naturally extends the solid rather than creating a disjoint one.
+  - The distance popup is the same field the line tool's distance uses (#881) — amber frame,
+    monospace expression, computed value underneath — with the **Flip** button beside it.
   - **Flip direction (#354):** the extrude distance popup has a **Flip** button that reverses which
     side of the sketch plane the profile extrudes to (it negates the distance, keeping the typed
     depth), so a profile can be extruded to either side without having to drag the gizmo back
@@ -2013,6 +2015,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 
 ### 5.2 Expressions
 - **Any input that accepts a value accepts an expression**, e.g. `1 + 2 + lengthOfThing / 2`.
+- **One look for every value field (#881):** the floating dimension field the line tool
+  draws with — amber frame, the typed expression in monospace, its computed value in
+  smaller muted monospace *underneath* — is the one every tool uses. The extrude depth
+  popup is on it today; the rest are being moved over.
 - **One standard value input (#456):** numeric fields share `expression_input::ValueInput`
   — the styled expression field (autocomplete, error tooltips, inline `name=value`
   definitions) plus a **computed-value label beside the field whenever it differs from
@@ -2028,7 +2034,7 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and
   cycle checking; the repeat panes (3D + in-sketch), Move X/Y/Z/Angle, offset distance,
-  sketch-text size/rotation/wrap, calibration length, and the floating extrude /
+  sketch-text size/rotation/wrap, calibration length, and the floating
   revolve / chamfer / fillet amount popups all use it — the chamfer/fillet amount is also
   **mirrored into the Context pane** ("Radius" for a fillet, "Distance" for a chamfer) with
   the blue **Go** button the other tools commit with, so the treatment tools read like Move
