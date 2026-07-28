@@ -281,7 +281,7 @@ assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
 -- A construction plane reports its drawn rectangle in its own u/v axes.
 local e = bearcad.get{ kind = "construction_plane", index = 0 }.extent
-assert(e.u_min == 0 and e.u_max == 100)
+assert(e.u_min == 5 and e.u_max == 105)
 
 local s = bearcad.body_stats(0)                -- volume / triangles / bbox of a body's mesh
 assert(math.abs(s.volume - 40 * 30 * 10) < 120)

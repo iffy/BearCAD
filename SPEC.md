@@ -144,7 +144,8 @@ features in dependency order.
   Line count stays bounded (extent is a fixed multiple of the heavy step).
 - **Datum planes & plane size (#833):** a new document opens with three construction
   planes — **XY**, **XZ** and **YZ** — each 100 mm square and placed in the positive
-  quadrant of its own space (they meet at the origin, so none hides the others). Every
+  quadrant of its own space, standing the same 5 mm clear of the origin in both of its
+  axes so the three frame the origin with a gap rather than boxing it in (#838). Every
   construction plane carries a `PlaneExtent { u_min, u_max, v_min, v_max }` giving its drawn
   rectangle in its own u/v axes; planes made by the Plane tool, and those in documents saved
   before extents existed, use the symmetric ±50 mm square. Selecting a plane (Elements pane

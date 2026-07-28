@@ -747,10 +747,11 @@ impl Default for PlaneExtent {
 }
 
 impl PlaneExtent {
-    /// A plane that starts at its origin and reaches `size` into the +u/+v quadrant — what
-    /// the three planes a new document opens with use.
-    pub fn quadrant(size: f32) -> Self {
-        Self { u_min: 0.0, u_max: size, v_min: 0.0, v_max: size }
+    /// A square `size` across sitting in the +u/+v quadrant, held `gap` clear of the plane's
+    /// origin in both directions — what the three planes a new document opens with use, so
+    /// they don't meet in a solid corner at the world origin (#838).
+    pub fn quadrant(size: f32, gap: f32) -> Self {
+        Self { u_min: gap, u_max: gap + size, v_min: gap, v_max: gap + size }
     }
 
     /// Keep the rectangle non-degenerate however the handles are dragged: at least

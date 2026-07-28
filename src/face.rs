@@ -47,11 +47,15 @@ pub fn default_xy_plane() -> ConstructionPlane {
 /// How far the datum planes of a fresh document reach (mm), into their +u/+v quadrant.
 pub const DATUM_PLANE_SIZE_MM: f32 = 100.0;
 
+/// How far the datum planes stand clear of the origin (mm) — the same gap on every one, so
+/// the three of them frame the origin instead of boxing it in (#838).
+pub const DATUM_PLANE_GAP_MM: f32 = 5.0;
+
 /// The three datum planes a new document opens with (#833): XY, XZ and YZ, each occupying
 /// the positive quadrant of its own plane so the origin corner is shared and none of them
 /// hides the others' geometry.
 pub fn default_datum_planes() -> Vec<ConstructionPlane> {
-    let extent = crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM);
+    let extent = crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM, DATUM_PLANE_GAP_MM);
     let plane = |normal: Vec3, u: Vec3, v: Vec3, label: &str| ConstructionPlane {
         origin: Vec3::ZERO,
         normal,
@@ -1479,7 +1483,13 @@ mod tests {
         assert!((doc.construction_planes[1].normal.y - 1.0).abs() < 1e-4);
         assert!((doc.construction_planes[2].normal.x - 1.0).abs() < 1e-4);
         for plane in &doc.construction_planes {
-            assert_eq!(plane.extent, crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM));
+            assert_eq!(
+                plane.extent,
+                crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM, DATUM_PLANE_GAP_MM)
+            );
+            // #838: every plane stands the same distance clear of the origin.
+            assert_eq!(plane.extent.u_min, DATUM_PLANE_GAP_MM);
+            assert_eq!(plane.extent.v_min, DATUM_PLANE_GAP_MM);
         }
         assert!(doc.shape_order.is_empty());
     }

@@ -3201,7 +3201,7 @@ mod tests {
     #[test]
     fn dragging_a_corner_grip_moves_only_that_corner() {
         let mut plane = plane_from_face(0.0, Vec3::ZERO, Vec3::Z);
-        plane.extent = PlaneExtent::quadrant(100.0);
+        plane.extent = PlaneExtent::quadrant(100.0, 0.0);
         let handles = plane_resize_handles(&plane);
         assert_eq!(handles[0].1, Vec3::ZERO, "low grip sits on the origin corner");
         assert_eq!(handles[1].1, Vec3::new(100.0, 100.0, 0.0));
@@ -3218,7 +3218,7 @@ mod tests {
     #[test]
     fn a_corner_dragged_past_its_opposite_keeps_a_minimum_size() {
         let mut plane = plane_from_face(0.0, Vec3::ZERO, Vec3::Z);
-        plane.extent = PlaneExtent::quadrant(100.0);
+        plane.extent = PlaneExtent::quadrant(100.0, 0.0);
         let extent = plane_extent_from_corner_drag(&plane, 2, Vec3::new(-40.0, -40.0, 0.0));
         assert!(extent.u_max - extent.u_min >= crate::model::MIN_PLANE_EXTENT_MM - 1e-4);
         assert!(extent.v_max - extent.v_min >= crate::model::MIN_PLANE_EXTENT_MM - 1e-4);
@@ -3228,7 +3228,7 @@ mod tests {
     #[test]
     fn grips_follow_the_planes_own_axes() {
         let mut plane = plane_from_face(0.0, Vec3::ZERO, Vec3::Y);
-        plane.extent = PlaneExtent::quadrant(10.0);
+        plane.extent = PlaneExtent::quadrant(10.0, 0.0);
         let corners = plane_corners(&plane);
         let handles = plane_resize_handles(&plane);
         assert_eq!(handles[0].1, corners[0]);
