@@ -3548,8 +3548,10 @@ document is millimeters, so the player is person-scale: eye height
   the axis, and only while the orb is on that first pick — not on the axis pick, not while a
   dimension is being placed, and never while the orb is on a **button** rather than geometry
   (#783/#784/#785/#813). A step can also name the **words to type**
-  (`Step::type_hint`, #778/#781/#848). Once the field has the keyboard the **guide itself
-  becomes the instruction**: the ring gives way to a single box just above the field reading
+  (`Step::type_hint`, #778/#781/#848). Once the field **the orb marks** has the keyboard the
+  **guide itself becomes the instruction** (`typing_guide_takes_over`, #874 — the keyboard being
+  in the box *beside* it, like the parameter name box while the orb is on the value box, leaves
+  the ring up, since there's still a box to click): the ring gives way to a single box just above the field reading
   *Use the keyboard to type* in white with the words in the monospace blue the narration gives
   code (`draw_orb_typing_guide`). There's nothing left to click once you're in the box, so the
   click guide steps aside rather than sitting there looking like a button.

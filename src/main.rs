@@ -1965,6 +1965,19 @@ fn draw_guide_number(
     );
 }
 
+/// Whether the guide has become the instruction to type, or the ring still has a box to point
+/// at (#874). The keyboard being in *some* box isn't enough — typing `hole` into the name box
+/// leaves the value box beside it still to be clicked, and the orb is on that. A floating input
+/// (a dimension's value, a circle's diameter) has no anchor of its own, so there the keyboard
+/// landing anywhere means it landed in that.
+fn typing_guide_takes_over(orb_field: Option<egui::Rect>, focused: Option<egui::Rect>) -> bool {
+    match (orb_field, focused) {
+        (Some(anchor), Some(focused)) => focused.intersects(anchor),
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
 /// Where the typing guide sits (#868): clear of the **field** it's talking about — just above
 /// it, or below when the top of the window is in the way — rather than over the orb, which the
 /// floating dimension and diameter inputs open right on top of. With no field rect to go by
@@ -2890,8 +2903,8 @@ impl App {
 
         // The glowing orb: where to click next. It pulses blue and *glides* between
         // anchors, so the eye can follow it from one target to the next.
-        let ui_anchor = |anchor: tutorial::UiAnchor| -> Option<(egui::Pos2, f32)> {
-            let rect = match anchor {
+        let ui_anchor_rect = |anchor: tutorial::UiAnchor| -> Option<egui::Rect> {
+            match anchor {
                 // The pane's constraint buttons report themselves through egui memory
                 // rather than the per-frame anchor map (#770).
                 tutorial::UiAnchor::ConstraintButton(kind) => {
@@ -2903,15 +2916,22 @@ impl App {
                     &actions::ExtrudeBodyMode::Cut(0),
                 ),
                 other => self.state.tutorial_anchor_rects.get(&other).copied(),
-            }?;
+            }
+        };
+        let ui_anchor = |anchor: tutorial::UiAnchor| -> Option<(egui::Pos2, f32)> {
+            let rect = ui_anchor_rect(anchor)?;
             Some((rect.center(), rect.size().max_elem() * 0.5 + 6.0))
         };
         // Whether the orb is on a pane/toolbar button rather than on geometry: the
         // crowded-pick hint has nothing to say about a button (#813).
         let mut orb_on_ui = false;
+        // The box the orb is pointing at, when it's pointing at one: the typing guide only
+        // takes over once *that* box has the keyboard (#874).
+        let mut orb_field: Option<egui::Rect> = None;
         let target = match step.anchor {
             tutorial::StepAnchor::Ui(anchor) => {
                 orb_on_ui = true;
+                orb_field = ui_anchor_rect(anchor);
                 ui_anchor(anchor)
             }
             tutorial::StepAnchor::World(point) => {
@@ -2921,6 +2941,7 @@ impl App {
                 Some(tutorial::StepTarget::World(w)) => project(w).map(|p| (p, 26.0)),
                 Some(tutorial::StepTarget::Ui(anchor)) => {
                     orb_on_ui = true;
+                    orb_field = ui_anchor_rect(anchor);
                     ui_anchor(anchor)
                 }
                 None => None,
@@ -2964,13 +2985,13 @@ impl App {
             // instruction to type (#848): the ring is for finding something to click, and
             // there's nothing left to click once you're in the box.
             let focused = ctx.memory(|m| m.focused());
+            let field = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect);
             let typing = step
                 .type_hint
                 .and_then(|h| h.text(&self.state))
-                .filter(|_| focused.is_some());
+                .filter(|_| typing_guide_takes_over(orb_field, field));
             if let Some(text) = typing {
                 // The box hangs off the field with the keyboard, not the orb (#868).
-                let field = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect);
                 draw_orb_typing_guide(&painter, ctx, pos, field, badge_bounds, &text);
             } else {
                 let t = ctx.input(|i| i.time) as f32;
@@ -23718,6 +23739,21 @@ fn draw_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #874: the guide only becomes "type this" once the keyboard is in the box the orb marks;
+    /// with the keyboard in the box beside it, the ring still has somewhere to point.
+    #[test]
+    fn typing_guide_waits_for_the_box_the_orb_marks() {
+        let name = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(80.0, 20.0));
+        let value = egui::Rect::from_min_size(egui::pos2(190.0, 40.0), egui::vec2(80.0, 20.0));
+        assert!(!typing_guide_takes_over(Some(value), Some(name)), "name box isn't the value box");
+        assert!(typing_guide_takes_over(Some(value), Some(value)));
+        // A floating input the orb has no anchor for: the keyboard anywhere is it.
+        assert!(typing_guide_takes_over(None, Some(name)));
+        // Nothing has the keyboard: the ring stays.
+        assert!(!typing_guide_takes_over(Some(value), None));
+        assert!(!typing_guide_takes_over(None, None));
+    }
 
     /// #868: the typing guide clears the field it names — above it normally, below it when
     /// the field is up against the top of the window — and never lands on top of it.
