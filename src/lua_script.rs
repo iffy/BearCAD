@@ -4733,26 +4733,26 @@ mod tests {
 
             -- One fillet per step now (#791): inside of the bend, then the outside.
             bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 2 }, radius = 4 }
-            assert(bearcad.ui.tutorial_step() == 29, "inner bend -> outer bend step")
+            assert(bearcad.ui.tutorial_step() == 29, "inner bend -> spin-to-the-outside step")
             bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 5 }, radius = 9 }
-            assert(bearcad.ui.tutorial_step() == 30, "bend rounded -> hole sketch step")
+            assert(bearcad.ui.tutorial_step() == 31, "bend rounded -> hole sketch step")
 
             -- The hole stage is one click per step now (#795/#796/#798/#799).
             bearcad.ui.tool("sketch")
             -- The spin step (#817) satisfies itself when the camera already faces the
-            -- flange, so this lands on it (25) or straight past it (26).
+            -- flange, so this lands on it (32) or straight past it (33).
             local spin = bearcad.ui.tutorial_step()
-            assert(spin == 31 or spin == 32, "sketch tool -> spin/pick the flange face")
+            assert(spin == 32 or spin == 33, "sketch tool -> spin/pick the flange face")
             -- The spin step (#817) watches the camera; opening the sketch satisfies it too.
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                                   profile_lines = loop, edge = 2 }
-            assert(bearcad.ui.tutorial_step() == 33, "face picked -> circle tool")
+            assert(bearcad.ui.tutorial_step() == 34, "face picked -> circle tool")
             bearcad.ui.tool("circle")
-            assert(bearcad.ui.tutorial_step() == 34, "circle tool -> first hole")
+            assert(bearcad.ui.tutorial_step() == 35, "circle tool -> first hole")
             bearcad.circle{ x = 19, y = 10, r = 2.5 }
-            assert(bearcad.ui.tutorial_step() == 35, "first hole -> second hole")
+            assert(bearcad.ui.tutorial_step() == 36, "first hole -> second hole")
             bearcad.circle{ x = 19, y = 30, r = 2.5 }
-            assert(bearcad.ui.tutorial_step() == 36, "both holes -> position them")
+            assert(bearcad.ui.tutorial_step() == 37, "both holes -> position them")
             -- Position each hole off one of the sketched-on face's own edges — the
             -- point-to-edge dimension the step asks for, now scriptable (#809).
             local flange = { kind = "extrude_side", extrusion = 0, profile = "polygon",
@@ -4763,34 +4763,34 @@ mod tests {
                                        line = { kind = "face", face = flange,
                                                 index = nth == 1 and 1 or 3 } }, "10mm")
             end
-            assert(bearcad.ui.tutorial_step() == 38, "positioned -> cut step")
+            assert(bearcad.ui.tutorial_step() == 39, "positioned -> cut step")
 
             bearcad.exit_sketch()
             bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
-            assert(bearcad.ui.tutorial_step() == 40, "holes cut -> countersink step")
+            assert(bearcad.ui.tutorial_step() == 41, "holes cut -> countersink step")
 "#;
         let full_tail = r#"
             for face = 0, 1 do
               bearcad.chamfer_edge{ extrusion = 1,
                 edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
             end
-            assert(bearcad.ui.tutorial_step() == 41, "countersunk -> corner fillet step")
+            assert(bearcad.ui.tutorial_step() == 42, "countersunk -> corner fillet step")
 
             for _, k in ipairs({0, 1, 3, 4}) do
               bearcad.fillet_edge{ extrusion = 0,
                 edge = { kind = "vertical", face = 0, edge = k }, radius = 2.0 }
             end
-            assert(bearcad.ui.tutorial_step() == 42, "corners rounded -> engrave step")
+            assert(bearcad.ui.tutorial_step() == 43, "corners rounded -> engrave step")
 
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                                   profile_lines = loop, edge = 0 }
             bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
             bearcad.exit_sketch()
             bearcad.extrude{ text = 0, distance = -1, body = "cut" }
-            assert(bearcad.ui.tutorial_step() == 43, "engraved -> change-your-mind step")
+            assert(bearcad.ui.tutorial_step() == 44, "engraved -> change-your-mind step")
 
             bearcad.parameter("value", 5, "150deg")
-            assert(bearcad.ui.tutorial_step() == 44, "angle changed -> final step")
+            assert(bearcad.ui.tutorial_step() == 45, "angle changed -> final step")
 
             bearcad.ui.tutorial_next()
             assert(bearcad.ui.tutorial_step() == nil, "finished")

@@ -1253,6 +1253,59 @@ fn looking_at_flange_face(app: &AppState) -> bool {
     (app.cam.eye() - spot).normalize_or_zero().dot(outward) > 0.25
 }
 
+/// The outer bend edge faces the camera (#867). The bend's outside is on the far side of the
+/// bracket from the inner one, so the reader has to swing the view round before that fillet
+/// step can be clicked — this is the predicate for the step that teaches the spin.
+fn looking_at_outer_bend(app: &AppState) -> bool {
+    if bend_rounded(app) {
+        return true;
+    }
+    let (Some(inner), Some(outer)) = (bend_edge_point(app, 3), bend_edge_point(app, 0)) else {
+        // No bend edges to look at yet (the fillets haven't been set up): nothing to wait for.
+        return true;
+    };
+    // Outward = from the inner bend edge toward the outer one; we're looking at the outside
+    // once the eye is on that side of it.
+    let outward = (outer - inner).normalize_or_zero();
+    if outward.length_squared() < 1e-6 {
+        return false;
+    }
+    (app.cam.eye() - outer).normalize_or_zero().dot(outward) > 0.25
+}
+
+/// Swing the view round to the outside of the bend — the spin step's own button (#867).
+fn assist_spin_to_outer_bend(app: &mut AppState) {
+    let (Some(inner), Some(outer)) = (bend_edge_point(app, 3), bend_edge_point(app, 0)) else {
+        return;
+    };
+    let dir = (outer - inner).normalize_or_zero();
+    if dir.length_squared() < 1e-6 {
+        return;
+    }
+    let eye_dir = (dir + glam::Vec3::Z * 0.35).normalize_or_zero();
+    // Stand the eye off along the outward direction, looking back at the bend.
+    let (yaw, pitch) = crate::camera::Camera::view_direction_to_yaw_pitch(eye_dir);
+    let view = crate::camera::HomeView {
+        target: outer,
+        yaw,
+        pitch,
+        distance: app.cam.distance.max(120.0),
+        view_up: None,
+    };
+    app.cam.start_transition_to_view(view, 0.5);
+    // The pose lands now as well: the step's predicate reads the camera, and an animation
+    // that hasn't ticked yet would leave the button looking like it did nothing.
+    app.cam.yaw = view.yaw;
+    app.cam.pitch = view.pitch;
+    app.cam.target = view.target;
+    app.cam.distance = view.distance;
+}
+
+/// The spin-to-the-bend step's orb: the outer bend edge it's swinging round to.
+fn outer_bend_spin_orb(app: &AppState) -> Option<StepTarget> {
+    bend_edge_point(app, 0).map(StepTarget::World)
+}
+
 /// Where the spin step's orb sits (#819): over the bracket itself, since the drag can start
 /// anywhere but that's where the eye is.
 fn spin_orb(app: &AppState) -> Option<StepTarget> {
@@ -1271,19 +1324,25 @@ fn assist_spin_to_flange(app: &mut AppState) {
     if dir.length_squared() < 1e-6 {
         return;
     }
-    // Look back along the face's outward direction, from a little above it.
-    let eye_dir = (dir + glam::Vec3::Z * 0.35).normalize_or_zero();
-    let (yaw, pitch) = crate::camera::Camera::view_direction_to_yaw_pitch(-eye_dir);
-    app.cam.start_transition_to_view(
-        crate::camera::HomeView {
-            target: spot,
-            yaw,
-            pitch,
-            distance: app.cam.distance.max(120.0),
-            view_up: None,
-        },
-        0.5,
-    );
+    // Stand the eye off along the face's outward direction, looking back at it. Only the
+    // sideways part of that direction counts — the step asks the reader to spin, not climb.
+    let sideways = glam::Vec3::new(dir.x, dir.y, 0.0).normalize_or_zero();
+    let eye_dir = (sideways + glam::Vec3::Z * 0.35).normalize_or_zero();
+    let (yaw, pitch) = crate::camera::Camera::view_direction_to_yaw_pitch(eye_dir);
+    let view = crate::camera::HomeView {
+        target: spot,
+        yaw,
+        pitch,
+        distance: app.cam.distance.max(120.0),
+        view_up: None,
+    };
+    app.cam.start_transition_to_view(view, 0.5);
+    // The pose lands now as well: the step's predicate reads the camera, and an animation
+    // that hasn't ticked yet would leave the button looking like it did nothing.
+    app.cam.yaw = view.yaw;
+    app.cam.pitch = view.pitch;
+    app.cam.target = view.target;
+    app.cam.distance = view.distance;
 }
 
 /// Point at the middle of the flange's inside face — the face to click.
@@ -1344,6 +1403,52 @@ fn holes_dimensioned(app: &AppState) -> bool {
 }
 
 /// Point at each hole's centre in turn while they're being positioned.
+/// The hole-positioning step as a numbered pair (#869): the hole's centre, then the flange
+/// edge it's measured from. The centre goes green once it's selected, so a click that landed
+/// is visibly a click that landed.
+fn hole_dimension_marks(app: &AppState) -> Vec<GuideMark> {
+    use crate::hierarchy::SceneElement;
+    use crate::model::{ConstraintLine, ConstraintPoint};
+    let mut marks = Vec::new();
+    if holes_dimensioned(app) || app.tool != Tool::Dimension {
+        return marks;
+    }
+    let Some(session) = app.sketch_session else { return marks };
+    let Some(frame) = crate::face::sketch_geometry_frame(&app.doc, session.sketch) else {
+        return marks;
+    };
+    let Some(face) = app.doc.sketch_face(session.sketch) else { return marks };
+    let placed = hole_position_dims(app);
+    let nth = placed.min(1);
+    let Some((ci, circle)) = app
+        .doc
+        .circles
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .nth(nth)
+    else {
+        return marks;
+    };
+    let centre_selected = app
+        .scene_selection
+        .is_selected(SceneElement::Point(ConstraintPoint::CircleCenter(ci)));
+    marks.push(GuideMark {
+        target: StepTarget::World(crate::face::local_to_world(&frame, circle.cx, circle.cy)),
+        done: centre_selected,
+    });
+    // The face edge this hole measures from — the same one the assist uses.
+    let index = if nth == 0 { 1 } else { 3 };
+    let edge = ConstraintLine::FaceEdge { face, index };
+    if let Some((a, b)) = crate::constraint_viewport::constraint_line_world_endpoints(&app.doc, session.sketch, edge.clone()) {
+        marks.push(GuideMark {
+            target: StepTarget::World((a + b) * 0.5),
+            done: app.scene_selection.is_selected(SceneElement::FaceEdge(edge)),
+        });
+    }
+    marks
+}
+
 fn hole_dimension_orb(app: &AppState) -> Option<StepTarget> {
     if holes_dimensioned(app) {
         return None;
@@ -2223,6 +2328,21 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
+        narration: "The outside of the bend is round the back. `Right-drag` to spin the view \
+                    until you can see it.",
+        anchor: StepAnchor::Guided(outer_bend_spin_orb),
+        done: Some(looking_at_outer_bend),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Spin it for me", run: assist_spin_to_outer_bend }),
+        needs_shift: None,
+        drag_hint: Some("Right-drag"),
+        key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration: Some("The outside of the bend is round the back. Drag with three fingers to spin the view until you can see it."),
+        only_on_phone: false,
+    },
+    Step {
         narration: "Now the outside edge, one bracket thickness bigger: type \
                     `bend+thick`. Concentric, like bent sheet metal.",
         anchor: StepAnchor::Guided(outer_bend_orb),
@@ -2326,10 +2446,7 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "Pin them down with the Dimension tool (`D`): click the glowing centre, \
-                    Shift+click the flange's end edge, place the dimension and type `10mm`. \
-                    Give the other hole the same `10mm` from the *other* edge and the pair \
-                    sits evenly.",
+        narration: "Position each hole `10mm` from its end of the flange.",
         anchor: StepAnchor::Guided(hole_dimension_orb),
         done: Some(holes_dimensioned),
         on_enter: None,
@@ -2337,7 +2454,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
-        marks: None,
+        marks: Some(hole_dimension_marks),
         type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2686,7 +2803,7 @@ mod tests {
     fn click_only_steps_offer_no_button() {
         // Tool buttons, pane taps, tapping into a box, clicking a face or the glowing points —
         // and the constraint steps, whose three marks are all clicks now (#864).
-        for step in [1, 2, 4, 6, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 30, 32, 33, 37, 39] {
+        for step in [1, 2, 4, 6, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 31, 33, 34, 38, 40] {
             assert!(
                 BRACKET_STEPS[step].assist.is_none(),
                 "step {step} is click-only but offers a button: {}",
@@ -2694,7 +2811,7 @@ mod tests {
             );
         }
         // Typing keeps theirs.
-        for step in [3, 5, 7, 8, 9, 22, 23, 27, 34, 40, 43] {
+        for step in [3, 5, 7, 8, 9, 22, 23, 27, 35, 41, 44] {
             assert!(
                 BRACKET_STEPS[step].assist.is_some(),
                 "step {step} needs the keyboard and should offer a button: {}",

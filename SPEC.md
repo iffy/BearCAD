@@ -3583,7 +3583,9 @@ document is millimeters, so the player is person-scale: eye height
   needlessly fiddly. The profile stays out in the middle of the XY plane, where it was
   drawn. The **bend fillets** are a step each, the orb on the
   body's bend edge (`bend_edge_point` picks the extrusion-direction feature edge nearest the
-  inner or outer bend corner, #791), and the **screw-hole stage** is six: the Sketch tool,
+  inner or outer bend corner, #791), with a **spin step between them** — the outside of the
+  bend sits round the back, so a step of its own has you right-drag round to it before it can
+  be clicked (`looking_at_outer_bend`, "Spin it for me", #867) — and the **screw-hole stage** is six: the Sketch tool,
   the flange's inside face (with the narration naming right-drag to spin the view, #795),
   the Circle tool, each hole's centre, and positioning them — each step's predicate also
   satisfied by having done it already, so a user who opened the sketch themselves isn't told
