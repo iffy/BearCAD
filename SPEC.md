@@ -961,7 +961,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     don't rotate into it), and the items have no single direction to measure their own extent
     along, so they space centre-to-centre like plane targets. A curved path can only be
     followed — its "around the path" option is disabled and ignored. A pattern longer than its
-    path runs on past the end along the last segment's direction.
+    path runs on past the end along the last segment's direction. A **circle** is a path too
+    (`RepeatOperation::path_circle`, set by clicking a circle while the Path picker is what's
+    being picked): the copies ride round its circumference, keeping their orientation — the
+    difference between that and the rotational mode, which turns them as it goes.
   - **Repeating construction planes (#221):** a repeat can also target construction planes
     (`RepeatOperation::plane_targets`), picked from the Elements pane / viewport with the tool
     active. Each further instance is a generated `ConstructionPlane` carrying a

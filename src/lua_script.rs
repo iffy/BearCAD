@@ -3705,6 +3705,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
+                    path_circle: None,
                     around_axis,
                     targets: Vec::new(),
                     plane_targets: Vec::new(),
@@ -3737,6 +3738,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
+                    path_circle: None,
                     around_axis,
                     targets: Vec::new(),
                     plane_targets: Vec::new(),

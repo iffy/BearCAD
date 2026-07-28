@@ -50,9 +50,10 @@ bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
 
 ## Along a curve
 
-Pick a **curved** line as the path and the copies follow its bend, spaced by distance
-*along the curve*. They keep their orientation as they go, and a curved path is always
-followed — the "around" option is off for it.
+Pick a **curved** line — or a **circle** — as the path and the copies follow it, spaced by
+distance *along the curve*. They keep their orientation as they go, and a curved path is
+always followed: the "around" option is off for it (that's what the rotational mode is for,
+and it turns the copies as they go).
 
 ## Spacing modes
 

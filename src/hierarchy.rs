@@ -5170,6 +5170,7 @@ mod tests {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),

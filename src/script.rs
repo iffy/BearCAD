@@ -1899,7 +1899,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
         // the Move op's plane/image targets — they replay as body-only operations.
-        Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, around_axis, mode, count, spacing, length, length_target } => {
+        Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, path_circle: _, around_axis, mode, count, spacing, length, length_target } => {
             Some(Instruction::CreateRepeatOp {
                 targets: targets.clone(),
                 axis: *axis,
@@ -1911,7 +1911,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 length_target: length_target.clone(),
             })
         }
-        Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, around_axis, mode, count, spacing, length, length_target } => {
+        Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, path_circle: _, around_axis, mode, count, spacing, length, length_target } => {
             Some(Instruction::EditRepeatOp {
                 op: *op,
                 targets: targets.clone(),
@@ -4531,6 +4531,7 @@ impl ScriptRunner {
             }
             Instruction::CreateRepeatOp { targets, axis, around_axis, mode, count, spacing, length, length_target } => {
                 let result = state.apply(Action::CreateRepeatOperation {
+                    path_circle: None,
                     around_axis,
                     targets,
                     plane_targets: Vec::new(),
@@ -4554,6 +4555,7 @@ impl ScriptRunner {
                     extrusion_targets: Vec::new(),
                     sketch_targets: Vec::new(),
                     axis,
+                    path_circle: None,
                     around_axis,
                     mode,
                     count,

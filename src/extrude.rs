@@ -1349,6 +1349,34 @@ pub fn repeat_extent(doc: &Document, op: &crate::model::RepeatOperation) -> Opti
 /// The world polyline of a **curved** repeat path (#840): a bezier sketch line sampled along
 /// its length. `None` for anything straight — those repeat along their direction as before.
 pub fn repeat_path_polyline(doc: &Document, axis: crate::model::RevolveAxis) -> Option<Vec<Vec3>> {
+    repeat_path_polyline_of(doc, axis, None)
+}
+
+/// The world polyline of a repeat's path (#840): the picked **circle**'s circumference when
+/// there is one, else a curved line's samples. `None` for a straight path, which repeats
+/// along its direction instead.
+pub fn repeat_path_polyline_of(
+    doc: &Document,
+    axis: crate::model::RevolveAxis,
+    path_circle: Option<usize>,
+) -> Option<Vec<Vec3>> {
+    if let Some(ci) = path_circle {
+        let circle = doc.circles.get(ci).filter(|c| !c.deleted)?;
+        let frame = crate::face::sketch_geometry_frame(doc, circle.sketch)?;
+        // Closed: the last point repeats the first, so a pattern can run the whole way round.
+        const N: usize = 96;
+        let points: Vec<Vec3> = (0..=N)
+            .map(|i| {
+                let t = i as f32 / N as f32 * std::f32::consts::TAU;
+                crate::face::local_to_world(
+                    &frame,
+                    circle.cx + circle.r * t.cos(),
+                    circle.cy + circle.r * t.sin(),
+                )
+            })
+            .collect();
+        return (circle.r > 1e-6).then_some(points);
+    }
     let crate::model::RevolveAxis::Line(li) = axis else {
         return None;
     };
@@ -1402,7 +1430,7 @@ pub fn repeat_offset_transform(
 ) -> Option<glam::Mat4> {
     // A curved path carries the copies along it: each one is offset by the vector from the
     // path's start to the point that far along it, so the pattern follows the bend.
-    if let Some(points) = repeat_path_polyline(doc, op.axis) {
+    if let Some(points) = repeat_path_polyline_of(doc, op.axis, op.path_circle) {
         let start = *points.first()?;
         return Some(glam::Mat4::from_translation(
             point_along_polyline(&points, step)? - start,
@@ -1449,12 +1477,12 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
     // Turning about the axis measures in degrees, and the items have no angular extent of
     // their own to space around (#839). A curved path is only ever followed, never turned
     // about, so it can't be in this mode (#840).
-    if op.around_axis && repeat_path_polyline(doc, op.axis).is_none() {
+    if op.around_axis && repeat_path_polyline_of(doc, op.axis, op.path_circle).is_none() {
         return repeat_angles(doc, op);
     }
     // Along a curved path (#840) the copies step by arc length; there's no single direction
     // to measure the items' own extent along, so they space centre-to-centre like planes do.
-    if repeat_path_polyline(doc, op.axis).is_some() {
+    if repeat_path_polyline_of(doc, op.axis, op.path_circle).is_some() {
         let eval = |expr: &str| -> Option<f32> {
             (!expr.trim().is_empty())
                 .then(|| crate::value::eval_length_mm_in_doc(expr, doc))
@@ -5560,6 +5588,7 @@ mod tests {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             axis: RevolveAxis::Line(0),
+            path_circle: None,
             around_axis: false,
             mode: RepeatMode::CountGap,
             count: "4".to_string(),
@@ -5599,6 +5628,22 @@ mod tests {
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         assert!(repeat_path_polyline(&doc, RevolveAxis::Line(1)).is_none());
         assert!(repeat_path_polyline(&doc, RevolveAxis::Z).is_none());
+
+        // A circle is a path too (#840): the copies ride round its circumference.
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 30.0, 0.0));
+        let ring = repeat_path_polyline_of(&doc, RevolveAxis::Z, Some(0)).expect("a circle path");
+        assert!(ring.len() > 8, "sampled round");
+        assert!(
+            (ring.first().unwrap() - ring.last().unwrap()).length() < 1e-3,
+            "the ring closes"
+        );
+        let circumference: f32 = ring.windows(2).map(|p| (p[1] - p[0]).length()).sum();
+        let exact = std::f32::consts::TAU * 30.0;
+        assert!(
+            (circumference - exact).abs() < exact * 0.01,
+            "sampled circumference ≈ 2πr, got {circumference}"
+        );
     }
 
     /// #839: a rotational repeat turns its copies about the axis — six 60° steps put the
@@ -5615,6 +5660,7 @@ mod tests {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             axis: RevolveAxis::Z,
+            path_circle: None,
             around_axis: around,
             mode: RepeatMode::CountGap,
             count: "6".to_string(),
@@ -5922,6 +5968,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: RepeatMode::FillPitch,
             count: String::new(),
@@ -6243,6 +6290,7 @@ mod tests {
             extrusion_targets: vec![1],
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
@@ -6288,6 +6336,7 @@ mod tests {
             extrusion_targets: vec![0],
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),

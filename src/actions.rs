@@ -642,6 +642,8 @@ pub struct CreatingRepeat {
     pub sketch_targets: Vec<usize>,
     /// `None` until picked (#439): the path picker starts empty and focused.
     pub axis: Option<crate::model::RevolveAxis>,
+    /// A picked **circle** as the path (#840); wins over `axis` while set.
+    pub path_circle: Option<usize>,
     /// Repeat **around** the picked path rather than along it (#839).
     pub around_axis: bool,
     pub mode: crate::model::RepeatMode,
@@ -670,6 +672,7 @@ impl Default for CreatingRepeat {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: None,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -2045,6 +2048,8 @@ pub enum Action {
         extrusion_targets: Vec<usize>,
         sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
+        /// A circle used as the path (#840); wins over `axis`.
+        path_circle: Option<usize>,
         /// Turn the copies about the axis instead of sliding them along it (#839).
         around_axis: bool,
         mode: crate::model::RepeatMode,
@@ -2062,6 +2067,7 @@ pub enum Action {
         extrusion_targets: Vec<usize>,
         sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
+        path_circle: Option<usize>,
         around_axis: bool,
         mode: crate::model::RepeatMode,
         count: String,
@@ -9615,6 +9621,7 @@ label_hidden: false,
                         extrusion_targets: cr.extrusion_targets.clone(),
                         sketch_targets: cr.sketch_targets.clone(),
                         axis,
+                        path_circle: cr.path_circle,
                         around_axis: cr.around_axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -9628,6 +9635,7 @@ label_hidden: false,
                         extrusion_targets: cr.extrusion_targets.clone(),
                         sketch_targets: cr.sketch_targets.clone(),
                         axis,
+                        path_circle: cr.path_circle,
                         around_axis: cr.around_axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -9643,7 +9651,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, around_axis, mode, count, spacing, length, length_target } => {
+            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, mode, count, spacing, length, length_target } => {
                 if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets, &sketch_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -9655,6 +9663,7 @@ label_hidden: false,
                     extrusion_targets: extrusion_targets.clone(),
                     sketch_targets: sketch_targets.clone(),
                     axis,
+                    path_circle,
                     around_axis,
                     mode,
                     count,
@@ -9733,7 +9742,7 @@ label_hidden: false,
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, around_axis, mode, count, spacing, length, length_target } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, mode, count, spacing, length, length_target } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
@@ -9751,6 +9760,7 @@ label_hidden: false,
                     entry.targets = targets.clone();
                     entry.plane_targets = plane_targets.clone();
                     entry.axis = axis;
+                    entry.path_circle = path_circle;
                     entry.around_axis = around_axis;
                     entry.mode = mode;
                     entry.count = count;
@@ -18897,6 +18907,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -18939,6 +18950,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::FillMaxPitch,
             count: String::new(),
@@ -18965,6 +18977,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -18980,6 +18993,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "5".to_string(),
@@ -19005,6 +19019,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "n".to_string(),
@@ -19823,6 +19838,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -19863,6 +19879,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -19905,6 +19922,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -19920,6 +19938,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
+            path_circle: None,
             around_axis: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "4".to_string(),

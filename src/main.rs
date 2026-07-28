@@ -7084,6 +7084,7 @@ impl App {
                         extrusion_targets: existing.extrusion_targets,
                         sketch_targets: existing.sketch_targets,
                         axis: Some(existing.axis),
+                        path_circle: existing.path_circle,
                         around_axis: existing.around_axis,
                         mode: existing.mode,
                         count: existing.count,
@@ -7721,6 +7722,20 @@ impl App {
         else {
             return;
         };
+        // A circle under the cursor becomes the path (#840): the copies ride round it. Only
+        // while the path picker is what's being picked, so a click on a circle otherwise
+        // still falls through to the body pick below.
+        if let construction::PickTargetKind::Circle(ci) = target.kind {
+            if repeat_axis_pick_active(self.state.creating_repeat.as_ref()) {
+                if let Some(cr) = self.state.creating_repeat.as_mut() {
+                    cr.path_circle = Some(ci);
+                    cr.axis = Some(model::RevolveAxis::Z);
+                    cr.around_axis = false;
+                }
+                self.state.status = "Repeat: path set — round a circle".to_string();
+                return;
+            }
+        }
         // Any straight reference under the cursor sets the axis (#643): a sketch line, an
         // origin axis, or a feature edge of a body — the same set the hover highlights.
         // Origin axes and body edges only count while the axis picker is the focused one,
@@ -7732,6 +7747,7 @@ impl App {
             let label = names::revolve_axis_label(&self.state.doc, axis);
             if let Some(cr) = self.state.creating_repeat.as_mut() {
                 cr.axis = Some(axis);
+                cr.path_circle = None;
             }
             self.state.status = format!("Repeat: axis set — {label}");
             return;
@@ -8007,7 +8023,8 @@ impl App {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             axis: cr.axis?,
-            around_axis: false,
+            path_circle: cr.path_circle,
+            around_axis: cr.around_axis,
             mode: cr.mode,
             count: cr.count.clone(),
             spacing: cr.spacing.clone(),
@@ -10162,8 +10179,15 @@ impl eframe::App for App {
                     context::RepeatControl {
                         around_axis: cr.is_some_and(|c| c.around_axis),
                         // A curved path is followed, never turned about (#840).
-                        can_turn_about_path: cr.and_then(|c| c.axis).is_none_or(|axis| {
-                            extrude::repeat_path_polyline(&self.state.doc, axis).is_none()
+                        can_turn_about_path: cr.is_none_or(|c| {
+                            c.axis.is_none_or(|axis| {
+                                extrude::repeat_path_polyline_of(
+                                    &self.state.doc,
+                                    axis,
+                                    c.path_circle,
+                                )
+                                .is_none()
+                            })
                         }),
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
@@ -10182,9 +10206,18 @@ impl eframe::App for App {
                                 self.state.doc.default_length_unit,
                             ))
                         }),
-                        axis_label: cr
-                            .and_then(|c| c.axis)
-                            .map(|a| names::revolve_axis_label(&self.state.doc, a)),
+                        // A circle path names itself (#840); otherwise the axis does.
+                        axis_label: cr.and_then(|c| match c.path_circle {
+                            Some(ci) => Some(
+                                names::element_name(
+                                    &self.state.doc,
+                                    hierarchy::SceneElement::Circle(ci),
+                                )
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| format!("circle {ci}")),
+                            ),
+                            None => c.axis.map(|a| names::revolve_axis_label(&self.state.doc, a)),
+                        }),
                         mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
                         count: cr.map(|c| c.count.clone()).unwrap_or_default(),
                         spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
@@ -13516,6 +13549,7 @@ fn build_viewport_scene_input<'a>(
                 sketch_plane_outputs: Vec::new(),
                 sketch_outputs: Vec::new(),
                 axis: c.axis?,
+                path_circle: c.path_circle,
                 around_axis: c.around_axis,
                 mode: c.mode,
                 count: c.count.clone(),
