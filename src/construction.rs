@@ -2587,13 +2587,11 @@ fn nearest_body_edge(
         if body.deleted || body.shadow {
             continue;
         }
-        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
-            continue;
-        };
         // Segments of one smooth chain all carry the chain's canonical segment as their
         // pick identity (#626), so clicking any facet of a curved rim selects the whole
         // curve; the hovered segment itself still provides the axis anchor geometry.
-        for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
+        for chain in crate::extrude::body_edge_chains(doc, bi).iter() {
+            let chain = chain.clone();
             let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
             for (a, b) in chain {
                 consider(PickTargetKind::BodyEdge { body: bi, a: ca, b: cb }, a, b);

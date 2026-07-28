@@ -1260,10 +1260,7 @@ pub fn pick_body_face(
         if body.deleted || body.shadow {
             continue;
         }
-        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
-            continue;
-        };
-        for triangles in crate::gpu_viewport::solid_mesh_coplanar_faces(&solid) {
+        for triangles in crate::extrude::body_face_groups(doc, bi).iter().cloned() {
             let inside = triangles.iter().any(|tri| {
                 matches!(
                     (project(tri[0]), project(tri[1]), project(tri[2])),
@@ -1314,10 +1311,7 @@ pub fn body_faces_near(
         if body.deleted || body.shadow {
             continue;
         }
-        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
-            continue;
-        };
-        for triangles in crate::gpu_viewport::solid_mesh_coplanar_faces(&solid) {
+        for triangles in crate::extrude::body_face_groups(doc, bi).iter().cloned() {
             let mut dist = f32::MAX;
             for tri in &triangles {
                 let (Some(a), Some(b), Some(c)) =

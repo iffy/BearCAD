@@ -3087,6 +3087,89 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     })
 }
 
+thread_local! {
+    /// Per-thread memo for the mesh **analyses** the pick/hover path runs every frame (#845):
+    /// coplanar face groups and feature edges are derived purely from a body's mesh, so they
+    /// live and die with the same document fingerprint the mesh cache uses. Recomputing them
+    /// per body per frame is what made a document with engraved text lag while zooming — the
+    /// cursor hovering the model re-derived every face group of every body, every frame.
+    static BODY_FACE_GROUP_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<Vec<[Vec3; 3]>>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+    static BODY_EDGE_CHAIN_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+    static BODY_FEATURE_EDGE_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// A body's coplanar face groups, memoized per document state (#845).
+pub fn body_face_groups(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<[Vec3; 3]>>> {
+    let fingerprint = document_mesh_fingerprint(doc);
+    // The mesh itself comes from its own cache; take it before borrowing this one.
+    let mesh = body_solid_mesh(doc, body_index);
+    BODY_FACE_GROUP_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(groups) = cache.1.get(&body_index) {
+            return groups.clone();
+        }
+        let groups = std::rc::Rc::new(
+            mesh.map(|m| crate::gpu_viewport::solid_mesh_coplanar_faces(&m))
+                .unwrap_or_default(),
+        );
+        cache.1.insert(body_index, groups.clone());
+        groups
+    })
+}
+
+/// A body's feature-edge **chains** (#626), memoized per document state (#845): the pick and
+/// hover paths walk these every frame, and rebuilding them per body per frame is what made a
+/// heavy document lag.
+pub fn body_edge_chains(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>> {
+    let fingerprint = document_mesh_fingerprint(doc);
+    let mesh = body_solid_mesh(doc, body_index);
+    BODY_EDGE_CHAIN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(chains) = cache.1.get(&body_index) {
+            return chains.clone();
+        }
+        let chains = std::rc::Rc::new(
+            mesh.map(|m| crate::gpu_viewport::solid_mesh_edge_chains(&m))
+                .unwrap_or_default(),
+        );
+        cache.1.insert(body_index, chains.clone());
+        chains
+    })
+}
+
+/// A body's feature edges (mesh boundaries and creases), memoized per document state (#845).
+pub fn body_feature_edges(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
+    let fingerprint = document_mesh_fingerprint(doc);
+    let mesh = body_solid_mesh(doc, body_index);
+    BODY_FEATURE_EDGE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(edges) = cache.1.get(&body_index) {
+            return edges.clone();
+        }
+        let edges = std::rc::Rc::new(
+            mesh.map(|m| crate::gpu_viewport::solid_mesh_unique_edges(&m))
+                .unwrap_or_default(),
+        );
+        cache.1.insert(body_index, edges.clone());
+        edges
+    })
+}
+
 /// Build a body's solid mesh **without** consulting or populating [`BODY_MESH_CACHE`]. Used for
 /// the in-progress-edit descendant preview (#260), which meshes a throwaway scratch document each
 /// frame — routing that through the cache would evict the real document's warm meshes every frame
@@ -5644,6 +5727,44 @@ mod tests {
             (circumference - exact).abs() < exact * 0.01,
             "sampled circumference ≈ 2πr, got {circumference}"
         );
+    }
+
+    /// #845: the pick/hover path's per-body mesh analyses are memoized on the same document
+    /// fingerprint the mesh cache uses — repeated calls reuse the work, and any geometry
+    /// change invalidates it.
+    #[test]
+    fn body_mesh_analyses_are_cached_and_invalidated() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.push(ext);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let first = body_face_groups(&doc, 0);
+        let again = body_face_groups(&doc, 0);
+        assert!(std::rc::Rc::ptr_eq(&first, &again), "the second call reuses the first");
+        assert_eq!(first.len(), 6, "a box has six faces");
+        assert!(!body_feature_edges(&doc, 0).is_empty());
+        assert!(!body_edge_chains(&doc, 0).is_empty());
+
+        // Changing the geometry invalidates it: the taller box's faces are recomputed.
+        let before = first.clone();
+        doc.extrusions[0].distance = 40.0;
+        let after = body_face_groups(&doc, 0);
+        assert!(!std::rc::Rc::ptr_eq(&before, &after), "a geometry edit rebuilds the groups");
+        let height = |groups: &Vec<Vec<[Vec3; 3]>>| {
+            groups
+                .iter()
+                .flatten()
+                .flatten()
+                .map(|p| p.z)
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(height(&after) > height(&before), "the rebuilt groups are the taller box");
     }
 
     /// #839: a rotational repeat turns its copies about the axis — six 60° steps put the
