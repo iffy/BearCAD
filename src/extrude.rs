@@ -1199,10 +1199,12 @@ pub fn spacing_offsets(
 /// each targeted line endpoint and circle rim is projected onto the (normalized) repeat direction.
 /// Returns `None` if the direction is degenerate, nothing is targeted, or the config doesn't
 /// evaluate.
-pub fn sketch_repeat_offsets(
+/// How far the repeated entities themselves reach along the repeat direction (mm) — the `L`
+/// the gap/distance maths measures from, and what the pane's computed readout needs (#835).
+pub fn sketch_repeat_extent(
     doc: &Document,
     op: &crate::model::SketchRepeatOperation,
-) -> Option<Vec<f32>> {
+) -> Option<f32> {
     let len = (op.dir_u * op.dir_u + op.dir_v * op.dir_v).sqrt();
     if len <= 1e-6 {
         return None;
@@ -1231,7 +1233,14 @@ pub fn sketch_repeat_offsets(
     if !min_p.is_finite() || !max_p.is_finite() {
         return None;
     }
-    let extent = (max_p - min_p).max(0.0);
+    Some((max_p - min_p).max(0.0))
+}
+
+pub fn sketch_repeat_offsets(
+    doc: &Document,
+    op: &crate::model::SketchRepeatOperation,
+) -> Option<Vec<f32>> {
+    let extent = sketch_repeat_extent(doc, op)?;
     let eval = |expr: &str| -> Option<f32> {
         (!expr.trim().is_empty())
             .then(|| crate::value::eval_length_mm_in_doc(expr, doc))
@@ -5312,6 +5321,49 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
+    }
+
+    /// #835: the extent the in-sketch repeat measures its gap/distance from — how far the
+    /// picked entities themselves reach along the repeat direction.
+    #[test]
+    fn sketch_repeat_extent_spans_the_picked_entities_along_the_direction() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 20.0, 0.0, 3.0, 0.0));
+        let op = |dir_u: f32, dir_v: f32, lines: Vec<usize>, circles: Vec<usize>| {
+            crate::model::SketchRepeatOperation {
+                sketch,
+                line_targets: lines,
+                circle_targets: circles,
+                dir_u,
+                dir_v,
+                mode: crate::model::RepeatMode::CountGap,
+                count: "3".to_string(),
+                spacing: "5".to_string(),
+                length: String::new(),
+                line_outputs: Vec::new(),
+                circle_outputs: Vec::new(),
+                name: None,
+                deleted: false,
+            }
+        };
+        // Along U the line spans 0..10.
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![0], Vec::new())).unwrap();
+        assert!((e - 10.0).abs() < 1e-3, "got {e}");
+        // Along V it's edge-on: no extent.
+        let e = sketch_repeat_extent(&doc, &op(0.0, 1.0, vec![0], Vec::new())).unwrap();
+        assert!(e.abs() < 1e-3, "got {e}");
+        // The circle contributes its radius either side of its centre.
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), vec![0])).unwrap();
+        assert!((e - 6.0).abs() < 1e-3, "got {e}");
+        // Both together span 0..23.
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![0], vec![0])).unwrap();
+        assert!((e - 23.0).abs() < 1e-3, "got {e}");
+        // Nothing picked, or a degenerate direction, has no extent to measure.
+        assert!(sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), Vec::new())).is_none());
+        assert!(sketch_repeat_extent(&doc, &op(0.0, 0.0, vec![0], Vec::new())).is_none());
     }
 
     /// #260: the live-edit descendant preview relies on [`body_solid_mesh_uncached_pub`] being a

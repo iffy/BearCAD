@@ -364,19 +364,27 @@ pub struct RepeatControl {
 
 /// What the in-sketch Repeat tool's context section shows (#232): the picked entities, the
 /// repeat direction, and the count/gap/distance fields (which map onto the same variables as the
-/// 3D repeat).
+/// 3D repeat). Laid out like the 3D section (#835), one dimension down: element pickers for the
+/// entities and the direction line, and the same three interlinked value rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchRepeatControl {
-    pub entity_count: usize,
-    /// The direction source: a picked edge's name, or "the U axis".
-    pub direction_label: String,
-    pub direction_is_edge: bool,
+    /// The sketch entities being copied, as element-picker rows.
+    pub picked: Vec<SceneElement>,
+    /// The picked direction line; `None` means the sketch's U axis.
+    pub direction: Option<SceneElement>,
+    /// Whether the direction picker is armed (the next viewport click sets it, #835).
+    pub direction_focused: bool,
+    /// Whether one of the section's value fields holds keyboard focus — while it does,
+    /// neither picker reads as focused (mirrors the 3D section, #646).
+    pub value_field_focused: bool,
     pub count: String,
     pub spacing: String,
     pub length: String,
     pub computed_var: crate::model::RepeatVar,
     pub gap_is_offset: bool,
     pub distance_is_end: bool,
+    /// Formatted value of the computed variable, shown read-only in its field.
+    pub computed_value: Option<String>,
     pub can_commit: bool,
     pub editing: bool,
 }
@@ -389,6 +397,14 @@ pub enum SketchRepeatEdit {
     Distance(String),
     ToggleGapOffset,
     ToggleDistanceEnd,
+    /// Move the green lock — compute this variable from the other two (#835).
+    SetComputed(crate::model::RepeatVar),
+    /// Drop one picked entity.
+    Remove(SceneElement),
+    /// Drop every picked entity.
+    Clear,
+    /// Arm the direction picker: the next viewport click sets the direction line (#835).
+    DirectionFocus,
     /// Clear the picked direction edge (fall back to the U axis).
     ClearDirection,
     Commit,
@@ -2687,11 +2703,12 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
              distance — the copies follow it if it moves.",
         ),
         (Some(Tool::Repeat), "Entities") => Some(
-            "How many sketch entities the in-sketch repeat copies.",
+            "The sketch lines and circles to copy. Click one to add it, click it again \
+             to drop it.",
         ),
         (Some(Tool::Repeat), "Direction") => Some(
-            "The direction the copies run — the sketch's U axis, or an edge you \
-             Shift+click.",
+            "The direction the copies run — a sketch line, or the sketch's U axis while \
+             this is empty.",
         ),
         (Some(Tool::Mirror), "Mirror plane") => Some(
             "The plane the reflection flips across — a construction plane or a flat \
@@ -4377,24 +4394,64 @@ pub fn show_pane(
         }
     }
 
-    // In-sketch Repeat tool (#232): entities + direction + count/gap/distance.
+    // In-sketch Repeat tool (#232): entities + direction + count/gap/distance, laid out like
+    // the 3D section one dimension down (#835) — pickers for both, locks on the value rows.
     if let Some(control) = &content.sketch_repeat {
         use crate::model::RepeatVar;
         any_control = true;
         ui.separator();
-        // Values, not a sentence (#662); what the direction wants lives in help mode.
-        let entity_count = control.entity_count;
-        labeled_row(ui, "Entities", |ui| {
-            ui.label(entity_count.to_string());
-        });
-        let direction_label = control.direction_label.clone();
-        labeled_row(ui, "Direction", |ui| {
-            ui.label(direction_label);
-        });
         let mut pending: Option<SketchRepeatEdit> = None;
-        if control.direction_is_edge && ui.small_button("Use U axis").clicked() {
-            pending = Some(SketchRepeatEdit::ClearDirection);
-        }
+        // The entities being copied (#835): the same unified picker every other in-sketch
+        // tool uses, so rows can be dropped individually or cleared.
+        let mut picker = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            PickLimit::Infinite,
+        );
+        picker.set_focused(!control.direction_focused && !control.value_field_focused);
+        picker.set_picked(control.picked.iter().cloned());
+        labeled_row_top(ui, "Entities", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &picker, doc, "sketch_repeat_picker")
+                {
+                    match event {
+                        crate::element_picker::PickerEvent::Focus => {}
+                        crate::element_picker::PickerEvent::Remove(i) => {
+                            if let Some(el) = control.picked.get(i).cloned() {
+                                pending = Some(SketchRepeatEdit::Remove(el));
+                            }
+                        }
+                        crate::element_picker::PickerEvent::Clear => {
+                            pending = Some(SketchRepeatEdit::Clear);
+                        }
+                    }
+                }
+            });
+        });
+        // The direction line (#835), the in-sketch counterpart of the 3D section's Axis
+        // picker: empty means the sketch's U axis. Focus it and the next viewport click sets
+        // it; the ✕ hands the direction back to the U axis.
+        let mut dir_picker =
+            ElementPicker::new(ElementFilter::kinds(&[ElementKind::Line]), PickLimit::Finite(1));
+        dir_picker.set_focused(control.direction_focused);
+        dir_picker.set_picked(control.direction.clone());
+        labeled_row_top(ui, "Direction", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &dir_picker, doc, "sketch_repeat_direction")
+                {
+                    pending = Some(match event {
+                        crate::element_picker::PickerEvent::Focus => {
+                            SketchRepeatEdit::DirectionFocus
+                        }
+                        crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear => {
+                            SketchRepeatEdit::ClearDirection
+                        }
+                    });
+                }
+            });
+        });
         let mut var_row = |ui: &mut egui::Ui,
                            var: RepeatVar,
                            label: &str,
@@ -4402,25 +4459,42 @@ pub fn show_pane(
                            toggle: Option<(crate::icons::IconId, SketchRepeatEdit)>,
                            make: &dyn Fn(String) -> SketchRepeatEdit| {
             let computed = control.computed_var == var;
-            ui.horizontal(|ui| {
+            let row = ui.horizontal(|ui| {
                 // Icon + label share the fixed label column (#371) so the inputs align.
                 ui.allocate_ui_with_layout(
                     egui::vec2(FIELD_LABEL_W, 18.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                        if let Some((icon, edit)) = toggle {
-                            if crate::icons::icon_button(ui, icon, "Toggle how this is measured")
-                                .clicked()
-                            {
-                                pending = Some(edit);
+                        match toggle {
+                            Some((icon, edit)) => {
+                                const TIP: &str = "Click to toggle how this is measured";
+                                if crate::icons::icon_button_hover_gold(ui, icon, TIP).clicked()
+                                    || clickable_label(ui, label, TIP).clicked()
+                                {
+                                    pending = Some(edit);
+                                }
+                            }
+                            None => {
+                                ui.label(label);
                             }
                         }
-                        ui.label(label);
                     },
                 );
+                // Both states render at the same width (#641) so the column doesn't jump as
+                // the computed one moves between rows.
+                const VAR_FIELD_W: f32 = 110.0;
                 if computed {
-                    ui.label(egui::RichText::new("(auto)").color(egui::Color32::from_gray(130)).size(10.0));
+                    let mut text = control.computed_value.clone().unwrap_or_default();
+                    ui.add_enabled_ui(false, |ui| {
+                        crate::expression_input::ValueInput::new(
+                            ("sketch_repeat_var_field", label, "computed"),
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(VAR_FIELD_W)
+                        .show(ui, &mut text, doc)
+                        .on_hover_text("Computed from the other two");
+                    });
                 } else {
                     let mut text = value.to_string();
                     let kind = if var == RepeatVar::Count {
@@ -4432,13 +4506,38 @@ pub fn show_pane(
                         ("sketch_repeat_var_field", label),
                         kind,
                     )
-                    .width(80.0)
+                    .width(VAR_FIELD_W)
                     .show(ui, &mut text, doc);
                     if resp.changed() {
                         pending = Some(make(text));
                     }
                 }
+                // Lock (#642/#835): green on the value the app computes, grey on the two the
+                // user sets; clicking a grey lock moves the green one there.
+                let lock = crate::icons::tinted_icon_button(
+                    ui,
+                    crate::icons::IconId::Lock,
+                    if computed {
+                        crate::theme::LOCKED_ACCENT
+                    } else {
+                        crate::theme::UNLOCKED_GRAY
+                    },
+                    if computed {
+                        crate::theme::LOCKED_ACCENT
+                    } else {
+                        crate::theme::LOCKED_ACCENT.gamma_multiply(0.7)
+                    },
+                    if computed {
+                        "Computed from the other two"
+                    } else {
+                        "Click to compute this from the other two instead"
+                    },
+                );
+                if lock.clicked() && !computed {
+                    pending = Some(SketchRepeatEdit::SetComputed(var));
+                }
             });
+            note_help(ui, label, row.response.rect);
         };
         var_row(ui, RepeatVar::Count, "Count", &control.count, None, &SketchRepeatEdit::Count);
         let gap_icon = if control.gap_is_offset {
@@ -4471,13 +4570,12 @@ pub fn show_pane(
             on_sketch_repeat_edit(edit);
         }
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Repeat" }),
-            )
-            .clicked()
-        {
+        // The blue primary button, in the input column, like every other tool's commit.
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Repeat" },
+        ) {
             on_sketch_repeat_edit(SketchRepeatEdit::Commit);
         }
     }

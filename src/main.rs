@@ -2272,6 +2272,9 @@ struct App {
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
+    /// Armed by focusing the in-sketch Repeat pane's "Direction" picker (#835): the next
+    /// viewport click on a sketch line sets the repeat direction.
+    sketch_repeat_direction_pick: bool,
     vertex_treatment_gizmo_drag: Option<VertexTreatmentGizmoDrag>,
     /// Push/pull gizmo drag state for the 3D edge chamfer/fillet tool (#77); parallel to
     /// `vertex_treatment_gizmo_drag`.
@@ -3347,6 +3350,7 @@ impl App {
             pending_extrude_target: None,
             extrude_target_pick: false,
             repeat_target_pick: false,
+            sketch_repeat_direction_pick: false,
             move_focus_override: None,
             move_b_hover: None,
             vertex_treatment_gizmo_drag: None,
@@ -5547,21 +5551,7 @@ impl App {
         }
         let doc = &self.state.doc;
         let (du, dv) = cr.direction(doc);
-        let probe = model::SketchRepeatOperation {
-            sketch: cr.sketch,
-            line_targets: cr.line_targets.clone(),
-            circle_targets: cr.circle_targets.clone(),
-            dir_u: du,
-            dir_v: dv,
-            mode: cr.mode,
-            count: cr.count.clone(),
-            spacing: cr.spacing.clone(),
-            length: cr.length.clone(),
-            line_outputs: Vec::new(),
-            circle_outputs: Vec::new(),
-            name: None,
-            deleted: false,
-        };
+        let probe = sketch_repeat_probe_op(cr, doc);
         let Some(offsets) = extrude::sketch_repeat_offsets(doc, &probe) else {
             return Vec::new();
         };
@@ -8032,6 +8022,11 @@ impl App {
         pointer_screen: Option<egui::Pos2>,
         session: SketchSession,
     ) {
+        // The Direction picker's arm is App state (#835); it can't outlive the in-progress
+        // repeat it belongs to.
+        if self.state.creating_sketch_repeat.is_none() {
+            self.sketch_repeat_direction_pick = false;
+        }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
             && !ui.ctx().wants_keyboard_input()
             && self
@@ -8040,6 +8035,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|c| c.has_targets())
         {
+            self.sketch_repeat_direction_pick = false;
             let cr = self.state.creating_sketch_repeat.take().unwrap();
             let (dir_u, dir_v) = cr.direction(&self.state.doc);
             let action = match cr.editing {
@@ -8079,13 +8075,16 @@ impl App {
         let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
             return;
         };
+        let direction_pick = self.sketch_repeat_direction_pick;
         let cr = self
             .state
             .creating_sketch_repeat
             .get_or_insert_with(|| actions::CreatingSketchRepeat::new(session.sketch));
         match target.kind {
-            construction::PickTargetKind::Line(li) if shift => {
+            // Shift+click, or a click while the pane's Direction picker is armed (#835).
+            construction::PickTargetKind::Line(li) if shift || direction_pick => {
                 cr.dir_line = Some(li);
+                self.sketch_repeat_direction_pick = false;
                 self.state.status = "Repeat: direction set from edge".to_string();
             }
             construction::PickTargetKind::Line(li) => {
@@ -8987,6 +8986,20 @@ impl eframe::App for App {
         // Scripted input (bearcad.ui.click/drag/key…) feeds egui as raw events, one
         // queued batch per frame — indistinguishable from OS input to every handler.
         if let Some(batch) = self.synthetic.take_raw_frame() {
+            // A scripted click that carries Shift has to show up in `RawInput::modifiers`
+            // too (#835) — that, not the event's own field, is what `ui.input(|i|
+            // i.modifiers)` reads, and it's how tools tell a plain click from a Shift+click.
+            if let Some(modifiers) = batch.iter().find_map(|e| match e {
+                egui::Event::PointerButton { modifiers, .. }
+                | egui::Event::Key { modifiers, .. }
+                    if !modifiers.is_none() =>
+                {
+                    Some(*modifiers)
+                }
+                _ => None,
+            }) {
+                raw_input.modifiers = modifiers;
+            }
             raw_input.events.extend(batch);
         }
     }
@@ -10151,23 +10164,49 @@ impl eframe::App for App {
                     }
                 }),
                 sketch_repeat: self.state.creating_sketch_repeat.as_ref().map(|c| {
-                    let direction_is_edge = c.dir_line.is_some();
-                    let direction_label = match c.dir_line {
-                        Some(li) => names::element_name(&self.state.doc, SceneElement::Line(li))
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| format!("edge {li}")),
-                        None => "the U axis".to_string(),
-                    };
+                    let mut picked = Vec::new();
+                    for &li in &c.line_targets {
+                        picked.push(SceneElement::Line(li));
+                    }
+                    for &ci in &c.circle_targets {
+                        picked.push(SceneElement::Circle(ci));
+                    }
+                    // The value of the computed variable (#835), from the same offsets the
+                    // ghost preview draws — the in-sketch twin of the 3D section's readout.
+                    let computed_value = (|| {
+                        let doc = &self.state.doc;
+                        let probe = sketch_repeat_probe_op(c, doc);
+                        let offsets = extrude::sketch_repeat_offsets(doc, &probe)?;
+                        let l = extrude::sketch_repeat_extent(doc, &probe)?;
+                        let unit = crate::model::effective_length_unit(doc, c.sketch);
+                        let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
+                        Some(match c.computed_var() {
+                            model::RepeatVar::Count => (offsets.len() + 1).to_string(),
+                            model::RepeatVar::Gap => {
+                                let step = offsets.first().copied().unwrap_or(0.0);
+                                fmt(if c.gap_is_offset { step } else { step - l })
+                            }
+                            model::RepeatVar::Distance => {
+                                let last = offsets.last().copied().unwrap_or(0.0);
+                                fmt(if c.distance_is_end { last + l } else { last })
+                            }
+                        })
+                    })();
                     context::SketchRepeatControl {
-                        entity_count: c.line_targets.len() + c.circle_targets.len(),
-                        direction_label,
-                        direction_is_edge,
+                        picked,
+                        direction: c.dir_line.map(SceneElement::Line),
+                        // Only the armed picker reads as focused (#835): entities and the
+                        // direction are both sketch lines, so a plain click always toggles an
+                        // entity unless the Direction picker was armed (or Shift is held).
+                        direction_focused: self.sketch_repeat_direction_pick,
+                        value_field_focused: context::repeat_value_field_focused(ctx),
                         count: c.count.clone(),
                         spacing: c.spacing.clone(),
                         length: c.length.clone(),
                         computed_var: c.computed_var(),
                         gap_is_offset: c.gap_is_offset,
                         distance_is_end: c.distance_is_end,
+                        computed_value,
                         can_commit: c.has_targets(),
                         editing: c.editing.is_some(),
                     }
@@ -11139,6 +11178,7 @@ impl eframe::App for App {
                             },
                         };
                         self.state.creating_sketch_repeat = None;
+                        self.sketch_repeat_direction_pick = false;
                         self.state.apply(action);
                     }
                 } else if let Some(cr) = self.state.creating_sketch_repeat.as_mut() {
@@ -11163,8 +11203,19 @@ impl eframe::App for App {
                             cr.distance_is_end = !cr.distance_is_end;
                             cr.recompute_mode();
                         }
-                        context::SketchRepeatEdit::ClearDirection => cr.dir_line = None,
-                        context::SketchRepeatEdit::Commit => {}
+                        context::SketchRepeatEdit::SetComputed(var) => cr.set_computed(var),
+                        context::SketchRepeatEdit::Remove(element) => cr.remove_target(&element),
+                        context::SketchRepeatEdit::Clear => cr.clear_targets(),
+                        context::SketchRepeatEdit::DirectionFocus => {
+                            self.sketch_repeat_direction_pick = true;
+                        }
+                        context::SketchRepeatEdit::ClearDirection => {
+                            cr.dir_line = None;
+                            self.sketch_repeat_direction_pick = false;
+                        }
+                        context::SketchRepeatEdit::Commit => {
+                            self.sketch_repeat_direction_pick = false;
+                        }
                     }
                 }
             }
@@ -12626,6 +12677,31 @@ fn repeat_axis_from_pick(
             Some(model::RevolveAxis::BodyEdge { body, a, b })
         }
         _ => None,
+    }
+}
+
+/// A throwaway `SketchRepeatOperation` standing in for the in-progress one (#232), so the
+/// offset/extent maths that drives the ghost preview and the pane's computed value can run
+/// against the same code committed repeats use.
+fn sketch_repeat_probe_op(
+    cr: &actions::CreatingSketchRepeat,
+    doc: &model::Document,
+) -> model::SketchRepeatOperation {
+    let (dir_u, dir_v) = cr.direction(doc);
+    model::SketchRepeatOperation {
+        sketch: cr.sketch,
+        line_targets: cr.line_targets.clone(),
+        circle_targets: cr.circle_targets.clone(),
+        dir_u,
+        dir_v,
+        mode: cr.mode,
+        count: cr.count.clone(),
+        spacing: cr.spacing.clone(),
+        length: cr.length.clone(),
+        line_outputs: Vec::new(),
+        circle_outputs: Vec::new(),
+        name: None,
+        deleted: false,
     }
 }
 

@@ -871,6 +871,32 @@ impl CreatingSketchRepeat {
         self.recompute_mode();
     }
 
+    /// Move the green lock (#835): `var` becomes the value computed from the other two,
+    /// which is the same as saying the user set those two most recently.
+    pub fn set_computed(&mut self, var: crate::model::RepeatVar) {
+        use crate::model::RepeatVar;
+        for other in [RepeatVar::Count, RepeatVar::Gap, RepeatVar::Distance] {
+            if other != var {
+                self.touch_var(other);
+            }
+        }
+    }
+
+    /// Drop one picked entity, from the pane's element picker (#835).
+    pub fn remove_target(&mut self, element: &crate::hierarchy::SceneElement) {
+        match element {
+            crate::hierarchy::SceneElement::Line(li) => self.line_targets.retain(|x| x != li),
+            crate::hierarchy::SceneElement::Circle(ci) => self.circle_targets.retain(|x| x != ci),
+            _ => {}
+        }
+    }
+
+    /// Drop every picked entity (the picker's "Clear all", #835).
+    pub fn clear_targets(&mut self) {
+        self.line_targets.clear();
+        self.circle_targets.clear();
+    }
+
     pub fn has_targets(&self) -> bool {
         !self.line_targets.is_empty() || !self.circle_targets.is_empty()
     }
@@ -19364,6 +19390,41 @@ mod tests {
         cr.dir_line = Some(0);
         let (u, v) = cr.direction(&state.doc);
         assert!((u - 0.0).abs() < 1e-5 && (v - 1.0).abs() < 1e-5, "unit direction from the edge: {u},{v}");
+    }
+
+    /// #835: the in-sketch Repeat pane's element pickers — dropping one entity, clearing the
+    /// set, and moving the green lock onto a chosen variable.
+    #[test]
+    fn sketch_repeat_pickers_drop_entities_and_move_the_lock() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{RepeatMode, RepeatVar};
+        let mut cr = CreatingSketchRepeat::new(0);
+        cr.line_targets = vec![2, 5];
+        cr.circle_targets = vec![1];
+
+        cr.remove_target(&SceneElement::Line(2));
+        assert_eq!(cr.line_targets, vec![5]);
+        cr.remove_target(&SceneElement::Circle(1));
+        assert!(cr.circle_targets.is_empty());
+        // A kind this tool doesn't collect leaves the set alone.
+        cr.remove_target(&SceneElement::Body(0));
+        assert_eq!(cr.line_targets, vec![5]);
+        assert!(cr.has_targets());
+
+        cr.clear_targets();
+        assert!(!cr.has_targets());
+
+        // The lock: whichever variable is computed, the other two are the ones the user sets,
+        // and the mode follows — the same mapping the 3D section uses.
+        assert_eq!(cr.computed_var(), RepeatVar::Distance);
+        cr.set_computed(RepeatVar::Count);
+        assert_eq!(cr.computed_var(), RepeatVar::Count);
+        assert_eq!(cr.mode, RepeatMode::FillGap);
+        cr.set_computed(RepeatVar::Gap);
+        assert_eq!(cr.computed_var(), RepeatVar::Gap);
+        cr.set_computed(RepeatVar::Distance);
+        assert_eq!(cr.computed_var(), RepeatVar::Distance);
+        assert_eq!(cr.mode, RepeatMode::CountGap);
     }
 
     /// #257: editing a repeat variable keeps the last two edited and computes the third; the

@@ -215,6 +215,14 @@ fn make_element(lua: &Lua, element: SceneElement) -> mlua::Result<Value> {
     Ok(Value::UserData(lua.create_userdata(LuaElement { element })?))
 }
 
+/// The optional `{ shift = true }` table a scripted click can carry (#835).
+fn click_shift(opts: Option<Table>) -> mlua::Result<bool> {
+    match opts {
+        Some(t) => Ok(t.get::<Option<bool>>("shift")?.unwrap_or(false)),
+        None => Ok(false),
+    }
+}
+
 fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
     match value {
         Value::UserData(ud) => {
@@ -2842,9 +2850,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "click",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
+        lua.create_function(|lua, (x, y, opts): (f32, f32, Option<Table>)| {
+            let shift = click_shift(opts)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::Click { x, y }) }
+            unsafe { tick.exec(Instruction::Click { x, y, shift }) }
         })?,
     )?;
 
@@ -2881,9 +2890,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
     api.set(
         "click_ground",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
+        lua.create_function(|lua, (x, y, opts): (f32, f32, Option<Table>)| {
+            let shift = click_shift(opts)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::ClickGround { x, y }) }
+            unsafe { tick.exec(Instruction::ClickGround { x, y, shift }) }
         })?,
     )?;
 

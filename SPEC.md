@@ -980,10 +980,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     entities — click lines/circles to toggle them into the set, **Shift+click an edge** to set
     the repeat direction (its unit vector; default is the sketch U axis), **Enter** commits a
     `SketchRepeatOperation` (a `CreatingSketchRepeat` draft carries the same count/gap/distance
-    parametrization as the 3D repeat). The context pane shows the entity count, the direction,
-    and the **count/gap/distance** fields with the same picture toggles as the 3D repeat, plus a
-    **Repeat** button. A live dashed **ghost preview** of the duplicated lines/circles is drawn at
-    every computed offset while the draft is in progress.
+    parametrization as the 3D repeat). **Context pane (#835):** laid out like the 3D section one
+    dimension down — an **Entities** element picker holding the picked lines/circles (rows drop
+    individually or clear), a single-line **Direction** element picker (empty = the sketch's U
+    axis; focusing it arms the next viewport click, and its ✕ hands the direction back to the U
+    axis), then the **count/gap/distance** rows with the same picture toggles, the same green
+    **lock** marking the computed one, its computed value read back in the disabled field
+    (`extrude::sketch_repeat_extent`), and the blue commit button. A live dashed **ghost
+    preview** of the duplicated lines/circles is drawn at every computed offset while the draft
+    is in progress.
   The GUI/scripting to *pick* the length face is a tracked follow-up.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
@@ -2633,7 +2638,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   `bearcad.extrude`, `bearcad.add_constraint`, `bearcad.parameter`, `bearcad.select`, …).
   All **GUI/UI manipulation** — simulated mouse/keyboard, camera, tools, panes, the command
   palette, and viewport drags — lives under the `bearcad.ui.*` sub-namespace
-  (`bearcad.ui.move`, `bearcad.ui.click`, `bearcad.ui.key`, `bearcad.ui.type`,
+  (`bearcad.ui.move`, `bearcad.ui.click` (with an optional `{ shift = true }` for a
+  Shift+click, #835), `bearcad.ui.key`, `bearcad.ui.type`,
   `bearcad.ui.orbit`, `bearcad.ui.pan`, `bearcad.ui.wheel`, `bearcad.ui.view`,
   `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.palette`,
   `bearcad.ui.wait`, `bearcad.ui.screenshot`, …). Examples and documentation should model
