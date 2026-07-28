@@ -460,11 +460,11 @@ fn occt_fused_extrusions(
             if op.deleted || !op.extrusion_targets.contains(&ei) {
                 continue;
             }
-            if let (Some((origin, dir)), Some(offsets)) =
-                (axis_world(doc, op.axis), repeat_offsets(doc, op))
-            {
+            if let Some(offsets) = repeat_offsets(doc, op) {
                 for off in offsets {
-                    placements.push(repeat_step_transform(origin, dir, op.around_axis, off));
+                    if let Some(m) = repeat_offset_transform(doc, op, off) {
+                        placements.push(m);
+                    }
                 }
             }
         }
@@ -566,11 +566,11 @@ fn occt_subtract_cut_extrusions(
             if op.deleted || !op.extrusion_targets.contains(&ei) {
                 continue;
             }
-            if let (Some((origin, dir)), Some(offsets)) =
-                (axis_world(doc, op.axis), repeat_offsets(doc, op))
-            {
+            if let Some(offsets) = repeat_offsets(doc, op) {
                 for off in offsets {
-                    let m = repeat_step_transform(origin, dir, op.around_axis, off);
+                    let Some(m) = repeat_offset_transform(doc, op, off) else {
+                        continue;
+                    };
                     let moved = cut.transformed(&mat4_to_rows_3x4(&m))?;
                     solid = solid.boolean(&moved, BoolOp::Cut)?;
                 }
@@ -1346,6 +1346,41 @@ pub fn repeat_extent(doc: &Document, op: &crate::model::RepeatOperation) -> Opti
     Some((max_p - min_p).max(0.0))
 }
 
+/// The world polyline of a **curved** repeat path (#840): a bezier sketch line sampled along
+/// its length. `None` for anything straight — those repeat along their direction as before.
+pub fn repeat_path_polyline(doc: &Document, axis: crate::model::RevolveAxis) -> Option<Vec<Vec3>> {
+    let crate::model::RevolveAxis::Line(li) = axis else {
+        return None;
+    };
+    let line = doc.lines.get(li).filter(|_| crate::document_lifecycle::line_alive(doc, li))?;
+    if !line.is_curved() {
+        return None;
+    }
+    let points = crate::face::line_world_polyline(doc, line)?;
+    (points.len() >= 2).then_some(points)
+}
+
+/// The point `distance` along a polyline from its start, walking segment by segment. Past the
+/// end it keeps going along the last segment's direction, so a pattern longer than its path
+/// runs off the end in a straight line rather than piling up at the tip.
+fn point_along_polyline(points: &[Vec3], distance: f32) -> Option<Vec3> {
+    let mut left = distance;
+    for pair in points.windows(2) {
+        let seg = pair[1] - pair[0];
+        let len = seg.length();
+        if len <= 1e-9 {
+            continue;
+        }
+        if left <= len {
+            return Some(pair[0] + seg / len * left);
+        }
+        left -= len;
+    }
+    let last = points.last()?;
+    let seg = *last - *points.get(points.len().checked_sub(2)?)?;
+    Some(*last + seg.normalize_or_zero() * left)
+}
+
 /// The world transform one repeat instance applies to its source (#839): a slide along the
 /// axis, or — when the op repeats **around** the path — a turn about it. `instance` counts
 /// from 1; instance 0 is the original.
@@ -1354,8 +1389,26 @@ pub fn repeat_instance_transform(
     op: &crate::model::RepeatOperation,
     instance: usize,
 ) -> Option<glam::Mat4> {
-    let (origin, dir) = axis_world(doc, op.axis)?;
     let step = *repeat_offsets(doc, op)?.get(instance.checked_sub(1)?)?;
+    repeat_offset_transform(doc, op, step)
+}
+
+/// The transform for one step of `op` — `step` millimetres along a straight path, degrees
+/// about it when turning (#839), or arc length along a curved one (#840).
+pub fn repeat_offset_transform(
+    doc: &Document,
+    op: &crate::model::RepeatOperation,
+    step: f32,
+) -> Option<glam::Mat4> {
+    // A curved path carries the copies along it: each one is offset by the vector from the
+    // path's start to the point that far along it, so the pattern follows the bend.
+    if let Some(points) = repeat_path_polyline(doc, op.axis) {
+        let start = *points.first()?;
+        return Some(glam::Mat4::from_translation(
+            point_along_polyline(&points, step)? - start,
+        ));
+    }
+    let (origin, dir) = axis_world(doc, op.axis)?;
     Some(repeat_step_transform(origin, dir, op.around_axis, step))
 }
 
@@ -1394,9 +1447,26 @@ fn repeat_count(doc: &Document, op: &crate::model::RepeatOperation) -> Option<us
 
 pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
     // Turning about the axis measures in degrees, and the items have no angular extent of
-    // their own to space around (#839).
-    if op.around_axis {
+    // their own to space around (#839). A curved path is only ever followed, never turned
+    // about, so it can't be in this mode (#840).
+    if op.around_axis && repeat_path_polyline(doc, op.axis).is_none() {
         return repeat_angles(doc, op);
+    }
+    // Along a curved path (#840) the copies step by arc length; there's no single direction
+    // to measure the items' own extent along, so they space centre-to-centre like planes do.
+    if repeat_path_polyline(doc, op.axis).is_some() {
+        let eval = |expr: &str| -> Option<f32> {
+            (!expr.trim().is_empty())
+                .then(|| crate::value::eval_length_mm_in_doc(expr, doc))
+                .flatten()
+        };
+        return spacing_offsets(
+            op.mode,
+            0.0,
+            repeat_count(doc, op),
+            eval(&op.spacing),
+            eval(&op.length),
+        );
     }
     let (_, dir) = axis_world(doc, op.axis)?;
     // The targets' combined extent along the axis (end-to-start measurements need it).
@@ -5471,6 +5541,64 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
+    }
+
+    /// #840: a curved path carries the copies along its bend, spaced by arc length.
+    #[test]
+    fn a_curved_path_carries_the_copies_along_it() {
+        use crate::model::{Line, RepeatMode, RepeatOperation, RevolveAxis};
+        let (mut doc, sketch) = sketch_doc();
+        // A quarter-circle-ish bend from (0,0) to (40,40).
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 40.0));
+        doc.lines[0].bezier = Some([(40.0, 0.0), (40.0, 0.0)]);
+        assert!(doc.lines[0].is_curved());
+        let op = RepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis: RevolveAxis::Line(0),
+            around_axis: false,
+            mode: RepeatMode::CountGap,
+            count: "4".to_string(),
+            spacing: "15".to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        let path = repeat_path_polyline(&doc, op.axis).expect("a curved path");
+        assert!(path.len() > 2, "a curve samples to a polyline");
+
+        let offsets = repeat_offsets(&doc, &op).expect("offsets");
+        assert_eq!(offsets, vec![15.0, 30.0, 45.0], "spaced by arc length");
+
+        // Each copy sits on the curve, not on the straight line between its ends.
+        let m = repeat_instance_transform(&doc, &op, 1).expect("transform");
+        let p = m.transform_point3(Vec3::ZERO);
+        assert!(p.x > 0.0 && p.y > 0.0, "moved along the bend, got {p:?}");
+        assert!(
+            p.x > p.y,
+            "the bend leans along +X first, so the first copy is right of the chord: {p:?}"
+        );
+        // Arc length really is the spacing: consecutive copies are ~15mm apart along the curve.
+        let a = repeat_instance_transform(&doc, &op, 1).unwrap().transform_point3(Vec3::ZERO);
+        let b = repeat_instance_transform(&doc, &op, 2).unwrap().transform_point3(Vec3::ZERO);
+        let straight = (b - a).length();
+        assert!(straight > 10.0 && straight < 15.1, "chord under the 15mm arc, got {straight}");
+
+        // A curved path is followed, never turned about, even if the flag is set.
+        let turned = RepeatOperation { around_axis: true, ..op.clone() };
+        assert_eq!(repeat_offsets(&doc, &turned), repeat_offsets(&doc, &op));
+
+        // A straight line is not a path polyline — it keeps the along-the-axis maths.
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        assert!(repeat_path_polyline(&doc, RevolveAxis::Line(1)).is_none());
+        assert!(repeat_path_polyline(&doc, RevolveAxis::Z).is_none());
     }
 
     /// #839: a rotational repeat turns its copies about the axis — six 60° steps put the

@@ -953,6 +953,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the **Distance to** picker and the distance drag handle stand down, and the section title
     reads *Rotational repeat*. Scriptable as `bearcad.repeat_bodies{ …, around = true,
     spacing = "60deg" }`.
+  - **Along a curved path (#840):** when the picked path is a **curved** sketch line, the
+    copies follow its bend instead of a straight direction: the path samples to a world
+    polyline (`extrude::repeat_path_polyline`) and each instance is offset by the vector from
+    the path's start to the point that far along it (`point_along_polyline`), so the gap and
+    span are **arc length**. Copies keep their orientation (they slide along the curve, they
+    don't rotate into it), and the items have no single direction to measure their own extent
+    along, so they space centre-to-centre like plane targets. A curved path can only be
+    followed — its "around the path" option is disabled and ignored. A pattern longer than its
+    path runs on past the end along the last segment's direction.
   - **Repeating construction planes (#221):** a repeat can also target construction planes
     (`RepeatOperation::plane_targets`), picked from the Elements pane / viewport with the tool
     active. Each further instance is a generated `ConstructionPlane` carrying a

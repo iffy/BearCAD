@@ -10161,6 +10161,10 @@ impl eframe::App for App {
                     });
                     context::RepeatControl {
                         around_axis: cr.is_some_and(|c| c.around_axis),
+                        // A curved path is followed, never turned about (#840).
+                        can_turn_about_path: cr.and_then(|c| c.axis).is_none_or(|axis| {
+                            extrude::repeat_path_polyline(&self.state.doc, axis).is_none()
+                        }),
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
@@ -13523,13 +13527,14 @@ fn build_viewport_scene_input<'a>(
                 name: None,
                 deleted: false,
             };
-            let (origin, dir) = extrude::axis_world(doc, c.axis?)?;
             let offsets = extrude::repeat_offsets(doc, &probe)?;
             let mut ghosts = Vec::new();
             for &bi in &c.targets {
                 if let Some(base) = extrude::body_solid_mesh(doc, bi) {
                     for &off in &offsets {
-                        let m = extrude::repeat_step_transform(origin, dir, c.around_axis, off);
+                        let Some(m) = extrude::repeat_offset_transform(doc, &probe, off) else {
+                            continue;
+                        };
                         ghosts.push(extrude::SolidMesh {
                             triangles: base
                                 .triangles

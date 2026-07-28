@@ -12726,16 +12726,19 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
 /// before its instances copy it.
 pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
     // Precompute each op's axis direction and instance offsets (immutable borrow before mutating).
-    let op_data: Vec<Option<(glam::Vec3, glam::Vec3, Vec<f32>)>> = doc
+    let op_data: Vec<Option<Vec<glam::Mat4>>> = doc
         .repeat_ops
         .iter()
         .map(|op| {
             if op.deleted || op.plane_targets.is_empty() {
                 return None;
             }
-            let (origin, dir) = crate::extrude::axis_world(doc, op.axis)?;
             let offsets = crate::extrude::repeat_offsets(doc, op)?;
-            Some((origin, dir, offsets))
+            let transforms: Vec<glam::Mat4> = offsets
+                .iter()
+                .filter_map(|off| crate::extrude::repeat_offset_transform(doc, op, *off))
+                .collect();
+            Some(transforms)
         })
         .collect();
     let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
@@ -12746,18 +12749,17 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
         let Some(inst) = plane.repeat_instance else {
             continue;
         };
-        let Some((axis_origin, dir, offsets)) = op_data.get(inst.op).and_then(|d| d.as_ref())
-        else {
+        let Some(transforms) = op_data.get(inst.op).and_then(|d| d.as_ref()) else {
             continue;
         };
         let op = &doc.repeat_ops[inst.op];
         let Some(&src) = op.plane_targets.get(inst.target) else {
             continue;
         };
-        let Some(offset) = inst
+        let Some(m) = inst
             .instance
             .checked_sub(1)
-            .and_then(|i| offsets.get(i))
+            .and_then(|i| transforms.get(i))
             .copied()
         else {
             continue;
@@ -12765,8 +12767,8 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
         let Some(source) = doc.construction_planes.get(src).filter(|p| !p.deleted) else {
             continue;
         };
-        // A rotational repeat turns the plane about the axis instead of sliding it (#839).
-        let m = crate::extrude::repeat_step_transform(*axis_origin, *dir, op.around_axis, offset);
+        // A rotational repeat turns the plane about the axis instead of sliding it (#839);
+        // a curved path carries it along the bend (#840).
         updates.push((
             pi,
             m.transform_point3(source.origin),
@@ -13948,9 +13950,7 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) 
     if op.sketch_targets.is_empty() {
         return;
     }
-    let (Some((axis_origin, dir)), Some(offsets)) =
-        (crate::extrude::axis_world(doc, op.axis), crate::extrude::repeat_offsets(doc, &op))
-    else {
+    let Some(offsets) = crate::extrude::repeat_offsets(doc, &op) else {
         return;
     };
     let mut plane_outputs = Vec::new();
@@ -13971,8 +13971,11 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) 
             };
             let mut plane =
                 crate::construction::plane_from_face(0.0, frame.origin, frame.normal);
-            // A rotational repeat turns the copy's frame about the axis (#839).
-            let m = crate::extrude::repeat_step_transform(axis_origin, dir, op.around_axis, off);
+            // A rotational repeat turns the copy's frame about the axis (#839); a curved
+            // path carries it along the bend (#840).
+            let Some(m) = crate::extrude::repeat_offset_transform(doc, &op, off) else {
+                continue;
+            };
             plane.origin = m.transform_point3(frame.origin);
             plane.u_axis = m.transform_vector3(frame.u_axis).normalize_or_zero();
             plane.v_axis = m.transform_vector3(frame.v_axis).normalize_or_zero();

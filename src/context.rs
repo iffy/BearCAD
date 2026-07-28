@@ -338,6 +338,9 @@ pub struct RepeatControl {
     /// Repeat **around** the path instead of along it (#839). While set, Distance becomes an
     /// Angle and the distance-target picker stands down.
     pub around_axis: bool,
+    /// Whether the picked path can be turned about at all (#840): a curved one is only ever
+    /// followed, so its "around" option is disabled.
+    pub can_turn_about_path: bool,
     /// Label of the picked distance target (#645), if any — the face/plane/vertex the fill
     /// length is measured to. Empty means the Distance expression governs.
     pub length_target_rows: Vec<String>,
@@ -4319,23 +4322,32 @@ pub fn show_pane(
                         (
                             false,
                             crate::icons::IconId::RepeatAlongPath,
-                            "Along the path",
+                            "Along the path".to_string(),
                         ),
                         (
                             true,
                             crate::icons::IconId::RepeatAroundAxis,
-                            "Around the path, as an axis of rotation",
+                            if control.can_turn_about_path {
+                                "Around the path, as an axis of rotation".to_string()
+                            } else {
+                                "A curved path is followed, not turned about".to_string()
+                            },
                         ),
                     ] {
-                        if crate::icons::selectable_icon_button(
-                            ui,
-                            icon,
-                            control.around_axis == around,
-                            tip.to_string(),
-                        )
-                        .clicked()
-                            && control.around_axis != around
-                        {
+                        // A curved path can only be followed (#840).
+                        let enabled = !around || control.can_turn_about_path;
+                        let clicked = ui
+                            .add_enabled_ui(enabled, |ui| {
+                                crate::icons::selectable_icon_button(
+                                    ui,
+                                    icon,
+                                    control.around_axis == around,
+                                    tip,
+                                )
+                                .clicked()
+                            })
+                            .inner;
+                        if clicked && control.around_axis != around {
                             pending = Some(RepeatEdit::SetAroundAxis(around));
                         }
                     }
@@ -6643,6 +6655,7 @@ mod tests {
             in_drawing_workbench: false,
             repeat_op: Some(RepeatControl {
                 around_axis: false,
+                can_turn_about_path: true,
                 targets: vec![7],
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
@@ -6679,6 +6692,7 @@ mod tests {
         let selection = SceneSelection::default();
         let control = |value_field_focused, axis_label: Option<&str>| RepeatControl {
             around_axis: false,
+            can_turn_about_path: true,
             targets: vec![7],
             plane_targets: Vec::new(),
             sketch_targets: Vec::new(),

@@ -48,6 +48,12 @@ bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
                        mode = "count_gap", count = 6, spacing = "60deg" }
 ```
 
+## Along a curve
+
+Pick a **curved** line as the path and the copies follow its bend, spaced by distance
+*along the curve*. They keep their orientation as they go, and a curved path is always
+followed — the "around" option is off for it.
+
 ## Spacing modes
 
 | Mode | You give | Meaning |
