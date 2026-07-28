@@ -4658,6 +4658,16 @@ impl ScriptRunner {
                 expression,
             } => {
                 if let Some(session) = state.sketch_session {
+                    // `name = value` defines the parameter on the spot and dimensions with
+                    // it, exactly as typing it into the GUI's value field does (#797).
+                    let mut expression = expression;
+                    if let Err(e) = crate::actions::commit_inline_parameter_defs(
+                        &mut state.doc,
+                        [&mut expression],
+                    ) {
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                        return StepResult::Continue;
+                    }
                     let result = crate::constraints::apply_dimension_expression(
                         &mut state.doc,
                         session.sketch,
@@ -4678,6 +4688,17 @@ impl ScriptRunner {
             }
             Instruction::AddDistanceConstraint { target, expression } => {
                 if let Some(session) = state.sketch_session {
+                    // `name = value` defines the parameter on the spot and dimensions with
+                    // it, exactly as typing it into the GUI's value field does (#797).
+                    let mut expression = expression;
+                    if let Err(e) = crate::actions::commit_inline_parameter_defs(
+                        &mut state.doc,
+                        [&mut expression],
+                    ) {
+                        state.status = e.clone();
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                        return StepResult::Continue;
+                    }
                     match add_distance_constraint(
                         &mut state.doc,
                         session.sketch,

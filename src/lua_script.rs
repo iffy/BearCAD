@@ -5203,6 +5203,66 @@ mod tests {
         );
     }
 
+    /// #797: a dimension value of `name = value` defines the parameter on the spot and
+    /// dimensions with it — the scripted twin of typing it into the GUI's value field.
+    #[test]
+    fn lua_dimension_value_defines_a_parameter_inline() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 30 }
+            bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
+            bearcad.add_angle_constraint{ a = 0, b = 1, value = "corner = 90deg" }
+        "#,
+        );
+        let param = |name: &str| {
+            state
+                .doc
+                .parameters
+                .iter()
+                .find(|p| !p.deleted && p.name == name)
+                .map(|p| p.expression.clone())
+        };
+        assert_eq!(param("leg").as_deref(), Some("40mm"));
+        assert_eq!(param("corner").as_deref(), Some("90deg"));
+        // The constraints reference the parameters, not the literals they were defined with.
+        let expressions: Vec<String> = state
+            .doc
+            .constraints
+            .iter()
+            .filter(|c| !c.deleted)
+            .map(|c| c.expression.clone())
+            .collect();
+        assert!(expressions.iter().any(|e| e == "leg"), "got {expressions:?}");
+        assert!(expressions.iter().any(|e| e == "corner"), "got {expressions:?}");
+    }
+
+    /// #797: an inline definition naming a live parameter redefines it, as in the GUI.
+    #[test]
+    fn lua_dimension_value_redefines_an_existing_parameter() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.parameter("add", "leg", "10mm")
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
+        "#,
+        );
+        let leg = state
+            .doc
+            .parameters
+            .iter()
+            .find(|p| !p.deleted && p.name == "leg")
+            .expect("leg exists");
+        assert_eq!(leg.expression, "40mm");
+        assert_eq!(
+            state.doc.parameters.iter().filter(|p| !p.deleted && p.name == "leg").count(),
+            1,
+            "redefining shouldn't add a second row"
+        );
+    }
+
     #[test]
     fn lua_equal_constraint_is_scriptable() {
         // #47: the Equal constraint is reachable from scripting via

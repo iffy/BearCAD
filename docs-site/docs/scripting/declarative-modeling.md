@@ -234,6 +234,8 @@ bearcad.select({ kind = "line", index = 1 }, true)
 bearcad.add_geometric_constraint("parallel")
 
 bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
+-- `name = value` defines the parameter and dimensions with it, as in any value field:
+bearcad.add_constraint({ kind = "line", index = 1 }, "leg = 40mm")
 
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")

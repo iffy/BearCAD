@@ -1906,7 +1906,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   binds the field to it (the field now holds the expression `width`). This mirrors
   Autodesk Fusion's inline-parameter behavior.
 - The assignment target follows the normal scoping rules (§5.1); creation is a DAG node
-  like any other parameter creation.
+  like any other parameter creation. Scripted dimensions take it too (#797):
+  `bearcad.add_constraint(target, "leg = 40mm")` and `bearcad.add_angle_constraint{ …,
+  value = "corner = 90deg" }` define the parameter and dimension with it.
 - If `name` already exists, the input must either **reuse** it (binding the field to the
   existing parameter) or, if a value is also supplied, treat `name=value` as redefining
   that parameter — the UI must make which one is happening unambiguous (e.g. reuse on
