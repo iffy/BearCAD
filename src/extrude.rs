@@ -5049,6 +5049,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5129,6 +5130,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5176,6 +5178,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5225,6 +5228,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5313,6 +5317,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5335,6 +5340,7 @@ mod tests {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5372,6 +5378,7 @@ mod tests {
         for _ in 0..5 {
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Imported(0),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -5501,6 +5508,7 @@ mod tests {
         // body 0: the extruded box; body 1: a moved copy of it.
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5524,6 +5532,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Moved { op: 0, target: 0 },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5570,6 +5579,7 @@ mod tests {
                 add: vec![0],
                 cut: vec![1],
             },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5593,6 +5603,7 @@ mod tests {
         doc.extrusions.push(ext);
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5668,6 +5679,7 @@ mod tests {
         doc.extrusions.push(ext);
         doc.bodies.push(Body {
             source: BodySource::Solid { add: vec![0], cut: vec![] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5731,6 +5743,7 @@ mod tests {
         for ei in 0..2 {
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(ei),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -5840,6 +5853,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![glyph_face], 5.0));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5868,6 +5882,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![ring], h));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5930,6 +5945,7 @@ mod tests {
         doc.extrusions.push(ext);
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5962,6 +5978,7 @@ mod tests {
         doc.extrusions.push(hole);
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5993,6 +6010,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6037,6 +6055,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![box_face], 5.0)); // ×5 = 80
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6076,6 +6095,7 @@ mod tests {
         doc.extrusions.push(ext);
         doc.bodies.push(Body {
             source: BodySource::Solid { add: vec![0], cut: vec![] },
+            material: None,
             name: None,
             deleted: false,
             shadow: true, // consumed by the move
@@ -6106,6 +6126,7 @@ mod tests {
         });
         doc.bodies.push(Body {
             source: BodySource::Moved { op: 0, target: 0 },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6148,6 +6169,7 @@ mod tests {
         doc.extrusions.push(hole);
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6211,6 +6233,7 @@ mod tests {
         ));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6233,6 +6256,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![outer], 5.0));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6344,6 +6368,7 @@ mod tests {
         ));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Revolve(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6408,6 +6433,7 @@ mod tests {
         ));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Revolve(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6456,6 +6482,7 @@ mod tests {
         ));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Revolve(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6487,6 +6514,7 @@ mod tests {
             ));
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Revolve(0),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -6507,6 +6535,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6640,6 +6669,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6674,6 +6704,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -7190,6 +7221,7 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1, 2] },
+            material: None,
             name: Some("B".to_string()),
             deleted: false,
             shadow: false,
@@ -7535,6 +7567,7 @@ mod tests {
         doc.extrusions.push(ext);
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -7583,6 +7616,7 @@ mod tests {
         doc.extrusions.push(ext);
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,

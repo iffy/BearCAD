@@ -4956,6 +4956,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut inner, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         inner.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: Some("Inner body".to_string()),
             deleted: false,
             shadow: false,
@@ -5156,6 +5157,7 @@ mod tests {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5265,6 +5267,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5344,6 +5347,7 @@ mod tests {
         for _ in 0..3 {
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Imported(0),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -5372,6 +5376,7 @@ mod tests {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: Some("Plate".to_string()),
             deleted: false,
             shadow: false,
@@ -5635,6 +5640,7 @@ label_hidden: false,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -5659,6 +5665,7 @@ label_hidden: false,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: Some("part".to_string()),
             deleted: false,
             shadow: false,
@@ -6316,6 +6323,7 @@ label_hidden: false,
         });
         doc.bodies.push(Body {
             source: BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6602,6 +6610,7 @@ label_hidden: false,
         });
         doc.bodies.push(Body {
             source: BodySource::Loft(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6646,6 +6655,7 @@ label_hidden: false,
         });
         doc.bodies.push(Body {
             source: BodySource::Sweep(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -6709,6 +6719,7 @@ label_hidden: false,
         });
         doc.bodies.push(Body {
             source: BodySource::Revolve(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,

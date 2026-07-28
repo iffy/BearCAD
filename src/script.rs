@@ -401,6 +401,17 @@ pub enum Instruction {
         element: SceneElement,
         visible: Option<bool>,
     },
+    /// Add a material and give it to `bodies` (#834).
+    AddMaterial {
+        name: Option<String>,
+        color: Option<[u8; 3]>,
+        bodies: Vec<usize>,
+    },
+    /// Assign (or clear) a body's material (#834).
+    SetBodyMaterial {
+        body: usize,
+        material: Option<usize>,
+    },
     /// Click a tree row: replaces selection unless `additive` is true.
     SelectSceneElement {
         element: SceneElement,
@@ -1092,6 +1103,27 @@ impl Instruction {
                     None => "toggle",
                 };
                 format!("bearcad.set_visible({target}, {verb:?})")
+            }
+            Instruction::AddMaterial { name, color, bodies } => {
+                let name = name
+                    .as_ref()
+                    .map(|n| format!("name = {n:?}, "))
+                    .unwrap_or_default();
+                let color = color
+                    .map(|c| format!("color = \"#{:02x}{:02x}{:02x}\", ", c[0], c[1], c[2]))
+                    .unwrap_or_default();
+                let bodies = bodies
+                    .iter()
+                    .map(|b| b.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("bearcad.material{{ {name}{color}bodies = {{{bodies}}} }}")
+            }
+            Instruction::SetBodyMaterial { body, material } => {
+                let material = material
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "nil".to_string());
+                format!("bearcad.set_material{{ body = {body}, material = {material} }}")
             }
             Instruction::SelectSceneElement { element, additive } => {
                 let target = element_lua_ref(element);
@@ -4545,6 +4577,16 @@ impl ScriptRunner {
                     Some(v) => state.apply(Action::SetElementVisible { element, visible: v }),
                     None => state.apply(Action::ToggleElementVisibility(element)),
                 };
+                StepResult::Continue
+            }
+            Instruction::AddMaterial { name, color, bodies } => {
+                let result = state.apply(Action::AddMaterial { name, color, bodies });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetBodyMaterial { body, material } => {
+                let result = state.apply(Action::SetBodyMaterial { body, material });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SelectSceneElement { element, additive } => {

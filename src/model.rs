@@ -1522,6 +1522,10 @@ pub struct Body {
     pub source: BodySource,
     #[serde(default)]
     pub name: Option<String>,
+    /// The material this body is made of (#834), indexing [`Document::materials`]. `None` is
+    /// the document's default material — the look every body has always had.
+    #[serde(default)]
+    pub material: Option<usize>,
     #[serde(default)]
     pub deleted: bool,
     /// A consumed boolean-operation input (Combine tool): still listed in the Elements
@@ -1529,6 +1533,30 @@ pub struct Body {
     /// selected there, where it renders ghosted.
     #[serde(default)]
     pub shadow: bool,
+}
+
+/// A material a body can be made of (#834): a name and the colour it renders in. Documents
+/// start with none — a body with no material renders in the default body colour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Material {
+    pub name: String,
+    /// Rendered colour, sRGB.
+    pub color: [u8; 3],
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+impl Material {
+    /// A new material's starting colour walks a small palette so consecutive ones look
+    /// different without anyone picking colours (#834).
+    pub const NEW_COLORS: [[u8; 3]; 6] = [
+        [0xb0, 0xb6, 0xbe], // steel
+        [0xc8, 0x8a, 0x4a], // brass
+        [0x7d, 0x9e, 0x6f], // green
+        [0x8a, 0x7d, 0xa8], // violet
+        [0xc4, 0x6a, 0x6a], // red
+        [0x5f, 0x8f, 0xa8], // blue
+    ];
 }
 
 /// A loft: a solid blended through two or more cross-section profiles on (usually)
@@ -3300,6 +3328,10 @@ pub struct Document {
     pub extrusions: Vec<Extrusion>,
     #[serde(default)]
     pub bodies: Vec<Body>,
+    /// Materials bodies can be made of (#834). A body with no material renders in the
+    /// document's default body colour.
+    #[serde(default)]
+    pub materials: Vec<Material>,
     #[serde(default)]
     pub imported_meshes: Vec<ImportedMesh>,
     /// Reference images imported for tracing (#163/#169).
@@ -3537,6 +3569,7 @@ impl Default for Document {
             construction_planes: crate::face::default_datum_planes(),
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            materials: Vec::new(),
             imported_meshes: Vec::new(),
             tracing_images: Vec::new(),
             lofts: Vec::new(),

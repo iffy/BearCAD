@@ -1611,6 +1611,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,

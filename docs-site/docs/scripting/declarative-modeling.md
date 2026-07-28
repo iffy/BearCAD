@@ -303,6 +303,14 @@ assert(bearcad.parameter("get_expression", "A") == "5mm")
 `bearcad.sketch_dof()` / `bearcad.sketch_conflicts()` for solver introspection, and
 [`bearcad.ui.camera{}`](./ui-namespace#camera) for the camera pose.
 
+## Materials
+
+```lua
+bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
+bearcad.set_material{ body = 1, material = 0 }
+bearcad.set_material{ body = 1 }        -- back to the default material
+```
+
 ## Visibility and construction geometry
 
 ```lua

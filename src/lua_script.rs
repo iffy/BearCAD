@@ -215,6 +215,18 @@ fn make_element(lua: &Lua, element: SceneElement) -> mlua::Result<Value> {
     Ok(Value::UserData(lua.create_userdata(LuaElement { element })?))
 }
 
+/// A `#rrggbb` (or bare `rrggbb`) colour string (#834).
+fn parse_hex_color(text: &str) -> mlua::Result<[u8; 3]> {
+    let hex = text.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(mlua::Error::external(format!(
+            "colour must be #rrggbb, got '{text}'"
+        )));
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0);
+    Ok([byte(0), byte(2), byte(4)])
+}
+
 /// The optional `{ shift = true }` table a scripted click can carry (#835).
 fn click_shift(opts: Option<Table>) -> mlua::Result<bool> {
     match opts {
@@ -2128,6 +2140,33 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 out.set(i + 1, entry)?;
             }
             Ok(out)
+        })?,
+    )?;
+
+    // Materials (#834): `bearcad.material{ name = "Steel", color = "#b0b6be", bodies = {0} }`
+    // adds one and hands it to the listed bodies; `bearcad.set_material{ body = 0, material =
+    // 0 }` (or `material = nil`) assigns/clears one.
+    api.set(
+        "material",
+        lua.create_function(|lua, opts: Table| {
+            let name: Option<String> = opts.get("name")?;
+            let color = match opts.get::<Option<String>>("color")? {
+                Some(text) => Some(parse_hex_color(&text)?),
+                None => None,
+            };
+            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::AddMaterial { name, color, bodies }) }
+        })?,
+    )?;
+
+    api.set(
+        "set_material",
+        lua.create_function(|lua, opts: Table| {
+            let body: usize = opts.get("body")?;
+            let material: Option<usize> = opts.get("material")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetBodyMaterial { body, material }) }
         })?,
     )?;
 
@@ -5229,6 +5268,47 @@ mod tests {
             "the start point should be pinned to the X axis (v = 0), got y0={}",
             state.doc.lines[0].y0
         );
+    }
+
+    /// #834: materials from scripts — created with a colour, handed to bodies, reassigned.
+    #[test]
+    fn lua_materials_are_scriptable() {
+        let state = run_lua(
+            r##"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
+            bearcad.material{ name = "Steel" }
+            bearcad.set_material{ body = 0, material = 1 }
+        "##,
+        );
+        assert_eq!(state.doc.materials.len(), 2);
+        assert_eq!(state.doc.materials[0].name, "Brass");
+        assert_eq!(state.doc.materials[0].color, [0xc8, 0x8a, 0x4a]);
+        assert_eq!(state.doc.bodies[0].material, Some(1), "reassigned to Steel");
+    }
+
+    #[test]
+    fn lua_material_rejects_a_bad_colour() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r##"
+            bearcad.new()
+            local ok, err = pcall(bearcad.material, { name = "Bad", color = "nope" })
+            assert(not ok, "a bad colour should error")
+            assert(tostring(err):find("#rrggbb"), "the error should say the form: " .. tostring(err))
+        "##,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
     }
 
     /// #837: a new-body extrude of profiles that don't touch makes one body each; `body =

@@ -10668,6 +10668,7 @@ impl eframe::App for App {
             let mut extrude_face_remove: Option<Option<usize>> = None;
             let mut extrude_edit: Option<context::ExtrudeEdit> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
+            let mut material_edit: Option<context::MaterialEdit> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut selection_edit: Option<context::SelectionEdit> = None;
             let mut tool_picker_edit: Option<(context::PickerTarget, context::ToolPickerAction)> =
@@ -10739,6 +10740,7 @@ impl eframe::App for App {
                         &mut |remove| extrude_face_remove = Some(remove),
                         &mut |edit| extrude_edit = Some(edit),
                         &mut |choice| units_change = Some(choice),
+                        &mut |edit| material_edit = Some(edit),
                         &mut |edit| edge_picker_edit = Some(edit),
                         &mut |edit| selection_edit = Some(edit),
                         &mut |target, edit| tool_picker_edit = Some((target, edit)),
@@ -11752,6 +11754,38 @@ impl eframe::App for App {
                     context::UnitsChoice::Component { component, length, angle } => {
                         self.state
                             .apply(Action::SetComponentUnits { component, length, angle });
+                    }
+                }
+            }
+            // Material picker (#834): assign, create, rename, recolour.
+            if let Some(edit) = material_edit {
+                let bodies: Vec<usize> = self
+                    .state
+                    .scene_selection
+                    .iter()
+                    .filter_map(|e| match e {
+                        hierarchy::SceneElement::Body(bi) => Some(bi),
+                        _ => None,
+                    })
+                    .collect();
+                match edit {
+                    context::MaterialEdit::Assign(material) => {
+                        for body in bodies {
+                            self.state.apply(Action::SetBodyMaterial { body, material });
+                        }
+                    }
+                    context::MaterialEdit::New => {
+                        self.state.apply(Action::AddMaterial {
+                            name: None,
+                            color: None,
+                            bodies,
+                        });
+                    }
+                    context::MaterialEdit::Rename(material, name) => {
+                        self.state.apply(Action::SetMaterialName { material, name });
+                    }
+                    context::MaterialEdit::Recolor(material, color) => {
+                        self.state.apply(Action::SetMaterialColor { material, color });
                     }
                 }
             }
@@ -24050,6 +24084,7 @@ mod tests {
         });
         state.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -24172,6 +24207,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -24956,6 +24992,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -25016,6 +25053,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -25088,6 +25126,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -25227,6 +25266,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,

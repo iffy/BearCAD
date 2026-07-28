@@ -36,6 +36,12 @@ See [Selection Exploder](/docs/selection-exploder) for the full walkthrough.
 A selected [construction plane](/docs/tools/construction-plane) shows a grip on two
 opposite corners; drag either one to resize its rectangle.
 
+## Materials
+
+With bodies selected, the context pane's **Material** dropdown says what they're made of.
+Pick **New material…** to make one; its **Name** and **Colour** are editable right below,
+and every body using it re-renders.
+
 ## Selection feeds the other tools
 
 Most tools act on the selection: select two lines and Constraint's Parallel lights up;

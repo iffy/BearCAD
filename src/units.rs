@@ -226,6 +226,7 @@ pub fn sync_unit_bodies(doc: &mut Document) {
             None if alive => {
                 doc.bodies.push(crate::model::Body {
                     source: BodySource::UnitInstance(instance),
+                    material: None,
                     name: None,
                     deleted: false,
                     shadow: false,
@@ -531,6 +532,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,

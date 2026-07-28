@@ -999,6 +999,23 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     is in progress.
   The GUI/scripting to *pick* the length face is a tracked follow-up.
 
+#### 3.4.4 Materials (#834)
+- A **material** (`model::Material`) is a name plus a rendered colour, living in
+  `Document::materials`. Every body carries `Body::material: Option<usize>`; `None` is the
+  **default material** — the neutral body colour every body has always had. A body renders in
+  its material's colour (`gpu_viewport::scene::body_material_fill`); selection and hover
+  colours still win over it, as they do over the default.
+- **Context pane:** selecting one or more bodies (any tool) shows a **Material** dropdown —
+  *Default*, each material with its colour swatch, and **New material…**, which creates one
+  (named `Material N`, next colour from `Material::NEW_COLORS`) and assigns it to the
+  selection. Selecting bodies whose materials differ reads *Mixed*. With a material chosen,
+  its **Name** and **Colour** are editable in place, and every body using it re-renders.
+- Actions: `AddMaterial { name?, color?, bodies }`, `SetBodyMaterial { body, material }`,
+  `SetMaterialName`, `SetMaterialColor` — each one undoable like any other edit. Persisted as
+  `material` DAG nodes; files saved before materials existed load with none.
+- Scripting: `bearcad.material{ name?, color? = "#rrggbb", bodies? = {..} }` and
+  `bearcad.set_material{ body, material }` (`material = nil` for the default).
+
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
   (the targets, multi-select) and **Cutters** (construction planes and/or planar body
   faces, multi-select) — with a *Picking* switch in the context pane choosing where the

@@ -818,6 +818,8 @@ pub struct ContextPaneContent {
     /// per-sketch (with a "follow document" inherit option) when a single sketch is
     /// selected (#52).
     pub units: Option<UnitsControl>,
+    /// Material picker for the selected bodies (#834).
+    pub material: Option<MaterialControl>,
     /// Generalized selection picker (#157/#167): the elements the active tool operates on.
     /// Legacy row-list form; being replaced tool-by-tool with [`ContextPaneContent::selection_picker`].
     pub edge_picker: Option<EdgePickerControl>,
@@ -917,6 +919,30 @@ pub struct EdgePickerControl {
 
 /// What the units picker in the context pane should show and let the user change.
 ///
+/// The material picker for the selected bodies (#834): what they're made of, and the way in
+/// to naming/recolouring that material.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterialControl {
+    /// The selected bodies this assigns to.
+    pub bodies: Vec<usize>,
+    /// The material they all share; `None` when they disagree. `Some(None)` is the default
+    /// material — no material assigned.
+    pub current: Option<Option<usize>>,
+    /// Every live material: index, name, colour.
+    pub materials: Vec<(usize, String, [u8; 3])>,
+}
+
+/// One edit from the material picker (#834).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MaterialEdit {
+    /// Assign this material (or the default, with `None`) to the selected bodies.
+    Assign(Option<usize>),
+    /// Create a material and give it to the selected bodies.
+    New,
+    Rename(usize, String),
+    Recolor(usize, [u8; 3]),
+}
+
 /// NOTE (#52 scope): this control only reads/writes the stored default-unit choice. It
 /// does not (yet) change how bare numbers are parsed or how any dimension is displayed —
 /// see the doc comments on [`crate::model::Document::default_length_unit`] and SPEC §5.3.
@@ -1522,6 +1548,9 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let units = (!units_suppressed)
         .then(|| units_control_from_selection(input.doc, input.selection))
         .flatten();
+    // Material picker (#834): shown whenever the selection is bodies, so what a body is made
+    // of sits right where its name does.
+    let material = material_control_from_selection(input.doc, input.selection);
     let edge_picker = input
         .edge_treatment_rows
         .clone()
@@ -1753,6 +1782,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude_faces: extrude_faces.clone(),
             extrude: extrude.clone(),
             units,
+            material: material.clone(),
             edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
@@ -1812,6 +1842,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude_faces: extrude_faces.clone(),
             extrude: extrude.clone(),
             units,
+            material: material.clone(),
             edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
@@ -1873,6 +1904,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude_faces: extrude_faces.clone(),
             extrude: extrude.clone(),
             units,
+            material: material.clone(),
             edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
@@ -1941,6 +1973,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         extrude_faces: extrude_faces.clone(),
         extrude: extrude.clone(),
         units,
+        material,
         edge_picker,
         selection_picker,
         dimension_derive,
@@ -1984,6 +2017,39 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
 /// Build the units picker for the current selection: document-level when nothing is
 /// selected, per-sketch (with an inherit option) when a single sketch is selected, and
 /// hidden (`None`) for any other selection (#52).
+/// The material picker for the selected bodies (#834): `None` unless every selected element
+/// is a live body.
+fn material_control_from_selection(
+    doc: &Document,
+    selection: &SceneSelection,
+) -> Option<MaterialControl> {
+    let mut bodies = Vec::new();
+    for element in selection.iter() {
+        match element {
+            SceneElement::Body(bi) if doc.bodies.get(bi).is_some_and(|b| !b.deleted) => {
+                bodies.push(bi)
+            }
+            _ => return None,
+        }
+    }
+    if bodies.is_empty() {
+        return None;
+    }
+    let first = doc.bodies[bodies[0]].material;
+    let agreed = bodies.iter().all(|bi| doc.bodies[*bi].material == first);
+    Some(MaterialControl {
+        materials: doc
+            .materials
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.deleted)
+            .map(|(i, m)| (i, m.name.clone(), m.color))
+            .collect(),
+        current: agreed.then_some(first),
+        bodies,
+    })
+}
+
 fn units_control_from_selection(doc: &Document, selection: &SceneSelection) -> Option<UnitsControl> {
     if selection.is_empty() {
         return Some(UnitsControl {
@@ -3036,6 +3102,7 @@ pub fn show_pane(
     on_extrude_face_remove: &mut impl FnMut(Option<usize>),
     on_extrude_edit: &mut impl FnMut(ExtrudeEdit),
     on_units_changed: &mut impl FnMut(UnitsChoice),
+    on_material_edit: &mut impl FnMut(MaterialEdit),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_selection_edit: &mut impl FnMut(SelectionEdit),
     on_tool_picker_edit: &mut impl FnMut(PickerTarget, ToolPickerAction),
@@ -5464,6 +5531,87 @@ pub fn show_pane(
         ui.add_space(4.0);
     }
 
+    // Material picker (#834): what the selected body is made of, with the way in to naming
+    // and recolouring that material.
+    if let Some(control) = &content.material {
+        any_control = true;
+        ui.separator();
+        let mut pending: Option<MaterialEdit> = None;
+        let selected_text = match control.current {
+            None => "Mixed".to_string(),
+            Some(None) => "Default".to_string(),
+            Some(Some(mi)) => control
+                .materials
+                .iter()
+                .find(|(i, _, _)| *i == mi)
+                .map(|(_, name, _)| name.clone())
+                .unwrap_or_else(|| "Default".to_string()),
+        };
+        labeled_row(ui, "Material", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                egui::ComboBox::from_id_salt("context_material")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(control.current == Some(None), "Default")
+                            .clicked()
+                        {
+                            pending = Some(MaterialEdit::Assign(None));
+                        }
+                        for (index, name, color) in &control.materials {
+                            let selected = control.current == Some(Some(*index));
+                            if ui
+                                .horizontal(|ui| {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(12.0, 12.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        2.0,
+                                        egui::Color32::from_rgb(color[0], color[1], color[2]),
+                                    );
+                                    ui.selectable_label(selected, name)
+                                })
+                                .inner
+                                .clicked()
+                            {
+                                pending = Some(MaterialEdit::Assign(Some(*index)));
+                            }
+                        }
+                        ui.separator();
+                        if ui.selectable_label(false, "New material…").clicked() {
+                            pending = Some(MaterialEdit::New);
+                        }
+                    });
+            });
+        });
+        // The chosen material's own name and colour, editable in place.
+        if let Some(Some(mi)) = control.current {
+            if let Some((_, name, color)) =
+                control.materials.iter().find(|(i, _, _)| *i == mi)
+            {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    labeled_row(ui, "Name", |ui| {
+                        let mut text = name.clone();
+                        if ui.text_edit_singleline(&mut text).changed() {
+                            pending = Some(MaterialEdit::Rename(mi, text));
+                        }
+                    });
+                    labeled_row(ui, "Colour", |ui| {
+                        let mut rgb = *color;
+                        if ui.color_edit_button_srgb(&mut rgb).changed() {
+                            pending = Some(MaterialEdit::Recolor(mi, rgb));
+                        }
+                    });
+                });
+            }
+        }
+        if let Some(edit) = pending {
+            on_material_edit(edit);
+        }
+    }
+
     if let Some(control) = &content.units {
         any_control = true;
         section_label(
@@ -6345,6 +6493,46 @@ mod tests {
         assert!(context_pane_content(&new_body_input).tool_pickers.is_empty());
     }
 
+    /// #834: the material picker shows for a body selection, reports what they share, and
+    /// stays away when the selection isn't bodies.
+    #[test]
+    fn material_picker_follows_the_body_selection() {
+        use crate::hierarchy::SceneElement;
+        let mut doc = Document::default();
+        doc.materials.push(crate::model::Material {
+            name: "Brass".to_string(),
+            color: [1, 2, 3],
+            deleted: false,
+        });
+        for material in [Some(0), None] {
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Extrusion(0),
+                material,
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+
+        let mut selection = SceneSelection::default();
+        assert!(context_pane_content(&input(&doc, &selection)).material.is_none());
+
+        selection.insert(SceneElement::Body(0));
+        let control = context_pane_content(&input(&doc, &selection)).material.unwrap();
+        assert_eq!(control.bodies, vec![0]);
+        assert_eq!(control.current, Some(Some(0)));
+        assert_eq!(control.materials, vec![(0, "Brass".to_string(), [1, 2, 3])]);
+
+        // Two bodies that disagree read as mixed.
+        selection.insert(SceneElement::Body(1));
+        let control = context_pane_content(&input(&doc, &selection)).material.unwrap();
+        assert_eq!(control.current, None);
+
+        // A non-body in the selection takes the picker away.
+        selection.insert(SceneElement::Line(0));
+        assert!(context_pane_content(&input(&doc, &selection)).material.is_none());
+    }
+
     #[test]
     fn move_and_repeat_yield_body_pickers_without_cut_override() {
         use crate::hierarchy::SceneElement;
@@ -6629,6 +6817,7 @@ mod tests {
                     document_length: LengthUnit::Mm,
                     document_angle: AngleUnit::Deg,
                 }),
+                material: None,
             }
         );
     }
@@ -6762,6 +6951,7 @@ mod tests {
                     document_length: LengthUnit::Mm,
                     document_angle: AngleUnit::Deg,
                 }),
+                material: None,
             }
         );
     }
@@ -6904,6 +7094,7 @@ mod tests {
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
+            material: None,
             }
         );
     }
@@ -7159,6 +7350,7 @@ mod tests {
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
+            material: None,
             }
         );
     }

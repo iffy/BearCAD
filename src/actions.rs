@@ -1441,6 +1441,26 @@ pub enum Action {
         element: SceneElement,
         visible: bool,
     },
+    /// Add a material and hand it to `bodies` (#834). The name defaults to "Material N" and
+    /// the colour to the next one in [`Material::NEW_COLORS`].
+    AddMaterial {
+        name: Option<String>,
+        color: Option<[u8; 3]>,
+        bodies: Vec<usize>,
+    },
+    /// Assign (or clear, with `None`) a body's material (#834).
+    SetBodyMaterial {
+        body: usize,
+        material: Option<usize>,
+    },
+    SetMaterialName {
+        material: usize,
+        name: String,
+    },
+    SetMaterialColor {
+        material: usize,
+        color: [u8; 3],
+    },
     ToggleElementVisibility(SceneElement),
     OrbitCamera { delta: (f32, f32) },
     PanCamera { delta: (f32, f32), viewport_height: f32 },
@@ -3126,6 +3146,7 @@ impl AppState {
                 } else {
                     self.doc.bodies.push(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -3141,6 +3162,7 @@ impl AppState {
             ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {
                 self.doc.bodies.push(crate::model::Body {
                     source: crate::model::BodySource::single(ei),
+                    material: None,
                     name: None,
                     deleted: false,
                     shadow: false,
@@ -3153,6 +3175,7 @@ impl AppState {
                 } else {
                     self.doc.bodies.push(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -3166,6 +3189,7 @@ impl AppState {
                 } else {
                     self.doc.bodies.push(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -3339,6 +3363,7 @@ impl AppState {
             None => {
                 self.doc.bodies.push(crate::model::Body {
                     source: crate::model::BodySource::UnitCut { instance, cut: vec![ei] },
+                    material: None,
                     name: None,
                     deleted: false,
                     shadow: false,
@@ -3382,6 +3407,7 @@ impl AppState {
         }
         self.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::single(ei),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -3405,6 +3431,7 @@ impl AppState {
         let mesh_index = self.doc.imported_meshes.len() - 1;
         self.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh_index),
+            material: None,
             name: Some(source_name),
             deleted: false,
             shadow: false,
@@ -3829,6 +3856,7 @@ impl AppState {
                 trial_outputs.push(trial.bodies.len());
                 trial.bodies.push(Body {
                     source: BodySource::EdgeTreated { op: op_index, target },
+                    material: None,
                     name: None,
                     deleted: false,
                     shadow: false,
@@ -3860,6 +3888,7 @@ impl AppState {
             outputs.push(self.doc.bodies.len());
             self.doc.bodies.push(Body {
                 source: BodySource::EdgeTreated { op: op_index, target },
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -3972,6 +4001,7 @@ impl AppState {
         if matches!(mode, crate::model::RevolveMode::NewBody) {
             self.doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Revolve(self.doc.revolutions.len() - 1),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -4036,6 +4066,7 @@ impl AppState {
         match (matches!(mode, crate::model::RevolveMode::NewBody), has_body) {
             (true, false) => self.doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Revolve(op),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -4137,6 +4168,7 @@ impl AppState {
         if matches!(mode, crate::model::SweepMode::NewBody) {
             self.doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Sweep(self.doc.sweeps.len() - 1),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -4195,6 +4227,7 @@ impl AppState {
         match (matches!(mode, crate::model::SweepMode::NewBody), has_body) {
             (true, false) => self.doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Sweep(op),
+                material: None,
                 name: None,
                 deleted: false,
                 shadow: false,
@@ -8960,6 +8993,7 @@ impl AppState {
                 if matches!(mode, crate::model::LoftMode::NewBody) {
                     self.doc.bodies.push(crate::model::Body {
                         source: crate::model::BodySource::Loft(self.doc.lofts.len() - 1),
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -9652,6 +9686,7 @@ label_hidden: false,
                                 target: ti,
                                 instance,
                             },
+                            material: None,
                             name: None,
                             deleted: false,
                             shadow: false,
@@ -9738,6 +9773,7 @@ label_hidden: false,
                                 target: ti,
                                 instance,
                             },
+                            material: None,
                             name: None,
                             deleted: false,
                             shadow: false,
@@ -10516,6 +10552,7 @@ label_hidden: false,
                             op: op_index,
                             target: ordinal,
                         },
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -10603,6 +10640,7 @@ label_hidden: false,
                         outputs.push(self.doc.bodies.len());
                         self.doc.bodies.push(crate::model::Body {
                             source: crate::model::BodySource::Moved { op, target: ordinal },
+                            material: None,
                             name: None,
                             deleted: false,
                             shadow: false,
@@ -10684,6 +10722,7 @@ label_hidden: false,
                     outputs.push(self.doc.bodies.len());
                     self.doc.bodies.push(crate::model::Body {
                         source: crate::model::BodySource::Mirrored { op: op_index, target: ordinal },
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -10742,6 +10781,7 @@ label_hidden: false,
                         outputs.push(self.doc.bodies.len());
                         self.doc.bodies.push(crate::model::Body {
                             source: crate::model::BodySource::Mirrored { op, target: ordinal },
+                            material: None,
                             name: None,
                             deleted: false,
                             shadow: false,
@@ -10818,6 +10858,7 @@ label_hidden: false,
                             op: op_index,
                             solid: ordinal,
                         },
+                        material: None,
                         name: None,
                         deleted: false,
                         shadow: false,
@@ -10955,6 +10996,7 @@ label_hidden: false,
                         outputs.push(self.doc.bodies.len());
                         self.doc.bodies.push(crate::model::Body {
                             source: crate::model::BodySource::Sliced { op: op_index, target, piece },
+                            material: None,
                             name: None,
                             deleted: false,
                             shadow: false,
@@ -11038,6 +11080,7 @@ label_hidden: false,
                         outputs.push(self.doc.bodies.len());
                         self.doc.bodies.push(crate::model::Body {
                             source,
+                            material: None,
                             name: None,
                             deleted: false,
                             shadow: false,
@@ -11795,6 +11838,79 @@ label_hidden: false,
                 c.length_unit = length;
                 c.angle_unit = angle;
                 self.status = "Set component units".to_string();
+                ActionResult::Ok
+            }
+            Action::AddMaterial { name, color, bodies } => {
+                let index = self.doc.materials.len();
+                let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
+                    format!("Material {}", self.doc.materials.iter().filter(|m| !m.deleted).count() + 1)
+                });
+                if self
+                    .doc
+                    .materials
+                    .iter()
+                    .any(|m| !m.deleted && m.name.eq_ignore_ascii_case(name.trim()))
+                {
+                    let e = format!("A material named '{name}' already exists");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let color = color.unwrap_or(
+                    crate::model::Material::NEW_COLORS[index % crate::model::Material::NEW_COLORS.len()],
+                );
+                self.doc.materials.push(crate::model::Material {
+                    name: name.clone(),
+                    color,
+                    deleted: false,
+                });
+                for bi in &bodies {
+                    if let Some(body) = self.doc.bodies.get_mut(*bi).filter(|b| !b.deleted) {
+                        body.material = Some(index);
+                    }
+                }
+                self.status = format!("Added material '{name}'");
+                ActionResult::Ok
+            }
+            Action::SetBodyMaterial { body, material } => {
+                if let Some(mi) = material {
+                    if !self.doc.materials.get(mi).is_some_and(|m| !m.deleted) {
+                        return ActionResult::Err(format!("Unknown material {mi}"));
+                    }
+                }
+                let Some(b) = self.doc.bodies.get_mut(body).filter(|b| !b.deleted) else {
+                    return ActionResult::Err(format!("Unknown body {body}"));
+                };
+                b.material = material;
+                let label = match material {
+                    Some(mi) => self.doc.materials[mi].name.clone(),
+                    None => "the default material".to_string(),
+                };
+                self.status = format!("{} is {label}", element_label(SceneElement::Body(body)));
+                ActionResult::Ok
+            }
+            Action::SetMaterialName { material, name } => {
+                let trimmed = name.trim().to_string();
+                if trimmed.is_empty() {
+                    return ActionResult::Err("A material needs a name".to_string());
+                }
+                if self.doc.materials.iter().enumerate().any(|(i, m)| {
+                    i != material && !m.deleted && m.name.eq_ignore_ascii_case(&trimmed)
+                }) {
+                    let e = format!("A material named '{trimmed}' already exists");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let Some(m) = self.doc.materials.get_mut(material).filter(|m| !m.deleted) else {
+                    return ActionResult::Err(format!("Unknown material {material}"));
+                };
+                m.name = trimmed;
+                ActionResult::Ok
+            }
+            Action::SetMaterialColor { material, color } => {
+                let Some(m) = self.doc.materials.get_mut(material).filter(|m| !m.deleted) else {
+                    return ActionResult::Err(format!("Unknown material {material}"));
+                };
+                m.color = color;
                 ActionResult::Ok
             }
             Action::SetElementVisible { element, visible } => {
@@ -15628,6 +15744,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -17165,6 +17282,73 @@ mod tests {
         cp.offset_live = 12.0;
         cp.axis_angle_deg = 45.0;
         assert_eq!(cp.live_dims(), (12.0, 45.0));
+    }
+
+    /// #834: a material is created, handed to the selected bodies, renamed and recoloured;
+    /// a body with none keeps the default look.
+    #[test]
+    fn materials_are_assigned_named_and_recoloured() {
+        let mut state = two_box_state(false);
+        assert_eq!(state.doc.bodies[0].material, None, "bodies start with no material");
+
+        state.apply(Action::AddMaterial {
+            name: Some("Brass".to_string()),
+            color: Some([0x10, 0x20, 0x30]),
+            bodies: vec![0],
+        });
+        assert_eq!(state.doc.materials.len(), 1);
+        assert_eq!(state.doc.materials[0].name, "Brass");
+        assert_eq!(state.doc.bodies[0].material, Some(0));
+        assert_eq!(state.doc.bodies[1].material, None, "only the listed bodies get it");
+
+        // A second material gets the next palette colour and its own name by default.
+        state.apply(Action::AddMaterial { name: None, color: None, bodies: vec![1] });
+        assert_eq!(state.doc.materials[1].name, "Material 2");
+        assert_ne!(state.doc.materials[1].color, state.doc.materials[0].color);
+
+        state.apply(Action::SetBodyMaterial { body: 1, material: Some(0) });
+        assert_eq!(state.doc.bodies[1].material, Some(0));
+        state.apply(Action::SetBodyMaterial { body: 1, material: None });
+        assert_eq!(state.doc.bodies[1].material, None, "back to the default material");
+
+        state.apply(Action::SetMaterialName { material: 0, name: "  Bronze ".to_string() });
+        assert_eq!(state.doc.materials[0].name, "Bronze", "the name is trimmed");
+        state.apply(Action::SetMaterialColor { material: 0, color: [1, 2, 3] });
+        assert_eq!(state.doc.materials[0].color, [1, 2, 3]);
+    }
+
+    /// Names are unique and non-empty, and only live materials can be assigned (#834).
+    #[test]
+    fn material_edits_are_validated() {
+        let mut state = two_box_state(false);
+        state.apply(Action::AddMaterial {
+            name: Some("Steel".to_string()),
+            color: None,
+            bodies: vec![],
+        });
+        assert!(matches!(
+            state.apply(Action::AddMaterial {
+                name: Some("steel".to_string()),
+                color: None,
+                bodies: vec![],
+            }),
+            ActionResult::Err(_)
+        ));
+        assert!(matches!(
+            state.apply(Action::SetMaterialName { material: 0, name: "  ".to_string() }),
+            ActionResult::Err(_)
+        ));
+        assert!(matches!(
+            state.apply(Action::SetBodyMaterial { body: 0, material: Some(7) }),
+            ActionResult::Err(_)
+        ));
+        assert!(matches!(
+            state.apply(Action::SetBodyMaterial { body: 99, material: None }),
+            ActionResult::Err(_)
+        ));
+        // Undo takes the material back out.
+        state.apply(Action::UndoLast);
+        assert!(state.doc.materials.is_empty(), "one undo removes the material");
     }
 
     /// #833: resizing a plane is one undoable edit.
@@ -21116,6 +21300,7 @@ mod tests {
         }
         state.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,

@@ -3627,6 +3627,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -3671,6 +3672,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -3800,6 +3802,7 @@ mod tests {
         });
         doc.bodies.push(Body {
             source: BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -4206,6 +4209,7 @@ mod tests {
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -4290,7 +4294,7 @@ mod tests {
         }
         let mut doc = Document::default();
         doc.imported_meshes.push(crate::model::ImportedMesh { triangles, source_name: "box".to_string() });
-        doc.bodies.push(crate::model::Body { source: crate::model::BodySource::Imported(0), name: None, deleted: false, shadow: false });
+        doc.bodies.push(crate::model::Body { source: crate::model::BodySource::Imported(0), material: None, name: None, deleted: false, shadow: false });
         let project = |p: Vec3| Some(egui::pos2(p.x, p.y));
         let eye = Vec3::new(30.0, 30.0, 100.0);
         let vis = crate::hierarchy::ElementVisibility::default();

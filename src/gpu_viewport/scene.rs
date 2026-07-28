@@ -109,6 +109,16 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
+
+/// The fill a body renders in: its material's colour (#834), or [`SOLID_FILL`] when it has
+/// no material — what every body looked like before materials existed.
+pub fn body_material_fill(doc: &crate::model::Document, body: &crate::model::Body) -> Color32 {
+    body.material
+        .and_then(|mi| doc.materials.get(mi))
+        .filter(|m| !m.deleted)
+        .map(|m| Color32::from_rgb(m.color[0], m.color[1], m.color[2]))
+        .unwrap_or(SOLID_FILL)
+}
 /// Base fill for an imported unit's materialized body (#724): a warmer tone than
 /// [`SOLID_FILL`], so pointing at read-only unit geometry is visibly different from
 /// pointing at the document's own bodies.
@@ -842,7 +852,9 @@ impl ViewportScene {
             } else if unit_instance.is_some() {
                 UNIT_SOLID_FILL
             } else {
-                SOLID_FILL
+                // The body's material colours it (#834); bodies with no material keep the
+                // default look.
+                body_material_fill(input.doc, body)
             };
             let line_color = if selected {
                 BODY_SILHOUETTE_COLOR

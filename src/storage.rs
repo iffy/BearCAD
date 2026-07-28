@@ -235,6 +235,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
+    save_indexed_nodes(&tx, &mut row_id, "material", &doc.materials)?;
     save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
@@ -529,6 +530,8 @@ pub fn open(path: &str) -> Result<Document> {
     // Extrusions/bodies (empty for legacy files that predate them).
     let extrusions = load_indexed_entities(&conn, "extrusion")?;
     let bodies = load_indexed_entities(&conn, "body")?;
+    // Materials (#834) — empty for files saved before they existed.
+    let materials = load_indexed_entities(&conn, "material")?;
     let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
     let lofts = load_indexed_entities(&conn, "loft")?;
@@ -566,6 +569,7 @@ pub fn open(path: &str) -> Result<Document> {
         construction_planes,
         extrusions,
         bodies,
+        materials,
         imported_meshes,
         tracing_images,
         lofts,
@@ -767,12 +771,14 @@ mod tests {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: true,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Boolean { op: 0, solid: 0 },
+            material: None,
             name: Some("Result".to_string()),
             deleted: false,
             shadow: false,
@@ -808,18 +814,21 @@ mod tests {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: true,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 0 },
+            material: None,
             name: Some("Top".to_string()),
             deleted: false,
             shadow: false,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 1 },
+            material: None,
             name: Some("Bottom".to_string()),
             deleted: false,
             shadow: false,
@@ -891,6 +900,44 @@ mod tests {
             (a.z - 25.0).abs() < 1e-3,
             "geometry on the offset plane should keep its world height"
         );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #834: materials and each body's material survive a save/load.
+    #[test]
+    fn materials_round_trip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_materials_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.materials.push(crate::model::Material {
+            name: "Brass".to_string(),
+            color: [0xc8, 0x8a, 0x4a],
+            deleted: false,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            material: Some(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(1),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.materials, doc.materials);
+        assert_eq!(loaded.bodies[0].material, Some(0));
+        assert_eq!(loaded.bodies[1].material, None);
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -1035,6 +1082,7 @@ mod tests {
         doc.shape_order.push(ShapeKind::Extrusion);
         doc.bodies.push(Body {
             source: BodySource::Extrusion(0),
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
@@ -1095,6 +1143,7 @@ mod tests {
                 add: vec![0],
                 cut: vec![1],
             },
+            material: None,
             name: None,
             deleted: false,
             shadow: false,
