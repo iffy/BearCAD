@@ -1008,6 +1008,9 @@ pub struct CreatingMove {
     /// The optional second pair (#669), which adds the rotation.
     pub start_point_b: Option<crate::model::MovePointRef>,
     pub end_point_b: Option<crate::model::MovePointRef>,
+    /// The optional third pair, which pins the spin B leaves free.
+    pub start_point_c: Option<crate::model::MovePointRef>,
+    pub end_point_c: Option<crate::model::MovePointRef>,
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
@@ -1976,6 +1979,9 @@ pub enum Action {
         /// The optional B pair (#669), which adds the rotation.
         start_point_b: Option<crate::model::MovePointRef>,
         end_point_b: Option<crate::model::MovePointRef>,
+        /// The optional C pair, which pins the spin B leaves free.
+        start_point_c: Option<crate::model::MovePointRef>,
+        end_point_c: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -1996,6 +2002,9 @@ pub enum Action {
         /// The optional B pair (#669), which adds the rotation.
         start_point_b: Option<crate::model::MovePointRef>,
         end_point_b: Option<crate::model::MovePointRef>,
+        /// The optional C pair, which pins the spin B leaves free.
+        start_point_c: Option<crate::model::MovePointRef>,
+        end_point_c: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -10465,6 +10474,8 @@ label_hidden: false,
                         end_point_a: cm.end_point_a,
                         start_point_b: cm.start_point_b,
                         end_point_b: cm.end_point_b,
+                        start_point_c: cm.start_point_c,
+                        end_point_c: cm.end_point_c,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
@@ -10490,6 +10501,8 @@ label_hidden: false,
                                     end_point_a: None,
                                     start_point_b: None,
                                     end_point_b: None,
+                                    start_point_c: None,
+                                    end_point_c: None,
                                     targets: self.doc.move_ops[op].targets.clone(),
                                     plane_targets: self.doc.move_ops[op].plane_targets.clone(),
                                     image_targets: self.doc.move_ops[op].image_targets.clone(),
@@ -10505,6 +10518,8 @@ label_hidden: false,
                                 end_point_a: cm.end_point_a,
                                 start_point_b: cm.start_point_b,
                                 end_point_b: cm.end_point_b,
+                                start_point_c: cm.start_point_c,
+                                end_point_c: cm.end_point_c,
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
                                 image_targets: cm.image_targets.clone(),
@@ -10523,7 +10538,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
                 if targets.is_empty()
                     && plane_targets.is_empty()
                     && image_targets.is_empty()
@@ -10547,6 +10562,8 @@ label_hidden: false,
                     end_point_a,
                     start_point_b,
                     end_point_b,
+                    start_point_c,
+                    end_point_c,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
                     instance_targets: instance_targets.clone(),
@@ -10592,7 +10609,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -10618,6 +10635,8 @@ label_hidden: false,
                     entry.end_point_a = end_point_a;
                     entry.start_point_b = start_point_b;
                     entry.end_point_b = end_point_b;
+                    entry.start_point_c = start_point_c;
+                    entry.end_point_c = end_point_c;
                     entry.plane_targets = plane_targets.clone();
                     entry.image_targets = image_targets.clone();
                     entry.instance_targets = instance_targets.clone();
@@ -15046,6 +15065,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
@@ -15070,6 +15091,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -15095,6 +15118,8 @@ mod tests {
                 end_point_a: None,
                 start_point_b: None,
                 end_point_b: None,
+                start_point_c: None,
+                end_point_c: None,
                 plane_targets: vec![0],
                 tz: tz.to_string(),
                 ..Default::default()
@@ -15145,6 +15170,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![0],
@@ -15170,6 +15197,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             op,
             targets: vec![],
             plane_targets: vec![],
@@ -15188,6 +15217,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -15225,6 +15256,8 @@ mod tests {
                 end_point_a: None,
                 start_point_b: None,
                 end_point_b: None,
+                start_point_c: None,
+                end_point_c: None,
                 image_targets: vec![0],
             instance_targets: Vec::new(),
                 tx: tx.to_string(),
@@ -15390,6 +15423,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16456,6 +16491,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: Vec::new(),
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -18804,6 +18841,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![0, 1],
             plane_targets: vec![],
             image_targets: vec![],
@@ -18846,6 +18885,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -18861,6 +18902,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             op: 0,
             targets: vec![0, 1],
             plane_targets: vec![],
@@ -18889,6 +18932,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -19903,6 +19948,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: Vec::new(),
             plane_targets: vec![0],
             image_targets: Vec::new(),

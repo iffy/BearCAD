@@ -1819,6 +1819,14 @@ impl MoveOperation {
             && self.end_point_b.is_some()
     }
 
+    /// Whether the optional C pair is complete, so the move's last degree of freedom is
+    /// pinned too. Only meaningful alongside a resolved B pair — C spins *about* the
+    /// `endA → endB` axis that B leaves free.
+    pub fn has_snap_roll(&self) -> bool {
+        self.has_snap_rotation()
+            && self.start_point_c.is_some()
+            && self.end_point_c.is_some()
+    }
 }
 
 impl MovePointRef {
@@ -1860,6 +1868,14 @@ pub struct MoveOperation {
     pub start_point_b: Option<MovePointRef>,
     #[serde(default)]
     pub end_point_b: Option<MovePointRef>,
+    /// The optional third pair: a point on the **moving** bodies and where it should end up.
+    /// A fixes the translation and B the rotation, but that still leaves the bodies free to
+    /// spin about the `endA → endB` axis; C fixes that last turn, so the placement is fully
+    /// determined. Both must be set for it to apply.
+    #[serde(default)]
+    pub start_point_c: Option<MovePointRef>,
+    #[serde(default)]
+    pub end_point_c: Option<MovePointRef>,
     /// Construction planes moved by this op (#217): transformed in place at recompute, so
     /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
     #[serde(default)]

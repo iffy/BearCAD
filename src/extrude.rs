@@ -936,6 +936,56 @@ pub fn move_snap_rotation_axis_angle(
     Some((axis, dot.acos()))
 }
 
+/// The spin the optional C pair asks for: B lines the bodies up along `endA → endB` but
+/// leaves them free to turn about that line, and C is what pins it. The angle is the one
+/// about that axis that brings the already-translated, already-rotated start point C as near
+/// end point C as the axis allows.
+///
+/// Only C's *direction about the axis* is used — the component along the axis, and the
+/// distance out from it, are B's and A's to decide, and a pick can't change them. So any end
+/// point C gives a well-defined answer; there is no reachable/unreachable to refuse, unlike
+/// end point B's constraint sphere.
+pub fn move_snap_roll_axis_angle(
+    doc: &Document,
+    op: &crate::model::MoveOperation,
+) -> Option<(Vec3, f32)> {
+    if !op.has_snap_roll() {
+        return None;
+    }
+    let translation = move_op_translation(doc, op)?;
+    let pivot = move_point_world(doc, op.end_point_a.as_ref()?)?;
+    let target_b = move_point_world(doc, op.end_point_b.as_ref()?)?;
+    let axis = (target_b - pivot).normalize_or_zero();
+    if axis.length_squared() < 0.5 {
+        return None;
+    }
+    // Start C rides the translation and then B's turn before it spins.
+    let rot_b = move_snap_rotation(doc, op)?;
+    let start_c = move_point_world(doc, op.start_point_c.as_ref()?)? + translation;
+    let moved_start_c = pivot + rot_b * (start_c - pivot);
+    let target_c = move_point_world(doc, op.end_point_c.as_ref()?)?;
+    // Only what's perpendicular to the axis can turn; flatten both onto that plane.
+    let flatten = |v: Vec3| v - axis * v.dot(axis);
+    let from = flatten(moved_start_c - pivot).normalize_or_zero();
+    let to = flatten(target_c - pivot).normalize_or_zero();
+    // A point on the axis itself has no direction about it to line up — no spin to derive.
+    if from.length_squared() < 0.5 || to.length_squared() < 0.5 {
+        return None;
+    }
+    // Signed about the axis, so the spin turns the short way round in the right direction.
+    let angle = from.cross(to).dot(axis).atan2(from.dot(to));
+    Some((axis, angle))
+}
+
+/// The rotation matrix behind [`move_snap_roll_axis_angle`].
+pub fn move_snap_roll(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat3> {
+    let (axis, angle) = move_snap_roll_axis_angle(doc, op)?;
+    if angle.abs() < 1e-9 {
+        return Some(glam::Mat3::IDENTITY);
+    }
+    Some(glam::Mat3::from_axis_angle(axis, angle))
+}
+
 pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
     let translation = glam::Mat4::from_translation(move_op_translation(doc, op)?);
     // The B pair adds a rotation about end point A, applied after the translation (#669).
@@ -943,9 +993,11 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
         return Some(translation);
     };
     let pivot = move_point_world(doc, op.end_point_a.as_ref()?)?;
+    // The C pair spins about the endA → endB axis B left free, applied after B's turn.
+    let roll = move_snap_roll(doc, op).unwrap_or(glam::Mat3::IDENTITY);
     Some(
         glam::Mat4::from_translation(pivot)
-            * glam::Mat4::from_mat3(rot)
+            * glam::Mat4::from_mat3(roll * rot)
             * glam::Mat4::from_translation(-pivot)
             * translation,
     )
@@ -5294,6 +5346,8 @@ mod tests {
             end_point_a: vertex(o),
             start_point_b: vertex(x),
             end_point_b: vertex(y),
+            start_point_c: None,
+            end_point_c: None,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
@@ -5339,6 +5393,102 @@ mod tests {
         assert!(reachable(Vec3::new(0.0, 0.0, 10.0)), "any direction, same radius");
         assert!(!reachable(Vec3::new(0.0, 40.0, 0.0)), "too far to reach");
         assert!(!reachable(Vec3::new(0.0, 2.0, 0.0)), "too close to reach");
+    }
+
+    /// The optional C pair pins the spin about `end A → end B` that the B pair leaves free,
+    /// so the placement is fully determined rather than free to roll.
+    #[test]
+    fn snap_c_pair_pins_the_spin_b_leaves_free() {
+        use crate::hierarchy::quantize_body_point as q;
+        use crate::model::{MoveOperation, MovePointRef, MoveTranslateMode};
+        // A body with the origin, +10X and +10Z as corners, so C has something off the
+        // start A → start B line to aim with.
+        let mut doc = Document::default();
+        let (o, x, z) = (
+            Vec3::ZERO,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
+        );
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[o, x, z]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let vertex = |p: Vec3| Some(MovePointRef::Vertex { body: 0, p: q(p) });
+        // Targets are picked as points *on* geometry rather than corners (what the end-point
+        // pickers hand back), so they can sit anywhere in space.
+        let at = |p: Vec3| Some(MovePointRef::OnEdge { body: 0, p: q(p) });
+
+        // A holds the origin still and B keeps +10X where it is, so B's turn is the identity
+        // and the bodies are free to spin about the X axis — exactly the ambiguity C fixes.
+        let base = MoveOperation {
+            targets: vec![0],
+            translate_mode: MoveTranslateMode::Snap,
+            start_point_a: vertex(o),
+            end_point_a: vertex(o),
+            start_point_b: vertex(x),
+            end_point_b: at(x),
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        assert!(base.has_snap_rotation() && !base.has_snap_roll());
+        // With B alone, +10Z stays put — the spin is undecided, so nothing turns.
+        let m = move_op_transform(&doc, &base).expect("transform");
+        assert!((m.transform_point3(z) - z).length() < 1e-3, "B alone leaves the spin free");
+
+        // C says +10Z should end up at +10Y: a quarter turn about the X axis.
+        let y = Vec3::new(0.0, 10.0, 0.0);
+        let op = MoveOperation {
+            start_point_c: vertex(z),
+            end_point_c: at(y),
+            ..base.clone()
+        };
+        assert!(op.has_snap_roll());
+        let (axis, angle) = move_snap_roll_axis_angle(&doc, &op).expect("roll");
+        assert!((axis - Vec3::X).length() < 1e-4, "spins about end A → end B, got {axis:?}");
+        // A quarter turn, negative about +X: the right-hand rule takes +Y to +Z, and this
+        // goes the other way.
+        assert!(
+            (angle + std::f32::consts::FRAC_PI_2).abs() < 1e-4,
+            "a quarter turn back about +X, got {angle}"
+        );
+        let m = move_op_transform(&doc, &op).expect("transform");
+        let landed = m.transform_point3(z);
+        assert!((landed - y).length() < 1e-3, "start C should land on end C, got {landed:?}");
+        // A and B still hold what they were pinning.
+        assert!(m.transform_point3(o).length() < 1e-3, "the pivot holds");
+        assert!((m.transform_point3(x) - x).length() < 1e-3, "end B holds");
+
+        // Only C's direction *about* the axis counts: a target further out along the same
+        // bearing asks for the same turn, since distance is A's and B's to decide.
+        let far = MoveOperation {
+            end_point_c: at(Vec3::new(5.0, 40.0, 0.0)),
+            ..op.clone()
+        };
+        let (_, far_angle) = move_snap_roll_axis_angle(&doc, &far).expect("roll");
+        assert!((far_angle - angle).abs() < 1e-4, "same bearing, same turn");
+
+        // A C point on the axis itself has no bearing to line up, so there's no spin to
+        // derive — the move falls back to what B alone gives.
+        let on_axis = MoveOperation { start_point_c: vertex(x), ..op.clone() };
+        assert!(move_snap_roll_axis_angle(&doc, &on_axis).is_none());
+        let m = move_op_transform(&doc, &on_axis).expect("transform");
+        assert!((m.transform_point3(z) - z).length() < 1e-3, "no spin derived, none applied");
     }
 
     /// #670: the reachable end-point-B spots are where body edges cross the constraint
@@ -5419,6 +5569,8 @@ mod tests {
             end_point_a: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::new(10.0, 0.0, 0.0)) }),
             start_point_b: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::new(10.0, 0.0, 0.0)) }),
             end_point_b: Some(MovePointRef::OnEdge { body: 0, p: q(Vec3::new(10.0, 10.0, 0.0)) }),
+            start_point_c: None,
+            end_point_c: None,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
@@ -5495,6 +5647,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
@@ -5524,6 +5678,8 @@ mod tests {
             end_point_a: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             ..half
         };
         assert!(full.has_snap_translation());
@@ -5629,6 +5785,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![2],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -5903,6 +6061,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -6503,6 +6663,8 @@ mod tests {
             end_point_a: None,
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),

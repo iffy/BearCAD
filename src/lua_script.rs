@@ -742,6 +742,8 @@ fn parse_move_op_args(
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
+    Option<crate::model::MovePointRef>,
+    Option<crate::model::MovePointRef>,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -765,7 +767,21 @@ fn parse_move_op_args(
     // The optional B pair (#669) adds the rotation about end point A.
     let start_point_b = parse_move_point(opts.get::<Value>("from_b")?, "from_b")?;
     let end_point_b = parse_move_point(opts.get::<Value>("to_b")?, "to_b")?;
-    Ok((targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b))
+    // The optional C pair pins the spin about `end A → end B` that B leaves free.
+    let start_point_c = parse_move_point(opts.get::<Value>("from_c")?, "from_c")?;
+    let end_point_c = parse_move_point(opts.get::<Value>("to_c")?, "to_c")?;
+    Ok((
+        targets,
+        tx,
+        ty,
+        tz,
+        start_point_a,
+        end_point_a,
+        start_point_b,
+        end_point_b,
+        start_point_c,
+        end_point_c,
+    ))
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3827,11 +3843,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
-                parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
                     targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                    start_point_c, end_point_c,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3847,11 +3864,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
-                parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
                     op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                    start_point_c, end_point_c,
                 })?;
             }
             Ok(())
@@ -6890,6 +6908,49 @@ mod tests {
             "#,
         );
         assert!(!translate_only.doc.move_ops[0].has_snap_rotation());
+    }
+
+    /// `from_c`/`to_c` pin the spin about `end A → end B` that the B pair leaves free.
+    #[test]
+    fn lua_move_c_pair_pins_the_remaining_spin() {
+        let source = |c: &str| {
+            format!(
+                r#"
+            bearcad.rect{{ width = 10, height = 10 }}
+            bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
+            -- A holds the origin and B holds (10, 0, 0), so the box is still free to spin
+            -- about the X axis; C is what decides that turn.
+            bearcad.move_bodies{{
+                bodies = {{0}},
+                from   = {{ body = 0, vertex = {{0, 0, 0}} }},
+                to     = {{ body = 0, vertex = {{0, 0, 0}} }},
+                from_b = {{ body = 0, vertex = {{10, 0, 0}} }},
+                to_b   = {{ body = 0, vertex = {{10, 0, 0}} }},
+                {c}
+            }}
+            "#
+            )
+        };
+        // Without C the spin is undecided, so nothing turns.
+        let free = run_lua(&source(""));
+        assert!(!free.doc.move_ops[0].has_snap_roll());
+        let m = crate::extrude::move_op_transform(&free.doc, &free.doc.move_ops[0]).unwrap();
+        let corner = glam::Vec3::new(0.0, 0.0, 10.0);
+        assert!((m.transform_point3(corner) - corner).length() < 1e-2, "no C, no spin");
+
+        // With C, the top corner swings a quarter turn onto +10 Y.
+        let state = run_lua(&source(
+            "from_c = { body = 0, vertex = {0, 0, 10} },
+             to_c   = { body = 0, vertex = {0, 10, 0} },",
+        ));
+        let op = &state.doc.move_ops[0];
+        assert!(op.has_snap_roll(), "both C points pin the spin");
+        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
+        let landed = m.transform_point3(corner);
+        assert!(
+            (landed - glam::Vec3::new(0.0, 10.0, 0.0)).length() < 1e-2,
+            "start C lands on end C, got {landed:?}"
+        );
     }
 
     /// #649/#650: an **edge midpoint** works as either point too.

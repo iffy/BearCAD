@@ -268,6 +268,11 @@ pub struct MoveControl {
     pub start_b_focused: bool,
     pub end_b_rows: Vec<String>,
     pub end_b_focused: bool,
+    /// The optional **C pair**, which pins the spin B leaves free.
+    pub start_c_rows: Vec<String>,
+    pub start_c_focused: bool,
+    pub end_c_rows: Vec<String>,
+    pub end_c_focused: bool,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -294,6 +299,11 @@ pub enum MoveEdit {
     ClearStartB,
     EndBFocus,
     ClearEndB,
+    /// Arm / clear the optional C-pair pickers.
+    StartCFocus,
+    ClearStartC,
+    EndCFocus,
+    ClearEndC,
     Commit,
 }
 
@@ -4148,6 +4158,24 @@ pub fn show_pane(
                 MoveEdit::EndBFocus,
                 MoveEdit::ClearEndB,
             );
+            picker_row(
+                ui,
+                "Start point C",
+                "move_start_point_c",
+                &control.start_c_rows,
+                control.start_c_focused,
+                MoveEdit::StartCFocus,
+                MoveEdit::ClearStartC,
+            );
+            picker_row(
+                ui,
+                "End point C",
+                "move_end_point_c",
+                &control.end_c_rows,
+                control.end_c_focused,
+                MoveEdit::EndCFocus,
+                MoveEdit::ClearEndC,
+            );
         }
         drop(picker_row);
         {
@@ -6627,6 +6655,10 @@ mod tests {
                 start_b_focused: false,
                 end_b_rows: Vec::new(),
                 end_b_focused: false,
+                start_c_rows: Vec::new(),
+                start_c_focused: false,
+                end_c_rows: Vec::new(),
+                end_c_focused: false,
                 targets: vec![1, 4],
                 tx: String::new(),
                 ty: String::new(),

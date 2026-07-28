@@ -34,13 +34,19 @@ Move slides whole bodies to a new place, producing moved copies.
      the preview shows the move you'd get. With both B points picked, a **dashed blue curve** from
      start B to end B traces the point's path with the slide and the turn advancing
      together — half way along, it's half way through both.
+     Lined up on end B, the bodies can still spin about the line from end point A to end
+     point B. A third pair settles that: **Start point C** on a moving body and **End point
+     C** wherever it should end up. The bodies spin about that line until start C points at
+     end C, and the placement is then completely decided. End point C can be anywhere — only
+     which way round it sits matters, since how far along and how far out are already set by
+     the other two pairs.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
 
 The tool moves you along as you go: pick a body and it's ready for the start point, then the
-end point, then straight on to **Start point B** in case you want the turn too. Click any
-picker to jump back to it.
+end point, then straight on to **Start point B** in case you want the turn too, and then to
+**Start point C** for the spin. Click any picker to jump back to it.
 
 ## Help
 
@@ -68,6 +74,15 @@ bearcad.move_bodies{ bodies = {0},
   to     = { body = 0, vertex = {0, 0, 0} },
   from_b = { body = 0, vertex = {10, 0, 0} },
   to_b   = { body = 0, vertex = {0, 10, 0} } }
+
+-- A third pair spins it about end A → end B, so the placement is fully decided.
+bearcad.move_bodies{ bodies = {0},
+  from   = { body = 0, vertex = {0, 0, 0} },
+  to     = { body = 0, vertex = {0, 0, 0} },
+  from_b = { body = 0, vertex = {10, 0, 0} },
+  to_b   = { body = 0, vertex = {10, 0, 0} },
+  from_c = { body = 0, vertex = {0, 0, 10} },
+  to_c   = { body = 0, vertex = {0, 10, 0} } }
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or

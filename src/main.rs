@@ -507,6 +507,10 @@ enum MoveFocus {
     StartPointB,
     /// **End point B**: where start B should end up, on the constraint sphere (#669).
     EndPointB,
+    /// **Start point C**: a third point on the moving bodies, pinning the last turn.
+    StartPointC,
+    /// **End point C**: the direction start C should end up pointing, about the B axis.
+    EndPointC,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -7112,6 +7116,8 @@ impl App {
             MoveFocus::EndPointA => Some((Some(false), "end A")),
             MoveFocus::StartPointB => Some((Some(true), "start B")),
             MoveFocus::EndPointB => Some((Some(false), "end B")),
+            MoveFocus::StartPointC => Some((Some(true), "start C")),
+            MoveFocus::EndPointC => Some((Some(false), "end C")),
             _ => None,
         } {
             // End point B is confined to the constraint sphere (#669): a rotation about end
@@ -7159,7 +7165,9 @@ impl App {
                                 cm.start_point_b = Some(point);
                                 cm.end_point_b = None;
                             }
-                            _ => cm.end_point_b = Some(point),
+                            MoveFocus::EndPointB => cm.end_point_b = Some(point),
+                            MoveFocus::StartPointC => cm.start_point_c = Some(point),
+                            _ => cm.end_point_c = Some(point),
                         }
                     }
                     self.release_satisfied_move_focus();
@@ -7244,8 +7252,12 @@ impl App {
                         translate_mode: existing.translate_mode,
                         start_point_a: existing.start_point_a,
                         end_point_a: existing.end_point_a,
-                        start_point_b: None,
-                        end_point_b: None,
+                        // Re-editing keeps the pairs it was committed with — dropping them
+                        // here made a re-commit silently throw the rotation away.
+                        start_point_b: existing.start_point_b,
+                        end_point_b: existing.end_point_b,
+                        start_point_c: existing.start_point_c,
+                        end_point_c: existing.end_point_c,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         instance_targets: existing.instance_targets,
@@ -10287,6 +10299,16 @@ impl eframe::App for App {
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
                         end_b_focused: move_focus == MoveFocus::EndPointB,
+                        start_c_rows: cm
+                            .and_then(|c| c.start_point_c)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        start_c_focused: move_focus == MoveFocus::StartPointC,
+                        end_c_rows: cm
+                            .and_then(|c| c.end_point_c)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        end_c_focused: move_focus == MoveFocus::EndPointC,
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
@@ -11219,10 +11241,18 @@ impl eframe::App for App {
                     context::MoveEdit::EndBFocus => {
                         self.move_focus_override = Some(MoveFocus::EndPointB)
                     }
+                    context::MoveEdit::StartCFocus => {
+                        self.move_focus_override = Some(MoveFocus::StartPointC)
+                    }
+                    context::MoveEdit::EndCFocus => {
+                        self.move_focus_override = Some(MoveFocus::EndPointC)
+                    }
                     context::MoveEdit::ClearStartA
                     | context::MoveEdit::ClearEndA
                     | context::MoveEdit::ClearStartB
                     | context::MoveEdit::ClearEndB
+                    | context::MoveEdit::ClearStartC
+                    | context::MoveEdit::ClearEndC
                     | context::MoveEdit::Commit => self.move_focus_override = None,
                     _ => {}
                 }
@@ -11249,10 +11279,18 @@ impl eframe::App for App {
                                 cm.end_point_b = None;
                             }
                             context::MoveEdit::ClearEndB => cm.end_point_b = None,
+                            // Dropping start C drops end C with it, the same way B cascades.
+                            context::MoveEdit::ClearStartC => {
+                                cm.start_point_c = None;
+                                cm.end_point_c = None;
+                            }
+                            context::MoveEdit::ClearEndC => cm.end_point_c = None,
                             context::MoveEdit::StartAFocus
                             | context::MoveEdit::EndAFocus
                             | context::MoveEdit::StartBFocus
-                            | context::MoveEdit::EndBFocus => {}
+                            | context::MoveEdit::EndBFocus
+                            | context::MoveEdit::StartCFocus
+                            | context::MoveEdit::EndCFocus => {}
                             context::MoveEdit::Commit => unreachable!(),
                         }
                     }
@@ -12756,6 +12794,8 @@ fn move_ghost_target_transform(
         end_point_a: cm.end_point_a,
         start_point_b: cm.start_point_b,
         end_point_b: cm.end_point_b,
+        start_point_c: cm.start_point_c,
+        end_point_c: cm.end_point_c,
         plane_targets: Vec::new(),
         image_targets: Vec::new(),
         instance_targets: Vec::new(),
@@ -12845,6 +12885,32 @@ fn move_b_path_points(
         .map(|i| {
             let t = i as f32 / segments.max(1) as f32;
             start_a + translation * t + glam::Quat::from_axis_angle(axis, angle * t) * rel
+        })
+        .collect()
+}
+
+/// Sample the path start point C travels: the same blend as [`move_b_path_points`] with the
+/// spin advancing alongside, so at `t` the body has slid `t` of the way, turned `t` of B's
+/// angle, and spun `t` of C's. Starts exactly at start C and lands where the committed move
+/// puts it.
+#[allow(clippy::too_many_arguments)]
+fn move_c_path_points(
+    start_a: Vec3,
+    start_c: Vec3,
+    translation: Vec3,
+    axis: Vec3,
+    angle: f32,
+    roll_axis: Vec3,
+    roll: f32,
+    segments: usize,
+) -> Vec<Vec3> {
+    let rel = start_c - start_a;
+    (0..=segments)
+        .map(|i| {
+            let t = i as f32 / segments.max(1) as f32;
+            let turned = glam::Quat::from_axis_angle(axis, angle * t) * rel;
+            let spun = glam::Quat::from_axis_angle(roll_axis, roll * t) * turned;
+            start_a + translation * t + spun
         })
         .collect()
 }
@@ -13047,6 +13113,14 @@ fn move_focus_for(
     if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_b.is_none() {
         return MoveFocus::EndPointB;
     }
+    // B still leaves the bodies free to spin about `end A → end B`; the C pair pins it, so
+    // the chain walks on into it the same way.
+    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.start_point_c.is_none() {
+        return MoveFocus::StartPointC;
+    }
+    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_c.is_none() {
+        return MoveFocus::EndPointC;
+    }
     MoveFocus::Bodies
 }
 
@@ -13059,6 +13133,8 @@ fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
         MoveFocus::EndPointA => cm.end_point_a.is_some(),
         MoveFocus::StartPointB => cm.start_point_b.is_some(),
         MoveFocus::EndPointB => cm.end_point_b.is_some(),
+        MoveFocus::StartPointC => cm.start_point_c.is_some(),
+        MoveFocus::EndPointC => cm.end_point_c.is_some(),
     }
 }
 
@@ -20861,7 +20937,11 @@ impl App {
             sketch_session,
             match self.move_focus() {
                 MoveFocus::Bodies => MovePickHover::Bodies,
-                MoveFocus::StartPointA | MoveFocus::EndPointA | MoveFocus::StartPointB => {
+                MoveFocus::StartPointA
+                | MoveFocus::EndPointA
+                | MoveFocus::StartPointB
+                | MoveFocus::StartPointC
+                | MoveFocus::EndPointC => {
                     MovePickHover::Point
                 }
                 // End point B takes only the sphere candidates (#744), which mark and
@@ -21126,6 +21206,8 @@ impl App {
                         body,
                         p: hierarchy::quantize_body_point(world),
                     }),
+                    start_point_c: None,
+                    end_point_c: None,
                     ..cm.clone()
                 })
             })
@@ -21197,6 +21279,8 @@ impl App {
                     (cm.end_point_a, theme::MOVE_END_POINT),
                     (cm.start_point_b, theme::MOVE_CANDIDATE),
                     (cm.end_point_b, theme::MOVE_CANDIDATE),
+                    (cm.start_point_c, theme::MOVE_CANDIDATE),
+                    (cm.end_point_c, theme::MOVE_CANDIDATE),
                 ]
                 .into_iter()
                 .filter_map(|(point, color)| {
@@ -21217,7 +21301,7 @@ impl App {
         // candidate blue as its endpoint marks — tracing where the point travels with the
         // slide and the turn advancing together: half way through the translation it is
         // half way through its rotation.
-        if let Some(path) = self
+        if let Some(paths) = self
             .state
             .creating_move
             .as_ref()
@@ -21230,6 +21314,8 @@ impl App {
                     end_point_a: cm.end_point_a,
                     start_point_b: cm.start_point_b,
                     end_point_b: cm.end_point_b,
+                    start_point_c: cm.start_point_c,
+                    end_point_c: cm.end_point_c,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),
                     instance_targets: Vec::new(),
@@ -21247,10 +21333,24 @@ impl App {
                     extrude::move_point_world(&self.state.doc, &probe.start_point_a?)?;
                 let start_b =
                     extrude::move_point_world(&self.state.doc, &probe.start_point_b?)?;
-                Some(move_b_path_points(start_a, start_b, translation, axis, angle, 32))
+                let mut paths =
+                    vec![move_b_path_points(start_a, start_b, translation, axis, angle, 32)];
+                // The C pair gets a path of its own, drawn the same way: the slide, B's turn
+                // and C's spin all advancing together.
+                if let (Some((roll_axis, roll)), Some(start_c)) = (
+                    extrude::move_snap_roll_axis_angle(&self.state.doc, &probe),
+                    probe
+                        .start_point_c
+                        .and_then(|p| extrude::move_point_world(&self.state.doc, &p)),
+                ) {
+                    paths.push(move_c_path_points(
+                        start_a, start_c, translation, axis, angle, roll_axis, roll, 32,
+                    ));
+                }
+                Some(paths)
             })
         {
-            for pair in path.windows(2) {
+            for pair in paths.iter().flat_map(|points| points.windows(2)) {
                 move_connector.push((pair[0], pair[1], theme::MOVE_CANDIDATE, true));
             }
         }
@@ -24027,6 +24127,56 @@ mod tests {
         assert!((mid - expected).length() < 1e-4, "half slide, half turn, got {mid:?}");
     }
 
+    /// The C-pair path blends the slide, B's turn and C's spin together, so it starts at
+    /// start C and lands where the committed move puts it.
+    #[test]
+    fn move_c_path_blends_translation_rotation_and_roll() {
+        use glam::Vec3;
+        // No slide, no B turn: the spin about +X alone takes (0,0,10) a quarter turn to
+        // (0,10,0) — the same case the transform test covers.
+        let start_a = Vec3::ZERO;
+        let start_c = Vec3::new(0.0, 0.0, 10.0);
+        let roll = -std::f32::consts::FRAC_PI_2;
+        let path = move_c_path_points(
+            start_a,
+            start_c,
+            Vec3::ZERO,
+            Vec3::X,
+            0.0,
+            Vec3::X,
+            roll,
+            4,
+        );
+        assert_eq!(path.len(), 5);
+        assert!((path[0] - start_c).length() < 1e-5, "starts at start C");
+        assert!(
+            (path[4] - Vec3::new(0.0, 10.0, 0.0)).length() < 1e-4,
+            "lands on end C, got {:?}",
+            path[4]
+        );
+        // Half way through: half the spin, so 45° round.
+        let mid = path[2];
+        let expected = glam::Quat::from_axis_angle(Vec3::X, roll * 0.5) * start_c;
+        assert!((mid - expected).length() < 1e-4, "half the spin, got {mid:?}");
+
+        // With a slide and a B turn as well, all three advance together.
+        let path = move_c_path_points(
+            start_a,
+            start_c,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::Z,
+            std::f32::consts::FRAC_PI_2,
+            Vec3::X,
+            roll,
+            2,
+        );
+        let mid = path[1];
+        let expected = Vec3::new(5.0, 0.0, 0.0)
+            + glam::Quat::from_axis_angle(Vec3::X, roll * 0.5)
+                * (glam::Quat::from_axis_angle(Vec3::Z, std::f32::consts::FRAC_PI_4) * start_c);
+        assert!((mid - expected).length() < 1e-4, "half of each, got {mid:?}");
+    }
+
     /// #771: the label sits *beside* its axis, never with the line running through the
     /// letters, and stays inside the frame it was given.
     #[test]
@@ -24543,6 +24693,8 @@ mod tests {
                 body: 0,
                 p: q(glam::Vec3::new(10.0, 10.0, 0.0)),
             }),
+            start_point_c: None,
+            end_point_c: None,
             ..snapped
         };
         let ghost = ghosts(Some(&rotated));
@@ -24596,6 +24748,8 @@ mod tests {
             end_point_a: Some(MovePointRef::Vertex { body: 0, p: [9999; 3] }),
             start_point_b: None,
             end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
             ..both
         };
         assert_eq!(move_snap_connector(&doc, &gone), None);
@@ -25584,6 +25738,16 @@ mod tests {
         cm.start_point_b = Some(point(0));
         assert_eq!(focus(&cm), MoveFocus::EndPointB);
         cm.end_point_b = Some(point(1));
+        assert_eq!(
+            focus(&cm),
+            MoveFocus::StartPointC,
+            "the B pair done, the chain walks into start C"
+        );
+
+        // C pins the spin about `end A → end B` that B leaves free.
+        cm.start_point_c = Some(point(0));
+        assert_eq!(focus(&cm), MoveFocus::EndPointC);
+        cm.end_point_c = Some(point(1));
         assert_eq!(focus(&cm), MoveFocus::Bodies, "everything picked");
 
         // Free translate has no target point to pick.

@@ -727,7 +727,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   ghost (#748), so a completed rotation previews too. The picked points are marked in the
   viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
   point A green** and **end point A red** — go and stop, so the direction of the snap reads at
-  a glance — and **both B points in candidate blue** (#748). A complete pair draws the
+  a glance — and **both B points and both C points in candidate blue** (#748). A complete pair draws the
   point's **path**: a dashed curve from start B to end B, in the same candidate blue as
   its endpoint marks, tracing where the point travels
   with the slide and the turn advancing **together** — half way through the translation it
@@ -741,7 +741,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   lights up is always what a click takes (`MoveFocus`, `move_focus_for`). The tool **advances
   on its own**: Bodies until one is picked, then Source point, then the Target point when
   snapping — and with the A pair set the chain walks straight into **Start point B** (#741),
-  the rotation opt-in being the likeliest next click (Bodies stays a hand-focus away).
+  the rotation opt-in being the likeliest next click (Bodies stays a hand-focus away), and on
+  into **Start point C** once B completes.
   Clicking a picker overrides the chain until that picker is satisfied
   (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover marks
   the exact candidate **point** (#739) — the corner, the edge's midpoint, or the face's
@@ -767,6 +768,20 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     quantized world position) instead of being re-found by matching. The generic
     corner/edge/face hover stands down entirely while this picker is armed (#744) — only the
     candidates are pickable, and they mark and glow on their own (`MovePickHover::EndB`).
+
+  - An optional **third pair**, **Start point C** on the moving bodies and **End point C**
+    anywhere, pins the one freedom the B pair leaves: with start B lined up on end B the
+    bodies can still **spin about the `end A → end B` axis**, and C decides that turn
+    (`extrude::move_snap_roll_axis_angle`) — with all three pairs the placement is fully
+    determined. The spin is the signed angle about that axis taking the already-translated,
+    already-rotated start C onto end C, measured from their directions **flattened onto the
+    plane perpendicular to the axis**: only C's bearing about the axis is C's to decide, since
+    how far along the axis and how far out from it are already A's and B's. So — unlike end
+    point B — **any** end C gives a well-defined answer and none is refused; there is no
+    constraint surface to pick on, and no candidate marks. A start C **on the axis itself**
+    has no bearing to line up, so no spin is derived and the move is what B alone gives.
+    Re-picking or clearing start C clears end C, the way B cascades, and the focus chain arms
+    Start point C once the B pair completes.
     **Hover previews both end pickers:** with End point A or End point B armed, hovering a
     valid point shows the ghost as if that point had been chosen (`move_hover_preview` — a
     probe copy of the in-progress move with the hovered point filled in). The ghost's pose
@@ -801,7 +816,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, from?, to?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation; a point table takes
+  on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation, and
+  `from_c`/`to_c` the optional C pair, and so the spin; a point table takes
   `vertex`, `edge` (its midpoint), or `on_edge` (a position along one). **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,

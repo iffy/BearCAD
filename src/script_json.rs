@@ -382,15 +382,15 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
         "move_bodies" => {
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
-                move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b })
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) = move_op_args(o)?;
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
-                move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b })
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) = move_op_args(o)?;
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -1104,6 +1104,8 @@ fn move_op_args(
         Option<crate::model::MovePointRef>,
         Option<crate::model::MovePointRef>,
         Option<crate::model::MovePointRef>,
+        Option<crate::model::MovePointRef>,
+        Option<crate::model::MovePointRef>,
     ),
     String,
 > {
@@ -1119,6 +1121,9 @@ fn move_op_args(
         // The optional B pair (#669) adds the rotation.
         move_point_from_json(o.get("from_b"), "from_b")?,
         move_point_from_json(o.get("to_b"), "to_b")?,
+        // The optional C pair pins the spin B leaves free.
+        move_point_from_json(o.get("from_c"), "from_c")?,
+        move_point_from_json(o.get("to_c"), "to_c")?,
     ))
 }
 
@@ -2109,6 +2114,8 @@ mod tests {
                 end_point_a: None,
                 start_point_b: None,
                 end_point_b: None,
+                start_point_c: None,
+                end_point_c: None,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -2123,6 +2130,8 @@ mod tests {
                 end_point_a: None,
                 start_point_b: None,
                 end_point_b: None,
+                start_point_c: None,
+                end_point_c: None,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),
