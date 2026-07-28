@@ -2734,6 +2734,15 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   purely from a script — a line's two points are `start`/`end`, i.e. `(x0,y0)`/`(x1,y1)`.
   A table with no `end` still resolves to the whole element as before; pass an explicit
   `point = true` to target a point that has no such field (e.g. a circle's center).
+- **Positioning dimensions (#809):** `bearcad.add_constraint` takes the two-thing targets the
+  Dimension tool picks interactively, not just `line` (length) and `circle` (diameter):
+  `{ kind = "point_line", point = <point>, line = <line> }` (perpendicular distance from a
+  point to an edge — how holes are positioned), `{ kind = "point_point", anchor, mover }`,
+  and `{ kind = "line_line", a, b }` (spacing between parallel lines). `point` takes the same
+  tables point-level selection does (line endpoint, circle centre, face vertex, text anchor);
+  `line` takes a sketch line, an origin `axis`, or a `face` edge. The side/direction each
+  dimension is measured on is captured from the current geometry
+  (`constraints::finalize_distance_target`), exactly as for an interactive pick.
 - **Face vertex/edge selection (#26/#27):** `bearcad.select{ kind = "face", face = { … }, index }`
   selects a corner of the *sketched-on* face's own boundary loop (a `ConstraintPoint::FaceVertex`);
   add `edge = true` to select the edge from that corner to the next instead

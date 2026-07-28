@@ -1056,12 +1056,32 @@ fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
 
 fn parse_distance_target(table: Table) -> mlua::Result<DistanceTarget> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
-    let index: usize = table.get("index")?;
     match kind.to_ascii_lowercase().as_str() {
-        "line" => Ok(DistanceTarget::LineLength(index)),
-        "circle" => Ok(DistanceTarget::CircleDiameter(index)),
+        "line" => Ok(DistanceTarget::LineLength(table.get("index")?)),
+        "circle" => Ok(DistanceTarget::CircleDiameter(table.get("index")?)),
+        // Positioning dimensions (#809), the scripted twins of picking two things under the
+        // Dimension tool. The side/direction each one is measured on is captured from the
+        // current geometry by `constraints::finalize_distance_target`, exactly as it is for
+        // an interactive pick, so a script only names the two things.
+        "point_line" | "point_edge" => Ok(DistanceTarget::PointLineDistance {
+            point: parse_constraint_point_table(table.get("point")?)?,
+            line: parse_constraint_line_table(table.get("line")?)?,
+            side: crate::model::default_constraint_sign(),
+        }),
+        "point_point" | "points" => Ok(DistanceTarget::PointPointDistance {
+            anchor: parse_constraint_point_table(table.get("anchor")?)?,
+            mover: parse_constraint_point_table(table.get("mover")?)?,
+            dir_u: 0.0,
+            dir_v: 0.0,
+        }),
+        "line_line" | "lines" => Ok(DistanceTarget::LineLineDistance {
+            line_a: parse_constraint_line_table(table.get("a")?)?,
+            line_b: parse_constraint_line_table(table.get("b")?)?,
+            side: crate::model::default_constraint_sign(),
+        }),
         other => Err(mlua::Error::external(format!(
-            "unknown constraint target '{other}'"
+            "unknown constraint target '{other}' (line, circle, point_line, point_point, \
+             line_line)"
         ))),
     }
 }
@@ -4678,10 +4698,16 @@ mod tests {
             assert(bearcad.ui.tutorial_step() == 33, "first hole -> second hole")
             bearcad.circle{ x = 19, y = 30, r = 2.5 }
             assert(bearcad.ui.tutorial_step() == 34, "both holes -> position them")
-            -- Positioning a hole takes a point-to-edge dimension, which the scripting API
-            -- can't author yet (see the note on `add_constraint`), so step past it the way
-            -- a user reading ahead would.
-            bearcad.ui.tutorial_next()
+            -- Position each hole off one of the sketched-on face's own edges — the
+            -- point-to-edge dimension the step asks for, now scriptable (#809).
+            local flange = { kind = "extrude_side", extrusion = 0, profile = "polygon",
+                             profile_lines = loop, edge = 2 }
+            for nth, circle in ipairs({ 0, 1 }) do
+              bearcad.add_constraint({ kind = "point_line",
+                                       point = { kind = "circle", index = circle },
+                                       line = { kind = "face", face = flange,
+                                                index = nth == 1 and 1 or 3 } }, "10mm")
+            end
             assert(bearcad.ui.tutorial_step() == 36, "positioned -> cut step")
 
             bearcad.exit_sketch()
@@ -5261,6 +5287,80 @@ mod tests {
             1,
             "redefining shouldn't add a second row"
         );
+    }
+
+    /// #809: positioning dimensions from scripts — a point off an edge, two points apart,
+    /// and the spacing between two parallel lines. The side each is measured on is captured
+    /// from the geometry, as it is for an interactive pick.
+    #[test]
+    fn lua_positioning_dimensions_are_scriptable() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.circle{ x = 12, y = 9, r = 3 }
+            bearcad.add_constraint({ kind = "point_line",
+                                     point = { kind = "circle", index = 0 },
+                                     line  = { kind = "line", index = 0 } }, "15mm")
+            bearcad.add_constraint({ kind = "point_line",
+                                     point = { kind = "circle", index = 0 },
+                                     line  = { kind = "axis", axis = "y" } }, "8mm")
+        "#,
+        );
+        let circle = &state.doc.circles[0];
+        assert!((circle.cy - 15.0).abs() < 0.05, "off the edge: cy={}", circle.cy);
+        assert!((circle.cx - 8.0).abs() < 0.05, "off the Y axis: cx={}", circle.cx);
+
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.circle{ x = 12, y = 9, r = 3 }
+            bearcad.add_constraint({ kind = "point_point",
+                                     anchor = { kind = "line", index = 0, ["end"] = "start" },
+                                     mover  = { kind = "circle", index = 0 } }, "25mm")
+        "#,
+        );
+        let circle = &state.doc.circles[0];
+        let dist = (circle.cx * circle.cx + circle.cy * circle.cy).sqrt();
+        assert!((dist - 25.0).abs() < 0.1, "point-to-point: {dist}");
+
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.line{ x = 0, y = 20, x1 = 40, y1 = 20 }
+            bearcad.add_geometric_constraint("parallel",
+                { kind = "line", index = 0 }, { kind = "line", index = 1 })
+            bearcad.add_constraint({ kind = "line_line",
+                                     a = { kind = "line", index = 0 },
+                                     b = { kind = "line", index = 1 } }, "12mm")
+        "#,
+        );
+        let line = &state.doc.lines[1];
+        assert!((line.y0 - 12.0).abs() < 0.1, "line spacing: y0={}", line.y0);
+    }
+
+    #[test]
+    fn lua_unknown_constraint_target_names_the_valid_ones() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            bearcad.new()
+            local ok, err = pcall(bearcad.add_constraint, { kind = "widget", index = 0 }, "5mm")
+            assert(not ok, "an unknown target should error")
+            assert(tostring(err):find("point_line"), "the error should name the valid kinds: " .. tostring(err))
+        "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
     }
 
     #[test]
