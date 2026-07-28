@@ -3553,7 +3553,9 @@ document is millimeters, so the player is person-scale: eye height
   *Use the keyboard to type* in white with the words in the monospace blue the narration gives
   code (`draw_orb_typing_guide`). There's nothing left to click once you're in the box, so the
   click guide steps aside rather than sitting there looking like a button.
-  The box hugs the field the orb marked, staying clear of what's being typed into.
+  The box hangs off the **focused field's own rect** (`typing_guide_rect`, #868) — just above it,
+  or below when the top of the window is in the way — so it never covers the floating dimension
+  and diameter inputs, which open right where the orb is.
   It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
   parameter-list step names whichever parameter is still missing, one **box** at a time: its
   name until that's typed, then its value (#782/#812) — and the orb walks the two boxes with

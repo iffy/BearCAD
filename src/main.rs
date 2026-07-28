@@ -1965,14 +1965,37 @@ fn draw_guide_number(
     );
 }
 
+/// Where the typing guide sits (#868): clear of the **field** it's talking about — just above
+/// it, or below when the top of the window is in the way — rather than over the orb, which the
+/// floating dimension and diameter inputs open right on top of. With no field rect to go by
+/// (nothing registered its place yet) the orb stands in for one.
+fn typing_guide_rect(
+    field: Option<egui::Rect>,
+    orb: egui::Pos2,
+    size: egui::Vec2,
+    bounds: egui::Rect,
+) -> egui::Rect {
+    const GAP: f32 = 10.0;
+    let anchor = field.unwrap_or(egui::Rect::from_center_size(orb, egui::Vec2::splat(8.0)));
+    let above = anchor.top() - GAP - size.y * 0.5;
+    let below = anchor.bottom() + GAP + size.y * 0.5;
+    let cy = if above - size.y * 0.5 >= bounds.top() + 6.0 { above } else { below };
+    let cx = anchor.center().x.clamp(
+        bounds.left() + size.x * 0.5 + 6.0,
+        (bounds.right() - size.x * 0.5 - 6.0).max(bounds.left() + size.x * 0.5 + 6.0),
+    );
+    egui::Rect::from_center_size(egui::pos2(cx, cy), size)
+}
+
 /// The guide, once the keyboard has the field (#848): the ring gives way to a single box
 /// that says what to type — "Use the keyboard to type" in white, the words themselves in the
-/// same blue the narration gives code. Sits where the ring was, so it reads as the same guide
-/// having changed job rather than a new thing appearing.
+/// same blue the narration gives code. It rides with the field that has the keyboard (#868),
+/// so the words never sit over what's being typed.
 fn draw_orb_typing_guide(
     painter: &egui::Painter,
     ctx: &egui::Context,
     orb: egui::Pos2,
+    field: Option<egui::Rect>,
     bounds: egui::Rect,
     text: &str,
 ) {
@@ -1986,12 +2009,7 @@ fn draw_orb_typing_guide(
     let pad = egui::vec2(12.0, 7.0);
     let size = egui::vec2(lead.size().x + typed.size().x, lead.size().y.max(typed.size().y))
         + pad * 2.0;
-    // Just above the field, so the box doesn't cover what's being typed into.
-    let cy = (orb.y - size.y * 0.5 - 18.0).max(bounds.top() + size.y * 0.5 + 6.0);
-    let cx = orb
-        .x
-        .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
-    let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
+    let rect = typing_guide_rect(field, orb, size, bounds);
     painter.rect_filled(rect, 9.0, egui::Color32::from_rgba_unmultiplied(20, 30, 44, 240));
     painter.rect_stroke(
         rect,
@@ -2945,12 +2963,15 @@ impl App {
             // Once the field the orb marks has the keyboard, the guide **becomes** the
             // instruction to type (#848): the ring is for finding something to click, and
             // there's nothing left to click once you're in the box.
+            let focused = ctx.memory(|m| m.focused());
             let typing = step
                 .type_hint
                 .and_then(|h| h.text(&self.state))
-                .filter(|_| ctx.memory(|m| m.focused()).is_some());
+                .filter(|_| focused.is_some());
             if let Some(text) = typing {
-                draw_orb_typing_guide(&painter, ctx, pos, badge_bounds, &text);
+                // The box hangs off the field with the keyboard, not the orb (#868).
+                let field = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect);
+                draw_orb_typing_guide(&painter, ctx, pos, field, badge_bounds, &text);
             } else {
                 let t = ctx.input(|i| i.time) as f32;
                 let pulse = ((t * 2.5).sin() * 0.5 + 0.5) * 5.0;
@@ -23697,6 +23718,39 @@ fn draw_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #868: the typing guide clears the field it names — above it normally, below it when
+    /// the field is up against the top of the window — and never lands on top of it.
+    #[test]
+    fn typing_guide_stays_off_the_field() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let size = egui::vec2(260.0, 30.0);
+        let orb = egui::pos2(400.0, 420.0);
+
+        let field = egui::Rect::from_min_size(egui::pos2(380.0, 400.0), egui::vec2(90.0, 24.0));
+        let above = typing_guide_rect(Some(field), orb, size, bounds);
+        assert!(!above.intersects(field), "the guide covered the field: {above:?}");
+        assert!(above.bottom() <= field.top(), "the guide should sit above the field");
+        assert!(
+            (above.center().x - field.center().x).abs() < 1e-3,
+            "the guide should line up with the field"
+        );
+
+        // A field at the very top has no room above it, so the guide drops below.
+        let high = egui::Rect::from_min_size(egui::pos2(380.0, 4.0), egui::vec2(90.0, 24.0));
+        let below = typing_guide_rect(Some(high), orb, size, bounds);
+        assert!(!below.intersects(high), "the guide covered the field: {below:?}");
+        assert!(below.top() >= high.bottom(), "the guide should sit below the field");
+
+        // Off to the side, the guide stays inside the window.
+        let edge = egui::Rect::from_min_size(egui::pos2(1180.0, 400.0), egui::vec2(90.0, 24.0));
+        let clamped = typing_guide_rect(Some(edge), orb, size, bounds);
+        assert!(bounds.contains_rect(clamped), "the guide left the window: {clamped:?}");
+
+        // With no field to go by, it still hangs above the orb.
+        let fallback = typing_guide_rect(None, orb, size, bounds);
+        assert!(fallback.bottom() < orb.y, "the fallback guide should sit above the orb");
+    }
 
     /// #826: mid-animation the Move ghost keeps start point A exactly on end point A — the
     /// pose is a rotation *about that pivot*, not an independently eased translation.
