@@ -3456,7 +3456,8 @@ document is millimeters, so the player is person-scale: eye height
   box's edges delimit the exact characters (#818).
   It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
   parameter-list step names whichever parameter is still missing, one **box** at a time: its
-  name until that's typed, then its value (#782/#812) — and a step holds
+  name until that's typed, then its value (#782/#812) — and the orb walks the two boxes with
+  it (#832) — and a step holds
   its words back until the field that takes them exists (#786/#787/#789): a dimension's
   value input after it's placed, the extrude's distance after a face is picked. The extrude
   step's orb likewise moves from the toolbar button to the **profile face** once the tool is

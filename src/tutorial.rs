@@ -263,6 +263,19 @@ fn params_defined(app: &AppState) -> bool {
     BRACKET_PARAMS.iter().all(|(name, _)| param_exists(app, name))
 }
 
+/// The parameter-list step's orb (#832): the name box until that name is typed, then the
+/// value box beside it — the same one-box-at-a-time walk the "Type …" badge does.
+fn param_list_orb(app: &AppState) -> Option<StepTarget> {
+    let (name, _) = BRACKET_PARAMS
+        .iter()
+        .find(|(name, _)| !param_exists(app, name))?;
+    if app.parameters_pane.new_name.trim().eq_ignore_ascii_case(name) {
+        Some(StepTarget::Ui(UiAnchor::ParametersValue))
+    } else {
+        Some(StepTarget::Ui(UiAnchor::ParametersName))
+    }
+}
+
 /// The "Add them for me" button: adds whichever bracket parameters are still
 /// missing, leaving any the user already typed (or renamed the value of) alone.
 fn add_missing_params(app: &mut AppState) {
@@ -1959,7 +1972,7 @@ static BRACKET_STEPS: &[Step] = &[
         narration: "Three more, exactly the same moves:\n\
                     `hole` = `5mm`\n`bend` = `4mm`\n`bend_angle` = `120deg`\n\
                     \u{2014} or let me type them in for you.",
-        anchor: StepAnchor::Ui(UiAnchor::ParametersName),
+        anchor: StepAnchor::Guided(param_list_orb),
         done: Some(params_defined),
         on_enter: None,
         assist: Some(StepAssist { label: "Add them for me", run: add_missing_params }),
@@ -2579,6 +2592,23 @@ mod tests {
         let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
         assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
         assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
+    }
+
+    /// #832: on the parameter-list step the orb walks the two boxes with the badge — the
+    /// name until it's typed, then the value.
+    #[test]
+    fn parameter_list_orb_moves_to_the_value_box() {
+        let mut app = AppState::default();
+        assert!(matches!(
+            param_list_orb(&app),
+            Some(StepTarget::Ui(UiAnchor::ParametersName))
+        ));
+        let (next, _) = BRACKET_PARAMS.iter().find(|(n, _)| !param_exists(&app, n)).unwrap();
+        app.parameters_pane.new_name = next.to_string();
+        assert!(matches!(
+            param_list_orb(&app),
+            Some(StepTarget::Ui(UiAnchor::ParametersValue))
+        ));
     }
 
     /// #828: the phone-only steps are left out of the numbering on anything wider, so a
