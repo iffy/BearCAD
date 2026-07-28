@@ -238,6 +238,14 @@ fn name_box_tapped(app: &AppState) -> bool {
         || param_exists(app, "leg")
 }
 
+/// The value box has the keyboard (or already holds something) — its own step now (#861),
+/// so the click guide points at the box before the typing guide takes over.
+fn value_box_tapped(app: &AppState) -> bool {
+    app.parameters_pane.new_value_focused
+        || !app.parameters_pane.new_value.trim().is_empty()
+        || param_exists(app, "leg")
+}
+
 fn name_says_leg(app: &AppState) -> bool {
     app.parameters_pane.new_name.trim().eq_ignore_ascii_case("leg") || param_exists(app, "leg")
 }
@@ -473,10 +481,6 @@ enum ClickTarget {
     /// The nth drawn (non-construction) line of the open sketch, in the order the drawing
     /// step laid them down.
     ProfileLine(usize),
-    /// The start corner of the nth profile line (shared with the line before it).
-    ProfileCorner(usize),
-    /// The sketch's origin point.
-    Origin,
     /// The sketch's red X axis.
     XAxis,
 }
@@ -528,40 +532,15 @@ fn polyline_midpoint(points: &[glam::Vec3]) -> Option<glam::Vec3> {
     points.last().copied()
 }
 
-/// Where the orb sits for a target: a line's middle, a corner's vertex, the origin, or a
-/// clear stretch of the X axis away from the profile.
+/// Where the orb sits for a target: a line's middle, or a clear stretch of the X axis away
+/// from the profile.
 fn target_point(app: &AppState, target: ClickTarget) -> Option<glam::Vec3> {
     match target {
         ClickTarget::ProfileLine(n) => polyline_midpoint(&profile_polyline(app, n)?),
-        ClickTarget::ProfileCorner(n) => profile_polyline(app, n)?.first().copied(),
-        ClickTarget::Origin => {
-            Some(crate::face::local_to_world(&sketch_frame(app)?, 0.0, 0.0))
-        }
         ClickTarget::XAxis => {
             Some(crate::face::local_to_world(&sketch_frame(app)?, -22.0, 0.0))
         }
     }
-}
-
-/// Whether a selected point sits on `world` (which line's endpoint it counts as doesn't
-/// matter — the corner is shared).
-fn point_selected_at(app: &AppState, world: glam::Vec3) -> bool {
-    use crate::hierarchy::SceneElement;
-    app.scene_selection.iter().any(|element| match element {
-        SceneElement::Point(cp) => crate::construction::point_world_position(&app.doc, cp)
-            .is_some_and(|p| (p - world).length() < 0.5),
-        SceneElement::Origin => (crate::face::local_to_world(
-            &match sketch_frame(app) {
-                Some(f) => f,
-                None => return false,
-            },
-            0.0,
-            0.0,
-        ) - world)
-            .length()
-            < 0.5,
-        _ => false,
-    })
 }
 
 fn target_selected(app: &AppState, target: ClickTarget) -> bool {
@@ -571,9 +550,6 @@ fn target_selected(app: &AppState, target: ClickTarget) -> bool {
         ClickTarget::ProfileLine(n) => profile_lines(app)
             .get(n)
             .is_some_and(|i| app.scene_selection.is_selected(SceneElement::Line(*i))),
-        ClickTarget::ProfileCorner(_) | ClickTarget::Origin => {
-            target_point(app, target).is_some_and(|w| point_selected_at(app, w))
-        }
         ClickTarget::XAxis => app
             .scene_selection
             .is_selected(SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))),
@@ -587,14 +563,6 @@ fn element_is_target(app: &AppState, element: &crate::hierarchy::SceneElement, t
     match target {
         ClickTarget::ProfileLine(n) => matches!(element, SceneElement::Line(i)
             if profile_lines(app).get(n) == Some(i)),
-        ClickTarget::ProfileCorner(_) | ClickTarget::Origin => match element {
-            SceneElement::Origin => matches!(target, ClickTarget::Origin),
-            SceneElement::Point(cp) => target_point(app, target).is_some_and(|w| {
-                crate::construction::point_world_position(&app.doc, cp.clone())
-                    .is_some_and(|p| (p - w).length() < 0.5)
-            }),
-            _ => false,
-        },
         ClickTarget::XAxis => matches!(
             element,
             SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
@@ -696,14 +664,6 @@ macro_rules! constraint_step {
 // 3 tilted leg outer, 4 tilted leg end cap, 5 tilted leg inner (back to the bend corner).
 use crate::geometric_constraints::GeometricConstraintType as GC;
 constraint_step!(
-    pin_click,
-    pin_shift,
-    pin_marks,
-    ClickTarget::ProfileCorner(0),
-    ClickTarget::Origin,
-    GC::Coincident
-);
-constraint_step!(
     level_click,
     level_shift,
     level_marks,
@@ -748,18 +708,8 @@ constraint_step!(
 // (each includes the ones before it), so a user who works ahead skips ahead and Back
 // reviews hold their ground.
 
-fn bend_pinned(app: &AppState) -> bool {
-    // Specifically a coincidence WITH THE ORIGIN — the endpoint-joining coincidences the
-    // drawing phase snaps into place don't count as pinning the profile down.
-    use crate::model::ConstraintEntity;
-    constraint_count(app, |k| {
-        matches!(k, ConstraintKind::Coincident { a, b }
-            if matches!(a, ConstraintEntity::Origin) || matches!(b, ConstraintEntity::Origin))
-    }) >= 1
-}
-
 fn base_leveled(app: &AppState) -> bool {
-    bend_pinned(app) && constraint_count(app, axis_parallel_kind) >= 1
+    constraint_count(app, axis_parallel_kind) >= 1
 }
 
 fn base_strip_even(app: &AppState) -> bool {
@@ -1461,6 +1411,17 @@ fn bend_angle_changed(app: &AppState) -> bool {
 /// Draw the sloppy profile for the user. No longer a button of its own (#843 — clicking the
 /// glowing points is the whole job), but the constraint assists below lean on it so pressing
 /// *their* button works even for someone who skipped ahead past the drawing.
+/// Select exactly `a` and `b` — what a click and a Shift+click do.
+fn select_pair(
+    app: &mut AppState,
+    a: crate::hierarchy::SceneElement,
+    b: crate::hierarchy::SceneElement,
+) {
+    app.scene_selection.clear();
+    app.scene_selection.insert(a);
+    app.scene_selection.insert(b);
+}
+
 fn draw_profile_for_me(app: &mut AppState) {
     use crate::model::{ConstraintPoint, FaceId, LineEnd};
     if app.sketch_session.is_none() {
@@ -1493,73 +1454,6 @@ fn draw_profile_for_me(app: &mut AppState) {
     app.scene_selection.clear();
 }
 
-/// Select exactly `a` and `b` — what a click and a Shift+click do.
-fn select_pair(
-    app: &mut AppState,
-    a: crate::hierarchy::SceneElement,
-    b: crate::hierarchy::SceneElement,
-) {
-    app.scene_selection.clear();
-    app.scene_selection.insert(a);
-    app.scene_selection.insert(b);
-}
-
-/// A constraint step's assist: pick the two things it asks for, apply the constraint.
-fn apply_constraint(app: &mut AppState, a: ClickTarget, b: ClickTarget, kind: GC) {
-    let (Some(ea), Some(eb)) = (target_element(app, a), target_element(app, b)) else {
-        return;
-    };
-    select_pair(app, ea, eb);
-    app.apply(Action::AddGeometricConstraint(kind));
-    app.scene_selection.clear();
-}
-
-/// The scene element a click target *is* — the assists select these directly.
-fn target_element(app: &AppState, target: ClickTarget) -> Option<crate::hierarchy::SceneElement> {
-    use crate::hierarchy::SceneElement;
-    use crate::model::{ConstraintLine, ConstraintPoint, LineEnd, SketchAxis};
-    match target {
-        ClickTarget::ProfileLine(n) => profile_lines(app).get(n).map(|i| SceneElement::Line(*i)),
-        ClickTarget::ProfileCorner(n) => profile_lines(app).get(n).map(|i| {
-            SceneElement::Point(ConstraintPoint::LineEndpoint { line: *i, end: LineEnd::Start })
-        }),
-        ClickTarget::Origin => Some(SceneElement::Origin),
-        ClickTarget::XAxis => Some(SceneElement::FaceEdge(ConstraintLine::OriginAxis(
-            SketchAxis::X,
-        ))),
-    }
-}
-
-fn assist_pin(app: &mut AppState) {
-    draw_profile_for_me(app);
-    apply_constraint(app, ClickTarget::ProfileCorner(0), ClickTarget::Origin, GC::Coincident);
-}
-fn assist_level(app: &mut AppState) {
-    apply_constraint(app, ClickTarget::ProfileLine(0), ClickTarget::XAxis, GC::Parallel);
-}
-fn assist_base_strip(app: &mut AppState) {
-    apply_constraint(app, ClickTarget::ProfileLine(0), ClickTarget::ProfileLine(2), GC::Parallel);
-}
-fn assist_legs(app: &mut AppState) {
-    apply_constraint(app, ClickTarget::ProfileLine(3), ClickTarget::ProfileLine(5), GC::Parallel);
-}
-fn assist_cap_one(app: &mut AppState) {
-    apply_constraint(
-        app,
-        ClickTarget::ProfileLine(1),
-        ClickTarget::ProfileLine(0),
-        GC::Perpendicular,
-    );
-}
-fn assist_cap_two(app: &mut AppState) {
-    apply_constraint(
-        app,
-        ClickTarget::ProfileLine(4),
-        ClickTarget::ProfileLine(3),
-        GC::Perpendicular,
-    );
-}
-
 /// Dimension the nth profile line with `expression`, defining the parameter it names first
 /// when the tutorial hasn't introduced it yet (#788's `thick`).
 fn dimension_profile_line(app: &mut AppState, nth: usize, expression: &str) {
@@ -1580,6 +1474,9 @@ fn dimension_profile_line(app: &mut AppState, nth: usize, expression: &str) {
 }
 
 fn assist_base_leg_dim(app: &mut AppState) {
+    // The first assist after the constraint steps, which have no button of their own now
+    // (#864): make the profile if the reader clicked past drawing it.
+    draw_profile_for_me(app);
     dimension_profile_line(app, 0, "leg");
 }
 fn assist_tilted_leg_dim(app: &mut AppState) {
@@ -1970,7 +1867,21 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "Now tap the value box beside it and type `50mm`.",
+        narration: "Now tap the value box beside it.",
+        anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
+        done: Some(value_box_tapped),
+        on_enter: None,
+        assist: None,
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint: None,
+        phone_narration: None,
+        only_on_phone: false,
+    },
+    Step {
+        narration: "Type `50mm` \u{2014} how long each leg is.",
         anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
         done: Some(value_says_50),
         on_enter: None,
@@ -2111,25 +2022,11 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: true,
     },
     Step {
-        narration: "Pin the bend corner to the origin \u{2014} follow 1, 2, 3.",
-        anchor: StepAnchor::Guided(pin_click),
-        done: Some(bend_pinned),
-        on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_pin }),
-        needs_shift: Some(pin_shift),
-        drag_hint: None,
-        key_hint: None,
-        marks: Some(pin_marks),
-        type_hint: None,
-        phone_narration: None,
-        only_on_phone: false,
-    },
-    Step {
-        narration: "Level the base against the red X axis.",
+        narration: "Make the base parallel to the red X axis.",
         anchor: StepAnchor::Guided(level_click),
         done: Some(base_leveled),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_level }),
+        assist: None,
         needs_shift: Some(level_shift),
         drag_hint: None,
         key_hint: Some(("Space", "Press space if it's too crowded to pick")),
@@ -2143,7 +2040,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(base_strip_click),
         done: Some(base_strip_even),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_base_strip }),
+        assist: None,
         needs_shift: Some(base_strip_shift),
         drag_hint: None,
         key_hint: None,
@@ -2157,7 +2054,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(legs_click),
         done: Some(legs_parallel),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_legs }),
+        assist: None,
         needs_shift: Some(legs_shift),
         drag_hint: None,
         key_hint: None,
@@ -2167,11 +2064,11 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "Square the base's end cap to the base.",
+        narration: "Make these edges square.",
         anchor: StepAnchor::Guided(cap_one_click),
         done: Some(first_cap_squared),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_cap_one }),
+        assist: None,
         needs_shift: Some(cap_one_shift),
         drag_hint: None,
         key_hint: None,
@@ -2181,11 +2078,11 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "And the tilted leg's end cap to its leg. Squared up!",
+        narration: "Make these edges square too. Squared up!",
         anchor: StepAnchor::Guided(cap_two_click),
         done: Some(profile_squared),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_cap_two }),
+        assist: None,
         needs_shift: Some(cap_two_shift),
         drag_hint: None,
         key_hint: None,
@@ -2252,9 +2149,8 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "Now an end cap \u{2014} the bracket's thickness. We never entered that \
-                    one: type `thick=5mm` in the value box and it becomes a parameter \
-                    right there. Click, place, type, Enter.",
+        narration: "You can create parameters while drawing, too. Create the `thick` \
+                    parameter for this edge.",
         anchor: StepAnchor::Guided(base_cap_orb),
         done: Some(base_cap_dimensioned),
         on_enter: None,
@@ -2627,23 +2523,23 @@ mod tests {
                 expression: value.to_string(),
             });
         }
-        assert_eq!(app.tutorial.unwrap().step, 10, "params chain to the pane/line-tool steps");
+        assert_eq!(app.tutorial.unwrap().step, 11, "params chain to the pane/line-tool steps");
 
         app.apply(Action::TutorialBack);
         let run = app.tutorial.unwrap();
-        assert_eq!(run.step, 9);
+        assert_eq!(run.step, 10);
         assert!(run.hold);
         // Its predicate is satisfied, but reviewing holds auto-advance off.
         app.advance_tutorial();
-        assert_eq!(app.tutorial.unwrap().step, 9);
+        assert_eq!(app.tutorial.unwrap().step, 10);
 
         // Next walks forward; reaching the line-tool step (unfinished) resumes auto.
         app.apply(Action::TutorialNext);
         let run = app.tutorial.unwrap();
-        assert_eq!(run.step, 10);
+        assert_eq!(run.step, 11);
         assert!(!run.hold, "caught up to live work — auto-advance resumes");
         app.apply(Action::SetTool(Tool::Line));
-        assert_eq!(app.tutorial.unwrap().step, 11, "auto-advance is live again");
+        assert_eq!(app.tutorial.unwrap().step, 12, "auto-advance is live again");
     }
 
     /// The parameters step's assist button fills in the whole table in one press —
@@ -2788,16 +2684,17 @@ mod tests {
     /// for ones where clicking the thing the orb points at is the whole job.
     #[test]
     fn click_only_steps_offer_no_button() {
-        // Tool buttons, pane taps, tapping into a box, clicking a face or the glowing points.
-        for step in [1, 2, 5, 9, 10, 11, 12, 13, 20, 21, 30, 32, 33, 37, 39] {
+        // Tool buttons, pane taps, tapping into a box, clicking a face or the glowing points —
+        // and the constraint steps, whose three marks are all clicks now (#864).
+        for step in [1, 2, 4, 6, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 30, 32, 33, 37, 39] {
             assert!(
                 BRACKET_STEPS[step].assist.is_none(),
                 "step {step} is click-only but offers a button: {}",
                 BRACKET_STEPS[step].narration
             );
         }
-        // Typing (and the constraint steps' number keys) keep theirs.
-        for step in [3, 4, 6, 7, 8, 14, 15, 22, 27, 34, 40, 43] {
+        // Typing keeps theirs.
+        for step in [3, 5, 7, 8, 9, 22, 23, 27, 34, 40, 43] {
             assert!(
                 BRACKET_STEPS[step].assist.is_some(),
                 "step {step} needs the keyboard and should offer a button: {}",

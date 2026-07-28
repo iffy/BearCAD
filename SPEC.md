@@ -3576,10 +3576,12 @@ document is millimeters, so the player is person-scale: eye height
   forward (never while reviewing with Back): the drawing step uses it to **glide the
   camera in over the profile area** (`frame_profile_area`), so a user who happened to be
   zoomed way out gets comfortable click targets. The squaring-up stage is **one
-  constraint application per step** — pin the bend corner to the origin (a Coincident
-  *with the origin*, so the drawing phase's endpoint snaps don't satisfy it), level the
-  base against the X axis, the two Parallel pairs, then each end cap's Perpendicular —
-  every predicate cumulative so working ahead skips ahead. The **bend fillets** are a step each, the orb on the
+  constraint application per step** — the base parallel to the X axis, the two Parallel
+  pairs, then each end cap's Perpendicular — every predicate cumulative so working ahead
+  skips ahead. Nothing is pinned to the origin (#863): grounding the bracket there laid its
+  base line straight along the X axis, where clicking one without getting the other is
+  needlessly fiddly. The profile stays out in the middle of the XY plane, where it was
+  drawn. The **bend fillets** are a step each, the orb on the
   body's bend edge (`bend_edge_point` picks the extrusion-direction feature edge nearest the
   inner or outer bend corner, #791), and the **screw-hole stage** is six: the Sketch tool,
   the flange's inside face (with the narration naming right-drag to spin the view, #795),
@@ -3621,6 +3623,9 @@ document is millimeters, so the player is person-scale: eye height
   its orb points at the status-bar toggle (`UiAnchor::PaneButton`). Steps whose wording assumes a desktop can carry
   `Step::phone_narration`, used when `AppState::compact_layout` is set (mirrored each frame
   from `touch::compact`).
+- The parameter stage is one action a step (#846/#849/#861): tap the name box, type the name,
+  tap the value box, type the value, press **+** — then a step each for the three parameters
+  that follow, since a step that lists several has no way to say which part is outstanding.
 - The bubble's header is just **"Step N of M"** (#847) — the tutorial's own name is on the
   button that started it, and repeating it on every step is noise.
 - **Steps that need the keyboard offer to do themselves** (#810/#843): a **"do it for me"

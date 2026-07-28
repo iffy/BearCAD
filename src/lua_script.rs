@@ -4668,10 +4668,10 @@ mod tests {
             bearcad.parameter("add", "hole", "5mm")
             bearcad.parameter("add", "bend", "4mm")
             bearcad.parameter("add", "bend_angle", "120deg")
-            assert(bearcad.ui.tutorial_step() == 10, "params done -> line tool step")
+            assert(bearcad.ui.tutorial_step() == 11, "params done -> line tool step")
 
             bearcad.ui.tool("line")
-            assert(bearcad.ui.tutorial_step() == 11, "line tool -> draw step")
+            assert(bearcad.ui.tutorial_step() == 12, "line tool -> draw step")
 
             bearcad.line{ x = 0,     y = 0,    x1 = 51,    y1 = 2.5 }
             bearcad.line{ x = 51,    y = 2.5,  x1 = 49.5,  y1 = 7.8 }
@@ -4686,10 +4686,10 @@ mod tests {
               bearcad.add_geometric_constraint("coincident")
             end
             bearcad.clear_selection()
-            assert(bearcad.ui.tutorial_step() == 12, "six lines -> constraint tool step")
+            assert(bearcad.ui.tutorial_step() == 13, "six lines -> constraint tool step")
 
             bearcad.ui.tool("constraint")
-            assert(bearcad.ui.tutorial_step() == 14, "constraint tool -> pin-the-bend step")
+            assert(bearcad.ui.tutorial_step() == 15, "constraint tool -> level-the-base step")
 
             local function geo(kind, a, b)
               bearcad.select{ kind = "line", index = a }
@@ -4697,11 +4697,6 @@ mod tests {
               bearcad.add_geometric_constraint(kind)
               bearcad.clear_selection()
             end
-            bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
-            bearcad.select({ kind = "origin" }, true)
-            bearcad.add_geometric_constraint("coincident")
-            bearcad.clear_selection()
-            assert(bearcad.ui.tutorial_step() == 15, "pinned -> level-the-base step")
             -- #577: parallel-to-X-axis replaces the old Horizontal constraint.
             bearcad.select{ kind = "line", index = 0 }
             bearcad.select({ kind = "axis", axis = "x" }, true)

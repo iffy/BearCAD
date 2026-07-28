@@ -267,6 +267,9 @@ pub struct ParametersPaneState {
     /// Whether the new-parameter name field has focus (mirrored each frame for the
     /// tutorial's "tap the name box" predicate).
     pub new_name_focused: bool,
+    /// The same for the value field, so the tutorial can ask for that tap on its own step
+    /// (#861).
+    pub new_value_focused: bool,
     /// Name of the parameter whose row the pointer is over, mirrored each frame (#620):
     /// the viewport highlights everything that parameter drives in green.
     pub hovered_name: Option<String>,
@@ -1742,6 +1745,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                 }
                 let value_response = input.show(ui, &mut new_value, &app.doc);
                 app.parameters_pane.new_value = new_value;
+                app.parameters_pane.new_value_focused = value_response.has_focus();
                 app.tutorial_anchor_rects.insert(
                     crate::tutorial::UiAnchor::ParametersValue,
                     value_response.rect,
