@@ -5315,6 +5315,7 @@ impl App {
                 }
             }
         }
+        let sketch = self.state.creating_extrusion.as_ref().map(|ce| ce.sketch);
         if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_extrusion
@@ -5322,9 +5323,10 @@ impl App {
             .map(|ce| (ce.text.clone(), ce.pending_focus, ce.user_edited))
         {
             // Never steal the keyboard back from another field the user moved to (#506).
-            if want_focus && ctx.memory(|m| m.focused().is_some_and(|f| f != id)) {
-                want_focus = false;
-            }
+            want_focus = should_request_pending_tool_focus(
+                want_focus,
+                ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
+            );
             // #881: the very same field the line/dimension inputs use — amber frame, the
             // typed expression in monospace, its computed value underneath.
             let mut result = SketchDimFieldResult::default();
@@ -5340,7 +5342,7 @@ impl App {
                             id,
                             &mut text,
                             doc,
-                            None,
+                            sketch,
                             true,
                             &mut want_focus,
                             user_edited,
@@ -5636,51 +5638,48 @@ impl App {
                 }
             }
         }
-        if let Some((mut text, want_focus)) = self
+        let sketch = self.state.sketch_session.map(|s| s.sketch);
+        if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_vertex_treatment
             .as_ref()
-            .map(|cvt| (cvt.text.clone(), cvt.pending_focus))
+            .map(|cvt| (cvt.text.clone(), cvt.pending_focus, cvt.user_edited))
         {
-            let mut edited = false;
-            let mut clear_pending = false;
+            // Never steal the keyboard back from another field the user moved to (#506).
+            want_focus = should_request_pending_tool_focus(
+                want_focus,
+                ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
+            );
+            // #884: the same field the line/dimension distance uses.
+            let mut result = SketchDimFieldResult::default();
+            let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("vertex_treatment_amount_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let resp = crate::expression_input::ValueInput::from_id(
-                            id,
-                            crate::expression_input::ValueKind::Length,
-                        )
-                        .width(64.0)
-                        .show(ui, &mut text, &self.state.doc);
-                        if resp.changed() {
-                            edited = true;
-                        }
-                        let other_focused =
-                            ctx.memory(|m| m.focused().is_some_and(|f| f != id));
-                        if should_request_pending_tool_focus(want_focus, other_focused) {
-                            // Focused with the value selected (#858), like the extrude depth:
-                            // typing replaces it instead of appending.
-                            clear_pending = focus_and_select_all(ctx, id, &resp, &text);
-                        } else if want_focus && other_focused {
-                            clear_pending = true;
-                        }
-                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            commit = true;
-                        }
-                    });
+                    result = show_sketch_dimension_field(
+                        ui,
+                        ctx,
+                        id,
+                        &mut text,
+                        doc,
+                        sketch,
+                        true,
+                        &mut want_focus,
+                        user_edited,
+                        false,
+                    );
                 });
+            // Enter commits from the field itself as well as from outside it (#880).
+            commit |= result.enter_commit || sketch_dimension_enter_pressed(ui);
             if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
                 cvt.text = text;
-                if edited {
+                if result.changed {
                     cvt.user_edited = true;
                 }
-                if clear_pending {
-                    cvt.pending_focus = false;
-                }
+                cvt.pending_focus = want_focus;
             }
+            apply_dimension_field_feedback(&mut self.state, &result);
         }
         if commit {
             if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
@@ -6025,7 +6024,9 @@ impl App {
         let Some((anchor, axes)) = self.move_gizmo_arrows() else {
             return;
         };
+        let ctx = ui.ctx();
         let mut edits: Vec<(usize, String)> = Vec::new();
+        let mut feedback: Vec<SketchDimFieldResult> = Vec::new();
         for &(axis, id_source, dir, translation) in &axes {
             let handle = construction::offset_handle(
                 anchor,
@@ -6040,20 +6041,33 @@ impl App {
             }) else {
                 continue;
             };
+            // #885: the same field the line/dimension distance uses. These arrows have no
+            // focus hand-off of their own — a click on one starts a drag — so the field is
+            // never a focus target and keeps whatever the user has typed into it.
+            let mut result = SketchDimFieldResult::default();
+            let mut pending_focus = false;
+            let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new((id_source, "value")))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    let resp = crate::expression_input::ValueInput::from_id(
+                .show(ctx, |ui| {
+                    result = show_sketch_dimension_field(
+                        ui,
+                        ctx,
                         egui::Id::new(id_source),
-                        crate::expression_input::ValueKind::Length,
-                    )
-                    .width(64.0)
-                    .show(ui, &mut text, &self.state.doc);
-                    if resp.changed() {
-                        edits.push((axis, text.clone()));
-                    }
+                        &mut text,
+                        doc,
+                        None,
+                        false,
+                        &mut pending_focus,
+                        true,
+                        false,
+                    );
                 });
+            if result.changed {
+                edits.push((axis, text.clone()));
+            }
+            feedback.push(result);
         }
         if let Some(cm) = self.state.creating_move.as_mut() {
             for (axis, text) in edits {
@@ -6063,6 +6077,9 @@ impl App {
                     _ => cm.tz = text,
                 }
             }
+        }
+        for result in feedback {
+            apply_dimension_field_feedback(&mut self.state, &result);
         }
     }
 
@@ -6135,33 +6152,43 @@ impl App {
                 }
             }
         }
+        let sketch = self.state.sketch_session.map(|s| s.sketch);
         if let Some(mut text) = self
             .state
             .creating_sketch_offset
             .as_ref()
             .map(|c| c.distance.clone())
         {
+            // #886: the same field the line/dimension distance uses.
+            let mut result = SketchDimFieldResult::default();
+            let mut pending_focus = false;
+            let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("sketch_offset_distance_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    let resp = crate::expression_input::ValueInput::from_id(
+                    result = show_sketch_dimension_field(
+                        ui,
+                        ctx,
                         id,
-                        crate::expression_input::ValueKind::Length,
-                    )
-                    .width(72.0)
-                    .show(ui, &mut text, &self.state.doc);
-                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        commit = true;
-                    }
+                        &mut text,
+                        doc,
+                        sketch,
+                        false,
+                        &mut pending_focus,
+                        true,
+                        false,
+                    );
                 });
-            // Persist unconditionally, not only when `resp.changed()` fired: Tab/Space
+            commit |= result.enter_commit;
+            // Persist unconditionally, not only when the field reported a change: Tab/Space
             // parameter autocomplete rewrites the buffer *before* the text edit runs, so egui
-            // never reports it as a change — gating on `changed()` dropped the completion and
+            // never reports it as a change — gating on that dropped the completion and
             // the field reverted next frame (#517).
             if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                 co.distance = text;
             }
+            apply_dimension_field_feedback(&mut self.state, &result);
             if commit
                 && self
                     .state
@@ -8638,58 +8665,50 @@ impl App {
         let Some(pos) = project(handle).map(|p| p + egui::vec2(14.0, -12.0)) else {
             return;
         };
+        let ctx = ui.ctx();
         let mut commit = false;
-        if let Some((mut text, want_focus)) = self
+        if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_revolve
             .as_ref()
-            .map(|cr| (cr.text.clone(), cr.pending_focus))
+            .map(|cr| (cr.text.clone(), cr.pending_focus, cr.user_edited))
         {
-            let mut edited = false;
-            let mut clear_pending = false;
             let revolve_id = egui::Id::new(REVOLVE_ANGLE_FIELD_ID);
+            // Never steal the keyboard back from another field the user moved to (#506).
+            want_focus = should_request_pending_tool_focus(
+                want_focus,
+                ctx.memory(|m| m.focused().is_some_and(|f| f != revolve_id)),
+            );
+            // #887: the same field the line/dimension distance uses, in its angle flavour —
+            // which already spells the unit out under the box, so no "deg" label beside it.
+            let mut result = SketchDimFieldResult::default();
+            let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("revolve_angle_input"))
                 .fixed_pos(pos)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let response = crate::expression_input::ValueInput::from_id(
-                                revolve_id,
-                                crate::expression_input::ValueKind::Angle,
-                            )
-                            .hint("360")
-                            .width(64.0)
-                            .show(ui, &mut text, &self.state.doc);
-                            let other_focused = ui.ctx().memory(|m| {
-                                m.focused().is_some_and(|f| f != revolve_id)
-                            });
-                            if should_request_pending_tool_focus(want_focus, other_focused) {
-                                response.request_focus();
-                                clear_pending = true;
-                            } else if want_focus && other_focused {
-                                clear_pending = true;
-                            }
-                            if response.changed() {
-                                edited = true;
-                            }
-                            ui.label("deg");
-                            if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                && response.lost_focus()
-                            {
-                                commit = true;
-                            }
-                        });
-                    });
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    result = show_sketch_dimension_field(
+                        ui,
+                        ctx,
+                        revolve_id,
+                        &mut text,
+                        doc,
+                        None,
+                        true,
+                        &mut want_focus,
+                        user_edited,
+                        true,
+                    );
                 });
+            commit |= result.enter_commit;
             if let Some(cr) = self.state.creating_revolve.as_mut() {
                 cr.text = text;
-                if edited {
+                if result.changed {
                     cr.user_edited = true;
                 }
-                if clear_pending {
-                    cr.pending_focus = false;
-                }
+                cr.pending_focus = want_focus;
             }
+            apply_dimension_field_feedback(&mut self.state, &result);
         }
         if commit {
             self.state.apply(Action::CommitRevolve);
@@ -8946,51 +8965,47 @@ impl App {
                 }
             }
         }
-        if let Some((mut text, want_focus)) = self
+        if let Some((mut text, mut want_focus, user_edited)) = self
             .state
             .creating_edge_treatment
             .as_ref()
-            .map(|cet| (cet.text.clone(), cet.pending_focus))
+            .map(|cet| (cet.text.clone(), cet.pending_focus, cet.user_edited))
         {
-            let mut edited = false;
-            let mut clear_pending = false;
+            // Never steal the keyboard back from another field the user moved to (#506).
+            want_focus = should_request_pending_tool_focus(
+                want_focus,
+                ctx.memory(|m| m.focused().is_some_and(|f| f != id)),
+            );
+            // #888: the same field the line/dimension distance uses.
+            let mut result = SketchDimFieldResult::default();
+            let doc = &mut self.state.doc;
             egui::Area::new(egui::Id::new("edge_treatment_amount_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let resp = crate::expression_input::ValueInput::from_id(
-                            id,
-                            crate::expression_input::ValueKind::Length,
-                        )
-                        .width(64.0)
-                        .show(ui, &mut text, &self.state.doc);
-                        if resp.changed() {
-                            edited = true;
-                        }
-                        let other_focused =
-                            ctx.memory(|m| m.focused().is_some_and(|f| f != id));
-                        if should_request_pending_tool_focus(want_focus, other_focused) {
-                            // Focused with the value selected (#858), like the extrude depth:
-                            // typing replaces it instead of appending.
-                            clear_pending = focus_and_select_all(ctx, id, &resp, &text);
-                        } else if want_focus && other_focused {
-                            clear_pending = true;
-                        }
-                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            commit = true;
-                        }
-                    });
+                    result = show_sketch_dimension_field(
+                        ui,
+                        ctx,
+                        id,
+                        &mut text,
+                        doc,
+                        None,
+                        true,
+                        &mut want_focus,
+                        user_edited,
+                        false,
+                    );
                 });
+            // Enter commits from the field itself as well as from outside it (#880).
+            commit |= result.enter_commit || sketch_dimension_enter_pressed(ui);
             if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
                 cet.text = text;
-                if edited {
+                if result.changed {
                     cet.user_edited = true;
                 }
-                if clear_pending {
-                    cet.pending_focus = false;
-                }
+                cet.pending_focus = want_focus;
             }
+            apply_dimension_field_feedback(&mut self.state, &result);
         }
         if commit {
             if let Some(mut cet) = self.state.creating_edge_treatment.take() {
@@ -16018,24 +16033,6 @@ fn handle_dimension_point_pick(
     if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
         state.try_begin_dimension_from_selection();
     }
-    true
-}
-
-/// Focus a floating tool value field and select its contents, so the next keystroke replaces
-/// the value rather than appending to it (#437/#858) — the extrude depth field's behaviour,
-/// shared with the chamfer/fillet amounts.
-fn focus_and_select_all(ctx: &egui::Context, id: egui::Id, resp: &egui::Response, text: &str) -> bool {
-    resp.request_focus();
-    if !resp.has_focus() {
-        return false;
-    }
-    let len = text.chars().count();
-    let mut st = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
-    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-        egui::text::CCursor::default(),
-        egui::text::CCursor::new(len),
-    )));
-    st.store(ctx, id);
     true
 }
 

@@ -2019,8 +2019,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - **Any input that accepts a value accepts an expression**, e.g. `1 + 2 + lengthOfThing / 2`.
 - **One look for every value field (#881):** the floating dimension field the line tool
   draws with — amber frame, the typed expression in monospace, its computed value in
-  smaller muted monospace *underneath* — is the one every tool uses. The extrude depth
-  popup is on it today; the rest are being moved over.
+  smaller muted monospace *underneath* — is the one every **floating** tool field uses:
+  extrude depth, sketch-vertex and body-edge chamfer/fillet amounts, the Move gizmo's
+  X/Y/Z arrows, sketch offset distance, and the revolve angle (#881/#884–#888). The pane
+  fields are being moved over next (#889/#890).
 - **One standard value input (#456):** numeric fields share `expression_input::ValueInput`
   — the styled expression field (autocomplete, error tooltips, inline `name=value`
   definitions) plus a **computed-value label beside the field whenever it differs from
@@ -2035,9 +2037,8 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   two never overlap (#793). Kinds: `Length` (document
   length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and
-  cycle checking; the repeat panes (3D + in-sketch), Move X/Y/Z/Angle, offset distance,
-  sketch-text size/rotation/wrap, calibration length, and the floating
-  revolve / chamfer / fillet amount popups all use it — the chamfer/fillet amount is also
+  cycle checking; the repeat panes (3D + in-sketch), the pane's Move X/Y/Z/Angle,
+  sketch-text size/rotation/wrap, and calibration length all use it — the chamfer/fillet amount is also
   **mirrored into the Context pane** ("Radius" for a fillet, "Distance" for a chamfer) with
   the blue **Go** button the other tools commit with, so the treatment tools read like Move
   and the rest (#792). Deliberate exceptions: the
