@@ -12501,6 +12501,13 @@ label_hidden: false,
             );
         }
         self.sketch_session = Some(SketchSession { sketch });
+        // A tutorial step that framed something re-frames now (#875): the sketch's own entry
+        // transition aims at the plane's origin, which would throw the step's framing away.
+        if let Some(run) = self.tutorial {
+            if let Some(enter) = crate::tutorial::TUTORIALS[run.tutorial].steps[run.step].on_enter {
+                enter(self);
+            }
+        }
         self.creating_rect = None;
         self.discard_creating_line();
         if !self.tool.is_sketch_edit_tool() {

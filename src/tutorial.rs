@@ -387,17 +387,17 @@ fn line_tool_active(app: &AppState) -> bool {
 
 /// The sloppy bracket profile the tutorial leads the user around, in sketch-local
 /// millimetres (mirrors the quickstart's rough hexagon; the constraint steps square
-/// it up afterwards). It is drawn out in the **middle of the XY datum plane** (#841/#850)
-/// rather than over the origin: the plane stands clear of the origin now, so the first click
-/// has to land on the plane to open the sketch at all, and the middle is the least fiddly
-/// place to be pointed at. The pin-to-origin step then pulls the whole profile home.
+/// it up afterwards). It is drawn on the **corner of the XY datum plane nearest the origin**
+/// (#841/#850/#875) — clear of the origin and both axes (the plane itself stands off them, so
+/// the first click has to land on the plane to open the sketch at all), and close enough in
+/// that opening the sketch, which aims the view at the plane's origin, still shows all of it.
 const PROFILE_POINTS: [(f32, f32); 6] = [
-    (42.0, 31.0),
-    (93.0, 33.5),
-    (91.5, 38.8),
-    (46.5, 36.5),
-    (24.5, 78.0),
-    (16.5, 74.0),
+    (33.5, 8.0),
+    (84.5, 10.5),
+    (83.0, 15.8),
+    (38.0, 13.5),
+    (16.0, 55.0),
+    (8.0, 51.0),
 ];
 
 /// The next profile vertex to click while drawing the sloppy outline: follows the
@@ -444,15 +444,20 @@ fn dimension_tool_active(app: &AppState) -> bool {
 /// Frame the camera over the region the sloppy profile occupies: drawn from way out, the
 /// glowing click-points crowd together — glide in so they sit comfortably apart.
 fn frame_profile_area(app: &mut AppState) {
-    // The profile out on the plane, plus the origin with room to spare (#850/#852): the next
+    // The profile on the plane, plus the origin with room to spare (#850/#852): the next
     // steps ask for a click on it, and framing it right on the viewport's edge made it a
     // fiddly target.
-    app.cam.frame_bounds_animated(
-        glam::Vec3::new(-12.0, -12.0, 0.0),
-        glam::Vec3::new(105.0, 90.0, 10.0),
-        app.viewport_aspect,
-        0.35,
+    let (min, max) = (
+        glam::Vec3::new(-10.0, -10.0, 0.0),
+        glam::Vec3::new(94.0, 65.0, 10.0),
     );
+    // Opening the sketch starts its own straight-on transition, which aims at the plane's
+    // origin and would leave the profile hanging off the bottom of the viewport (#875).
+    // Re-aim that transition rather than replacing it, so the view still lands square on.
+    if app.cam.reaim_transition_at_bounds(min, max, app.viewport_aspect) {
+        return;
+    }
+    app.cam.frame_bounds_animated(min, max, app.viewport_aspect, 0.35);
 }
 
 fn constraint_count(app: &AppState, f: fn(&ConstraintKind) -> bool) -> usize {

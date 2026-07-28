@@ -3577,9 +3577,14 @@ document is millimeters, so the player is person-scale: eye height
   — it watches the camera and passes once you're looking at it, with "Spin it for me" for the
   impatient (#817). Steps can
   carry an **`on_enter` hook** that runs once when the tutorial lands on them going
-  forward (never while reviewing with Back): the drawing step uses it to **glide the
-  camera in over the profile area** (`frame_profile_area`), so a user who happened to be
-  zoomed way out gets comfortable click targets. The squaring-up stage is **one
+  forward (never while reviewing with Back) — and again when a sketch opens (#875), since a
+  sketch's own entry transition aims at the plane's origin and would throw the step's framing
+  away. The drawing step uses it to **glide the camera in over the profile area**
+  (`frame_profile_area`), so a user who happened to be zoomed way out gets comfortable click
+  targets; mid-transition it **re-aims** the sketch entry rather than replacing it
+  (`Camera::reaim_transition_at_bounds`), so the view still lands square on the plane. The
+  loose profile itself is drawn on the **corner of the plane nearest the origin** — clear of
+  the origin and both axes, close enough in to stay on camera (#875). The squaring-up stage is **one
   constraint application per step** — the base parallel to the X axis, the two Parallel
   pairs, then each end cap's Perpendicular — every predicate cumulative so working ahead
   skips ahead. Nothing is pinned to the origin (#863): grounding the bracket there laid its
