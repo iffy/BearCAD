@@ -15860,7 +15860,14 @@ fn handle_dimension_point_pick(
     else {
         return false;
     };
-    let element = vertex_drag::scene_element_for_point(point);
+    // Select the **point**, not the shape that owns it (#870): picking a circle's centre used
+    // to select the circle, which is its *diameter* — so a centre-to-edge distance could
+    // never be built, and the click looked like it had missed.
+    let owner = vertex_drag::scene_element_for_point(point.clone());
+    if document_health::require_element_editable(&state.document_health, owner).is_err() {
+        return false;
+    }
+    let element = SceneElement::Point(point);
     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
     state.apply(Action::ClickSceneElement { element, additive });
     if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
@@ -18170,8 +18177,12 @@ impl App {
     ) -> (bool, Option<egui::Pos2>, bool) {
         // Consume any pending palette request every frame so it never lingers (#576).
         let palette_request = std::mem::take(&mut self.exploder_palette_request);
-        if suppress {
-            self.exploder = None;
+        // `suppress` says the fan shouldn't **open** — a drag is running, a value is being
+        // typed, a shape is half-drawn. It no longer closes an open one (#871): several of
+        // those conditions are hover states (the cursor crossing a dimension label, say), and
+        // an open fan vanishing because the mouse moved is never what anyone meant. Space,
+        // Esc and a click are what close it.
+        if suppress && self.exploder.is_none() {
             return (false, None, false);
         }
         // The palette's "Explode Selection Under Cursor" entry behaves exactly like a Space press.
