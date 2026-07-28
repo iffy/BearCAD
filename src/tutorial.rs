@@ -359,26 +359,30 @@ fn line_tool_active(app: &AppState) -> bool {
 
 /// The sloppy bracket profile the tutorial leads the user around, in sketch-local
 /// millimetres (mirrors the quickstart's rough hexagon; the constraint steps square
-/// it up afterwards). The bend corner starts a little way **inside** the XY datum plane
-/// rather than on the origin (#841): the plane stands clear of the origin now, and the
-/// first click has to land on it to open the sketch at all. The pin-to-origin step then
-/// nudges the whole profile home.
+/// it up afterwards). It is drawn out in the **middle of the XY datum plane** (#841/#850)
+/// rather than over the origin: the plane stands clear of the origin now, so the first click
+/// has to land on the plane to open the sketch at all, and the middle is the least fiddly
+/// place to be pointed at. The pin-to-origin step then pulls the whole profile home.
 const PROFILE_POINTS: [(f32, f32); 6] = [
-    (10.0, 10.0),
-    (61.0, 12.5),
-    (59.5, 17.8),
-    (14.5, 15.5),
-    (-7.5, 57.0),
-    (-15.5, 53.0),
+    (42.0, 31.0),
+    (93.0, 33.5),
+    (91.5, 38.8),
+    (46.5, 36.5),
+    (24.5, 78.0),
+    (16.5, 74.0),
 ];
 
 /// The next profile vertex to click while drawing the sloppy outline: follows the
 /// chain (placed lines + the in-progress segment) and finally points back at the
 /// start to close the loop.
 fn next_profile_point(app: &AppState) -> Option<glam::Vec3> {
-    // No sketch open yet: the first click is on the ground plane itself — point there.
+    // No sketch open yet: the first click opens one on the XY plane, so point at the first
+    // profile vertex *on that plane* — not the world origin, which isn't even on it (#850).
     let Some(session) = app.sketch_session else {
-        return Some(glam::Vec3::ZERO);
+        let (u, v) = PROFILE_POINTS[0];
+        let frame =
+            crate::face::sketch_frame(&app.doc, crate::model::FaceId::ConstructionPlane(0))?;
+        return Some(crate::face::local_to_world(&frame, u, v));
     };
     let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
     let placed = app
@@ -412,11 +416,12 @@ fn dimension_tool_active(app: &AppState) -> bool {
 /// Frame the camera over the region the sloppy profile occupies: drawn from way out, the
 /// glowing click-points crowd together — glide in so they sit comfortably apart.
 fn frame_profile_area(app: &mut AppState) {
-    // Includes the origin with room to spare (#852): the next steps ask for a click on it,
-    // and framing it right on the edge of the viewport made it a fiddly target.
+    // The profile out on the plane, plus the origin with room to spare (#850/#852): the next
+    // steps ask for a click on it, and framing it right on the viewport's edge made it a
+    // fiddly target.
     app.cam.frame_bounds_animated(
-        glam::Vec3::new(-25.0, -15.0, 0.0),
-        glam::Vec3::new(70.0, 65.0, 10.0),
+        glam::Vec3::new(-12.0, -12.0, 0.0),
+        glam::Vec3::new(105.0, 90.0, 10.0),
         app.viewport_aspect,
         0.35,
     );
@@ -825,7 +830,7 @@ fn thick_value_hint(app: &AppState) -> Option<String> {
     if param_exists(app, "thick") {
         typed_value_hint(app, "thick")
     } else {
-        typed_value_hint(app, "thick = 5mm")
+        typed_value_hint(app, "thick=5mm")
     }
 }
 
@@ -846,11 +851,11 @@ fn extrude_orb(app: &AppState) -> Option<StepTarget> {
     Some(StepTarget::World(outer.lerp(inner, 0.5)))
 }
 
-/// "Type width = 40mm" waits for the extrude's distance field (#789).
+/// "Type width=40mm" waits for the extrude's distance field (#789).
 fn extrude_value_hint(app: &AppState) -> Option<String> {
     app.creating_extrusion
         .is_some()
-        .then(|| "width = 40mm".to_string())
+        .then(|| "width=40mm".to_string())
 }
 fn bend_angle_value_hint(app: &AppState) -> Option<String> {
     typed_value_hint(app, "bend_angle")
@@ -1152,7 +1157,7 @@ fn bend_value_hint(app: &AppState) -> Option<String> {
 }
 
 fn bend_thick_value_hint(app: &AppState) -> Option<String> {
-    treatment_value_hint(app, "bend + thick")
+    treatment_value_hint(app, "bend+thick")
 }
 
 fn hole_circles_drawn(app: &AppState) -> bool {
@@ -1587,7 +1592,7 @@ fn assist_inner_bend(app: &mut AppState) {
     fillet_vertical_edge(app, 2, "bend");
 }
 fn assist_outer_bend(app: &mut AppState) {
-    fillet_vertical_edge(app, 5, "bend + thick");
+    fillet_vertical_edge(app, 5, "bend+thick");
 }
 
 /// Place one screw hole at the spot the step's orb points at.
@@ -2025,10 +2030,7 @@ static BRACKET_STEPS: &[Step] = &[
         assist: Some(StepAssist { label: "Do it for me", run: assist_level }),
         needs_shift: Some(level_shift),
         drag_hint: None,
-        key_hint: Some((
-            "Space",
-            "fans out whatever is crowded under the cursor",
-        )),
+        key_hint: Some(("Space", "Press space if it's too crowded to pick")),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2144,7 +2146,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Now an end cap \u{2014} the bracket's thickness. We never entered that \
-                    one: type `thick = 5mm` in the value box and it becomes a parameter \
+                    one: type `thick=5mm` in the value box and it becomes a parameter \
                     right there. Click, place, type, Enter.",
         anchor: StepAnchor::Guided(base_cap_orb),
         done: Some(base_cap_dimensioned),
@@ -2187,7 +2189,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Esc to leave the sketch, then Extrude (E). Click the glowing face, and \
-                    for the distance type `width = 40mm` \u{2014} another parameter defined \
+                    for the distance type `width=40mm` \u{2014} another parameter defined \
                     where it's used. Enter. A solid!",
         anchor: StepAnchor::Guided(extrude_orb),
         done: Some(extruded),
@@ -2216,7 +2218,7 @@ static BRACKET_STEPS: &[Step] = &[
     },
     Step {
         narration: "Now the outside edge, one bracket thickness bigger: type \
-                    `bend + thick`. Concentric, like bent sheet metal.",
+                    `bend+thick`. Concentric, like bent sheet metal.",
         anchor: StepAnchor::Guided(outer_bend_orb),
         done: Some(bend_rounded),
         on_enter: None,

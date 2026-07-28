@@ -89,7 +89,7 @@ type `bend_angle`, **Enter**.
 With no sketch open, press **F** (Fillet):
 
 1. Click the **inside edge** of the bend, type `bend`, **Enter**.
-2. Click the **outside edge**, type `bend + thick`, **Enter**.
+2. Click the **outside edge**, type `bend+thick`, **Enter**.
 
 The two rounds are concentric, like bent sheet metal.
 

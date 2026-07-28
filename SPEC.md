@@ -3517,7 +3517,10 @@ document is millimeters, so the player is person-scale: eye height
   `UiAnchor::{ParametersName, ParametersValue, ParametersAdd}` recorded by the pane,
   the name-box tap detected via `ParametersPaneState::new_name_focused`), and
   the profile-drawing step leads **vertex by vertex** around the sloppy outline
-  (`next_profile_point`), pointing at the ground origin until the sketch opens. The
+  (`next_profile_point`), pointing at the **first profile vertex out on the XY plane** until
+  the sketch opens (#850) — the profile is drawn in the middle of that plane, not over the
+  origin, since the plane stands clear of it and the first click has to land on the plane to
+  open a sketch at all. The
   squaring-up steps lead **click by click** too (#758/#761): each points the orb at the
   first thing to click, then — once that's selected — at the second, and finally at the
   **Context pane's constraint button** that applies it (#770; `StepAnchor::Guided` resolves
@@ -3525,18 +3528,18 @@ document is millimeters, so the player is person-scale: eye height
   button's rect through egui memory). A stray pick leaves the orb pointing back at what's
   still wanted, which is how a mis-click finds its way back — and while **anything the pair
   doesn't include** is selected (the previous step's picks, most often) the orb points at
-  the first target with **no Shift keycap**, since that click has to replace the selection
+  the first target with **no Shift hint**, since that click has to replace the selection
   rather than add a third thing to it (#785). A line's orb sits at its
   **midpoint by arc length** (#769), not at whichever vertex fell in the middle of its
   polyline — for a straight line that was its end. A step that wants a **drag** rather than a click shows the
   mouse button as a keycap plus a looping drag animation beside the orb (`Step::drag_hint`,
-  #819) — the spin-the-view step uses it. The second click of a pair floats a blue **Shift
-  keycap** beside the orb (#759, `Step::needs_shift`, `draw_shift_keycap`), since that
-  click adds to the selection. Steps whose target sits **under other geometry** — the base
-  line lying along the X axis, once it's been levelled — carry a **key hint** badge below
-  the orb (`Step::key_hint`, `draw_orb_key_hint`): a **Space** keycap and a line saying it
-  fans out whatever is crowded, which is how the tutorial introduces the Selection
-  Exploder (#777). It appears **once**, on the step where the base line first hides under
+  #819) — the spin-the-view step uses it. The second click of a pair reads **"Hold Shift"** in
+  blue across the orb (#759/#851, `Step::needs_shift`, `orb_word_hint`), since that click
+  adds to the selection. Steps whose target sits **under other geometry** — the base line
+  lying along the X axis, once it's been levelled — say **"Press space if it's too crowded to
+  pick"** in the same blue just above the ring (`Step::key_hint`, #777/#853), which is how the
+  tutorial introduces the Selection Exploder. Neither is a keycap: a key-shaped badge reads as
+  something to click, and these are things to hold or press on the keyboard. It appears **once**, on the step where the base line first hides under
   the axis, and only while the orb is on that first pick — not on the axis pick, not while a
   dimension is being placed, and never while the orb is on a **button** rather than geometry
   (#783/#784/#785/#813). A step can also name the **words to type**
@@ -3614,6 +3617,8 @@ document is millimeters, so the player is person-scale: eye height
   its orb points at the status-bar toggle (`UiAnchor::PaneButton`). Steps whose wording assumes a desktop can carry
   `Step::phone_narration`, used when `AppState::compact_layout` is set (mirrored each frame
   from `touch::compact`).
+- The bubble's header is just **"Step N of M"** (#847) — the tutorial's own name is on the
+  button that started it, and repeating it on every step is noise.
 - **Steps that need the keyboard offer to do themselves** (#810/#843): a **"do it for me"
   button** in the bubble (`tutorial::StepAssist { label, run: fn(&mut AppState) }`, applied by
   `Action::TutorialAssist`) makes the same document changes the user's typing would — add the

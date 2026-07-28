@@ -1887,16 +1887,44 @@ fn draw_shift_keycap(
     orb_radius: f32,
     bounds: egui::Rect,
 ) {
-    const KEY: egui::Vec2 = egui::vec2(58.0, 34.0);
-    let gap = orb_radius + 14.0;
-    let mut center = orb + egui::vec2(gap + KEY.x * 0.5, 0.0);
-    if center.x + KEY.x * 0.5 > bounds.right() - 6.0 {
-        center = orb - egui::vec2(gap + KEY.x * 0.5, 0.0);
-    }
-    center.y = center
-        .y
-        .clamp(bounds.top() + KEY.y, bounds.bottom() - KEY.y);
-    draw_keycap(painter, egui::Rect::from_center_size(center, KEY), "Shift");
+    // Blue words, not a keycap (#851): a keycap reads as something to click, and the one
+    // thing this must not say is "click me".
+    orb_word_hint(painter, ctx, orb, orb_radius, bounds, "Hold Shift", true);
+}
+
+/// A line of blue words riding with the orb (#851/#853): the guide's own colour on a rounded
+/// backing that echoes the ring, so it reads as part of the guide rather than as a control.
+/// `over` puts it across the orb's middle; otherwise it floats just above the ring.
+fn orb_word_hint(
+    painter: &egui::Painter,
+    ctx: &egui::Context,
+    orb: egui::Pos2,
+    orb_radius: f32,
+    bounds: egui::Rect,
+    text: &str,
+    over: bool,
+) {
+    let font = egui::FontId::proportional(13.0);
+    let blue = egui::Color32::from_rgb(140, 200, 255);
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), blue);
+    let size = galley.size() + egui::vec2(18.0, 8.0);
+    let cy = if over {
+        orb.y
+    } else {
+        orb.y - orb_radius - 14.0 - size.y * 0.5
+    };
+    let cx = orb
+        .x
+        .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
+    let cy = cy.clamp(bounds.top() + size.y * 0.5 + 6.0, bounds.bottom() - size.y * 0.5 - 6.0);
+    let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
+    // Rounded to the pill the orb's own curve suggests.
+    painter.rect_filled(
+        rect,
+        size.y * 0.5,
+        egui::Color32::from_rgba_unmultiplied(16, 26, 40, 225),
+    );
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, blue);
     ctx.request_repaint();
 }
 
@@ -1991,91 +2019,6 @@ fn draw_orb_drag_hint(
         egui::Stroke::new(2.0, blue.gamma_multiply(0.5)),
     );
     painter.circle_filled(pos, 6.0, blue);
-    ctx.request_repaint();
-}
-
-/// A hint under the orb naming a key that helps with the click it points at (#777): the
-/// **Space** keycap plus a line of text, for when the thing to click sits under something
-/// else and the Selection Exploder is the way in. Sits below the orb, or above it when the
-/// bottom of the view is in the way.
-/// Where the orb's key hint sits (#777/#842): under the orb by preference, over it when
-/// that would run off the bottom — and either way clear of Bear's speech bubble, which it
-/// used to cover.
-fn orb_key_hint_center(
-    orb: egui::Pos2,
-    orb_radius: f32,
-    size: egui::Vec2,
-    bounds: egui::Rect,
-    avoid: egui::Rect,
-) -> egui::Pos2 {
-    let below = orb.y + orb_radius + 16.0 + size.y * 0.5;
-    let above = orb.y - orb_radius - 16.0 - size.y * 0.5;
-    let cx = orb
-        .x
-        .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
-    let rect_at = |cy: f32| egui::Rect::from_center_size(egui::pos2(cx, cy), size);
-    let fits = |cy: f32| {
-        let r = rect_at(cy);
-        r.top() >= bounds.top() + 6.0 && r.bottom() <= bounds.bottom() - 6.0
-    };
-    let clear = |cy: f32| fits(cy) && !rect_at(cy).intersects(avoid.expand(4.0));
-    let cy = if clear(below) {
-        below
-    } else if clear(above) {
-        above
-    } else if fits(below) {
-        below
-    } else {
-        above
-    };
-    egui::pos2(cx, cy)
-}
-
-fn draw_orb_key_hint(
-    painter: &egui::Painter,
-    ctx: &egui::Context,
-    orb: egui::Pos2,
-    orb_radius: f32,
-    bounds: egui::Rect,
-    // The narration bubble, which the hint must not cover (#842).
-    avoid: egui::Rect,
-    key: &str,
-    text: &str,
-) {
-    const KEY_H: f32 = 26.0;
-    let font = egui::FontId::proportional(12.5);
-    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE);
-    let key_w = (painter
-        .layout_no_wrap(key.to_string(), font.clone(), egui::Color32::WHITE)
-        .size()
-        .x
-        + 20.0)
-        .max(48.0);
-    let pad = 8.0;
-    let width = key_w + 8.0 + galley.size().x + pad * 2.0;
-    let height = KEY_H + pad;
-    let center = orb_key_hint_center(orb, orb_radius, egui::vec2(width, height), bounds, avoid);
-    let (cx, cy) = (center.x, center.y);
-    let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(width, height));
-    painter.rect_filled(rect, 8.0, egui::Color32::from_rgba_unmultiplied(24, 26, 34, 235));
-    painter.rect_stroke(
-        rect,
-        8.0,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 130, 200)),
-        egui::StrokeKind::Inside,
-    );
-    let key_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + pad + key_w * 0.5, rect.center().y),
-        egui::vec2(key_w, KEY_H),
-    );
-    draw_keycap(painter, key_rect, key);
-    painter.text(
-        egui::pos2(key_rect.right() + 8.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        text,
-        font,
-        egui::Color32::from_gray(225),
-    );
     ctx.request_repaint();
 }
 
@@ -2957,29 +2900,27 @@ impl App {
                     ),
                 );
             }
-            painter.circle_filled(
-                pos,
-                4.0,
-                egui::Color32::from_rgba_unmultiplied(140, 190, 255, 200),
-            );
+            // A pointer, not a dot (#855): the Select icon with its tip on the exact spot the
+            // ring is pointing at, so what to do there reads as "click here".
+            {
+                const P: f32 = 22.0;
+                // The arrow's tip sits at (8, 5) of the icon's 32x32 box; line that up with
+                // the point the ring marks.
+                let tip = egui::vec2(P * 8.0 / 32.0, P * 5.0 / 32.0);
+                let rect = egui::Rect::from_min_size(pos - tip, egui::vec2(P, P));
+                icons::paint_icon(
+                    &painter,
+                    ctx,
+                    icons::IconId::Select,
+                    rect,
+                    egui::Color32::from_rgb(150, 200, 255),
+                );
+            }
             // This click adds to the selection, so it wants Shift held: float a keycap
             // beside the orb saying so (#759).
             // Bounded by the window rather than the viewport: a step's orb can be pointing
             // at a side pane, and its badges have to follow it there (#781).
             let badge_bounds = ctx.screen_rect();
-            // Where the narration bubble will sit this frame (it lays out below, from the
-            // same orb position): badges keep off it (#842).
-            let cube = view_cube::cube_rect_in_viewport(viewport);
-            let bubble_rect = {
-                let (pos, _) = tutorial_bubble_layout(
-                    Some((pos, base)),
-                    cube.expand(view_cube::HUD_PANEL_PAD),
-                    self.tutorial_bubble_size,
-                    badge_bounds,
-                    touch::compact(ctx).then_some(viewport.bottom()),
-                );
-                egui::Rect::from_min_size(pos, self.tutorial_bubble_size)
-            };
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
                 draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
             }
@@ -3001,16 +2942,8 @@ impl App {
                 && self.state.editing_committed_dim.is_none()
                 && !step.needs_shift.is_some_and(|f| f(&self.state));
             if let (true, Some(hint)) = (picking, step.key_hint) {
-                draw_orb_key_hint(
-                    &painter,
-                    ctx,
-                    pos,
-                    base,
-                    badge_bounds,
-                    bubble_rect,
-                    hint.0,
-                    hint.1,
-                );
+                // Blue words above the ring, not a keycap (#853) — nothing here is clickable.
+                orb_word_hint(&painter, ctx, pos, base, badge_bounds, hint.1, false);
             }
             ctx.request_repaint(); // keep the pulse and glide animating
         } else {
@@ -3061,11 +2994,10 @@ impl App {
                             // pad a desktop reader's numbering (#828).
                             let (position, total) =
                                 tutorial::step_position(&self.state, run.tutorial, run.step);
+                            // Just the step count (#847): the tutorial's name is on the
+                            // button that started it, and repeating it every step is noise.
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{} — step {position} of {total}",
-                                    tut.title,
-                                ))
+                                egui::RichText::new(format!("Step {position} of {total}"))
                                 .color(egui::Color32::from_rgb(255, 200, 80))
                                 .size(11.0),
                             );
@@ -23714,36 +23646,6 @@ mod tests {
                 "at t={t} start A landed at {landed:?}, not on end A"
             );
         }
-    }
-
-    /// #842: the orb's Space hint keeps off the narration bubble — it sits under the orb
-    /// when that's clear, flips above when the bubble is in the way, and still respects the
-    /// window edges.
-    #[test]
-    fn the_space_hint_keeps_off_the_speech_bubble() {
-        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
-        let size = egui::vec2(220.0, 34.0);
-        let orb = egui::pos2(500.0, 300.0);
-        let nowhere = egui::Rect::from_min_size(egui::pos2(-500.0, -500.0), egui::Vec2::ZERO);
-
-        // Nothing in the way: under the orb.
-        let below = orb_key_hint_center(orb, 26.0, size, bounds, nowhere);
-        assert!(below.y > orb.y, "under the orb: {below:?}");
-
-        // The bubble hanging under the orb (where it normally goes) pushes the hint above.
-        let bubble = egui::Rect::from_min_size(egui::pos2(380.0, 340.0), egui::vec2(352.0, 120.0));
-        let flipped = orb_key_hint_center(orb, 26.0, size, bounds, bubble);
-        assert!(flipped.y < orb.y, "above the orb: {flipped:?}");
-        assert!(
-            !egui::Rect::from_center_size(flipped, size).intersects(bubble),
-            "still overlapping the bubble: {flipped:?}"
-        );
-
-        // Boxed in on both sides, it falls back to fitting the window rather than escaping it.
-        let everywhere = bounds;
-        let stuck = orb_key_hint_center(orb, 26.0, size, bounds, everywhere);
-        let rect = egui::Rect::from_center_size(stuck, size);
-        assert!(bounds.contains_rect(rect), "hint left the window: {rect:?}");
     }
 
     /// #767/#825: with no orb the bubble sits clear of the view-cube HUD; with one it
