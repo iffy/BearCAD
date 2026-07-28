@@ -3368,7 +3368,10 @@ document is millimeters, so the player is person-scale: eye height
   input events** flushed at the next frame start with focus handed back to the field
   (`tick_touch_extras`/`show_touch_keypad`), so every existing field — expressions,
   autocomplete, inline definitions — behaves exactly as if typed on a keyboard and the
-  OS virtual keyboard never covers the viewport. The keypad follows the last focused
+  OS virtual keyboard never covers the viewport. The queue **waits for the field to actually
+  hold focus** before firing (focus doesn't always land the same frame it's requested);
+  firing regardless dropped keystrokes — a tapped digit would simply not appear (#831). It
+  gives up after a few frames so a queue can't get stuck. The keypad follows the last focused
   field and tolerates the focus blip a key tap causes; it hides via Hide or ~30 frames
   with no focused field.
 - **Drawing loupe (#755):** a fingertip covers the very point it's aiming at, so while a

@@ -2284,6 +2284,8 @@ struct App {
     was_multi_touch: bool,
     /// Input events the on-screen keypad queued, flushed at the next frame start.
     pending_input_events: Vec<egui::Event>,
+    /// Frames the keypad queue has been waiting for its field to take focus (#831).
+    pending_input_frames: u32,
     /// The text field the on-screen keypad types into (last focused text widget).
     keypad_target: Option<egui::Id>,
     /// Frames since any text field had focus (tolerates keypad-tap focus blips).
@@ -2649,13 +2651,28 @@ impl App {
             return;
         }
         if !self.pending_input_events.is_empty() {
-            // Tapping a keypad button surrendered the field's focus; hand it back
-            // before the events land so it consumes them like real typing.
-            if let Some(id) = self.keypad_target {
-                ctx.memory_mut(|m| m.request_focus(id));
+            // Tapping a keypad button surrendered the field's focus; hand it back before the
+            // events land so it consumes them like real typing. Focus doesn't always take
+            // effect the same frame, so **hold the keystrokes until it has** rather than
+            // firing them into a field that isn't listening — that's how a tapped digit went
+            // missing (#831). A stuck queue can't linger: it's dropped after a few frames.
+            let focused = ctx.memory(|m| m.focused());
+            match self.keypad_target {
+                Some(id) if focused != Some(id) => {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                    self.pending_input_frames = self.pending_input_frames.saturating_add(1);
+                    if self.pending_input_frames > 8 {
+                        self.pending_input_events.clear();
+                        self.pending_input_frames = 0;
+                    }
+                    ctx.request_repaint();
+                }
+                _ => {
+                    self.pending_input_frames = 0;
+                    let events = std::mem::take(&mut self.pending_input_events);
+                    ctx.input_mut(|i| i.events.extend(events));
+                }
             }
-            let events = std::mem::take(&mut self.pending_input_events);
-            ctx.input_mut(|i| i.events.extend(events));
         }
         if ctx.wants_keyboard_input() {
             if !self.keypad_serves_focus {
@@ -3336,6 +3353,7 @@ impl App {
             last_touch_press_time: f64::NEG_INFINITY,
             was_multi_touch: false,
             pending_input_events: Vec::new(),
+            pending_input_frames: 0,
             keypad_target: None,
             keypad_focus_gone_frames: 0,
             long_press_fired: false,
