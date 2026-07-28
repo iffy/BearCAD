@@ -2873,7 +2873,7 @@ mod tests {
     #[test]
     fn constraint_step_orb_walks_the_two_clicks() {
         use crate::hierarchy::SceneElement;
-        use crate::model::{ConstraintLine, FaceId, SketchAxis};
+        use crate::model::FaceId;
 
         let mut app = AppState::default();
         app.apply(Action::BeginSketch {
@@ -2897,14 +2897,14 @@ mod tests {
         let lines = profile_lines(&app);
         assert_eq!(lines.len(), 3);
 
-        let world = |app: &AppState| match level_click(app) {
+        let world = |app: &AppState| match base_strip_click(app) {
             Some(StepTarget::World(w)) => Some(w),
             _ => None,
         };
 
         // Nothing picked: point at the *middle* of the bottom line (#769), no Shift yet.
         let first = world(&app).expect("orb points at the first click");
-        assert!(!level_shift(&app));
+        assert!(!base_strip_shift(&app));
         let poly = profile_polyline(&app, 0).unwrap();
         assert!(
             (first - poly[0].lerp(poly[1], 0.5)).length() < 1e-3,
@@ -2913,31 +2913,64 @@ mod tests {
 
         // A wrong pick doesn't count — the orb stays on the line still wanted, and the
         // click that clears it is Shift-free (#785).
-        app.scene_selection.insert(SceneElement::Line(lines[2]));
+        app.scene_selection.insert(SceneElement::Line(lines[1]));
         assert!(world(&app).is_some_and(|p| (p - first).length() < 1e-3));
-        assert!(!level_shift(&app));
+        assert!(!base_strip_shift(&app));
 
         // Even with the *right* line picked, a stray from an earlier step means starting
         // over with a plain click on the first target.
         app.scene_selection.insert(SceneElement::Line(lines[0]));
         assert!(world(&app).is_some_and(|p| (p - first).length() < 1e-3), "back to the first pick");
-        assert!(!level_shift(&app), "no Shift while a stray is selected");
+        assert!(!base_strip_shift(&app), "no Shift while a stray is selected");
         app.scene_selection.clear();
 
-        // The right line: now the orb moves to the X axis and asks for Shift.
+        // The right line: now the orb moves to the second line and asks for Shift.
         app.scene_selection.insert(SceneElement::Line(lines[0]));
         let second = world(&app).expect("orb points at the second click");
         assert!((second - first).length() > 1.0, "it moved");
-        assert!(level_shift(&app), "the second click of a pair holds Shift");
+        assert!(base_strip_shift(&app), "the second click of a pair holds Shift");
 
         // Both in hand: the orb moves to the pane button that applies it (#770).
-        app.scene_selection
-            .insert(SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X)));
+        app.scene_selection.insert(SceneElement::Line(lines[2]));
         assert!(matches!(
-            level_click(&app),
+            base_strip_click(&app),
             Some(StepTarget::Ui(UiAnchor::ConstraintButton(GC::Parallel)))
         ));
-        assert!(!level_shift(&app));
+        assert!(!base_strip_shift(&app));
+    }
+
+    /// #876: the base-to-X-axis step is one pick — the line — and then the pane's own axis
+    /// button, with no Shift anywhere.
+    #[test]
+    fn axis_constraint_step_walks_one_pick_then_the_button() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::FaceId;
+
+        let mut app = AppState::default();
+        app.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        app.apply(Action::CreateLineSegment {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 51.0,
+            y1: 2.5,
+            bezier: None,
+            dimension: None,
+        });
+        let lines = profile_lines(&app);
+
+        let marks = level_marks(&app);
+        assert_eq!(marks.len(), 2, "the line, then the button");
+        assert!(matches!(level_click(&app), Some(StepTarget::World(_))));
+
+        app.scene_selection.insert(SceneElement::Line(lines[0]));
+        assert!(matches!(
+            level_click(&app),
+            Some(StepTarget::Ui(UiAnchor::ConstraintButton(GC::AlongXAxis)))
+        ));
+        assert!(level_marks(&app)[0].done, "the pick reads as done");
     }
 
     /// #765: the web app's `?tutorial=` parameter names a registered tutorial.
