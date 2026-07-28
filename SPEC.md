@@ -3543,13 +3543,12 @@ document is millimeters, so the player is person-scale: eye height
   the axis, and only while the orb is on that first pick — not on the axis pick, not while a
   dimension is being placed, and never while the orb is on a **button** rather than geometry
   (#783/#784/#785/#813). A step can also name the **words to type**
-  (`Step::type_hint`, #778/#781): a badge **right beside the orb** reading "Type" in the
-  ordinary font and the words themselves in the monospace blue the narration gives code.
-  The badge hugs the field the orb marks — one field-height **above** it (below when the top
-  of the window is in the way), crossing the guide ring rather than clearing it, and at a
-  fixed offset so it doesn't bob with the ring's pulse (#811). The rounded box holds **only
-  what gets typed**; "Type" is a small caption on its own dark backing just above it, so the
-  box's edges delimit the exact characters (#818).
+  (`Step::type_hint`, #778/#781/#848). Once the field has the keyboard the **guide itself
+  becomes the instruction**: the ring gives way to a single box just above the field reading
+  *Use the keyboard to type* in white with the words in the monospace blue the narration gives
+  code (`draw_orb_typing_guide`). There's nothing left to click once you're in the box, so the
+  click guide steps aside rather than sitting there looking like a button.
+  The box hugs the field the orb marked, staying clear of what's being typed into.
   It's either fixed text or **computed from the state** (`TypeHint::Dynamic`) — the
   parameter-list step names whichever parameter is still missing, one **box** at a time: its
   name until that's typed, then its value (#782/#812) — and the orb walks the two boxes with

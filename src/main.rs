@@ -1928,58 +1928,55 @@ fn orb_word_hint(
     ctx.request_repaint();
 }
 
-/// "Type `leg`" by the orb (#778/#781): the instruction in the ordinary font, the words to
-/// type in the same monospace blue the narration gives code. Sits **just above** the thing
-/// the orb marks (below it when there's no room up there), close enough to read as belonging
-/// to that field even though it crosses the guide ring — and at a fixed offset, so it doesn't
-/// bob with the ring's pulse (#811). Bounded by the whole window, since the orb can be
-/// pointing at a side pane.
-fn draw_orb_type_hint(
+/// The guide, once the keyboard has the field (#848): the ring gives way to a single box
+/// that says what to type — "Use the keyboard to type" in white, the words themselves in the
+/// same blue the narration gives code. Sits where the ring was, so it reads as the same guide
+/// having changed job rather than a new thing appearing.
+fn draw_orb_typing_guide(
     painter: &egui::Painter,
     ctx: &egui::Context,
     orb: egui::Pos2,
     bounds: egui::Rect,
     text: &str,
 ) {
-    let label_font = egui::FontId::proportional(11.0);
+    let font = egui::FontId::proportional(13.0);
     let mono = egui::FontId::monospace(13.0);
+    let white = egui::Color32::from_gray(240);
     let blue = egui::Color32::from_rgb(140, 210, 255);
-    let grey = egui::Color32::from_gray(200);
-    let label = painter.layout_no_wrap("Type".to_string(), label_font.clone(), grey);
+    const LEAD: &str = "Use the keyboard to type ";
+    let lead = painter.layout_no_wrap(LEAD.to_string(), font.clone(), white);
     let typed = painter.layout_no_wrap(text.to_string(), mono.clone(), blue);
-    // The box holds **only** what gets typed; "Type" is a caption above it (#818), so the
-    // box's edges delimit the exact characters.
-    let pad = egui::vec2(10.0, 6.0);
-    let size = typed.size() + pad * 2.0;
-    // Hug the marked field: one field-height above it, or below when the top is in the way.
-    const CLEAR: f32 = 24.0;
-    let above = orb.y - CLEAR - size.y * 0.5;
-    let below = orb.y + CLEAR + size.y * 0.5;
-    let cy = if above - size.y * 0.5 >= bounds.top() + 6.0 {
-        above
-    } else {
-        below
-    };
+    let pad = egui::vec2(12.0, 7.0);
+    let size = egui::vec2(lead.size().x + typed.size().x, lead.size().y.max(typed.size().y))
+        + pad * 2.0;
+    // Just above the field, so the box doesn't cover what's being typed into.
+    let cy = (orb.y - size.y * 0.5 - 18.0).max(bounds.top() + size.y * 0.5 + 6.0);
     let cx = orb
         .x
         .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
     let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), size);
-    painter.rect_filled(rect, 7.0, egui::Color32::from_rgba_unmultiplied(20, 30, 44, 235));
+    painter.rect_filled(rect, 9.0, egui::Color32::from_rgba_unmultiplied(20, 30, 44, 240));
     painter.rect_stroke(
         rect,
-        7.0,
-        egui::Stroke::new(1.0, blue.gamma_multiply(0.7)),
+        9.0,
+        egui::Stroke::new(1.5, blue.gamma_multiply(0.8)),
         egui::StrokeKind::Inside,
     );
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, mono, blue);
-    // The caption sits just above the box on its own near-opaque backing, so it reads as a
-    // label rather than as part of what to type.
-    let caption = egui::Rect::from_center_size(
-        egui::pos2(rect.center().x, rect.top() - label.size().y * 0.5 - 3.0),
-        label.size() + egui::vec2(8.0, 2.0),
+    let left = rect.left() + pad.x;
+    painter.text(
+        egui::pos2(left, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        LEAD,
+        font,
+        white,
     );
-    painter.rect_filled(caption, 4.0, egui::Color32::from_rgba_unmultiplied(10, 12, 18, 225));
-    painter.text(caption.center(), egui::Align2::CENTER_CENTER, "Type", label_font, grey);
+    painter.text(
+        egui::pos2(left + lead.size().x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        mono,
+        blue,
+    );
     ctx.request_repaint();
 }
 
@@ -2888,21 +2885,33 @@ impl App {
                 None => goal,
             };
             self.tutorial_orb_pos = Some(pos);
-            let t = ctx.input(|i| i.time) as f32;
-            let pulse = ((t * 2.5).sin() * 0.5 + 0.5) * 5.0;
-            for (extra, alpha) in [(0.0, 230u8), (5.0, 120), (10.0, 55)] {
-                painter.circle_stroke(
-                    pos,
-                    base + pulse + extra,
-                    egui::Stroke::new(
-                        2.5,
-                        egui::Color32::from_rgba_unmultiplied(90, 160, 255, alpha),
-                    ),
-                );
-            }
-            // A pointer, not a dot (#855): the Select icon with its tip on the exact spot the
-            // ring is pointing at, so what to do there reads as "click here".
-            {
+            // Bounded by the window rather than the viewport: a step's orb can be pointing
+            // at a side pane, and its badges have to follow it there (#781).
+            let badge_bounds = ctx.screen_rect();
+            // Once the field the orb marks has the keyboard, the guide **becomes** the
+            // instruction to type (#848): the ring is for finding something to click, and
+            // there's nothing left to click once you're in the box.
+            let typing = step
+                .type_hint
+                .and_then(|h| h.text(&self.state))
+                .filter(|_| ctx.memory(|m| m.focused()).is_some());
+            if let Some(text) = typing {
+                draw_orb_typing_guide(&painter, ctx, pos, badge_bounds, &text);
+            } else {
+                let t = ctx.input(|i| i.time) as f32;
+                let pulse = ((t * 2.5).sin() * 0.5 + 0.5) * 5.0;
+                for (extra, alpha) in [(0.0, 230u8), (5.0, 120), (10.0, 55)] {
+                    painter.circle_stroke(
+                        pos,
+                        base + pulse + extra,
+                        egui::Stroke::new(
+                            2.5,
+                            egui::Color32::from_rgba_unmultiplied(90, 160, 255, alpha),
+                        ),
+                    );
+                }
+                // A pointer, not a dot (#855): the Select icon with its tip on the exact spot
+                // the ring is pointing at, so what to do there reads as "click here".
                 const P: f32 = 22.0;
                 // The arrow's tip sits at (8, 5) of the icon's 32x32 box; line that up with
                 // the point the ring marks.
@@ -2915,22 +2924,14 @@ impl App {
                     rect,
                     egui::Color32::from_rgb(150, 200, 255),
                 );
-            }
-            // This click adds to the selection, so it wants Shift held: float a keycap
-            // beside the orb saying so (#759).
-            // Bounded by the window rather than the viewport: a step's orb can be pointing
-            // at a side pane, and its badges have to follow it there (#781).
-            let badge_bounds = ctx.screen_rect();
-            if step.needs_shift.is_some_and(|f| f(&self.state)) {
-                draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
-            }
-            // A drag, not a click: name the button and animate the motion (#819).
-            if let Some(label) = step.drag_hint {
-                draw_orb_drag_hint(&painter, ctx, pos, base, badge_bounds, label);
-            }
-            // What to type, hugging the field the orb marks (#778/#781/#811).
-            if let Some(text) = step.type_hint.and_then(|h| h.text(&self.state)) {
-                draw_orb_type_hint(&painter, ctx, pos, badge_bounds, &text);
+                // This click adds to the selection, so it wants Shift held (#759/#851).
+                if step.needs_shift.is_some_and(|f| f(&self.state)) {
+                    draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
+                }
+                // A drag, not a click: name the button and animate the motion (#819).
+                if let Some(label) = step.drag_hint {
+                    draw_orb_drag_hint(&painter, ctx, pos, base, badge_bounds, label);
+                }
             }
             // Crowded spot? Name the key that fans it out (#777) — but only while the orb
             // is pointing at something to *pick*; once a dimension is being placed or typed
