@@ -1,6 +1,6 @@
--- Interaction regression (#486/#487/#488): Dimension tool accumulates edges;
--- second edge starts angle placement; a place-click opens the value editor and
--- committing creates an angle constraint.
+-- Interaction regression (#486/#487/#488): the Dimension tool accumulates edges on
+-- Shift+click; the second edge starts angle placement; a place-click opens the value
+-- editor and committing creates an angle constraint.
 bearcad.new()
 bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
 bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 30 }
@@ -31,8 +31,9 @@ end
 assert(has_line0, "first edge should be selected")
 assert(#sel == 1, "first edge only — length editor must not have consumed the pick")
 
--- Second edge without Shift: accumulates and starts angle placement.
-bearcad.ui.click_ground(0, 15)
+-- Shift+click the second edge: it joins the first for an angle (#780) — a plain click
+-- would switch to dimensioning that edge on its own (#762/#763).
+bearcad.ui.click_ground(0, 15, { shift = true })
 bearcad.ui.wait(10)
 sel = bearcad.selection()
 local has_line1 = false
