@@ -412,8 +412,10 @@ fn dimension_tool_active(app: &AppState) -> bool {
 /// Frame the camera over the region the sloppy profile occupies: drawn from way out, the
 /// glowing click-points crowd together — glide in so they sit comfortably apart.
 fn frame_profile_area(app: &mut AppState) {
+    // Includes the origin with room to spare (#852): the next steps ask for a click on it,
+    // and framing it right on the edge of the viewport made it a fiddly target.
     app.cam.frame_bounds_animated(
-        glam::Vec3::new(-25.0, 0.0, 0.0),
+        glam::Vec3::new(-25.0, -15.0, 0.0),
         glam::Vec3::new(70.0, 65.0, 10.0),
         app.viewport_aspect,
         0.35,

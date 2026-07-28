@@ -5495,9 +5495,11 @@ impl App {
                     })
                     .collect()
             });
+            // The same characters the extrude depth accepts (#858): a parameter name or a
+            // unit typed from the first keystroke, not just digits.
             let typed: String = typed
                 .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '.')
+                .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
                 .collect();
             if !typed.is_empty() {
                 if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
@@ -5507,16 +5509,12 @@ impl App {
                 }
             }
         }
-        if let Some((mut text, want_focus, kind)) = self
+        if let Some((mut text, want_focus)) = self
             .state
             .creating_vertex_treatment
             .as_ref()
-            .map(|cvt| (cvt.text.clone(), cvt.pending_focus, cvt.kind))
+            .map(|cvt| (cvt.text.clone(), cvt.pending_focus))
         {
-            let label = match kind {
-                VertexTreatmentKind::Chamfer => "mm",
-                VertexTreatmentKind::Fillet => "mm r",
-            };
             let mut edited = false;
             let mut clear_pending = false;
             egui::Area::new(egui::Id::new("vertex_treatment_amount_area"))
@@ -5536,15 +5534,15 @@ impl App {
                         let other_focused =
                             ctx.memory(|m| m.focused().is_some_and(|f| f != id));
                         if should_request_pending_tool_focus(want_focus, other_focused) {
-                            resp.request_focus();
-                            clear_pending = true;
+                            // Focused with the value selected (#858), like the extrude depth:
+                            // typing replaces it instead of appending.
+                            clear_pending = focus_and_select_all(ctx, id, &resp, &text);
                         } else if want_focus && other_focused {
                             clear_pending = true;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
                         }
-                        ui.label(label);
                     });
                 });
             if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
@@ -8807,9 +8805,11 @@ impl App {
                     })
                     .collect()
             });
+            // The same characters the extrude depth accepts (#858): a parameter name or a
+            // unit typed from the first keystroke, not just digits.
             let typed: String = typed
                 .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '.')
+                .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
                 .collect();
             if !typed.is_empty() {
                 if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
@@ -8819,16 +8819,12 @@ impl App {
                 }
             }
         }
-        if let Some((mut text, want_focus, kind)) = self
+        if let Some((mut text, want_focus)) = self
             .state
             .creating_edge_treatment
             .as_ref()
-            .map(|cet| (cet.text.clone(), cet.pending_focus, cet.kind))
+            .map(|cet| (cet.text.clone(), cet.pending_focus))
         {
-            let label = match kind {
-                VertexTreatmentKind::Chamfer => "mm",
-                VertexTreatmentKind::Fillet => "mm r",
-            };
             let mut edited = false;
             let mut clear_pending = false;
             egui::Area::new(egui::Id::new("edge_treatment_amount_area"))
@@ -8848,15 +8844,15 @@ impl App {
                         let other_focused =
                             ctx.memory(|m| m.focused().is_some_and(|f| f != id));
                         if should_request_pending_tool_focus(want_focus, other_focused) {
-                            resp.request_focus();
-                            clear_pending = true;
+                            // Focused with the value selected (#858), like the extrude depth:
+                            // typing replaces it instead of appending.
+                            clear_pending = focus_and_select_all(ctx, id, &resp, &text);
                         } else if want_focus && other_focused {
                             clear_pending = true;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
                         }
-                        ui.label(label);
                     });
                 });
             if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
@@ -15878,6 +15874,41 @@ fn handle_dimension_point_pick(
     true
 }
 
+/// Focus a floating tool value field and select its contents, so the next keystroke replaces
+/// the value rather than appending to it (#437/#858) — the extrude depth field's behaviour,
+/// shared with the chamfer/fillet amounts.
+fn focus_and_select_all(ctx: &egui::Context, id: egui::Id, resp: &egui::Response, text: &str) -> bool {
+    resp.request_focus();
+    if !resp.has_focus() {
+        return false;
+    }
+    let len = text.chars().count();
+    let mut st = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::default(),
+        egui::text::CCursor::new(len),
+    )));
+    st.store(ctx, id);
+    true
+}
+
+/// Whether a press at `pp` is on the sketch **origin** marker (#852). The origin is a
+/// selectable point but not a sketch vertex, so the line/edge handlers have to stand down for
+/// it the way they already do for real vertices — otherwise a reference line passing near it
+/// (an origin axis, or the sketched-on face's own border) takes the click.
+fn press_on_sketch_origin(
+    state: &AppState,
+    session: SketchSession,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    pp: egui::Pos2,
+) -> bool {
+    sketch_geometry_frame(&state.doc, session.sketch).is_some_and(|frame| {
+        project(frame.origin).is_some_and(|op| {
+            (op - pp).length() <= touch::hit(construction::POINT_PICK_RADIUS_PX)
+        })
+    })
+}
+
 fn handle_line_drag(
     ui: &egui::Ui,
     state: &mut AppState,
@@ -15926,7 +15957,9 @@ fn handle_line_drag(
 
     if primary_pressed {
         if let Some(pp) = pointer_screen {
-            if nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch).is_some() {
+            if nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch).is_some()
+                || press_on_sketch_origin(state, session, project, pp)
+            {
                 return false;
             }
             if let Some((target, _)) =
