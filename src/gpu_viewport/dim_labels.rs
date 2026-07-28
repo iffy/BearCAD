@@ -51,7 +51,7 @@ pub fn build_planar_label_mesh<Project>(
 where
     Project: Fn(Vec3) -> Option<Pos2>,
 {
-    let galley = ctx.fonts(|fonts| {
+    let galley = ctx.fonts_mut(|fonts| {
         fonts.layout_no_wrap(
             label.to_owned(),
             FontId::proportional(LABEL_FONT_SIZE),
@@ -135,7 +135,7 @@ mod tests {
 
     fn build(cam: &Camera, world: &LinearDimensionWorldGeom) -> (Vec<GpuTextVertex>, Vec<u32>) {
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
         let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let project = test_project(cam, viewport);
         let view = PlanarLabelView::from_camera_and_plane(cam, Vec3::Z);

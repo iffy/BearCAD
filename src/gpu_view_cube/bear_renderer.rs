@@ -98,8 +98,8 @@ impl BearGpuResources {
         let bear_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("bearcad_bear_hud_bear_layout"),
-                bind_group_layouts: &[&uniform_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+                immediate_size: 0,
             });
 
         let bear_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -143,13 +143,13 @@ impl BearGpuResources {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -179,8 +179,8 @@ impl BearGpuResources {
         let blit_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("bearcad_bear_hud_blit_layout"),
-                bind_group_layouts: &[&blit_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&blit_bind_group_layout)],
+                immediate_size: 0,
             });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -205,7 +205,7 @@ impl BearGpuResources {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -413,6 +413,7 @@ impl BearGpuResources {
                 label: Some("bearcad_bear_hud_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color_view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -429,6 +430,7 @@ impl BearGpuResources {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.bear_pipeline);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);

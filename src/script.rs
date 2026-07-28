@@ -3371,7 +3371,19 @@ struct ScreenshotRequest {
     path: String,
     /// `Some` crops the captured framebuffer to the 3D viewport; `None` keeps the whole window.
     crop: Option<ScreenshotCrop>,
+    /// Frames waited since the capture command was last sent (#872).
+    frames_waited: u32,
+    /// How many times the command has been sent, the first included.
+    attempts: u32,
 }
+
+/// Frames to wait for a captured frame before asking again (#872): an occluded window
+/// skips its paint, and wgpu ≥29 reports that as `CurrentSurfaceTexture::Occluded` — the
+/// capture request is dropped along with the frame, so it has to be re-sent.
+const SCREENSHOT_RETRY_FRAMES: u32 = 10;
+/// How many times to ask before giving up, so a permanently hidden window fails the
+/// script instead of hanging until `--timeout`.
+const SCREENSHOT_MAX_ATTEMPTS: u32 = 12;
 
 struct ScreenshotCrop {
     /// 3D viewport rect in logical points.
@@ -3640,7 +3652,7 @@ impl ScriptRunner {
             }
             self.waiting_view_transition = false;
         }
-        if self.screenshot_pending.is_some() {
+        if self.tick_pending_screenshot(ctx) {
             return true;
         }
 
@@ -3771,7 +3783,7 @@ impl ScriptRunner {
             self.advance_after_wait();
         }
 
-        if self.screenshot_pending.is_some() {
+        if self.tick_pending_screenshot(ctx) {
             return true;
         }
 
@@ -3862,7 +3874,7 @@ impl ScriptRunner {
             self.clear_instruction_wait();
         }
 
-        if self.screenshot_pending.is_some() {
+        if self.tick_pending_screenshot(ctx) {
             return true;
         }
 
@@ -3906,6 +3918,38 @@ impl ScriptRunner {
             return StepResult::Done;
         }
         result
+    }
+
+    /// Keep a pending capture alive: `true` while the script is still waiting for one.
+    ///
+    /// A frame the window server skips takes the pending capture request down with it, so
+    /// nothing ever comes back (#872) — on macOS wgpu skips every frame while the window
+    /// is fully covered or the display is asleep. Ask again every few frames, and fail the
+    /// script with a reason rather than hang until `--timeout` if it never lands.
+    fn tick_pending_screenshot(&mut self, ctx: &egui::Context) -> bool {
+        let Some(request) = self.screenshot_pending.as_mut() else {
+            return false;
+        };
+        request.frames_waited += 1;
+        if request.frames_waited < SCREENSHOT_RETRY_FRAMES {
+            return true;
+        }
+        request.frames_waited = 0;
+        if request.attempts >= SCREENSHOT_MAX_ATTEMPTS {
+            let path = request.path.clone();
+            self.screenshot_pending = None;
+            let message = format!(
+                "screenshot '{path}' was never delivered — the window never painted \
+                 (fully covered, minimized, or the display is asleep)"
+            );
+            eprintln!("Script error: {message}");
+            self.error = Some(message);
+            self.done = true;
+            return true;
+        }
+        request.attempts += 1;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        true
     }
 
     /// Called when egui delivers a screenshot response for a pending request.
@@ -5276,7 +5320,12 @@ impl ScriptRunner {
                     rect,
                     pixels_per_point: ctx.pixels_per_point(),
                 });
-                self.screenshot_pending = Some(ScreenshotRequest { path, crop });
+                self.screenshot_pending = Some(ScreenshotRequest {
+                    path,
+                    crop,
+                    frames_waited: 0,
+                    attempts: 1,
+                });
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 StepResult::Wait
             }

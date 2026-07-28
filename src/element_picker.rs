@@ -523,7 +523,7 @@ fn row_icon(ui: &mut egui::Ui, icon: IconId) {
 /// picked set renders identically.
 fn render_combo(
     ui: &mut egui::Ui,
-    id_source: impl std::hash::Hash,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
     focused: bool,
     single: bool,
     empty_icons: &[IconId],
@@ -615,12 +615,14 @@ fn render_combo(
                 ui.horizontal(|ui| {
                     // A muted-red ✕ icon (#256), soft enough not to jar against the dark theme.
                     let remove = ui.add(
-                        egui::ImageButton::new(crate::icons::sized_texture(
-                            ui.ctx(),
-                            crate::icons::IconId::Close,
-                        ))
-                        .frame(false)
-                        .tint(egui::Color32::from_rgb(0xC9, 0x6F, 0x66)),
+                        egui::Button::new(
+                            egui::Image::new(crate::icons::sized_texture(
+                                ui.ctx(),
+                                crate::icons::IconId::Close,
+                            ))
+                            .tint(egui::Color32::from_rgb(0xC9, 0x6F, 0x66)),
+                        )
+                        .frame(false),
                     );
                     if remove.on_hover_text("Remove").clicked() {
                         event = Some(PickerEvent::Remove(i));
@@ -649,7 +651,7 @@ pub fn show(
     ui: &mut egui::Ui,
     picker: &ElementPicker,
     doc: &Document,
-    id_source: impl std::hash::Hash,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
 ) -> Option<PickerEvent> {
     let rows: Vec<(IconId, String)> = picker
         .picked()
@@ -677,7 +679,7 @@ pub fn show(
 /// collapsed summary counts rows per icon in first-seen order.
 pub fn show_rows(
     ui: &mut egui::Ui,
-    id_source: impl std::hash::Hash,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
     focused: bool,
     pickable: &[IconId],
     single: bool,
@@ -699,7 +701,7 @@ pub fn show_rows(
 /// …). All rows share one `icon`; `labels` are the popup rows in order.
 pub fn show_labeled(
     ui: &mut egui::Ui,
-    id_source: impl std::hash::Hash,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
     focused: bool,
     single: bool,
     icon: IconId,

@@ -7091,7 +7091,7 @@ mod tests {
         let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
         let view = crate::dimensions::PlanarLabelView::from_camera_and_plane(&cam, glam::Vec3::Z);
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
         // The rectangle is four lines plus geometric constraints (#66); the width dimension
         // is the first constraint that carries an evaluated length.
         let width_dim = (0..state.doc.constraints.len())

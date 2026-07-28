@@ -900,7 +900,7 @@ fn draw_axes(ui: &mut Ui, axes: &[ProjectedAxis]) {
             [axis.from, axis.to],
             Stroke::new(AXIS_STROKE, axis.color),
         );
-        let galley = ui.fonts(|fonts| {
+        let galley = ui.fonts_mut(|fonts| {
             fonts.layout_no_wrap(
                 axis.label.to_owned(),
                 FontId::proportional(9.0),
@@ -1464,7 +1464,7 @@ pub fn free_basis(cam: &Camera) -> ([f32; 3], [f32; 3]) {
 #[allow(clippy::too_many_arguments)]
 pub fn show_orientation_picker(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
     current: StandardView,
     selected: Option<CubePick>,
     free: bool,

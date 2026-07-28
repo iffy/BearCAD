@@ -12,9 +12,9 @@ use crate::actions::Pane;
 use eframe::egui;
 
 /// Draw the menu bar; returns the command the user picked, if any.
-pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<MenuCommand> {
+pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<MenuCommand> {
     let mut picked: Option<MenuCommand> = None;
-    egui::TopBottomPanel::top("web_menu_bar").show(ctx, |ui| {
+    egui::Panel::top("web_menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New").clicked() {
@@ -110,7 +110,9 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("Documentation").clicked() {
-                    ctx.open_url(egui::OpenUrl::new_tab("https://www.iffycan.com/BearCAD/docs/intro"));
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                        "https://www.iffycan.com/BearCAD/docs/intro",
+                    ));
                     ui.close();
                 }
                 if ui.button("Keyboard shortcuts").clicked() {

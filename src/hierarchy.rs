@@ -3594,9 +3594,9 @@ pub fn show_pane(
 
     // Filter control (#275): a button at the pane's bottom that expands up into a set of
     // per-type show/hide toggles.
-    egui::TopBottomPanel::bottom("elements_filter")
+    egui::Panel::bottom("elements_filter")
         .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(4, 3)))
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             if *filter_expanded {
                 let all_on = filter.rows().iter().all(|(_, e)| **e);
                 // Icon-group toggles (#382): each category is a toggleable button showing the
@@ -3818,7 +3818,7 @@ fn show_graph_view(
         .iter()
         .map(|p| {
             let label = node_label(doc, p.node);
-            let w = ui.fonts(|f| {
+            let w = ui.fonts_mut(|f| {
                 f.layout_no_wrap(label, egui::FontId::default(), Color32::WHITE)
                     .size()
                     .x

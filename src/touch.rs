@@ -43,7 +43,7 @@ pub fn hit(base_px: f32) -> f32 {
 const COMPACT_WIDTH: f32 = 700.0;
 
 pub fn compact(ctx: &eframe::egui::Context) -> bool {
-    ctx.screen_rect().width() < COMPACT_WIDTH
+    ctx.content_rect().width() < COMPACT_WIDTH
 }
 
 /// Fingers a viewport drag needs to **orbit** (#754). Two fingers pan and pinch-zoom; a

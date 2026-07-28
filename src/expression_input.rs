@@ -475,7 +475,7 @@ fn apply_parameter_completion(
 fn cursor_char_index(state: Option<&TextEditState>, text: &str) -> usize {
     state
         .and_then(|state| state.cursor.char_range())
-        .map(|range| range.primary.index)
+        .map(|range| range.primary.index.0)
         .unwrap_or_else(|| text.chars().count())
 }
 
@@ -735,7 +735,7 @@ pub fn show_length_expression_text_edit(
                 .id(id)
                 .hint_text(hint_text)
                 .desired_width(f32::INFINITY)
-                .frame(false)
+                .frame(egui::Frame::NONE)
                 .margin(Margin::ZERO)
                 .lock_focus(true);
             if invalid {
@@ -745,14 +745,14 @@ pub fn show_length_expression_text_edit(
         })
         .inner;
 
-    if output.response.has_focus() {
+    if output.response.response.has_focus() {
         // Touch devices: a focused value field gets the app keypad, not the OS keyboard.
         crate::touch::set_value_field_focused(true);
         let cursor = cursor_char_index(Some(&output.state), text);
         if expression_autocomplete_show_dropdown(
             ui,
             &ctx,
-            &output.response,
+            &output.response.response,
             id,
             text,
             doc,
@@ -763,8 +763,8 @@ pub fn show_length_expression_text_edit(
         }
     }
 
-    show_expression_error_tooltips_above(ui, &output.response, errors);
-    output.response
+    show_expression_error_tooltips_above(ui, &output.response.response, errors);
+    output.response.response
 }
 
 /// Whether a commit has been attempted on this field since its text last changed (#824).
@@ -810,7 +810,7 @@ pub struct ValueInput<'a> {
 }
 
 impl<'a> ValueInput<'a> {
-    pub fn new(id: impl std::hash::Hash, kind: ValueKind) -> Self {
+    pub fn new(id: impl std::hash::Hash + std::fmt::Debug, kind: ValueKind) -> Self {
         Self {
             id: Id::new(id),
             kind,
@@ -1287,7 +1287,8 @@ mod tests {
             .char_range()
             .expect("cursor after completion")
             .primary
-            .index;
+            .index
+            .0;
         assert_eq!(cursor, "largeWidth".chars().count());
         // Simulate appending `/2` at that caret (what TextEdit does for unselected input).
         text.insert_str(cursor, "/2");

@@ -2470,7 +2470,7 @@ pub fn draw_help_notes(ctx: &egui::Context, pane_rect: egui::Rect) -> Option<egu
         .entries
         .iter()
         .map(|(_, text)| {
-            ctx.fonts(|fonts| {
+            ctx.fonts_mut(|fonts| {
                 fonts.layout(
                     text.to_string(),
                     egui::FontId::proportional(11.5),
@@ -2493,7 +2493,7 @@ pub fn draw_help_notes(ctx: &egui::Context, pane_rect: egui::Rect) -> Option<egu
         lowest = top + height;
         tops.push(top);
     }
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let overflow = lowest - (screen.bottom() - 8.0);
     if overflow > 0.0 {
         let headroom = tops[0] - (screen.top() + 8.0);
@@ -3510,10 +3510,10 @@ pub fn show_pane(
                     }
                     None => ui.add_enabled(
                         enabled,
-                        egui::ImageButton::new(crate::icons::sized_texture(
+                        egui::Button::new(egui::Image::new(crate::icons::sized_texture(
                             ui.ctx(),
                             icon_for_constraint(row.kind),
-                        ))
+                        )))
                         .frame(true),
                     ),
                 }
@@ -5957,8 +5957,8 @@ mod tests {
         let ctx = egui::Context::default();
         let families = crate::text::system_font_families();
         for fam in families.iter().take(40) {
-            let _ = ctx.run(Default::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     if let Some(ff) = preview_font_family(ui.ctx(), fam) {
                         ui.label(egui::RichText::new(fam).family(ff));
                     }
@@ -5967,8 +5967,8 @@ mod tests {
         }
         // One more pass so every family registered on the last iteration builds its atlas
         // (the #392 panic site) and lays out in its own face.
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 for fam in families.iter().take(40) {
                     if let Some(ff) = preview_font_family(ui.ctx(), fam) {
                         ui.label(egui::RichText::new(fam).family(ff));

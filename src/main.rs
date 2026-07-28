@@ -205,6 +205,52 @@ fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
     }
 }
 
+/// Vertical wheel travel this frame, unsmoothed.
+///
+/// egui 0.35 dropped `InputState::raw_scroll_delta`, so re-derive it from the frame's
+/// wheel events the way egui used to. Zoom and tool-cycling want the discrete notch,
+/// not `smooth_scroll_delta`'s multi-frame tail.
+fn raw_scroll_y(ctx: &egui::Context) -> f32 {
+    let (horizontal, vertical) = ctx.options(|o| {
+        (
+            o.input_options.horizontal_scroll_modifier,
+            o.input_options.vertical_scroll_modifier,
+        )
+    });
+    let line_scroll_speed = ctx.options(|o| o.input_options.line_scroll_speed);
+    ctx.input(|i| {
+        let page = i.viewport_rect().height();
+        i.raw
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } => {
+                    let delta = match unit {
+                        egui::MouseWheelUnit::Point => *delta,
+                        egui::MouseWheelUnit::Line => line_scroll_speed * *delta,
+                        egui::MouseWheelUnit::Page => page * *delta,
+                    };
+                    let is_horizontal = modifiers.matches_any(horizontal);
+                    let is_vertical = modifiers.matches_any(vertical);
+                    Some(if is_horizontal && !is_vertical {
+                        0.0
+                    } else if is_vertical && !is_horizontal {
+                        delta.x + delta.y
+                    } else {
+                        delta.y
+                    })
+                }
+                _ => None,
+            })
+            .sum()
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn native_options() -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
@@ -2728,7 +2774,7 @@ impl App {
                 }
             }
         }
-        if ctx.wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() {
             if !self.keypad_serves_focus {
                 // A free-text field (name, note, search): the OS keyboard's job.
                 self.keypad_target = None;
@@ -2980,7 +3026,7 @@ impl App {
             self.tutorial_orb_pos = Some(pos);
             // Bounded by the window rather than the viewport: a step's orb can be pointing
             // at a side pane, and its badges have to follow it there (#781).
-            let badge_bounds = ctx.screen_rect();
+            let badge_bounds = ctx.content_rect();
             // Once the field the orb marks has the keyboard, the guide **becomes** the
             // instruction to type (#848): the ring is for finding something to click, and
             // there's nothing left to click once you're in the box.
@@ -3067,7 +3113,7 @@ impl App {
             self.tutorial_orb_pos.map(|p| (p, orb_radius)),
             hud,
             self.tutorial_bubble_size,
-            ctx.screen_rect(),
+            ctx.content_rect(),
             // Phone layout: the default spot is the bottom of the viewport, above the
             // status bar's pane buttons.
             touch::compact(ctx).then_some(viewport.bottom()),
@@ -3581,7 +3627,7 @@ impl App {
             // Toward the right, like the panes — so help-mode notes (#672), which fan
             // out to the left, have room on screen.
             .default_pos(egui::pos2(
-                (ctx.screen_rect().right() - 440.0).max(0.0),
+                (ctx.content_rect().right() - 440.0).max(0.0),
                 60.0,
             ))
             .show(ctx, |ui| {
@@ -4481,7 +4527,7 @@ impl App {
         }
 
         // Wheel cycles tools (the viewport skips zoom while in FPS mode).
-        let scroll = ctx.input(|i| i.raw_scroll_delta.y);
+        let scroll = raw_scroll_y(ctx);
         if scroll.abs() >= 1.0 {
             let step = if scroll < 0.0 { 1 } else { -1 };
             self.state.apply(Action::SetTool(fps::cycle_tool(self.state.tool, step)));
@@ -4802,7 +4848,7 @@ impl App {
                 self.state.apply(Action::DeleteSelection);
             } else if delete_pressed
                 && self.state.editing_drawing.is_some()
-                && !ctx.wants_keyboard_input()
+                && !ctx.egui_wants_keyboard_input()
             {
                 // Delete/Backspace removes every selected drawing element (#336/#346): placed
                 // projections, text notes, and shown dimensions. The `wants_keyboard_input` guard
@@ -5181,7 +5227,7 @@ impl App {
         // typed from the first keystroke (#196). Skip when another field (e.g. Parameters
         // name) has the keyboard (#506).
         let field_focused = ctx.memory(|m| m.has_focus(id));
-        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
         if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
@@ -5521,7 +5567,7 @@ impl App {
         // Typing a number while unfocused grabs focus and overwrites the current value.
         // Skip when another field has the keyboard (#506).
         let field_focused = ctx.memory(|m| m.has_focus(id));
-        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
         if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
@@ -5761,7 +5807,7 @@ impl App {
         session: SketchSession,
     ) {
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && self
                 .state
                 .creating_sketch_offset
@@ -6024,7 +6070,7 @@ impl App {
         // Parameters name) holds the keyboard (#516) — otherwise every keystroke there is also
         // swallowed here, making the other field impossible to type into.
         let field_focused = ctx.memory(|m| m.has_focus(id));
-        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
         if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
@@ -6975,7 +7021,7 @@ impl App {
                 .creating_move
                 .as_ref()
                 .is_some_and(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
         {
             self.state.apply(Action::CommitMove);
             return;
@@ -7406,7 +7452,7 @@ impl App {
 
         // Enter commits once a plane and at least one body are picked.
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && cm.can_commit()
         {
             self.state.apply(Action::CommitMirror);
@@ -7480,7 +7526,7 @@ impl App {
             .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
 
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && sm.can_commit()
         {
             self.state.apply(Action::CommitSketchMirror);
@@ -7747,7 +7793,7 @@ impl App {
                 })
             // Enter still commits from the tool's own value fields (#655) — typing a
             // distance and pressing Enter is the whole point of them holding focus.
-            && (!ui.ctx().wants_keyboard_input()
+            && (!ui.ctx().egui_wants_keyboard_input()
                 || context::repeat_value_field_focused(ui.ctx()))
         {
             self.state.apply(Action::CommitRepeat);
@@ -8129,7 +8175,7 @@ impl App {
             self.sketch_repeat_direction_pick = false;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && self
                 .state
                 .creating_sketch_repeat
@@ -8239,7 +8285,7 @@ impl App {
                 .creating_slice
                 .as_ref()
                 .is_some_and(|c| !c.targets.is_empty() && !c.cutters.is_empty())
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
         {
             self.state.apply(Action::CommitSlice);
             return;
@@ -8313,7 +8359,7 @@ impl App {
         session: SketchSession,
     ) {
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && self
                 .state
                 .creating_sketch_slice
@@ -8831,7 +8877,7 @@ impl App {
         }
 
         let field_focused = ctx.memory(|m| m.has_focus(id));
-        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        let other_wants_kb = ctx.egui_wants_keyboard_input() && !field_focused;
         if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
@@ -9103,7 +9149,10 @@ impl eframe::App for App {
         }
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // egui 0.35 hands the app a `Ui` instead of a `Context`; panels nest inside it.
+        // Everything below still works off the context, so clone it out once.
+        let ctx = &ui.ctx().clone();
         // Tutorial anchors are re-recorded as this frame's UI renders.
         self.state.tutorial_anchor_rects.clear();
         touch::detect(ctx);
@@ -9185,15 +9234,15 @@ impl eframe::App for App {
         #[cfg(target_arch = "wasm32")]
         {
             let panes = self.state.panes.clone();
-            if let Some(command) = web_menu::bar(ctx, |pane| panes.is_visible(pane)) {
+            if let Some(command) = web_menu::bar(ui, |pane| panes.is_visible(pane)) {
                 self.handle_menu_command(ctx, command);
             }
             self.drain_web_io(ctx);
         }
 
-        egui::TopBottomPanel::top("toolbar")
+        egui::Panel::top("toolbar")
             .frame(theme::panel_frame())
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
             // On phone-width screens the toolbar overflows: scroll it sideways (the
             // pane toggles live in the always-visible status bar).
             egui::ScrollArea::horizontal()
@@ -9388,15 +9437,15 @@ impl eframe::App for App {
             let commands = commands_for_state(&self.state);
             let matches = filter_commands(&self.state.command_palette.query, &commands);
             let mut outcome = None;
-            egui::TopBottomPanel::bottom("command_palette")
+            egui::Panel::bottom("command_palette")
                 .resizable(false)
-                .exact_height(280.0)
+                .exact_size(280.0)
                 .frame(
                     egui::Frame::default()
                         .fill(theme::palette_console_fill())
                         .inner_margin(egui::Margin::symmetric(12, 8)),
                 )
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     outcome = show_palette(ui, &mut self.state.command_palette, &matches);
                 });
             if let Some(chosen) = outcome {
@@ -9457,9 +9506,9 @@ impl eframe::App for App {
             self.shortcuts_open = open;
         }
 
-        egui::TopBottomPanel::bottom("status")
+        egui::Panel::bottom("status")
             .frame(theme::panel_frame())
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
             let name = self
                 .state
                 .path
@@ -9592,7 +9641,7 @@ impl eframe::App for App {
             let mut activate_component: Option<Option<usize>> = None;
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
-            let pane_kept_open = show_pane_shell(ctx, "tree", "Elements", false, 220.0, None, |ui| {
+            let pane_kept_open = show_pane_shell(ui, "tree", "Elements", false, 220.0, None, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
                     };
@@ -9901,7 +9950,7 @@ impl eframe::App for App {
             if self.state.help_mode {
                 context::begin_help_notes(ctx, None);
             }
-            if !show_pane_shell(ctx, "parameters", "Parameters", true, 240.0, None, |ui| {
+            if !show_pane_shell(ui, "parameters", "Parameters", true, 240.0, None, |ui| {
                 parameters::show_pane(ui, &mut self.state);
             }) {
                 self.state.apply(Action::SetPaneVisible { pane: Pane::Parameters, visible: false });
@@ -10846,7 +10895,7 @@ impl eframe::App for App {
             } else {
                 context::end_help_notes(ctx);
             }
-            let pane_kept_open = show_pane_shell(ctx, "context", "Context", true, 200.0, Some(280.0), |ui| {
+            let pane_kept_open = show_pane_shell(ui, "context", "Context", true, 200.0, Some(280.0), |ui| {
                     context::show_pane(
                         ui,
                         ctx,
@@ -11940,7 +11989,7 @@ impl eframe::App for App {
         let render_state = frame.wgpu_render_state();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 // A technical drawing open (#180) takes over the central area with its
                 // white-on-black editor sheet (#254); otherwise the 3D viewport renders as usual.
                 match self.state.editing_drawing {
@@ -11970,14 +12019,14 @@ impl eframe::App for App {
                 ctx.show_viewport_immediate(
                     egui::ViewportId::from_hash_of("drawing_popout"),
                     builder,
-                    |vctx, _class| {
-                        theme::apply(vctx);
+                    |vui, _class| {
+                        theme::apply(vui.ctx());
                         egui::CentralPanel::default()
                             .frame(egui::Frame::NONE)
-                            .show(vctx, |ui| {
+                            .show(vui, |ui| {
                                 self.draw_drawing_pane(ui, di);
                             });
-                        if vctx.input(|i| i.viewport().close_requested()) {
+                        if vui.input(|i| i.viewport().close_requested()) {
                             close = true;
                         }
                     },
@@ -12004,9 +12053,9 @@ impl eframe::App for App {
                 ctx.show_viewport_immediate(
                     egui::ViewportId::from_hash_of("report_issue"),
                     builder,
-                    |vctx, _class| {
-                        theme::apply(vctx);
-                        egui::CentralPanel::default().show(vctx, |ui| {
+                    |vui, _class| {
+                        theme::apply(vui.ctx());
+                        egui::CentralPanel::default().show(vui, |ui| {
                             ui.label("Describe the issue:");
                             let response = ui.add_sized(
                                 [ui.available_width(), 200.0],
@@ -12045,7 +12094,7 @@ impl eframe::App for App {
                                 ui.label(result.clone());
                             }
                         });
-                        if vctx.input(|i| i.viewport().close_requested()) {
+                        if vui.input(|i| i.viewport().close_requested()) {
                             close = true;
                         }
                     },
@@ -12104,7 +12153,7 @@ impl eframe::App for App {
 /// Suppress unmodified keyboard shortcuts while a [`egui::TextEdit`] (or other focused text input)
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
-    ctx.wants_keyboard_input()
+    ctx.egui_wants_keyboard_input()
 }
 
 /// The DEV → Report issue window's state (#627): the description text, the attachment
@@ -12330,11 +12379,11 @@ const DIM_INPUT_MIN_TEXT_WIDTH: f32 = 48.0;
 /// Approximate monospace glyph width at 13pt (used for layout sizing).
 const DIM_INPUT_CHAR_WIDTH: f32 = 7.8;
 
-/// Container for a side pane: a docked `SidePanel` normally, a closable floating
+/// Container for a side pane: a docked side `Panel` normally, a closable floating
 /// window over the viewport in the compact (phone) layout. Returns false when the
 /// window's close button dismissed it, so the caller can hide the pane.
 fn show_pane_shell(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     id: &'static str,
     title: &'static str,
     right: bool,
@@ -12342,9 +12391,10 @@ fn show_pane_shell(
     max_width: Option<f32>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> bool {
+    let ctx = &ui.ctx().clone();
     if touch::compact(ctx) {
         let mut open = true;
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let width = default_width.min(screen.width() - 24.0);
         let pos = if right {
             egui::pos2(screen.right() - width - 8.0, screen.top() + 44.0)
@@ -12371,19 +12421,19 @@ fn show_pane_shell(
         open
     } else {
         let panel = if right {
-            egui::SidePanel::right(id)
+            egui::Panel::right(id)
         } else {
-            egui::SidePanel::left(id)
+            egui::Panel::left(id)
         };
         let mut panel = panel
             .resizable(true)
-            .default_width(default_width)
+            .default_size(default_width)
             .frame(theme::panel_frame());
         if let Some(m) = max_width {
-            panel = panel.max_width(m);
+            panel = panel.max_size(m);
         }
         let mut content_bottom = None;
-        let response = panel.show(ctx, |ui| {
+        let response = panel.show(ui, |ui| {
             add_contents(ui);
             content_bottom = Some(ui.cursor().min.y);
         });
@@ -12427,7 +12477,9 @@ fn trim_to_content(mut rect: egui::Rect, content_bottom: Option<f32>) -> egui::R
 fn remember_pane_rect(ctx: &egui::Context, id: &'static str, rect: Option<egui::Rect>) {
     let key = script::pane_rect_id(id);
     ctx.data_mut(|data| match rect {
-        Some(rect) => data.insert_temp(key, rect),
+        Some(rect) => {
+            data.insert_temp(key, rect);
+        }
         None => data.remove::<egui::Rect>(key),
     });
 }
@@ -14184,7 +14236,7 @@ fn show_sketch_dimension_field(
             ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
             let edit = egui::TextEdit::singleline(text)
                 .id(id)
-                .frame(false)
+                .frame(egui::Frame::NONE)
                 .desired_width(text_width)
                 .font(egui::FontId::monospace(13.0))
                 .text_color(if has_errors {
@@ -14210,17 +14262,17 @@ fn show_sketch_dimension_field(
         .inner
     });
     let output = frame_output.inner;
-    if output.response.has_focus() {
+    if output.response.response.has_focus() {
         let cursor = output
             .state
             .cursor
             .char_range()
-            .map(|range| range.primary.index)
+            .map(|range| range.primary.index.0)
             .unwrap_or_else(|| text.chars().count());
         if expression_autocomplete_show_dropdown(
             ui,
             ctx,
-            &output.response,
+            &output.response.response,
             id,
             text,
             doc,
@@ -14231,7 +14283,7 @@ fn show_sketch_dimension_field(
         }
     }
     show_expression_error_tooltips_above(ui, &frame_output.response, &field_errors);
-    let resp = &output.response;
+    let resp = &output.response.response;
     if is_focus_target && *pending_focus {
         resp.request_focus();
     }
@@ -16724,7 +16776,7 @@ impl App {
         let bg_pan_delta = (bg.dragged() || (primary_down && press_origin.is_some()))
             .then_some(pointer_delta);
         let mut pan_suppressed_by_card = self.drawing_view_drag.is_some();
-        let scroll = if bg.hovered() { ui.input(|i| i.raw_scroll_delta.y) } else { 0.0 };
+        let scroll = if bg.hovered() { raw_scroll_y(ui.ctx()) } else { 0.0 };
         if scroll != 0.0 {
             let f = (1.0 + scroll * 0.0015).clamp(0.5, 2.0);
             let cursor = bg.hover_pos().unwrap_or(area.center());
@@ -17068,8 +17120,11 @@ impl App {
                 if ui
                     .put(
                         x_rect,
-                        egui::ImageButton::new(icons::sized_texture(ui.ctx(), icons::IconId::Close))
-                            .frame(true),
+                        egui::Button::new(egui::Image::new(icons::sized_texture(
+                            ui.ctx(),
+                            icons::IconId::Close,
+                        )))
+                        .frame(true),
                     )
                     .on_hover_text("Remove view")
                     .clicked()
@@ -18120,7 +18175,9 @@ impl App {
         }
         // Persist the in-progress angle pick (armed first edge) across frames.
         match pending_angle {
-            Some(p) => ui.data_mut(|d| d.insert_temp(pending_angle_id, p)),
+            Some(p) => {
+                ui.data_mut(|d| d.insert_temp(pending_angle_id, p));
+            }
             None => ui.data_mut(|d| d.remove::<(usize, model::DrawingEdgeKey)>(pending_angle_id)),
         }
 
@@ -18230,7 +18287,7 @@ impl App {
         // The palette's "Explode Selection Under Cursor" entry behaves exactly like a Space press.
         // Not while a field has the keyboard, though — a space belongs in the expression being
         // typed, not to the exploder (#794).
-        let space = (!ui.ctx().wants_keyboard_input()
+        let space = (!ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Space)))
             || palette_request;
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
@@ -18855,7 +18912,7 @@ impl App {
         // loupes instead: scrolling up magnifies further into the crowd (bigger loupes, wider fan),
         // scrolling down backs out. Clamped so the fan stays usable.
         if exploder_on && response.hovered() {
-            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            let scroll = raw_scroll_y(ui.ctx());
             if scroll != 0.0 {
                 if let Some(ex) = self.exploder.as_mut() {
                     // Cap the zoom where the fan just fills the viewport — scrolling past that does
@@ -18866,7 +18923,7 @@ impl App {
             }
         }
         if response.hovered() && !camera_frozen {
-            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            let scroll = raw_scroll_y(ui.ctx());
             if scroll != 0.0 {
                 let focal = response.hover_pos().unwrap_or(viewport.center());
                 // In a sketch, zoom about the sketch plane under the cursor so isometric
@@ -20562,7 +20619,7 @@ impl App {
                 }
 
                 if let Some(cp) = &mut self.state.creating_plane {
-                    let scroll = ui.input(|i| i.raw_scroll_delta.y);
+                    let scroll = raw_scroll_y(ui.ctx());
                     let primary_down = ui.input(|i| i.pointer.primary_down());
                     let primary_released = ui.input(|i| i.pointer.primary_released());
 
@@ -25175,7 +25232,7 @@ mod tests {
         assert!(!state.doc.constraints.is_empty(), "dimension exists");
 
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
         let cam = state.cam.clone();
         let vp = cam.view_proj(viewport);

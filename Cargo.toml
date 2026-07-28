@@ -25,14 +25,14 @@ cc = "1"
 ab_glyph = "0.2"
 # wgpu backend (Metal on macOS) per SPEC §1; the default glow/OpenGL backend
 # crashes with a bus error on some macOS setups.
-eframe = { version = "0.32", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
-egui = "0.32"
+eframe = { version = "0.35", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+egui = "0.35"
 # eframe's `wgpu` feature only pulls in the `wgpu` crate — it doesn't select a backend.
 # That used to come transitively via egui-wgpu's own `default` feature, which we don't
 # get since eframe is `default-features = false` above; without it wgpu has no backend
 # (metal/vulkan/dx12/gles) compiled in and panics at startup. Depend on `wgpu` directly
 # with its own default backends (unifies with eframe's copy via Cargo feature unification).
-wgpu = "25"
+wgpu = "29"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -64,7 +64,7 @@ web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlC
 # std::time::Instant panics on wasm; this is the drop-in replacement.
 web-time = "1"
 # WebGL fallback so browsers without WebGPU still render.
-wgpu = { version = "25", features = ["webgl"] }
+wgpu = { version = "29", features = ["webgl"] }
 console_error_panic_hook = "0.1"
 log = "0.4"
 

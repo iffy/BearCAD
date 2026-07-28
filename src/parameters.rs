@@ -1664,12 +1664,14 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                         // Delete button (#270): a muted-red ✕ that removes the parameter.
                         let remove = ui.add(
-                            egui::ImageButton::new(crate::icons::sized_texture(
-                                ui.ctx(),
-                                crate::icons::IconId::Close,
-                            ))
-                            .frame(false)
-                            .tint(egui::Color32::from_rgb(0xC9, 0x6F, 0x66)),
+                            egui::Button::new(
+                                egui::Image::new(crate::icons::sized_texture(
+                                    ui.ctx(),
+                                    crate::icons::IconId::Close,
+                                ))
+                                .tint(egui::Color32::from_rgb(0xC9, 0x6F, 0x66)),
+                            )
+                            .frame(false),
                         );
                         if remove.on_hover_text("Delete parameter").clicked() {
                             delete_index = Some(index);

@@ -533,7 +533,7 @@ pub fn selectable_icon_button_at(
     size: f32,
 ) -> egui::Response {
     let response = ui.add(
-        egui::ImageButton::new(sized_texture_at(ui.ctx(), id, size))
+        egui::Button::new(egui::Image::new(sized_texture_at(ui.ctx(), id, size)))
             .frame(true)
             .selected(selected),
     );
@@ -622,7 +622,7 @@ pub fn tinted_icon_button(
 
 pub fn icon_button(ui: &mut Ui, id: IconId, tooltip: impl Into<WidgetText>) -> egui::Response {
     ui.add(
-        egui::ImageButton::new(sized_texture(ui.ctx(), id)).frame(false),
+        egui::Button::new(egui::Image::new(sized_texture(ui.ctx(), id))).frame(false),
     )
     .on_hover_text(tooltip)
 }

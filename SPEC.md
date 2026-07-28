@@ -2866,7 +2866,11 @@ The application must be fully scriptable via a file containing a sequence of ins
 - One supported instruction must be screenshot/export of the app's current visual appearance:
   `screenshot <output-path>` (PNG or other common image format). The captured image must be a
   faithful rendering of the full window (or primary viewport + overlays) at the moment the
-  instruction is executed, suitable for visual regression testing.
+  instruction is executed, suitable for visual regression testing. A capture rides the next
+  painted frame, and a frame the window server skips takes the request with it — on macOS
+  every frame is skipped while the window is fully covered, minimized, or the display is
+  asleep. The runner therefore re-sends the capture every few frames and, after a dozen
+  tries, fails the script with that reason instead of hanging until `--timeout` (#872).
 - Scripts shall support at minimum:
   - Core actions (new, open, save, clear, tool selection, rectangle creation flow including
     the click-to-place, mouse-move preview, dimension typing, tab, enter steps, etc.).
