@@ -4863,7 +4863,10 @@ impl App {
             return;
         }
 
-        if let Some(runner) = &mut self.script {
+        // A script that asked for a picture gets it; anything else falls through to a DEV
+        // report waiting on its own capture (#872), which a running script would otherwise eat.
+        let script_waiting = self.script.as_ref().is_some_and(|runner| runner.wants_screenshot());
+        if let (true, Some(runner)) = (script_waiting, &mut self.script) {
             for image in screenshots {
                 if let Err(e) = runner.on_screenshot(&image) {
                     runner.error = Some(e);
@@ -11967,48 +11970,54 @@ impl eframe::App for App {
             }
         }
 
-        // DEV → Report issue window (#627): its own OS window (reachable only through the
+        // DEV → Report issue (#627): a window inside the main one (reachable only through the
         // debug-build DEV menu) with a focused description textarea, attachment checkboxes
         // (screenshot + document JSON, both on by default), and a Submit that files the
         // issue into the repo's local todoer db — staying open for the next report.
+        // Its own OS window is what it used to be (#872): a second native window brings a
+        // second font atlas onto the one texture egui shares between them, and the next glyph
+        // typed anywhere lands outside it.
         #[cfg(not(target_arch = "wasm32"))]
         if self.report_issue.is_some() {
-            let builder = egui::ViewportBuilder::default()
-                .with_title("Report issue")
-                .with_inner_size([480.0, 380.0]);
             let mut close = false;
             let mut submit: Option<(String, bool, bool)> = None;
-            {
+            // For the capture the form steps aside for a couple of frames, so the screenshot
+            // shows the app rather than the form describing it — and then comes back, whether
+            // or not the picture arrived.
+            let hiding = self
+                .report_issue
+                .as_ref()
+                .and_then(|window| window.pending.as_ref())
+                .is_some_and(|pending| pending.hide_frames > 0);
+            if !hiding {
                 let window = self.report_issue.as_mut().expect("checked above");
-                ctx.show_viewport_immediate(
-                    egui::ViewportId::from_hash_of("report_issue"),
-                    builder,
-                    |vctx, _class| {
-                        theme::apply(vctx);
-                        egui::CentralPanel::default().show(vctx, |ui| {
-                            ui.label("Describe the issue:");
-                            let response = ui.add_sized(
-                                [ui.available_width(), 200.0],
-                                egui::TextEdit::multiline(&mut window.text),
-                            );
-                            if window.focus {
-                                response.request_focus();
-                                window.focus = false;
-                            }
-                            ui.add_space(4.0);
-                            ui.checkbox(
-                                &mut window.include_screenshot,
-                                "Include a screenshot of the current window",
-                            );
-                            ui.checkbox(&mut window.include_json, "Include the document JSON");
-                            ui.add_space(4.0);
-                            let can_submit =
-                                !window.text.trim().is_empty() && window.pending.is_none();
-                            // Cmd/Ctrl+Enter submits from inside the textbox (#634).
-                            let hotkey = can_submit
-                                && ui.input_mut(|i| {
-                                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
-                                });
+                egui::Window::new("Report issue")
+                    .collapsible(false)
+                    .default_width(460.0)
+                    .show(ctx, |ui| {
+                        ui.label("Describe the issue:");
+                        let response = ui.add_sized(
+                            [ui.available_width(), 200.0],
+                            egui::TextEdit::multiline(&mut window.text),
+                        );
+                        if window.focus {
+                            response.request_focus();
+                            window.focus = false;
+                        }
+                        ui.add_space(4.0);
+                        ui.checkbox(
+                            &mut window.include_screenshot,
+                            "Include a screenshot of the current window",
+                        );
+                        ui.checkbox(&mut window.include_json, "Include the document JSON");
+                        ui.add_space(4.0);
+                        let can_submit = !window.text.trim().is_empty() && window.pending.is_none();
+                        // Cmd/Ctrl+Enter submits from inside the textbox (#634).
+                        let hotkey = can_submit
+                            && ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                            });
+                        ui.horizontal(|ui| {
                             if ui.add_enabled(can_submit, egui::Button::new("Submit")).clicked()
                                 || hotkey
                             {
@@ -12018,32 +12027,41 @@ impl eframe::App for App {
                                     window.include_json,
                                 ));
                             }
-                            if window.pending.is_some() {
-                                ui.label("Capturing screenshot…");
-                            } else if let Some(result) = &window.last_result {
-                                ui.label(result.clone());
+                            if ui.button("Close").clicked() {
+                                close = true;
                             }
                         });
-                        if vctx.input(|i| i.viewport().close_requested()) {
-                            close = true;
+                        if window.pending.is_some() {
+                            ui.label("Capturing screenshot…");
+                        } else if let Some(result) = &window.last_result {
+                            ui.label(result.clone());
                         }
-                    },
-                );
+                    });
             }
             if let Some((text, with_screenshot, include_json)) = submit {
                 if with_screenshot {
                     if let Some(window) = &mut self.report_issue {
-                        window.pending = Some(PendingIssueReport { text, include_json });
+                        window.pending =
+                            Some(PendingIssueReport { text, include_json, hide_frames: 2 });
                         window.last_result = None;
                     }
-                    // Capture the MAIN window, not the report window.
+                } else {
+                    self.finish_issue_report(text, include_json, None);
+                }
+            }
+            if let Some(pending) =
+                self.report_issue.as_mut().and_then(|window| window.pending.as_mut())
+            {
+                // The first hidden frame asks for the picture; eframe captures that frame,
+                // form and all — which is why the form isn't in it.
+                if pending.hide_frames == 2 {
                     ctx.send_viewport_cmd_to(
                         egui::ViewportId::ROOT,
                         egui::ViewportCommand::Screenshot(egui::UserData::default()),
                     );
-                } else {
-                    self.finish_issue_report(text, include_json, None);
                 }
+                pending.hide_frames = pending.hide_frames.saturating_sub(1);
+                ctx.request_repaint();
             }
             if close {
                 self.report_issue = None;
@@ -12119,6 +12137,8 @@ impl ReportIssueWindow {
 struct PendingIssueReport {
     text: String,
     include_json: bool,
+    /// Frames left with the form hidden for the capture (#872).
+    hide_frames: u8,
 }
 
 /// File an issue into the repo's local todoer db via the `todoer` CLI (#627): the text's

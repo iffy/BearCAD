@@ -3925,6 +3925,12 @@ impl ScriptRunner {
         Ok(())
     }
 
+    /// Whether a scripted screenshot is waiting on egui's captured frame — a DEV report's
+    /// own capture (#872) goes to the report when this is false.
+    pub fn wants_screenshot(&self) -> bool {
+        self.screenshot_pending.is_some()
+    }
+
     /// Whether the view-cube HUD should be hidden this frame for a pending viewport screenshot.
     pub fn screenshot_suppresses_hud(&self) -> bool {
         self.screenshot_pending
