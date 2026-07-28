@@ -3587,9 +3587,11 @@ document is millimeters, so the player is person-scale: eye height
   the origin and both axes, close enough in to stay on camera (#875). The squaring-up stage is **one
   constraint application per step** — the base parallel to the X axis, the two Parallel
   pairs, then each end cap's Perpendicular — every predicate cumulative so working ahead
-  skips ahead. Nothing is pinned to the origin (#863): grounding the bracket there laid its
-  base line straight along the X axis, where clicking one without getting the other is
-  needlessly fiddly. The profile stays out in the middle of the XY plane, where it was
+  skips ahead. The base one is a **single pick** (#876): the pane's own axis button
+  (`AlongXAxis`, `6`) takes just the line, so that step is one click and one button rather
+  than a line, a Shift+click on the axis, and Parallel. Nothing is pinned to the origin
+  (#863): grounding the bracket there laid its base line straight along the X axis, where
+  clicking one without getting the other is needlessly fiddly. The profile stays where it was
   drawn. The **bend fillets** are a step each, the orb on the
   body's bend edge (`bend_edge_point` picks the extrusion-direction feature edge nearest the
   inner or outer bend corner, #791), with a **spin step between them** — the outside of the

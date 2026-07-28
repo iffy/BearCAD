@@ -486,8 +486,6 @@ enum ClickTarget {
     /// The nth drawn (non-construction) line of the open sketch, in the order the drawing
     /// step laid them down.
     ProfileLine(usize),
-    /// The sketch's red X axis.
-    XAxis,
 }
 
 fn sketch_frame(app: &AppState) -> Option<crate::face::SketchFrame> {
@@ -542,36 +540,24 @@ fn polyline_midpoint(points: &[glam::Vec3]) -> Option<glam::Vec3> {
 fn target_point(app: &AppState, target: ClickTarget) -> Option<glam::Vec3> {
     match target {
         ClickTarget::ProfileLine(n) => polyline_midpoint(&profile_polyline(app, n)?),
-        ClickTarget::XAxis => {
-            Some(crate::face::local_to_world(&sketch_frame(app)?, -22.0, 0.0))
-        }
     }
 }
 
 fn target_selected(app: &AppState, target: ClickTarget) -> bool {
     use crate::hierarchy::SceneElement;
-    use crate::model::{ConstraintLine, SketchAxis};
     match target {
         ClickTarget::ProfileLine(n) => profile_lines(app)
             .get(n)
             .is_some_and(|i| app.scene_selection.is_selected(SceneElement::Line(*i))),
-        ClickTarget::XAxis => app
-            .scene_selection
-            .is_selected(SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))),
     }
 }
 
 /// Whether `element` is one of the two things this step asks for.
 fn element_is_target(app: &AppState, element: &crate::hierarchy::SceneElement, target: ClickTarget) -> bool {
     use crate::hierarchy::SceneElement;
-    use crate::model::{ConstraintLine, SketchAxis};
     match target {
         ClickTarget::ProfileLine(n) => matches!(element, SceneElement::Line(i)
             if profile_lines(app).get(n) == Some(i)),
-        ClickTarget::XAxis => matches!(
-            element,
-            SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
-        ),
     }
 }
 
@@ -644,6 +630,40 @@ fn constraint_marks(
     marks
 }
 
+/// The one-pick axis constraints (#876): "parallel to the X axis" needs only the line — the
+/// axis itself isn't picked, the pane's own axis button (`6`/`7`) supplies it.
+fn axis_constraint_click(app: &AppState, a: ClickTarget, kind: GC) -> Option<StepTarget> {
+    let strays = app
+        .scene_selection
+        .iter()
+        .any(|element| !element_is_target(app, &element, a));
+    if strays || !target_selected(app, a) {
+        target_point(app, a).map(StepTarget::World)
+    } else {
+        Some(StepTarget::Ui(UiAnchor::ConstraintButton(kind)))
+    }
+}
+
+/// The two marks of a one-pick constraint step: the line, then the button that squares it up.
+fn axis_constraint_marks(app: &AppState, a: ClickTarget, kind: GC) -> Vec<GuideMark> {
+    let strays = app
+        .scene_selection
+        .iter()
+        .any(|element| !element_is_target(app, &element, a));
+    let mut marks = Vec::new();
+    if let Some(p) = target_point(app, a) {
+        marks.push(GuideMark {
+            target: StepTarget::World(p),
+            done: !strays && target_selected(app, a),
+        });
+    }
+    marks.push(GuideMark {
+        target: StepTarget::Ui(UiAnchor::ConstraintButton(kind)),
+        done: false,
+    });
+    marks
+}
+
 /// Generates a step's orb-target and Shift-hint functions for a two-click pair (the step
 /// table needs plain `fn` pointers, so each pair gets its own pair of functions). Once both
 /// picks are in hand the orb moves to the pane button that applies the constraint (#770) —
@@ -668,14 +688,12 @@ macro_rules! constraint_step {
 // The profile is drawn as six lines: 0 base bottom, 1 base end cap, 2 inner base,
 // 3 tilted leg outer, 4 tilted leg end cap, 5 tilted leg inner (back to the bend corner).
 use crate::geometric_constraints::GeometricConstraintType as GC;
-constraint_step!(
-    level_click,
-    level_shift,
-    level_marks,
-    ClickTarget::ProfileLine(0),
-    ClickTarget::XAxis,
-    GC::Parallel
-);
+fn level_click(app: &AppState) -> Option<StepTarget> {
+    axis_constraint_click(app, ClickTarget::ProfileLine(0), GC::AlongXAxis)
+}
+fn level_marks(app: &AppState) -> Vec<GuideMark> {
+    axis_constraint_marks(app, ClickTarget::ProfileLine(0), GC::AlongXAxis)
+}
 constraint_step!(
     base_strip_click,
     base_strip_shift,
@@ -2132,12 +2150,12 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: true,
     },
     Step {
-        narration: "Make the base parallel to the red X axis.",
+        narration: "Make the base parallel to the red X axis \u{2014} one line, one button.",
         anchor: StepAnchor::Guided(level_click),
         done: Some(base_leveled),
         on_enter: None,
         assist: None,
-        needs_shift: Some(level_shift),
+        needs_shift: None,
         drag_hint: None,
         key_hint: Some(("Space", "Press space if it's too crowded to pick")),
         marks: Some(level_marks),
