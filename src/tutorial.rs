@@ -353,56 +353,23 @@ fn context_button_orb(app: &AppState) -> Option<StepTarget> {
         .then_some(StepTarget::Ui(UiAnchor::PaneButton(crate::actions::Pane::Context)))
 }
 
-fn assist_open_params(app: &mut AppState) {
-    if !pane_open(app, crate::actions::Pane::Parameters) {
-        app.apply(Action::SetPaneVisible {
-            pane: crate::actions::Pane::Parameters,
-            visible: true,
-        });
-    }
-}
-
-fn assist_close_params(app: &mut AppState) {
-    if pane_open(app, crate::actions::Pane::Parameters) {
-        app.apply(Action::SetPaneVisible {
-            pane: crate::actions::Pane::Parameters,
-            visible: false,
-        });
-    }
-}
-
-fn assist_open_context(app: &mut AppState) {
-    if !pane_open(app, crate::actions::Pane::Context) {
-        app.apply(Action::SetPaneVisible {
-            pane: crate::actions::Pane::Context,
-            visible: true,
-        });
-    }
-}
-
-fn assist_close_context(app: &mut AppState) {
-    if pane_open(app, crate::actions::Pane::Context) {
-        app.apply(Action::SetPaneVisible {
-            pane: crate::actions::Pane::Context,
-            visible: false,
-        });
-    }
-}
-
 fn line_tool_active(app: &AppState) -> bool {
     app.tool == Tool::Line
 }
 
 /// The sloppy bracket profile the tutorial leads the user around, in sketch-local
 /// millimetres (mirrors the quickstart's rough hexagon; the constraint steps square
-/// it up afterwards).
+/// it up afterwards). The bend corner starts a little way **inside** the XY datum plane
+/// rather than on the origin (#841): the plane stands clear of the origin now, and the
+/// first click has to land on it to open the sketch at all. The pin-to-origin step then
+/// nudges the whole profile home.
 const PROFILE_POINTS: [(f32, f32); 6] = [
-    (0.0, 0.0),
-    (51.0, 2.5),
-    (49.5, 7.8),
-    (4.5, 5.5),
-    (-17.5, 47.0),
-    (-25.5, 43.0),
+    (10.0, 10.0),
+    (61.0, 12.5),
+    (59.5, 17.8),
+    (14.5, 15.5),
+    (-7.5, 57.0),
+    (-15.5, 53.0),
 ];
 
 /// The next profile vertex to click while drawing the sloppy outline: follows the
@@ -446,8 +413,8 @@ fn dimension_tool_active(app: &AppState) -> bool {
 /// glowing click-points crowd together — glide in so they sit comfortably apart.
 fn frame_profile_area(app: &mut AppState) {
     app.cam.frame_bounds_animated(
-        glam::Vec3::new(-35.0, -10.0, 0.0),
-        glam::Vec3::new(60.0, 55.0, 10.0),
+        glam::Vec3::new(-25.0, 0.0, 0.0),
+        glam::Vec3::new(70.0, 65.0, 10.0),
         app.viewport_aspect,
         0.35,
     );
@@ -1419,30 +1386,10 @@ fn bend_angle_changed(app: &AppState) -> bool {
 // they'd done it themselves. (The two narration-only bookends have nothing to do; their
 // button is Next.)
 
-fn assist_line_tool(app: &mut AppState) {
-    app.apply(Action::SetTool(Tool::Line));
-}
-
-fn assist_constraint_tool(app: &mut AppState) {
-    app.apply(Action::SetTool(Tool::Constraint));
-}
-
-fn assist_dimension_tool(app: &mut AppState) {
-    clear_selection_for_dimensioning(app);
-    app.apply(Action::SetTool(Tool::Dimension));
-}
-
-fn assist_sketch_tool(app: &mut AppState) {
-    app.apply(Action::SetTool(Tool::Sketch));
-}
-
-fn assist_circle_tool(app: &mut AppState) {
-    app.apply(Action::SetTool(Tool::Circle));
-}
-
-/// Draw the sloppy profile: the same six chained segments the click-by-click step walks,
-/// with the corner coincidences the drawing snaps would have added.
-fn assist_draw_profile(app: &mut AppState) {
+/// Draw the sloppy profile for the user. No longer a button of its own (#843 — clicking the
+/// glowing points is the whole job), but the constraint assists below lean on it so pressing
+/// *their* button works even for someone who skipped ahead past the drawing.
+fn draw_profile_for_me(app: &mut AppState) {
     use crate::model::{ConstraintPoint, FaceId, LineEnd};
     if app.sketch_session.is_none() {
         app.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
@@ -1512,6 +1459,7 @@ fn target_element(app: &AppState, target: ClickTarget) -> Option<crate::hierarch
 }
 
 fn assist_pin(app: &mut AppState) {
+    draw_profile_for_me(app);
     apply_constraint(app, ClickTarget::ProfileCorner(0), ClickTarget::Origin, GC::Coincident);
 }
 fn assist_level(app: &mut AppState) {
@@ -1640,8 +1588,22 @@ fn assist_outer_bend(app: &mut AppState) {
     fillet_vertical_edge(app, 5, "bend + thick");
 }
 
-/// Open a sketch on the inside face of the base flange (the face the holes go on).
-fn assist_flange_sketch(app: &mut AppState) {
+/// Place one screw hole at the spot the step's orb points at.
+fn draw_hole(app: &mut AppState, v: f32) {
+    ensure_param(app, "hole", "5mm");
+    let r = crate::value::eval_length_mm_in_doc("hole", &app.doc).unwrap_or(5.0) * 0.5;
+    app.apply(Action::CreateCircle {
+        cx: 19.0,
+        cy: v,
+        r,
+        diameter_expr: Some("hole".to_string()),
+    });
+}
+
+/// Open the sketch on the flange's inside face. Not a button any more (#843 — clicking the
+/// glowing face is the whole job), but the hole assists lean on it so theirs still work for
+/// someone who skipped ahead.
+fn open_flange_sketch_for_me(app: &mut AppState) {
     use crate::model::{ExtrudeFace, FaceId};
     if hole_sketch_open(app) {
         return;
@@ -1660,19 +1622,8 @@ fn assist_flange_sketch(app: &mut AppState) {
     });
 }
 
-/// Place one screw hole at the spot the step's orb points at.
-fn draw_hole(app: &mut AppState, v: f32) {
-    ensure_param(app, "hole", "5mm");
-    let r = crate::value::eval_length_mm_in_doc("hole", &app.doc).unwrap_or(5.0) * 0.5;
-    app.apply(Action::CreateCircle {
-        cx: 19.0,
-        cy: v,
-        r,
-        diameter_expr: Some("hole".to_string()),
-    });
-}
-
 fn assist_first_hole(app: &mut AppState) {
+    open_flange_sketch_for_me(app);
     if !first_hole_drawn(app) {
         draw_hole(app, 10.0);
     }
@@ -1906,7 +1857,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(params_button_orb),
         done: Some(params_pane_ready),
         on_enter: None,
-        assist: Some(StepAssist { label: "Open it for me", run: assist_open_params }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -1920,7 +1871,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(name_box_tapped),
         on_enter: None,
-        assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -1960,7 +1911,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
         done: Some(leg_added),
         on_enter: None,
-        assist: Some(StepAssist { label: "Add it for me", run: add_leg_param }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -1988,7 +1939,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(params_button_orb),
         done: Some(params_pane_tucked),
         on_enter: None,
-        assist: Some(StepAssist { label: "Tuck it away for me", run: assist_close_params }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2001,7 +1952,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Line)),
         done: Some(line_tool_active),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_line_tool }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2010,12 +1961,12 @@ static BRACKET_STEPS: &[Step] = &[
         only_on_phone: false,
     },
     Step {
-        narration: "I've brought us in over the drawing area. Now click each glowing point \
-                    in turn to draw a loose sketch.",
+        narration: "I've brought us in over the `XY` plane \u{2014} the flat one lying on the \
+                    ground. Click each glowing point in turn to draw a loose sketch on it.",
         anchor: StepAnchor::World(next_profile_point),
         done: Some(profile_drawn),
         on_enter: Some(frame_profile_area),
-        assist: Some(StepAssist { label: "Draw it for me", run: assist_draw_profile }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2028,7 +1979,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Constraint)),
         done: Some(constraint_tool_active),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_constraint_tool }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2041,7 +1992,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(context_button_orb),
         done: Some(context_pane_ready),
         on_enter: None,
-        assist: Some(StepAssist { label: "Open it for me", run: assist_open_context }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2140,7 +2091,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(context_button_orb),
         done: Some(context_pane_tucked),
         on_enter: None,
-        assist: Some(StepAssist { label: "Tuck it away for me", run: assist_close_context }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2154,7 +2105,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Ui(UiAnchor::Tool(Tool::Dimension)),
         done: Some(dimension_tool_active),
         on_enter: Some(clear_selection_for_dimensioning),
-        assist: Some(StepAssist { label: "Do it for me", run: assist_dimension_tool }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2281,7 +2232,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(sketch_tool_orb),
         done: Some(sketch_tool_ready),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_sketch_tool }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2309,7 +2260,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(flange_face_orb),
         done: Some(hole_sketch_open),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_flange_sketch }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2322,7 +2273,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(circle_tool_orb),
         done: Some(circle_tool_ready),
         on_enter: None,
-        assist: Some(StepAssist { label: "Do it for me", run: assist_circle_tool }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2378,7 +2329,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(context_button_orb),
         done: Some(context_pane_ready),
         on_enter: None,
-        assist: Some(StepAssist { label: "Open it for me", run: assist_open_context }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2406,7 +2357,7 @@ static BRACKET_STEPS: &[Step] = &[
         anchor: StepAnchor::Guided(context_button_orb),
         done: Some(context_pane_tucked),
         on_enter: None,
-        assist: Some(StepAssist { label: "Tuck it away for me", run: assist_close_context }),
+                assist: None,
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
@@ -2656,16 +2607,25 @@ mod tests {
             visible: false,
         });
         assert!(!params_pane_ready(&app), "the pane is hidden — the step has work to do");
-        assist_open_params(&mut app);
+        // Opening it satisfies the step; tucking it away satisfies the one after (#843 took
+        // the "do it for me" buttons off both — a tap is the whole job).
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Parameters,
+            visible: true,
+        });
         assert!(params_pane_ready(&app));
         assert!(!params_pane_tucked(&app));
-        assist_close_params(&mut app);
+        app.apply(Action::SetPaneVisible {
+            pane: crate::actions::Pane::Parameters,
+            visible: false,
+        });
         assert!(params_pane_tucked(&app));
     }
 
-    /// #810: every step that asks for work offers to do it, and pressing that button really
-    /// does satisfy the step — walk the whole tutorial on the buttons alone and it finishes.
-    /// (The two narration-only bookends have nothing to do; Next is their button.)
+    /// #810/#843: every step that offers a button really is done by it — walk the tutorial
+    /// pressing each step's button, or Next where there isn't one (narration, and the
+    /// click-only steps whose button #843 took away), and it finishes. The assists that need
+    /// earlier geometry make it themselves, so skipping ahead doesn't strand them.
     #[test]
     fn every_working_step_can_do_itself() {
         let mut app = AppState::default();
@@ -2693,6 +2653,28 @@ mod tests {
                     app.apply(Action::TutorialNext);
                 }
             }
+        }
+    }
+
+    /// #843: the "do it for me" button is for steps that need typing (or a keypress), not
+    /// for ones where clicking the thing the orb points at is the whole job.
+    #[test]
+    fn click_only_steps_offer_no_button() {
+        // Tool buttons, pane taps, tapping into a box, clicking a face or the glowing points.
+        for step in [1, 2, 5, 7, 8, 9, 10, 11, 18, 19, 28, 30, 31, 35, 37] {
+            assert!(
+                BRACKET_STEPS[step].assist.is_none(),
+                "step {step} is click-only but offers a button: {}",
+                BRACKET_STEPS[step].narration
+            );
+        }
+        // Typing (and the constraint steps' number keys) keep theirs.
+        for step in [3, 4, 6, 12, 13, 20, 25, 32, 38, 41] {
+            assert!(
+                BRACKET_STEPS[step].assist.is_some(),
+                "step {step} needs the keyboard and should offer a button: {}",
+                BRACKET_STEPS[step].narration
+            );
         }
     }
 

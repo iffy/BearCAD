@@ -3596,20 +3596,22 @@ document is millimeters, so the player is person-scale: eye height
   buttons and again for the extrude **Output → Cut**, tucking it away when the model needs
   the screen. Each such step's predicate is *already satisfied* on a desktop (where the panes
   are docked), so it auto-advances the moment it's reached and only ever shows on a phone;
-  its orb points at the status-bar toggle (`UiAnchor::PaneButton`), and its "do it for me"
-  opens or closes the pane. Steps whose wording assumes a desktop can carry
+  its orb points at the status-bar toggle (`UiAnchor::PaneButton`). Steps whose wording assumes a desktop can carry
   `Step::phone_narration`, used when `AppState::compact_layout` is set (mirrored each frame
   from `touch::compact`).
-- **Every step that asks for work offers to do it** (#810): a **"do it for me" button** in
-  the bubble (`tutorial::StepAssist { label, run: fn(&mut AppState) }`, applied by
-  `Action::TutorialAssist`) makes the same document changes the user's clicks would — add the
-  parameters, draw the profile with its corner coincidences, apply each constraint, each
-  dimension, the extrude, the fillets, the hole sketch and its circles, the cut, the
-  countersink, the corner rounds, the engraving, the angle change — so the step's own
-  predicate advances the tutorial exactly as if they'd done it. Only the two narration-only
-  bookends have none (Next is their button). An assist never clobbers work already done:
-  parameters keep values the user typed, and a step whose work exists is a no-op. A test
-  walks the whole tutorial on the buttons alone.
+- **Steps that need the keyboard offer to do themselves** (#810/#843): a **"do it for me"
+  button** in the bubble (`tutorial::StepAssist { label, run: fn(&mut AppState) }`, applied by
+  `Action::TutorialAssist`) makes the same document changes the user's typing would — add the
+  parameters, apply each constraint, each dimension, the extrude, the fillets, the hole
+  circles, the cut, the countersink, the corner rounds, the engraving, the angle change — so
+  the step's own predicate advances the tutorial exactly as if they'd done it. Steps where
+  **clicking the thing the orb points at is the whole job** carry no button (#843): tool
+  buttons, pane taps, tapping into a field, and clicking a face or the glowing profile
+  points. The assists that need earlier geometry make it themselves (the pin assist draws the
+  profile; the hole assists open the flange sketch), so a reader who clicked Next past those
+  steps isn't stranded. An assist never clobbers work already done: parameters keep values
+  the user typed, and a step whose work exists is a no-op. A test walks the whole tutorial on
+  the buttons, pressing Next where there is none.
 - First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
   interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
   angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and

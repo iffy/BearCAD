@@ -1994,12 +1994,47 @@ fn draw_orb_drag_hint(
 /// **Space** keycap plus a line of text, for when the thing to click sits under something
 /// else and the Selection Exploder is the way in. Sits below the orb, or above it when the
 /// bottom of the view is in the way.
+/// Where the orb's key hint sits (#777/#842): under the orb by preference, over it when
+/// that would run off the bottom — and either way clear of Bear's speech bubble, which it
+/// used to cover.
+fn orb_key_hint_center(
+    orb: egui::Pos2,
+    orb_radius: f32,
+    size: egui::Vec2,
+    bounds: egui::Rect,
+    avoid: egui::Rect,
+) -> egui::Pos2 {
+    let below = orb.y + orb_radius + 16.0 + size.y * 0.5;
+    let above = orb.y - orb_radius - 16.0 - size.y * 0.5;
+    let cx = orb
+        .x
+        .clamp(bounds.left() + size.x * 0.5 + 6.0, bounds.right() - size.x * 0.5 - 6.0);
+    let rect_at = |cy: f32| egui::Rect::from_center_size(egui::pos2(cx, cy), size);
+    let fits = |cy: f32| {
+        let r = rect_at(cy);
+        r.top() >= bounds.top() + 6.0 && r.bottom() <= bounds.bottom() - 6.0
+    };
+    let clear = |cy: f32| fits(cy) && !rect_at(cy).intersects(avoid.expand(4.0));
+    let cy = if clear(below) {
+        below
+    } else if clear(above) {
+        above
+    } else if fits(below) {
+        below
+    } else {
+        above
+    };
+    egui::pos2(cx, cy)
+}
+
 fn draw_orb_key_hint(
     painter: &egui::Painter,
     ctx: &egui::Context,
     orb: egui::Pos2,
     orb_radius: f32,
     bounds: egui::Rect,
+    // The narration bubble, which the hint must not cover (#842).
+    avoid: egui::Rect,
     key: &str,
     text: &str,
 ) {
@@ -2015,16 +2050,8 @@ fn draw_orb_key_hint(
     let pad = 8.0;
     let width = key_w + 8.0 + galley.size().x + pad * 2.0;
     let height = KEY_H + pad;
-    let below = orb.y + orb_radius + 16.0 + height * 0.5;
-    let above = orb.y - orb_radius - 16.0 - height * 0.5;
-    let cy = if below + height * 0.5 <= bounds.bottom() - 6.0 {
-        below
-    } else {
-        above
-    };
-    let cx = orb
-        .x
-        .clamp(bounds.left() + width * 0.5 + 6.0, bounds.right() - width * 0.5 - 6.0);
+    let center = orb_key_hint_center(orb, orb_radius, egui::vec2(width, height), bounds, avoid);
+    let (cx, cy) = (center.x, center.y);
     let rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(width, height));
     painter.rect_filled(rect, 8.0, egui::Color32::from_rgba_unmultiplied(24, 26, 34, 235));
     painter.rect_stroke(
@@ -2936,6 +2963,19 @@ impl App {
             // Bounded by the window rather than the viewport: a step's orb can be pointing
             // at a side pane, and its badges have to follow it there (#781).
             let badge_bounds = ctx.screen_rect();
+            // Where the narration bubble will sit this frame (it lays out below, from the
+            // same orb position): badges keep off it (#842).
+            let cube = view_cube::cube_rect_in_viewport(viewport);
+            let bubble_rect = {
+                let (pos, _) = tutorial_bubble_layout(
+                    Some((pos, base)),
+                    cube.expand(view_cube::HUD_PANEL_PAD),
+                    self.tutorial_bubble_size,
+                    badge_bounds,
+                    touch::compact(ctx).then_some(viewport.bottom()),
+                );
+                egui::Rect::from_min_size(pos, self.tutorial_bubble_size)
+            };
             if step.needs_shift.is_some_and(|f| f(&self.state)) {
                 draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);
             }
@@ -2963,6 +3003,7 @@ impl App {
                     pos,
                     base,
                     badge_bounds,
+                    bubble_rect,
                     hint.0,
                     hint.1,
                 );
@@ -23624,6 +23665,36 @@ mod tests {
                 "at t={t} start A landed at {landed:?}, not on end A"
             );
         }
+    }
+
+    /// #842: the orb's Space hint keeps off the narration bubble — it sits under the orb
+    /// when that's clear, flips above when the bubble is in the way, and still respects the
+    /// window edges.
+    #[test]
+    fn the_space_hint_keeps_off_the_speech_bubble() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let size = egui::vec2(220.0, 34.0);
+        let orb = egui::pos2(500.0, 300.0);
+        let nowhere = egui::Rect::from_min_size(egui::pos2(-500.0, -500.0), egui::Vec2::ZERO);
+
+        // Nothing in the way: under the orb.
+        let below = orb_key_hint_center(orb, 26.0, size, bounds, nowhere);
+        assert!(below.y > orb.y, "under the orb: {below:?}");
+
+        // The bubble hanging under the orb (where it normally goes) pushes the hint above.
+        let bubble = egui::Rect::from_min_size(egui::pos2(380.0, 340.0), egui::vec2(352.0, 120.0));
+        let flipped = orb_key_hint_center(orb, 26.0, size, bounds, bubble);
+        assert!(flipped.y < orb.y, "above the orb: {flipped:?}");
+        assert!(
+            !egui::Rect::from_center_size(flipped, size).intersects(bubble),
+            "still overlapping the bubble: {flipped:?}"
+        );
+
+        // Boxed in on both sides, it falls back to fitting the window rather than escaping it.
+        let everywhere = bounds;
+        let stuck = orb_key_hint_center(orb, 26.0, size, bounds, everywhere);
+        let rect = egui::Rect::from_center_size(stuck, size);
+        assert!(bounds.contains_rect(rect), "hint left the window: {rect:?}");
     }
 
     /// #767/#825: with no orb the bubble sits clear of the view-cube HUD; with one it
