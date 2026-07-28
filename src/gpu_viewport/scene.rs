@@ -11,7 +11,7 @@ use crate::construction::{
     axis_angle_handle, axis_normal, axis_reference_perp, gizmo_display_offset, global_axis_segment,
     plane_corners, AxisGizmoHit, AXIS_ANGLE_GIZMO_RADIUS_MM, CONSTRUCTION_DASH_GAP_PX,
     CONSTRUCTION_DASH_LENGTH_PX, CONSTRUCTION_RGBA, FACE_HOVER_FILL_MULTIPLIER, PLANE_FILL_RGBA,
-    GIZMO_HANDLE_HOVER_RGBA, PLANE_DISPLAY_HALF, PickTargetKind, PlaneEditDependentPreview,
+    GIZMO_HANDLE_HOVER_RGBA, PickTargetKind, PlaneEditDependentPreview,
     PlaneReference,
 };
 use crate::context::selection_highlight_dashed;
@@ -2271,7 +2271,7 @@ impl<'a> SceneMesh<'a> {
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+        let corners = plane_corners(plane);
         self.push_quad_outline(corners, color, stroke_width, cam, viewport, view_proj);
     }
 
@@ -2341,7 +2341,7 @@ impl<'a> SceneMesh<'a> {
         opacity: f32,
         cam: &Camera,
     ) {
-        let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+        let corners = plane_corners(plane);
         let fill_bias = plane_fill_depth_bias(index);
         let eye = cam.eye();
         let fill_corners = offset_corners_toward_camera(corners, plane.normal, eye, fill_bias);
@@ -2594,7 +2594,7 @@ impl<'a> SceneMesh<'a> {
         fill_multiplier: f32,
         cam: &Camera,
     ) {
-        let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+        let corners = plane_corners(plane);
         let bias = plane_fill_depth_bias(index) + HOVER_PLANE_DEPTH_LIFT;
         let fill_corners =
             offset_corners_toward_camera(corners, plane.normal, cam.eye(), bias);
@@ -3369,7 +3369,7 @@ pub fn plane_fill_depth_bias(index: usize) -> f32 {
 }
 
 fn plane_camera_depth(plane: &ConstructionPlane, cam: &Camera) -> f32 {
-    let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+    let corners = plane_corners(plane);
     let center = (corners[0] + corners[1] + corners[2] + corners[3]) * 0.25;
     (cam.eye() - center).length()
 }
@@ -5891,6 +5891,7 @@ mod tests {
     #[test]
     fn extruded_top_cap_on_slanted_target_plane_is_biased_toward_camera() {
         let mut state = AppState::default();
+        state.doc.construction_planes.truncate(1);
         commit_test_rectangle(&mut state);
         let sketch = state.doc.lines[0].sketch;
 
@@ -5968,6 +5969,7 @@ mod tests {
         // The in-progress (uncommitted) ghost preview should show the actual slanted shape
         // once the gizmo has snapped to a slanted target plane (#63).
         let mut state = AppState::default();
+        state.doc.construction_planes.truncate(1);
         commit_test_rectangle(&mut state);
         let sketch = state.doc.lines[0].sketch;
 

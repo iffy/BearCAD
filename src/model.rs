@@ -5,7 +5,6 @@
 //! and the OCCT kernel come online this will grow, but the persistence boundary
 //! (`storage.rs`) is kept narrow so the file format can evolve underneath it.
 
-use crate::face::default_xy_plane;
 use crate::value::{AngleUnit, LengthUnit};
 use serde::{Deserialize, Serialize};
 
@@ -719,8 +718,61 @@ pub struct ConstructionPlane {
     pub repeat_instance: Option<RepeatPlaneInstance>,
     /// User-visible label in the Elements pane; empty uses the default.
     pub name: Option<String>,
+    /// How far the drawn plane reaches in its own u/v axes (#833). Defaults to the old
+    /// symmetric ±`PLANE_DISPLAY_HALF` square, so documents saved before extents existed
+    /// look exactly as they did; the planes a new document starts with instead sit in one
+    /// quadrant, and any plane can be resized by dragging its corner handles.
+    #[serde(default)]
+    pub extent: PlaneExtent,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// A construction plane's drawn rectangle, in its own u/v millimetres relative to its origin
+/// (#833). `u_min`/`v_min` are the low corner, `u_max`/`v_max` the high one — the two the
+/// resize handles sit on.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaneExtent {
+    pub u_min: f32,
+    pub u_max: f32,
+    pub v_min: f32,
+    pub v_max: f32,
+}
+
+impl Default for PlaneExtent {
+    fn default() -> Self {
+        let half = crate::construction::PLANE_DISPLAY_HALF;
+        Self { u_min: -half, u_max: half, v_min: -half, v_max: half }
+    }
+}
+
+impl PlaneExtent {
+    /// A plane that starts at its origin and reaches `size` into the +u/+v quadrant — what
+    /// the three planes a new document opens with use.
+    pub fn quadrant(size: f32) -> Self {
+        Self { u_min: 0.0, u_max: size, v_min: 0.0, v_max: size }
+    }
+
+    /// Keep the rectangle non-degenerate however the handles are dragged: at least
+    /// `MIN_PLANE_EXTENT_MM` across in each direction, with min below max.
+    pub fn normalized(self) -> Self {
+        let (u_min, u_max) = ordered_span(self.u_min, self.u_max);
+        let (v_min, v_max) = ordered_span(self.v_min, self.v_max);
+        Self { u_min, u_max, v_min, v_max }
+    }
+}
+
+/// Smallest side a construction plane can be dragged down to (mm).
+pub const MIN_PLANE_EXTENT_MM: f32 = 5.0;
+
+fn ordered_span(a: f32, b: f32) -> (f32, f32) {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    if hi - lo >= MIN_PLANE_EXTENT_MM {
+        (lo, hi)
+    } else {
+        let mid = (lo + hi) * 0.5;
+        (mid - MIN_PLANE_EXTENT_MM * 0.5, mid + MIN_PLANE_EXTENT_MM * 0.5)
+    }
 }
 
 /// Which end of a line segment a constraint point refers to.
@@ -3481,7 +3533,7 @@ impl Default for Document {
             lines: Vec::new(),
             circles: Vec::new(),
             constraints: Vec::new(),
-            construction_planes: vec![default_xy_plane()],
+            construction_planes: crate::face::default_datum_planes(),
             extrusions: Vec::new(),
             bodies: Vec::new(),
             imported_meshes: Vec::new(),
@@ -3587,6 +3639,19 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #833: documents saved before planes had an extent load with the old symmetric
+    /// ±50mm square, so they look exactly as they did.
+    #[test]
+    fn a_plane_saved_without_an_extent_keeps_the_old_centred_square() {
+        let plane = crate::face::default_xy_plane();
+        let mut json: serde_json::Value = serde_json::to_value(&plane).unwrap();
+        json.as_object_mut().unwrap().remove("extent").expect("planes serialize their extent");
+        let loaded: ConstructionPlane = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.extent, PlaneExtent::default());
+        assert_eq!(loaded.extent.u_max, crate::construction::PLANE_DISPLAY_HALF);
+        assert_eq!(loaded.extent.u_min, -crate::construction::PLANE_DISPLAY_HALF);
+    }
 
     #[test]
     fn legacy_horizontal_vertical_constraints_migrate_to_axis_parallel() {

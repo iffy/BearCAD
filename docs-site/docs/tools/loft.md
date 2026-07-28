@@ -41,7 +41,8 @@ horns, hulls, funnels, transitions between shapes.
 ```lua
 bearcad.circle{ r = 5 }
 bearcad.plane{ offset = 10 }
-bearcad.begin_sketch{ kind = "plane", index = 1 }
+-- Plane 3: the new one, after the document's three starting planes.
+bearcad.begin_sketch{ kind = "plane", index = 3 }
 bearcad.circle{ r = 2 }
 bearcad.exit_sketch()
 bearcad.loft{ circles = {0, 1}, name = "Horn" }

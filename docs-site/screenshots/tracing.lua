@@ -33,7 +33,8 @@ bearcad.line{ x = 45, y = -105, x1 = 45, y1 = -57.5 }
 bearcad.exit_sketch()
 
 -- Hide the ground plane's display quad; the image itself reads as the surface.
-bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the three datum planes a new document opens with.
+for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 -- Park the cursor-independent Dimension tool for a deterministic capture.

@@ -1370,6 +1370,12 @@ pub enum Action {
         from: usize,
         offset_mm: f32,
     },
+    /// Resize a construction plane's drawn rectangle (#833) — what dragging one of its two
+    /// corner grips under the Select tool commits.
+    SetPlaneExtent {
+        index: usize,
+        extent: crate::model::PlaneExtent,
+    },
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
     FocusPlaneDim { dim: PlaneDim },
@@ -7257,6 +7263,20 @@ impl AppState {
                     angle_deg: 0.0,
                 };
                 self.add_construction_plane(definition, ConstructionPlaneParent::Root)
+            }
+            Action::SetPlaneExtent { index, extent } => {
+                let Some(plane) = self.doc.construction_planes.get_mut(index) else {
+                    return ActionResult::Err(format!("Unknown construction plane {index}"));
+                };
+                plane.extent = extent.normalized();
+                let (w, h) = (extent.u_max - extent.u_min, extent.v_max - extent.v_min);
+                let unit = self.doc.default_length_unit;
+                self.status = format!(
+                    "Plane resized to {} × {}",
+                    crate::value::format_length_display_in(w, unit),
+                    crate::value::format_length_display_in(h, unit)
+                );
+                ActionResult::Ok
             }
             Action::SetPlaneOffset { value } => {
                 let Some(cp) = &mut self.creating_plane else {
@@ -14735,7 +14755,7 @@ mod tests {
     #[test]
     fn target_snapped_extrusion_status_reports_resolved_depth() {
         use crate::model::{ExtrudeFace, ExtrudeTarget, FaceId};
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
         let lines = crate::construction::add_line_rectangle(
@@ -16680,6 +16700,7 @@ mod tests {
             definition: crate::face::default_xy_plane_definition(),
             repeat_instance: None,
             name: None,
+            extent: crate::model::PlaneExtent::default(),
             deleted: false,
         });
         let path_sketch = state
@@ -16992,7 +17013,7 @@ mod tests {
 
     #[test]
     fn edit_construction_plane_updates_offset_and_descendants() {
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.construction_planes.push(plane_from_definition(
@@ -17022,7 +17043,7 @@ mod tests {
 
     #[test]
     fn commit_construction_plane_adds_to_document_not_export_list() {
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         state.apply(Action::BeginConstructionPlane {
             reference: PlaneReference::Face {
                 origin: Vec3::ZERO,
@@ -17045,7 +17066,7 @@ mod tests {
 
     #[test]
     fn commit_construction_plane_replaces_stale_selection() {
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         state.apply(Action::BeginConstructionPlane {
             reference: PlaneReference::Face {
                 origin: Vec3::ZERO,
@@ -17089,9 +17110,47 @@ mod tests {
         assert_eq!(cp.live_dims(), (12.0, 45.0));
     }
 
+    /// #833: resizing a plane is one undoable edit.
+    #[test]
+    fn set_plane_extent_resizes_and_undoes() {
+        let mut state = AppState::default();
+        let before = state.doc.construction_planes[0].extent;
+        let resized = crate::model::PlaneExtent { u_min: 0.0, u_max: 140.0, v_min: 0.0, v_max: 60.0 };
+        state.apply(Action::SetPlaneExtent { index: 0, extent: resized });
+        assert_eq!(state.doc.construction_planes[0].extent, resized);
+
+        state.apply(Action::UndoLast);
+        assert_eq!(state.doc.construction_planes[0].extent, before);
+    }
+
+    /// An extent dragged inside out is stored the right way round, never negative (#833).
+    #[test]
+    fn set_plane_extent_normalizes_an_inside_out_rectangle() {
+        let mut state = AppState::default();
+        state.apply(Action::SetPlaneExtent {
+            index: 0,
+            extent: crate::model::PlaneExtent { u_min: 40.0, u_max: -10.0, v_min: 0.0, v_max: 30.0 },
+        });
+        let extent = state.doc.construction_planes[0].extent;
+        assert!(extent.u_min < extent.u_max, "got {extent:?}");
+        assert_eq!((extent.u_min, extent.u_max), (-10.0, 40.0));
+    }
+
+    #[test]
+    fn set_plane_extent_rejects_an_unknown_plane() {
+        let mut state = AppState::default();
+        assert!(matches!(
+            state.apply(Action::SetPlaneExtent {
+                index: 99,
+                extent: crate::model::PlaneExtent::default(),
+            }),
+            ActionResult::Err(_)
+        ));
+    }
+
     #[test]
     fn undo_construction_plane() {
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         state.apply(Action::BeginConstructionPlane {
             reference: PlaneReference::Face {
                 origin: Vec3::ZERO,
@@ -17117,7 +17176,7 @@ mod tests {
         };
         use crate::model::ConstraintPoint;
 
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         state.apply(Action::BeginConstructionPlane {
             reference: PlaneReference::Axis {
                 origin: Vec3::new(0.0, 5.0, 0.0),
@@ -17174,7 +17233,7 @@ mod tests {
         };
         use crate::model::{ConstraintPoint, Line, LineEnd};
 
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         let sketch = state
             .doc
             .add_sketch(crate::model::FaceId::ConstructionPlane(0));
@@ -17221,7 +17280,7 @@ mod tests {
 
     #[test]
     fn undo_construction_plane_edit_restores_previous() {
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         state.apply(Action::BeginConstructionPlane {
             reference: PlaneReference::Face {
                 origin: Vec3::ZERO,
@@ -17258,7 +17317,7 @@ mod tests {
 
     #[test]
     fn undo_construction_plane_edit_restores_descendants() {
-        let mut state = AppState::default();
+        let mut state = ground_plane_only_state();
         // A sketch on the default plane (0) and a child plane defined relative to it,
         // so editing plane 0 moves the child (index 1).
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
@@ -17290,6 +17349,15 @@ mod tests {
             "expected descendant restored to {child_before}, got {}",
             state.doc.construction_planes[1].origin.z
         );
+    }
+
+    /// A state whose document carries only the ground plane. Plane tests written before the
+    /// three datum planes a new document opens with (#833) index planes by hand, and only
+    /// care that plane 0 is the ground.
+    fn ground_plane_only_state() -> AppState {
+        let mut state = AppState::default();
+        state.doc.construction_planes.truncate(1);
+        state
     }
 
     fn recording_state() -> AppState {
@@ -19441,7 +19509,8 @@ mod tests {
     #[test]
     fn repeat_copies_a_construction_plane_along_the_axis() {
         let mut state = two_box_state(false);
-        // The default document ships one construction plane (the XY ground) at the origin.
+        // Only the XY ground plane, so the copies this makes are the only other planes.
+        state.doc.construction_planes.truncate(1);
         let base = state.doc.construction_planes[0].origin;
         let normal = state.doc.construction_planes[0].normal;
         let result = state.apply(Action::CreateRepeatOperation {

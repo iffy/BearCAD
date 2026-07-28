@@ -15,7 +15,8 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8, name = "Block" }
 
 bearcad.move_bodies{ bodies = {0}, x = "30", axis = "z", angle = "30", name = "Shifted" }
 
-bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the three datum planes a new document opens with.
+for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")

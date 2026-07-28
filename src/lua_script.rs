@@ -1980,6 +1980,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     };
                     t.set("origin", vec3_lua(lua, plane.origin)?)?;
                     t.set("normal", vec3_lua(lua, plane.normal)?)?;
+                    // The drawn rectangle's size in the plane's own u/v axes (#833).
+                    let extent = lua.create_table()?;
+                    extent.set("u_min", plane.extent.u_min)?;
+                    extent.set("u_max", plane.extent.u_max)?;
+                    extent.set("v_min", plane.extent.v_min)?;
+                    extent.set("v_max", plane.extent.v_max)?;
+                    t.set("extent", extent)?;
                     if let Some(name) = &plane.name {
                         t.set("name", name.as_str())?;
                     }
@@ -6289,7 +6296,8 @@ mod tests {
             assert(bearcad.count("line") == 4, "line count " .. bearcad.count("line"))
             assert(bearcad.count("circle") == 1)
             assert(bearcad.count("sketch") == 1)
-            assert(bearcad.count("construction_plane") == 1)
+            -- The three datum planes a new document opens with (#833).
+            assert(bearcad.count("construction_plane") == 3)
             assert(bearcad.count("extrusion") == 0)
             assert(bearcad.count("body") == 0)
             assert(bearcad.count("parameter") == 0)
@@ -6608,7 +6616,7 @@ mod tests {
             bearcad.plane{ origin = {40, 0, 0}, normal = {1, 0, 0} }
             bearcad.repeat_bodies{
                 bodies = {0}, axis = "x", mode = "fill_pitch", spacing = 10,
-                to = { plane = 1 },
+                to = { plane = 3 },
             }
             "#,
         );
@@ -7081,12 +7089,13 @@ mod tests {
             r#"
             bearcad.plane{ offset = 5 }
             bearcad.rect{ width = 10, height = 10 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, to = { plane = 1 } }
+            -- Plane 3: the added one, after the three datum planes (#833).
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, to = { plane = 3 } }
         "#,
         );
 
         let ext = &state.doc.extrusions[0];
-        assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(1)));
+        assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(3)));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
     }
@@ -7263,7 +7272,7 @@ mod tests {
             bearcad.exit_sketch()
             bearcad.extrude{ polygon = {0,1,2,3}, distance = 5 }
             bearcad.plane{ offset = 2.5 }
-            bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 1 }}, name = "Halved" }
+            bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 3 }}, name = "Halved" }
         "#,
         );
         assert_eq!(state.doc.slice_ops.len(), 1);
@@ -7820,8 +7829,9 @@ mod tests {
     #[test]
     fn lua_plane_adds_offset_construction_plane() {
         let state = run_lua("bearcad.plane{ offset = 5 }");
-        assert_eq!(state.doc.construction_planes.len(), 2);
-        let plane = &state.doc.construction_planes[1];
+        // Three datum planes (#833) plus the one the script added.
+        assert_eq!(state.doc.construction_planes.len(), 4);
+        let plane = &state.doc.construction_planes[3];
         assert!(
             (plane.origin.z - 5.0).abs() < 1e-3,
             "origin should sit 5mm above Ground along its normal, got {:?}",
@@ -7835,14 +7845,14 @@ mod tests {
         let state = run_lua(
             r#"
             bearcad.plane{ offset = 5 }
-            bearcad.plane{ offset = 3, from = 1 }
+            bearcad.plane{ offset = 3, from = 3 }
         "#,
         );
-        assert_eq!(state.doc.construction_planes.len(), 3);
+        assert_eq!(state.doc.construction_planes.len(), 5);
         assert!(
-            (state.doc.construction_planes[2].origin.z - 8.0).abs() < 1e-3,
-            "plane 2 should stack a further 3mm on top of plane 1's 5mm, got {:?}",
-            state.doc.construction_planes[2].origin
+            (state.doc.construction_planes[4].origin.z - 8.0).abs() < 1e-3,
+            "plane 4 should stack a further 3mm on top of plane 3's 5mm, got {:?}",
+            state.doc.construction_planes[4].origin
         );
     }
 

@@ -5314,6 +5314,9 @@ mod tests {
     fn a_plane_anchored_to_a_hidden_sketch_takes_its_sketches_with_it() {
         use crate::model::{ConstructionPlaneParent, FaceId};
         let mut doc = Document::default();
+        // Just the ground plane: this test indexes planes by hand, so the other two datum
+        // planes (#833) would only shift the numbers.
+        doc.construction_planes.truncate(1);
         let base = doc.add_sketch(FaceId::ConstructionPlane(0));
         // A plane anchored to that sketch, with a second sketch drawn on it.
         let mut plane = doc.construction_planes[0].clone();
@@ -5574,17 +5577,26 @@ label_hidden: false,
         let tree = build_hierarchy(&doc, None);
         assert_eq!(tree.len(), 1, "hierarchy should have exactly one root: {tree:?}");
         assert_eq!(tree[0].node, HierarchyNode::Document);
-        // The default document's lone construction plane nests under Document rather than
-        // sitting as a second root (#87).
+        // The default document's three datum planes (#833) nest under Document rather than
+        // sitting as extra roots (#87).
         assert_eq!(
             tree[0].children.iter().map(|c| c.node).collect::<Vec<_>>(),
-            vec![HierarchyNode::ConstructionPlane(0)]
+            vec![
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::ConstructionPlane(1),
+                HierarchyNode::ConstructionPlane(2),
+            ]
         );
 
         let list = build_element_list(&doc, None);
         assert_eq!(
             list,
-            vec![HierarchyNode::Document, HierarchyNode::ConstructionPlane(0)]
+            vec![
+                HierarchyNode::Document,
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::ConstructionPlane(1),
+                HierarchyNode::ConstructionPlane(2),
+            ]
         );
     }
 
@@ -5664,6 +5676,9 @@ label_hidden: false,
     #[test]
     fn construction_plane_ordering_is_deterministic_by_index() {
         let mut doc = Document::default();
+        // Just the ground plane: this test indexes planes by hand, so the other two datum
+        // planes (#833) would only shift the numbers.
+        doc.construction_planes.truncate(1);
         // Independent planes (no input relationship) order by kind+index (#540), which is
         // stable across the randomized HashSet iteration order — never by creation time.
         // shape_order is populated only to prove it no longer influences pane ordering.
@@ -5746,6 +5761,9 @@ label_hidden: false,
 
     fn doc_with_plane_sketches() -> Document {
         let mut doc = Document::default();
+        // Just the ground plane: this test indexes planes by hand, so the other two datum
+        // planes (#833) would only shift the numbers.
+        doc.construction_planes.truncate(1);
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
         crate::construction::add_line_rectangle(&mut doc, s0, 0.0, 0.0, 10.0, 10.0, [false; 4]);
@@ -5787,6 +5805,9 @@ label_hidden: false,
     #[test]
     fn nested_sketches_on_circle_face_follow_parent_order() {
         let mut doc = Document::default();
+        // Just the ground plane: this test indexes planes by hand, so the other two datum
+        // planes (#833) would only shift the numbers.
+        doc.construction_planes.truncate(1);
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
             .push(crate::model::Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
@@ -5809,6 +5830,9 @@ label_hidden: false,
     #[test]
     fn plane_from_sketch_geometry_lists_under_sketch() {
         let mut doc = Document::default();
+        // Just the ground plane: this test indexes planes by hand, so the other two datum
+        // planes (#833) would only shift the numbers.
+        doc.construction_planes.truncate(1);
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
@@ -6206,6 +6230,9 @@ label_hidden: false,
     #[test]
     fn hiding_sketch_hides_derived_construction_plane() {
         let mut doc = Document::default();
+        // Just the ground plane: this test indexes planes by hand, so the other two datum
+        // planes (#833) would only shift the numbers.
+        doc.construction_planes.truncate(1);
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.construction_planes.push(plane_from_definition(
             &default_xy_plane().definition,

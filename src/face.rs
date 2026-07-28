@@ -39,8 +39,49 @@ pub fn default_xy_plane() -> ConstructionPlane {
         definition: default_xy_plane_definition(),
         repeat_instance: None,
         name: None,
+        extent: crate::model::PlaneExtent::default(),
         deleted: false,
     }
+}
+
+/// How far the datum planes of a fresh document reach (mm), into their +u/+v quadrant.
+pub const DATUM_PLANE_SIZE_MM: f32 = 100.0;
+
+/// The three datum planes a new document opens with (#833): XY, XZ and YZ, each occupying
+/// the positive quadrant of its own plane so the origin corner is shared and none of them
+/// hides the others' geometry.
+pub fn default_datum_planes() -> Vec<ConstructionPlane> {
+    let extent = crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM);
+    let plane = |normal: Vec3, u: Vec3, v: Vec3, label: &str| ConstructionPlane {
+        origin: Vec3::ZERO,
+        normal,
+        u_axis: u,
+        v_axis: v,
+        parent: ConstructionPlaneParent::Root,
+        definition: PlaneDefinition {
+            anchor: PlaneAnchor::Face {
+                origin: Vec3::ZERO,
+                normal,
+                label: label.to_string(),
+            },
+            offset_mm: 0.0,
+            angle_deg: 0.0,
+        },
+        repeat_instance: None,
+        name: Some(label.to_string()),
+        extent,
+        deleted: false,
+    };
+    vec![
+        // XY keeps index 0 and the "Ground" anchor label every existing document uses.
+        ConstructionPlane {
+            name: Some("XY".to_string()),
+            extent,
+            ..default_xy_plane()
+        },
+        plane(Vec3::Y, Vec3::X, Vec3::Z, "XZ"),
+        plane(Vec3::X, Vec3::Y, Vec3::Z, "YZ"),
+    ]
 }
 
 /// Resolve the world-space sketch frame for a face.
@@ -1019,7 +1060,7 @@ pub fn pick_sketch_face(
     }
 
     for (i, plane) in doc.construction_planes.iter().enumerate().rev() {
-        let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
+        let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             let candidate = FaceId::ConstructionPlane(i);
             if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
@@ -1149,7 +1190,7 @@ pub fn sketch_faces_near(
         }
     }
     for (i, plane) in doc.construction_planes.iter().enumerate() {
-        let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
+        let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             push(FaceId::ConstructionPlane(i), c, dist);
         }
@@ -1428,11 +1469,18 @@ mod tests {
     use super::*;
     use crate::model::Sketch;
 
+    /// #833: a new document opens with the three datum planes, XY first (so plane 0 stays
+    /// the ground plane everything else assumes), each one sitting in a single quadrant.
     #[test]
-    fn default_document_has_xy_construction_plane() {
+    fn default_document_has_the_three_datum_planes() {
         let doc = Document::default();
-        assert_eq!(doc.construction_planes.len(), 1);
+        assert_eq!(doc.construction_planes.len(), 3);
         assert!((doc.construction_planes[0].normal.z - 1.0).abs() < 1e-4);
+        assert!((doc.construction_planes[1].normal.y - 1.0).abs() < 1e-4);
+        assert!((doc.construction_planes[2].normal.x - 1.0).abs() < 1e-4);
+        for plane in &doc.construction_planes {
+            assert_eq!(plane.extent, crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM));
+        }
         assert!(doc.shape_order.is_empty());
     }
 
@@ -1474,6 +1522,9 @@ mod tests {
     #[test]
     fn pick_sketch_face_finds_circle_interior() {
         let mut doc = Document::default();
+        // Only the ground plane matters here; the other two datum planes (#833) project
+        // edge-on under this flattening test projection and would tie for the click.
+        doc.construction_planes.truncate(1);
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
             .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
@@ -1596,7 +1647,8 @@ mod tests {
 
     #[test]
     fn pick_sketch_face_finds_extrusion_cap() {
-        let doc = doc_with_extruded_box();
+        let mut doc = doc_with_extruded_box();
+        doc.construction_planes.truncate(1);
         // Offset screen x by height so the top cap (z=10) separates from the base
         // rect; click where only the lifted top cap projects.
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x + p.z, p.y));
@@ -1656,7 +1708,8 @@ mod tests {
 
     #[test]
     fn pick_sketch_face_finds_extrusion_side_wall() {
-        let doc = doc_with_extruded_box();
+        let mut doc = doc_with_extruded_box();
+        doc.construction_planes.truncate(1);
         // Project to the XZ plane so the y=0 side wall shows as a 20x10 rectangle.
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.z));
         let face = pick_sketch_face(eframe::egui::pos2(10.0, 5.0), &project, &doc, Vec3::new(0.0, 0.0, 100.0));

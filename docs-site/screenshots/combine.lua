@@ -22,7 +22,8 @@ bearcad.rect{ x = 18, y = 6, width = 24, height = 8, name = "Bite" }
 bearcad.exit_sketch()
 bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 20, name = "Bite" }
 
-bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the three datum planes a new document opens with.
+for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")

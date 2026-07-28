@@ -25,7 +25,8 @@ bearcad.ui.wait(8)
 bearcad.ui.key("Enter")
 bearcad.ui.wait(8)
 
-local plane = bearcad.get{ kind = "construction_plane", index = 1 }
+-- Plane 3: the one just committed, after the three datum planes a new document opens with.
+local plane = bearcad.get{ kind = "construction_plane", index = 3 }
 assert(plane, "a plane should have been committed")
 local n = plane.normal
 local o = plane.origin

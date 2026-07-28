@@ -33,6 +33,15 @@ Their handles stay visible and grabbable even when a body is in front of them.
 
 Hiding a plane puts the plane away, not the work — sketches drawn on it stay visible.
 
+## Starting planes and resizing
+
+Every new document starts with three planes — **XY**, **XZ** and **YZ** — meeting at the
+origin.
+
+Select a plane (in the Elements pane or by clicking it) and, with the **Select** tool, drag
+either corner grip to resize its rectangle. The size is how the plane is drawn; sketching
+and extrude-to targets still treat it as reaching forever.
+
 ## Help
 
 ![The Construction Plane tool's Context pane, each field explained](/img/screenshots/pane-construction-plane.png)

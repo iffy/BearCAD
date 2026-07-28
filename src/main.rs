@@ -116,7 +116,7 @@ use construction::{
     offset_gizmo_hit, offset_handle,
     parent_from_pick_target, plane_corners, point_world_position, preview_plane_edit_dependents,
     resolve_pick_target, scene_element_from_pick, AxisGizmoDrag,
-    AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
+    AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
 };
 use document_health::{health_tint_color, DocumentHealth, HealthStatus};
 use document_lifecycle::{circle_alive, constraint_alive, line_alive};
@@ -509,6 +509,16 @@ struct MoveGizmoDrag {
     axis: usize,
     start_translation: f32,
     start_screen: egui::Pos2,
+}
+
+/// A construction plane being resized by one of its corner grips (#833). The plane's extent
+/// follows the pointer live; `start_extent` is put back at release so the committing action
+/// snapshots the size the drag started from, giving the whole drag one undo step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlaneResizeDrag {
+    plane: usize,
+    corner: usize,
+    start_extent: crate::model::PlaneExtent,
 }
 
 /// A drag on the Move tool's rotation ring (#216): the cursor's angle around the ring centre
@@ -2270,6 +2280,8 @@ struct App {
     revolve_gizmo_drag: Option<(egui::Pos2, f32)>,
     /// In-flight Move translation-arrow drag (#215).
     move_gizmo_drag: Option<MoveGizmoDrag>,
+    /// In-flight construction-plane corner resize under the Select tool (#833).
+    plane_resize_drag: Option<PlaneResizeDrag>,
     /// In-flight sketch-text rotation drag on the Move tool's ring (#286).
     text_rotation_drag: Option<TextRotationDrag>,
     /// In-flight in-sketch selection move on the Move tool's gizmo (#306).
@@ -3341,6 +3353,7 @@ impl App {
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
             move_gizmo_drag: None,
+            plane_resize_drag: None,
             text_rotation_drag: None,
             sketch_move_drag: None,
             vertex_drag: None,
@@ -7207,6 +7220,99 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Construction planes whose corner grips are live right now (#833): every selected,
+    /// visible plane, under the Select tool with nothing else in progress.
+    fn plane_resize_targets(&self) -> Vec<usize> {
+        if self.state.tool != Tool::Select || self.state.sketch_session.is_some() {
+            return Vec::new();
+        }
+        (0..self.state.doc.construction_planes.len())
+            .filter(|i| {
+                !self.state.doc.construction_planes[*i].deleted
+                    && self
+                        .state
+                        .scene_selection
+                        .is_selected(SceneElement::ConstructionPlane(*i))
+                    && self
+                        .state
+                        .element_visibility
+                        .effective_visible(&self.state.doc, SceneElement::ConstructionPlane(*i))
+            })
+            .collect()
+    }
+
+    /// Corner-grip resize for a selected construction plane (#833). Returns true while a grip
+    /// owns the pointer, so the normal selection click stands down.
+    fn handle_plane_resize(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> bool {
+        if let Some(drag) = self.plane_resize_drag {
+            let Some(plane) = self.state.doc.construction_planes.get(drag.plane).cloned() else {
+                self.plane_resize_drag = None;
+                return false;
+            };
+            if ui.input(|i| i.pointer.primary_down()) {
+                if let Some(pp) = pointer_screen {
+                    if let Some(world) =
+                        cam.ray_plane_hit(pp, viewport, vp, plane.origin, plane.normal)
+                    {
+                        let extent =
+                            construction::plane_extent_from_corner_drag(&plane, drag.corner, world);
+                        if let Some(p) = self.state.doc.construction_planes.get_mut(drag.plane) {
+                            p.extent = extent;
+                        }
+                    }
+                }
+                return true;
+            }
+            // Released: rewind to the size the grab started at so the committing action
+            // snapshots it, then apply the size it ended at — one undo step for the drag.
+            self.plane_resize_drag = None;
+            let ended_at = plane.extent;
+            if let Some(p) = self.state.doc.construction_planes.get_mut(drag.plane) {
+                p.extent = drag.start_extent;
+            }
+            if ended_at != drag.start_extent {
+                self.state.apply(Action::SetPlaneExtent {
+                    index: drag.plane,
+                    extent: ended_at,
+                });
+            }
+            return true;
+        }
+
+        let targets = self.plane_resize_targets();
+        if targets.is_empty() {
+            return false;
+        }
+        let Some(pp) = pointer_screen else { return false };
+        let hit = targets.iter().find_map(|&i| {
+            let plane = self.state.doc.construction_planes.get(i)?;
+            let corner = construction::plane_resize_handle_hit(pp, project, plane)?;
+            Some((i, corner, plane.extent))
+        });
+        let Some((plane, corner, start_extent)) = hit else {
+            return false;
+        };
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            // Hovering a grip already stops the click below from re-picking under it.
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            return true;
+        }
+        self.plane_resize_drag = Some(PlaneResizeDrag {
+            plane,
+            corner,
+            start_extent,
+        });
+        true
     }
 
     fn handle_mirror_tool(
@@ -16056,7 +16162,7 @@ fn draw_face_highlight(
     match face {
         FaceId::ConstructionPlane(i) => {
             if let Some(plane) = doc.construction_planes.get(i) {
-                let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+                let corners = plane_corners(plane);
                 draw_quad_face_highlight(painter, project, corners, color);
             }
         }
@@ -19106,12 +19212,17 @@ impl App {
             });
         }
 
+        // A selected construction plane's corner grips take the pointer before picking does,
+        // so grabbing one resizes the plane instead of re-selecting what's under it (#833).
+        let plane_resizing = self.handle_plane_resize(ui, &project, pointer_screen, &cam, viewport, &vp);
+
         // Dimension tool also selects in sketch mode (#486/#487): clicks accumulate edges for
         // an angle (or re-click / Enter for a length) instead of immediately locking length.
         if matches!(
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
-        ) && !exploder_owns_press
+        ) && !plane_resizing
+            && !exploder_owns_press
             && (self.state.editing_committed_dim.is_none()
                 || (self.state.tool == Tool::Dimension && additive_modifiers_held))
             && (self.state.placing_dimension.is_none() || self.state.tool == Tool::Dimension)
@@ -21150,6 +21261,37 @@ impl App {
         let gpu_drawn =
             self.gpu_viewport && gpu_viewport::paint(render_state, &painter, viewport, scene);
 
+        // Corner grips for every selected construction plane (#833), on top of the scene so
+        // they stay grabbable wherever the plane sits.
+        for i in self.plane_resize_targets() {
+            let Some(plane) = self.state.doc.construction_planes.get(i) else { continue };
+            for (corner, world) in construction::plane_resize_handles(plane) {
+                let Some(sp) = project(world) else { continue };
+                let hot = self
+                    .plane_resize_drag
+                    .is_some_and(|d| d.plane == i && d.corner == corner)
+                    || (self.plane_resize_drag.is_none()
+                        && pointer_screen.is_some_and(|pp| {
+                            construction::plane_resize_handle_hit(pp, &project, plane)
+                                == Some(corner)
+                        }));
+                let r = construction::PLANE_RESIZE_HANDLE_RADIUS_PX;
+                let rect = egui::Rect::from_center_size(sp, egui::vec2(r * 2.0, r * 2.0));
+                let fill = if hot {
+                    egui::Color32::WHITE
+                } else {
+                    construction::CONSTRUCTION_RGBA
+                };
+                painter.rect_filled(rect, 1.5, fill);
+                painter.rect_stroke(
+                    rect,
+                    1.5,
+                    egui::Stroke::new(1.5, construction::CONSTRUCTION_RGBA),
+                    egui::StrokeKind::Middle,
+                );
+            }
+        }
+
         // The dimension being placed, drawn on top of the scene (#763).
         if let (Some(preview), Some(session)) = (&placing_preview, sketch_session) {
             if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
@@ -23116,7 +23258,7 @@ fn draw_construction_plane(
     color: egui::Color32,
     fill: bool,
 ) {
-    let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+    let corners = plane_corners(plane);
     let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
     let Some(pts) = pts else { return };
     if fill {

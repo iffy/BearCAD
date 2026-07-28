@@ -6372,6 +6372,7 @@ mod tests {
             definition: crate::face::default_xy_plane_definition(),
             repeat_instance: None,
             name: None,
+            extent: crate::model::PlaneExtent::default(),
             deleted: false,
         });
         doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1))
@@ -6545,6 +6546,7 @@ mod tests {
     #[test]
     fn loft_stays_straight_for_off_origin_sections() {
         let mut doc = Document::default();
+        doc.construction_planes.truncate(1);
         doc.construction_planes.push(crate::construction::plane_from_face(
             30.0,
             Vec3::ZERO,
@@ -6581,6 +6583,7 @@ mod tests {
     #[test]
     fn loft_mesh_between_two_circles_closes_with_expected_volume() {
         let mut doc = Document::default();
+        doc.construction_planes.truncate(1);
         let bottom = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles.push(Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
         doc.construction_planes.push(crate::construction::plane_from_definition(

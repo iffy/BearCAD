@@ -142,6 +142,18 @@ features in dependency order.
   next-finer rung **fades in** continuously (8→32 px screen spacing), and every line
   sits on a fixed world multiple of its step, so zooming never pops or slides lines.
   Line count stays bounded (extent is a fixed multiple of the heavy step).
+- **Datum planes & plane size (#833):** a new document opens with three construction
+  planes — **XY**, **XZ** and **YZ** — each 100 mm square and placed in the positive
+  quadrant of its own space (they meet at the origin, so none hides the others). Every
+  construction plane carries a `PlaneExtent { u_min, u_max, v_min, v_max }` giving its drawn
+  rectangle in its own u/v axes; planes made by the Plane tool, and those in documents saved
+  before extents existed, use the symmetric ±50 mm square. Selecting a plane (Elements pane
+  or a viewport click) puts a square grip on its **low (`u_min`, `v_min`) and high
+  (`u_max`, `v_max`) corners**; with the **Select** tool, dragging a grip moves that corner
+  and leaves the opposite one where it is (`Action::SetPlaneExtent`, one undo step per drag,
+  minimum 5 mm a side). The extent is display only — a plane still extends infinitely for
+  sketching, picking and extrude-to targets. Readable from scripts as the `extent` field of
+  `bearcad.get{ kind = "construction_plane", index = i }`.
 
 ---
 

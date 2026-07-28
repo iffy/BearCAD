@@ -1478,6 +1478,16 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             };
             t.insert("origin".into(), vec3_json(plane.origin));
             t.insert("normal".into(), vec3_json(plane.normal));
+            // The drawn rectangle's size in the plane's own u/v axes (#833).
+            t.insert(
+                "extent".into(),
+                json!({
+                    "u_min": plane.extent.u_min,
+                    "u_max": plane.extent.u_max,
+                    "v_min": plane.extent.v_min,
+                    "v_max": plane.extent.v_max,
+                }),
+            );
             if let Some(name) = &plane.name {
                 t.insert("name".into(), json!(name));
             }

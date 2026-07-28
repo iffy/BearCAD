@@ -865,6 +865,7 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         );
         let mut doc = Document::default();
+        doc.construction_planes.truncate(1);
         doc.construction_planes.push(offset_plane);
 
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
@@ -914,6 +915,7 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         );
         let mut doc = Document::default();
+        doc.construction_planes.truncate(1);
         doc.construction_planes.push(offset_plane.clone());
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);

@@ -31,6 +31,11 @@ When a tiny vertex or edge is buried in a cluster of overlapping things, press *
 everything under your cursor fans out into spaced-apart handles you can pick without guessing.
 See [Selection Exploder](/docs/selection-exploder) for the full walkthrough.
 
+## Resizing a construction plane
+
+A selected [construction plane](/docs/tools/construction-plane) shows a grip on two
+opposite corners; drag either one to resize its rectangle.
+
 ## Selection feeds the other tools
 
 Most tools act on the selection: select two lines and Constraint's Parallel lights up;

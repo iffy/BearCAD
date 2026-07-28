@@ -279,6 +279,10 @@ assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
 local l = bearcad.get{ kind = "line", index = 0 }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
+-- A construction plane reports its drawn rectangle in its own u/v axes.
+local e = bearcad.get{ kind = "construction_plane", index = 0 }.extent
+assert(e.u_min == 0 and e.u_max == 100)
+
 local s = bearcad.body_stats(0)                -- volume / triangles / bbox of a body's mesh
 assert(math.abs(s.volume - 40 * 30 * 10) < 120)
 assert(s.bbox.max[3] - s.bbox.min[3] == 10)

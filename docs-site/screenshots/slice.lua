@@ -19,16 +19,17 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 16, name = "Block" }
 
 -- A cutting plane parallel to the ground, halfway up the block.
 bearcad.plane{ offset = 8 }
-bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 1 }},
+bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 3 }},
                name = "Halved" }
 
 -- Nudge the two fragments apart so the cut is visible.
 bearcad.move_bodies{ bodies = {1}, z = 6 }
 
-bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the three datum planes a new document opens with.
+for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
-bearcad.set_visible({ kind = "construction_plane", index = 1 }, "hide")
+bearcad.set_visible({ kind = "construction_plane", index = 3 }, "hide")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 bearcad.ui.wait(2)

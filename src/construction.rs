@@ -10,7 +10,7 @@ use crate::face::{
 use crate::hierarchy::SceneElement;
 use crate::model::{
     ConstructionPlane, ConstructionPlaneParent, ConstraintPoint, Document, FaceId, Line, LineEnd,
-    PlaneAnchor, PlaneDefinition, SketchId,
+    PlaneAnchor, PlaneDefinition, PlaneExtent, SketchId,
 };
 use crate::value::{eval_length_mm, parse_length_or};
 use eframe::egui;
@@ -688,6 +688,7 @@ pub fn plane_from_face(offset: f32, origin: Vec3, normal: Vec3) -> ConstructionP
         ),
         repeat_instance: None,
         name: None,
+        extent: crate::model::PlaneExtent::default(),
         deleted: false,
     }
 }
@@ -722,6 +723,7 @@ pub fn plane_from_axis(
         ),
         repeat_instance: None,
         name: None,
+        extent: crate::model::PlaneExtent::default(),
         deleted: false,
     }
 }
@@ -828,16 +830,78 @@ fn parse_or_live_signed(text: &str, live: f32, user_edited: bool) -> f32 {
 }
 
 /// Corners of the visible plane quad in world space.
-pub fn plane_corners(plane: &ConstructionPlane, half: f32) -> [Vec3; 4] {
+pub fn plane_corners(plane: &ConstructionPlane) -> [Vec3; 4] {
+    plane_corners_of(plane, plane.extent)
+}
+
+/// The four world-space corners a plane would have with `extent` — used to preview a resize
+/// drag before it is committed. Corner order is low-u/low-v first, then counter-clockwise in
+/// the plane's own frame, so index 0 and index 2 are the opposite pair the handles use.
+pub fn plane_corners_of(plane: &ConstructionPlane, extent: PlaneExtent) -> [Vec3; 4] {
     let o = plane.origin;
-    let u = plane.u_axis * half;
-    let v = plane.v_axis * half;
+    let u = plane.u_axis;
+    let v = plane.v_axis;
     [
-        o - u - v,
-        o + u - v,
-        o + u + v,
-        o - u + v,
+        o + u * extent.u_min + v * extent.v_min,
+        o + u * extent.u_max + v * extent.v_min,
+        o + u * extent.u_max + v * extent.v_max,
+        o + u * extent.u_min + v * extent.v_max,
     ]
+}
+
+/// Screen radius of a selected construction plane's corner resize handle (#833).
+pub const PLANE_RESIZE_HANDLE_RADIUS_PX: f32 = 7.0;
+
+/// The two opposite corners a selected plane offers as resize grips (#833): its low
+/// (`u_min`, `v_min`) corner and its high (`u_max`, `v_max`) one — always that pair, so the
+/// grips stay on the same two corners however the plane is dragged about.
+pub const PLANE_RESIZE_CORNERS: [usize; 2] = [0, 2];
+
+/// World positions of `plane`'s two resize grips, paired with their corner index.
+pub fn plane_resize_handles(plane: &ConstructionPlane) -> [(usize, Vec3); 2] {
+    let corners = plane_corners(plane);
+    [
+        (PLANE_RESIZE_CORNERS[0], corners[PLANE_RESIZE_CORNERS[0]]),
+        (PLANE_RESIZE_CORNERS[1], corners[PLANE_RESIZE_CORNERS[1]]),
+    ]
+}
+
+/// Which resize grip of `plane` sits under `pointer`, if any.
+pub fn plane_resize_handle_hit(
+    pointer: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    plane: &ConstructionPlane,
+) -> Option<usize> {
+    plane_resize_handles(plane)
+        .into_iter()
+        .filter_map(|(corner, world)| {
+            let screen = project(world)?;
+            let d = screen.distance(pointer);
+            (d <= PLANE_RESIZE_HANDLE_RADIUS_PX * 1.8).then_some((corner, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(corner, _)| corner)
+}
+
+/// The extent `plane` takes when its `corner` grip is dragged onto the plane point `world`:
+/// the dragged corner follows the pointer and the opposite one stays put.
+pub fn plane_extent_from_corner_drag(
+    plane: &ConstructionPlane,
+    corner: usize,
+    world: Vec3,
+) -> PlaneExtent {
+    let rel = world - plane.origin;
+    let u = rel.dot(plane.u_axis);
+    let v = rel.dot(plane.v_axis);
+    let mut extent = plane.extent;
+    if corner == PLANE_RESIZE_CORNERS[1] {
+        extent.u_max = u;
+        extent.v_max = v;
+    } else {
+        extent.u_min = u;
+        extent.v_min = v;
+    }
+    extent.normalized()
 }
 
 /// Live offset for a face reference from a world-space hover point.
@@ -1784,7 +1848,7 @@ pub fn sketch_face_boundary_world(doc: &Document, face: &FaceId) -> Option<Vec<V
         FaceId::ConstructionPlane(i) => doc
             .construction_planes
             .get(*i)
-            .map(|p| plane_corners(p, PLANE_DISPLAY_HALF).to_vec()),
+            .map(|p| plane_corners(p).to_vec()),
         _ => crate::extrude::face_boundary_loop_world(doc, face),
     }
 }
@@ -2031,7 +2095,7 @@ fn draw_plane_face_highlight(
     plane: &ConstructionPlane,
     color: egui::Color32,
 ) {
-    let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+    let corners = plane_corners(plane);
     draw_quad_face_highlight(painter, project, corners, color);
 }
 
@@ -2869,7 +2933,7 @@ fn nearest_construction_plane(
 ) -> Option<(usize, f32)> {
     let mut best: Option<(usize, f32)> = None;
     for (index, plane) in planes.iter().enumerate().rev() {
-        let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+        let corners = plane_corners(plane);
         let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
         let Some(pts) = pts else { continue };
         let quad = [pts[0], pts[1], pts[2], pts[3]];
@@ -3132,10 +3196,50 @@ mod tests {
         );
     }
 
+    /// #833: dragging a corner grip moves that corner and leaves the opposite one where it
+    /// was, so the rectangle resizes rather than shifting.
+    #[test]
+    fn dragging_a_corner_grip_moves_only_that_corner() {
+        let mut plane = plane_from_face(0.0, Vec3::ZERO, Vec3::Z);
+        plane.extent = PlaneExtent::quadrant(100.0);
+        let handles = plane_resize_handles(&plane);
+        assert_eq!(handles[0].1, Vec3::ZERO, "low grip sits on the origin corner");
+        assert_eq!(handles[1].1, Vec3::new(100.0, 100.0, 0.0));
+
+        let high = plane_extent_from_corner_drag(&plane, handles[1].0, Vec3::new(140.0, 60.0, 0.0));
+        assert_eq!(high, PlaneExtent { u_min: 0.0, u_max: 140.0, v_min: 0.0, v_max: 60.0 });
+
+        let low = plane_extent_from_corner_drag(&plane, handles[0].0, Vec3::new(-30.0, 20.0, 0.0));
+        assert_eq!(low, PlaneExtent { u_min: -30.0, u_max: 100.0, v_min: 20.0, v_max: 100.0 });
+    }
+
+    /// A grip dragged past its opposite number leaves a plane at least the minimum size,
+    /// never an inside-out or zero-area one (#833).
+    #[test]
+    fn a_corner_dragged_past_its_opposite_keeps_a_minimum_size() {
+        let mut plane = plane_from_face(0.0, Vec3::ZERO, Vec3::Z);
+        plane.extent = PlaneExtent::quadrant(100.0);
+        let extent = plane_extent_from_corner_drag(&plane, 2, Vec3::new(-40.0, -40.0, 0.0));
+        assert!(extent.u_max - extent.u_min >= crate::model::MIN_PLANE_EXTENT_MM - 1e-4);
+        assert!(extent.v_max - extent.v_min >= crate::model::MIN_PLANE_EXTENT_MM - 1e-4);
+    }
+
+    /// The grips land on the plane's own corners whatever its orientation (#833).
+    #[test]
+    fn grips_follow_the_planes_own_axes() {
+        let mut plane = plane_from_face(0.0, Vec3::ZERO, Vec3::Y);
+        plane.extent = PlaneExtent::quadrant(10.0);
+        let corners = plane_corners(&plane);
+        let handles = plane_resize_handles(&plane);
+        assert_eq!(handles[0].1, corners[0]);
+        assert_eq!(handles[1].1, corners[2]);
+        assert!((corners[2] - corners[0]).dot(plane.normal).abs() < 1e-4);
+    }
+
     #[test]
     fn plane_corners_are_centered_on_origin() {
         let plane = plane_from_face(0.0, Vec3::new(10.0, 20.0, 0.0), Vec3::Z);
-        let corners = plane_corners(&plane, 10.0);
+        let corners = plane_corners(&plane);
         let center = corners.iter().fold(Vec3::ZERO, |acc, c| acc + *c) / 4.0;
         assert!((center.x - 10.0).abs() < 1e-3);
         assert!((center.y - 20.0).abs() < 1e-3);
@@ -3947,10 +4051,12 @@ mod tests {
     fn pick_reference_uses_ground_when_empty() {
         let doc = Document::default();
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Well clear of the three datum planes' quadrants (#833), so nothing but the ground
+        // is under the click.
         let reference = resolve_pick_target(
-            Pos2::new(80.0, 80.0),
+            Pos2::new(180.0, 180.0),
             &project,
-            Some(Vec3::new(80.0, 80.0, 0.0)),
+            Some(Vec3::new(180.0, 180.0, 0.0)),
             &doc,
             None,
         )
@@ -3979,6 +4085,7 @@ mod tests {
             ),
             ConstructionPlaneParent::Sketch(sketch),
         );
+        doc.construction_planes.truncate(1);
         doc.construction_planes.push(child);
         let child_origin_before = doc.construction_planes[1].origin.z;
 

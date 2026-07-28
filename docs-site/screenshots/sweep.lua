@@ -22,17 +22,18 @@ bearcad.exit_sketch()
 -- Path: on a vertical plane through the origin — straight up 20 mm, then a curve
 -- bending over to the side.
 bearcad.plane{ origin = { 0, 0, 0 }, normal = { 0, 1, 0 }, name = "Path plane" }
-bearcad.begin_sketch{ kind = "plane", index = 1 }
+bearcad.begin_sketch{ kind = "plane", index = 3 }
 bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
 bearcad.line{ x = 0, y = 20, x1 = 25, y1 = 38, bezier = { { 0, 30 }, { 14, 38 } } }
 bearcad.exit_sketch()
 
 bearcad.sweep{ circle = 0, path = { 0, 1 }, name = "Tube" }
 
-bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the three datum planes a new document opens with.
+for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
-bearcad.set_visible({ kind = "construction_plane", index = 1 }, "hide")
+bearcad.set_visible({ kind = "construction_plane", index = 3 }, "hide")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_right_top")
 bearcad.ui.wait(2)

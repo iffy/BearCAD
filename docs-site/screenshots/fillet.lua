@@ -37,7 +37,8 @@ bearcad.fillet_edge{
 
 bearcad.exit_sketch()
 -- Hide the ground plane's display quad; it reads as a stray tan patch behind the body.
-bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the three datum planes a new document opens with.
+for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
 -- The source sketch too: its rectangle sits outside the rounded body and reads as a stray outline.
 bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
 -- Hide the ground grid too for a clean background (#579).
