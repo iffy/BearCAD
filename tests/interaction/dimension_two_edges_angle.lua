@@ -15,8 +15,10 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.ui.auto_zoom(false)
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
-bearcad.ui.zoom_fit()
-bearcad.ui.wait(2)
+-- A fixed camera rather than zoom_fit: the ground clicks below have to land in the
+-- same place whatever the window ends up being (CI's Xvfb has no WM to maximize).
+bearcad.ui.camera{ target = {15, 12, 0}, distance = 200 }
+bearcad.ui.wait(4)
 
 -- Seed the first edge via the selection API so a narrow CI viewport can't miss the
 -- first ground click; the second edge and place/commit still go through real pointer

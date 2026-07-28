@@ -5363,7 +5363,9 @@ impl App {
                     .tutorial_anchor_rects
                     .insert(tutorial::UiAnchor::ExtrudeDistance, rect);
             }
-            commit |= result.enter_commit;
+            // Enter commits an open extrude whether or not the field has the keyboard,
+            // matching the sketch dimension fields.
+            commit |= result.enter_commit || sketch_dimension_enter_pressed(ui);
             if let Some(ce) = self.state.creating_extrusion.as_mut() {
                 ce.text = text;
                 if result.changed {
@@ -14350,7 +14352,11 @@ fn show_sketch_dimension_field(
     if is_focus_target && resp.has_focus() {
         *pending_focus = false;
     }
-    let enter_commit = sketch_dimension_enter_pressed(ui) && resp.has_focus();
+    // Enter belongs to whichever field holds the keyboard, which is not the same as
+    // `Response::has_focus` — that also demands the OS window be focused, and a background
+    // window's open field is still where Enter lands.
+    let enter_commit =
+        sketch_dimension_enter_pressed(ui) && ctx.memory(|m| m.focused()) == Some(id);
     if enter_commit {
         consume_sketch_dimension_enter(ui);
     }

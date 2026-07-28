@@ -555,7 +555,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     locks it in there. Crucially, a gizmo release-click no
     longer *commits* — it just locks in the current distance/target; the extrusion is **completed
     only on Enter or the Extrude button** (`context::ExtrudeControl`/`ExtrudeEdit`, wired through
-    `App::extrude_target_pick`).
+    `App::extrude_target_pick`). Picking a face leaves the distance field holding the
+    keyboard with its value selected, so a depth can be typed straight away (#437/#880),
+    and **Enter commits whichever field has it** (#880).
   - **Body target (#32/#35)**: a `Body`'s source is one or more extrusions (`BodySource::Extrusion`
     for one, `BodySource::Extrusions` for several; `BodySource::Solid { add, cut }` once some of
     its extrusions are subtracted rather than added — see §3.3). Extruding from a sketch on an
@@ -2104,6 +2106,9 @@ modeled on SolveSpace (https://solvespace.com).
   that **already exists** skips placement and opens its value editor straight away — it
   already has a place on the sheet. The preview is painted **after** the GPU scene, so it
   isn't buried under it.
+- The click that places the label leaves the value input **holding the keyboard** with its
+  contents selected (#879), so a number or parameter name typed straight after lands in it —
+  no second click on the field.
 - **While the value is typed (#774):** the dimension it was just placed as **stays drawn** —
   extension lines, dimension line and arrows, or the angle's arc — but **without its number**,
   since that's what's being typed. The floating value input sits where the label will land,
