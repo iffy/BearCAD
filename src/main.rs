@@ -1928,6 +1928,43 @@ fn orb_word_hint(
     ctx.request_repaint();
 }
 
+/// A numbered guide mark that isn't the active one (#854): a quieter ring in green once its
+/// part is done, blue while it's still ahead, with its number beside it.
+fn draw_guide_mark(painter: &egui::Painter, at: egui::Pos2, radius: f32, n: usize, done: bool) {
+    let color = if done {
+        egui::Color32::from_rgb(110, 210, 140)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(90, 160, 255, 150)
+    };
+    painter.circle_stroke(at, radius, egui::Stroke::new(2.0, color));
+    draw_guide_number(painter, at, radius, n, done);
+}
+
+/// The little numbered chip that names a mark's place in the sequence (#854).
+fn draw_guide_number(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    radius: f32,
+    n: usize,
+    done: bool,
+) {
+    let color = if done {
+        egui::Color32::from_rgb(110, 210, 140)
+    } else {
+        egui::Color32::from_rgb(150, 200, 255)
+    };
+    let centre = at + egui::vec2(-radius * 0.72, -radius * 0.72);
+    painter.circle_filled(centre, 9.0, egui::Color32::from_rgba_unmultiplied(16, 26, 40, 235));
+    painter.circle_stroke(centre, 9.0, egui::Stroke::new(1.2, color));
+    painter.text(
+        centre,
+        egui::Align2::CENTER_CENTER,
+        n.to_string(),
+        egui::FontId::proportional(11.0),
+        color,
+    );
+}
+
 /// The guide, once the keyboard has the field (#848): the ring gives way to a single box
 /// that says what to type — "Use the keyboard to type" in white, the words themselves in the
 /// same blue the narration gives code. Sits where the ring was, so it reads as the same guide
@@ -2872,6 +2909,23 @@ impl App {
             },
             tutorial::StepAnchor::None => None,
         };
+        // The step's work as a numbered sequence (#854): every mark at once, each ring going
+        // green as its part lands, so the whole move reads from the start. The active mark is
+        // the orb itself (drawn below); these are the others.
+        let marks = step.marks.map(|f| f(&self.state)).unwrap_or_default();
+        let active_mark = marks.iter().position(|m| !m.done);
+        for (i, mark) in marks.iter().enumerate() {
+            if Some(i) == active_mark {
+                continue;
+            }
+            let at = match mark.target {
+                tutorial::StepTarget::World(w) => project(w).map(|p| (p, 26.0)),
+                tutorial::StepTarget::Ui(anchor) => ui_anchor(anchor),
+            };
+            if let Some((p, r)) = at {
+                draw_guide_mark(&painter, p, r, i + 1, mark.done);
+            }
+        }
         let mut orb_radius = 0.0f32;
         if let Some((goal, base)) = target {
             orb_radius = base;
@@ -2924,6 +2978,10 @@ impl App {
                     rect,
                     egui::Color32::from_rgb(150, 200, 255),
                 );
+                // Its number in the sequence, so "1, 2, 3" reads across the marks (#854).
+                if let Some(n) = active_mark {
+                    draw_guide_number(&painter, pos, base, n + 1, false);
+                }
                 // This click adds to the selection, so it wants Shift held (#759/#851).
                 if step.needs_shift.is_some_and(|f| f(&self.state)) {
                     draw_shift_keycap(&painter, ctx, pos, base, badge_bounds);

@@ -86,6 +86,9 @@ pub struct Step {
     /// A `(key, explanation)` badge under the orb (#777) — used to introduce **Space**, the
     /// Selection Exploder, on steps whose target sits under other geometry.
     pub key_hint: Option<(&'static str, &'static str)>,
+    /// The step's work as a short numbered sequence (#854): every mark shows at once, so the
+    /// whole move is visible from the start, and each ring goes green as its part lands.
+    pub marks: Option<fn(&AppState) -> Vec<GuideMark>>,
     /// The words this step wants typed (#778), shown in code blue beside the orb — right
     /// where the typing lands.
     pub type_hint: Option<TypeHint>,
@@ -278,6 +281,23 @@ fn param_list_orb(app: &AppState) -> Option<StepTarget> {
 
 /// The "Add them for me" button: adds whichever bracket parameters are still
 /// missing, leaving any the user already typed (or renamed the value of) alone.
+fn hole_param_defined(app: &AppState) -> bool {
+    param_exists(app, "hole")
+}
+
+fn bend_param_defined(app: &AppState) -> bool {
+    hole_param_defined(app) && param_exists(app, "bend")
+}
+
+fn add_hole_param(app: &mut AppState) {
+    ensure_param(app, "hole", "5mm");
+}
+
+fn add_bend_param(app: &mut AppState) {
+    add_hole_param(app);
+    ensure_param(app, "bend", "4mm");
+}
+
 fn add_missing_params(app: &mut AppState) {
     for (name, expression) in BRACKET_PARAMS {
         ensure_param(app, name, expression);
@@ -615,12 +635,48 @@ fn constraint_needs_shift(app: &AppState, a: ClickTarget, b: ClickTarget) -> boo
     !selection_has_strays(app, a, b) && target_selected(app, a) && !target_selected(app, b)
 }
 
+/// One mark of a step's numbered guide (#854): where it points and whether that part is
+/// already done. A step whose work is a short sequence — click this, Shift+click that, press
+/// the button — shows them all at once, numbered, so the whole move is visible from the
+/// start and each ring turns green as it lands.
+#[derive(Clone, Copy, Debug)]
+pub struct GuideMark {
+    pub target: StepTarget,
+    pub done: bool,
+}
+
+/// The three marks of a two-pick constraint step: the first pick, the second, and the pane
+/// button that applies it.
+fn constraint_marks(
+    app: &AppState,
+    a: ClickTarget,
+    b: ClickTarget,
+    kind: GC,
+) -> Vec<GuideMark> {
+    // A stray selection means the first click has to happen again, so nothing counts as done.
+    let strays = selection_has_strays(app, a, b);
+    let a_done = !strays && target_selected(app, a);
+    let b_done = a_done && target_selected(app, b);
+    let mut marks = Vec::new();
+    if let Some(p) = target_point(app, a) {
+        marks.push(GuideMark { target: StepTarget::World(p), done: a_done });
+    }
+    if let Some(p) = target_point(app, b) {
+        marks.push(GuideMark { target: StepTarget::World(p), done: b_done });
+    }
+    marks.push(GuideMark {
+        target: StepTarget::Ui(UiAnchor::ConstraintButton(kind)),
+        done: false,
+    });
+    marks
+}
+
 /// Generates a step's orb-target and Shift-hint functions for a two-click pair (the step
 /// table needs plain `fn` pointers, so each pair gets its own pair of functions). Once both
 /// picks are in hand the orb moves to the pane button that applies the constraint (#770) —
 /// the last thing left to do.
 macro_rules! constraint_step {
-    ($point:ident, $shift:ident, $a:expr, $b:expr, $kind:expr) => {
+    ($point:ident, $shift:ident, $marks:ident, $a:expr, $b:expr, $kind:expr) => {
         fn $point(app: &AppState) -> Option<StepTarget> {
             match constraint_click_point(app, $a, $b) {
                 Some(world) => Some(StepTarget::World(world)),
@@ -629,6 +685,9 @@ macro_rules! constraint_step {
         }
         fn $shift(app: &AppState) -> bool {
             constraint_needs_shift(app, $a, $b)
+        }
+        fn $marks(app: &AppState) -> Vec<GuideMark> {
+            constraint_marks(app, $a, $b, $kind)
         }
     };
 }
@@ -639,6 +698,7 @@ use crate::geometric_constraints::GeometricConstraintType as GC;
 constraint_step!(
     pin_click,
     pin_shift,
+    pin_marks,
     ClickTarget::ProfileCorner(0),
     ClickTarget::Origin,
     GC::Coincident
@@ -646,6 +706,7 @@ constraint_step!(
 constraint_step!(
     level_click,
     level_shift,
+    level_marks,
     ClickTarget::ProfileLine(0),
     ClickTarget::XAxis,
     GC::Parallel
@@ -653,6 +714,7 @@ constraint_step!(
 constraint_step!(
     base_strip_click,
     base_strip_shift,
+    base_strip_marks,
     ClickTarget::ProfileLine(0),
     ClickTarget::ProfileLine(2),
     GC::Parallel
@@ -660,6 +722,7 @@ constraint_step!(
 constraint_step!(
     legs_click,
     legs_shift,
+    legs_marks,
     ClickTarget::ProfileLine(3),
     ClickTarget::ProfileLine(5),
     GC::Parallel
@@ -667,6 +730,7 @@ constraint_step!(
 constraint_step!(
     cap_one_click,
     cap_one_shift,
+    cap_one_marks,
     ClickTarget::ProfileLine(1),
     ClickTarget::ProfileLine(0),
     GC::Perpendicular
@@ -674,6 +738,7 @@ constraint_step!(
 constraint_step!(
     cap_two_click,
     cap_two_shift,
+    cap_two_marks,
     ClickTarget::ProfileLine(4),
     ClickTarget::ProfileLine(3),
     GC::Perpendicular
@@ -968,7 +1033,7 @@ fn hole_cut_value_hint(app: &AppState) -> Option<String> {
     app.creating_extrusion
         .as_ref()
         .filter(|ce| ce.faces.len() >= hole_circles(app).len().max(1))
-        .map(|_| "-(thick + 1)".to_string())
+        .map(|_| "-(thick+1)".to_string())
 }
 
 /// The countersink step (#806): the Chamfer tool, then each hole's rim.
@@ -1670,7 +1735,7 @@ fn assist_cut_holes(app: &mut AppState) {
         distance: -depth,
         body: ExtrudeBodyChoice::Cut,
         target: None,
-        expression: Some("-(thick + 1)".to_string()),
+        expression: Some("-(thick+1)".to_string()),
         symmetric: false,
     });
 }
@@ -1855,6 +1920,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -1868,6 +1934,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: true,
@@ -1882,6 +1949,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: Some("The Parameters pane is open now. Tap inside the `name` box \u{2014} the pulsing ring marks it."),
         only_on_phone: false,
@@ -1896,6 +1964,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Fixed("leg")),
         phone_narration: None,
         only_on_phone: false,
@@ -1909,6 +1978,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Fixed("50mm")),
         phone_narration: None,
         only_on_phone: false,
@@ -1922,23 +1992,51 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "Three more, exactly the same moves:\n\
-                    `hole` = `5mm`\n`bend` = `4mm`\n`bend_angle` = `120deg`\n\
-                    \u{2014} or let me type them in for you.",
+        narration: "Now `hole`=`5mm`, the same way.",
         anchor: StepAnchor::Guided(param_list_orb),
-        done: Some(params_defined),
+        done: Some(hole_param_defined),
         on_enter: None,
-        assist: Some(StepAssist { label: "Add them for me", run: add_missing_params }),
+        assist: Some(StepAssist { label: "Add it for me", run: add_hole_param }),
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(next_missing_param)),
-        phone_narration: Some("Three more, the same moves:\n`hole` = `5mm`\n`bend` = `4mm`\n`bend_angle` = `120deg`\n\u{2014} or let me type them in for you."),
+        phone_narration: None,
+        only_on_phone: false,
+    },
+    Step {
+        narration: "And `bend`=`4mm` \u{2014} how tightly the bracket bends.",
+        anchor: StepAnchor::Guided(param_list_orb),
+        done: Some(bend_param_defined),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Add it for me", run: add_bend_param }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint: Some(TypeHint::Dynamic(next_missing_param)),
+        phone_narration: None,
+        only_on_phone: false,
+    },
+    Step {
+        narration: "Last one: `bend_angle`=`120deg`.",
+        anchor: StepAnchor::Guided(param_list_orb),
+        done: Some(params_defined),
+        on_enter: None,
+        assist: Some(StepAssist { label: "Add it for me", run: add_missing_params }),
+        needs_shift: None,
+        drag_hint: None,
+        key_hint: None,
+        marks: None,
+        type_hint: Some(TypeHint::Dynamic(next_missing_param)),
+        phone_narration: None,
         only_on_phone: false,
     },
     Step {
@@ -1950,6 +2048,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: true,
@@ -1963,6 +2062,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: Some("Grab the Line tool \u{2014} the glowing button in the toolbar along the top."),
         only_on_phone: false,
@@ -1977,6 +2077,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -1990,6 +2091,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: Some("Now the Constraint tool \u{2014} the glowing button in the toolbar."),
         only_on_phone: false,
@@ -2003,13 +2105,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: true,
     },
     Step {
-        narration: "Pin the profile down: click the bend corner, Shift+click the origin, \
-                    press `4` \u{2014} Coincident.",
+        narration: "Pin the bend corner to the origin \u{2014} follow 1, 2, 3.",
         anchor: StepAnchor::Guided(pin_click),
         done: Some(bend_pinned),
         on_enter: None,
@@ -2017,13 +2119,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(pin_shift),
         drag_hint: None,
         key_hint: None,
+        marks: Some(pin_marks),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "Level the base: click the bottom line, Shift+click the red X axis, \
-                    press `1` \u{2014} Parallel.",
+        narration: "Level the base against the red X axis.",
         anchor: StepAnchor::Guided(level_click),
         done: Some(base_leveled),
         on_enter: None,
@@ -2031,12 +2133,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(level_shift),
         drag_hint: None,
         key_hint: Some(("Space", "Press space if it's too crowded to pick")),
+        marks: Some(level_marks),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "Click the bottom line, Shift+click the inner base line, press `1`.",
+        narration: "Now the two base lines, parallel to each other.",
         anchor: StepAnchor::Guided(base_strip_click),
         done: Some(base_strip_even),
         on_enter: None,
@@ -2044,13 +2147,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(base_strip_shift),
         drag_hint: None,
         key_hint: None,
+        marks: Some(base_strip_marks),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "The tilted leg: click one long line, Shift+click the other, \
-                    press `1`.",
+        narration: "Same again for the tilted leg's two long lines.",
         anchor: StepAnchor::Guided(legs_click),
         done: Some(legs_parallel),
         on_enter: None,
@@ -2058,13 +2161,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(legs_shift),
         drag_hint: None,
         key_hint: None,
+        marks: Some(legs_marks),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "Click the base leg's end cap, Shift+click the bottom line, press `2` \
-                    \u{2014} Perpendicular.",
+        narration: "Square the base's end cap to the base.",
         anchor: StepAnchor::Guided(cap_one_click),
         done: Some(first_cap_squared),
         on_enter: None,
@@ -2072,13 +2175,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(cap_one_shift),
         drag_hint: None,
         key_hint: None,
+        marks: Some(cap_one_marks),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "Click the tilted leg's end cap, Shift+click its long line, \
-                    press `2`. Squared up!",
+        narration: "And the tilted leg's end cap to its leg. Squared up!",
         anchor: StepAnchor::Guided(cap_two_click),
         done: Some(profile_squared),
         on_enter: None,
@@ -2086,6 +2189,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(cap_two_shift),
         drag_hint: None,
         key_hint: None,
+        marks: Some(cap_two_marks),
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2099,6 +2203,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: true,
@@ -2113,13 +2218,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: Some("Now exact sizes. Grab the Dimension tool \u{2014} the glowing button in the toolbar."),
         only_on_phone: false,
     },
     Step {
-        narration: "Click the glowing line, move the mouse to place the dimension, click \
-                    again to drop it there, then type `leg` and press Enter.",
+        narration: "Dimension the base leg: place it, then type `leg`.",
         anchor: StepAnchor::Guided(base_leg_orb),
         done: Some(base_leg_dimensioned),
         on_enter: None,
@@ -2127,6 +2232,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2140,6 +2246,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(leg_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2155,6 +2262,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2169,6 +2277,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(thick_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2183,14 +2292,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(bend_angle_shift),
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(bend_angle_value_hint)),
         phone_narration: None,
         only_on_phone: false,
     },
     Step {
-        narration: "Esc to leave the sketch, then Extrude (E). Click the glowing face, and \
-                    for the distance type `width=40mm` \u{2014} another parameter defined \
-                    where it's used. Enter. A solid!",
+        narration: "Leave the sketch (Esc) and Extrude (E) the glowing face `width=40mm`.",
         anchor: StepAnchor::Guided(extrude_orb),
         done: Some(extruded),
         on_enter: None,
@@ -2198,6 +2306,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(extrude_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2212,6 +2321,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(bend_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2226,6 +2336,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(bend_thick_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2240,6 +2351,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2255,6 +2367,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: Some("Right-drag"),
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2268,6 +2381,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2281,6 +2395,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2295,6 +2410,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2308,6 +2424,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(hole_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2324,6 +2441,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(hole_position_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2337,14 +2455,13 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: true,
     },
     Step {
-        narration: "Esc, then Extrude (E). Click each glowing hole face, pick `Cut` in the \
-                    Output row, and type `-(thick + 1)` for the depth \u{2014} straight \
-                    through and a little past. Enter.",
+        narration: "Extrude the holes as a `Cut`, `-(thick+1)` deep \u{2014} right through.",
         anchor: StepAnchor::Guided(hole_cut_orb),
         done: Some(holes_cut),
         on_enter: None,
@@ -2352,6 +2469,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(hole_cut_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2365,6 +2483,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: true,
@@ -2379,6 +2498,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(countersink_shift),
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(countersink_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2393,6 +2513,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: Some(corner_fillet_shift),
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: Some(TypeHint::Dynamic(corner_value_hint)),
         phone_narration: None,
         only_on_phone: false,
@@ -2408,6 +2529,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2423,6 +2545,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2438,6 +2561,7 @@ static BRACKET_STEPS: &[Step] = &[
         needs_shift: None,
         drag_hint: None,
         key_hint: None,
+        marks: None,
         type_hint: None,
         phone_narration: None,
         only_on_phone: false,
@@ -2503,23 +2627,23 @@ mod tests {
                 expression: value.to_string(),
             });
         }
-        assert_eq!(app.tutorial.unwrap().step, 8, "params chain to the pane/line-tool steps");
+        assert_eq!(app.tutorial.unwrap().step, 10, "params chain to the pane/line-tool steps");
 
         app.apply(Action::TutorialBack);
         let run = app.tutorial.unwrap();
-        assert_eq!(run.step, 7);
+        assert_eq!(run.step, 9);
         assert!(run.hold);
         // Its predicate is satisfied, but reviewing holds auto-advance off.
         app.advance_tutorial();
-        assert_eq!(app.tutorial.unwrap().step, 7);
+        assert_eq!(app.tutorial.unwrap().step, 9);
 
         // Next walks forward; reaching the line-tool step (unfinished) resumes auto.
         app.apply(Action::TutorialNext);
         let run = app.tutorial.unwrap();
-        assert_eq!(run.step, 8);
+        assert_eq!(run.step, 10);
         assert!(!run.hold, "caught up to live work — auto-advance resumes");
         app.apply(Action::SetTool(Tool::Line));
-        assert_eq!(app.tutorial.unwrap().step, 9, "auto-advance is live again");
+        assert_eq!(app.tutorial.unwrap().step, 11, "auto-advance is live again");
     }
 
     /// The parameters step's assist button fills in the whole table in one press —
@@ -2665,7 +2789,7 @@ mod tests {
     #[test]
     fn click_only_steps_offer_no_button() {
         // Tool buttons, pane taps, tapping into a box, clicking a face or the glowing points.
-        for step in [1, 2, 5, 7, 8, 9, 10, 11, 18, 19, 28, 30, 31, 35, 37] {
+        for step in [1, 2, 5, 9, 10, 11, 12, 13, 20, 21, 30, 32, 33, 37, 39] {
             assert!(
                 BRACKET_STEPS[step].assist.is_none(),
                 "step {step} is click-only but offers a button: {}",
@@ -2673,7 +2797,7 @@ mod tests {
             );
         }
         // Typing (and the constraint steps' number keys) keep theirs.
-        for step in [3, 4, 6, 12, 13, 20, 25, 32, 38, 41] {
+        for step in [3, 4, 6, 7, 8, 14, 15, 22, 27, 34, 40, 43] {
             assert!(
                 BRACKET_STEPS[step].assist.is_some(),
                 "step {step} needs the keyboard and should offer a button: {}",
