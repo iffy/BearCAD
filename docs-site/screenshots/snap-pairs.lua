@@ -48,12 +48,11 @@ local function scene()
   bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 5, name = "Slab" }
 end
 
--- Same framing for all three, so only the slab's pose changes between them: a clean stage
--- (no datum planes, no grid, no sketch profiles drawn over the solids) and a pinned camera.
+-- Same framing for all three, so only the ghost's pose changes between them: a clean stage
+-- (no datum planes, no grid, no sketch profiles drawn over the solids) and a pinned camera
+-- holding both the parked slab and where it's going. The tool colours the cast itself —
+-- cyan ghost, dimmed source, green/red/blue marks — so nothing here needs a material.
 local function shoot(name)
-  -- The moving slab in its own colour, so it reads against the plate rather than merging
-  -- into it — and so does the ghost it casts at the destination.
-  bearcad.material{ name = "Moving", color = "#d8963c", bodies = { 1 } }
   for i = 0, bearcad.count("construction_plane") - 1 do
     bearcad.set_visible({ kind = "construction_plane", index = i }, "hide")
   end
@@ -64,7 +63,7 @@ local function shoot(name)
   bearcad.ui.auto_zoom(false)
   bearcad.ui.view("corner", "front_left_top")
   bearcad.ui.wait(2)
-  bearcad.ui.camera{ target = { 32, 13, 3 }, distance = 125 }
+  bearcad.ui.camera{ target = { 27, 9, 3 }, distance = 108 }
   bearcad.ui.wait(3)
   bearcad.ui.screenshot(out .. "/" .. name .. ".png")
 end
