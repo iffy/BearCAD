@@ -72,10 +72,66 @@ fn resolve_frame(doc: &Document, frame: &JointFrame) -> Option<Frame> {
     Some(Frame { origin, x, y, z })
 }
 
+/// A joint's resolved travel bounds (#896): mm for the slide, radians for the turn.
+/// `None` leaves that end open.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ResolvedJointLimits {
+    pub slide_min: Option<f32>,
+    pub slide_max: Option<f32>,
+    pub turn_min: Option<f32>,
+    pub turn_max: Option<f32>,
+}
+
+impl ResolvedJointLimits {
+    pub fn clamp_slide(&self, v: f32) -> f32 {
+        let v = self.slide_max.map_or(v, |m| v.min(m));
+        self.slide_min.map_or(v, |m| v.max(m))
+    }
+
+    pub fn clamp_turn(&self, v: f32) -> f32 {
+        let v = self.turn_max.map_or(v, |m| v.min(m));
+        self.turn_min.map_or(v, |m| v.max(m))
+    }
+}
+
+/// Resolve a joint's limits (#896): expressions evaluate against document parameters; a
+/// slide stop picked as geometry resolves to wherever the joint's axis meets the target's
+/// extended plane (the "extrude to object" idea), recomputed as the model changes — a
+/// geometry stop wins over the expression on the same end.
+pub fn resolve_limits(doc: &Document, joint: &Joint) -> ResolvedJointLimits {
+    let len = |e: &str| {
+        if e.trim().is_empty() {
+            None
+        } else {
+            crate::value::eval_length_mm_in_doc(e, doc)
+        }
+    };
+    let ang = |e: &str| {
+        if e.trim().is_empty() {
+            None
+        } else {
+            crate::value::eval_angle_rad_in_doc(e, doc)
+        }
+    };
+    let stop = |target: &Option<crate::model::ExtrudeTarget>| -> Option<f32> {
+        let target = target.as_ref()?;
+        let fa = resolve_frame(doc, &joint.frame_a)?;
+        crate::extrude::target_distance(doc, fa.origin, fa.x, target)
+    };
+    ResolvedJointLimits {
+        slide_min: stop(&joint.limits.slide_min_target).or_else(|| len(&joint.limits.slide_min)),
+        slide_max: stop(&joint.limits.slide_max_target).or_else(|| len(&joint.limits.slide_max)),
+        turn_min: ang(&joint.limits.turn_min),
+        turn_max: ang(&joint.limits.turn_max),
+    }
+}
+
 /// The motion the joint's position expressions ask for, in the mating frame's own
-/// coordinates (`x` = primary axis). Empty expressions read as zero, so a fresh joint sits
-/// at its captured pose. `None` when an expression doesn't evaluate.
+/// coordinates (`x` = primary axis), clamped to its limits (#896). Empty expressions read
+/// as zero, so a fresh joint sits at its captured pose. `None` when an expression doesn't
+/// evaluate.
 fn motion(doc: &Document, joint: &Joint) -> Option<Mat4> {
+    let limits = resolve_limits(doc, joint);
     let len = |e: &str| {
         if e.trim().is_empty() {
             Some(0.0)
@@ -90,37 +146,51 @@ fn motion(doc: &Document, joint: &Joint) -> Option<Mat4> {
             crate::value::eval_angle_rad_in_doc(e, doc)
         }
     };
+    let slide = |e: &str| len(e).map(|v| limits.clamp_slide(v));
+    let turn = |e: &str| ang(e).map(|v| limits.clamp_turn(v));
     let rot_x = |a: f32| Mat4::from_mat3(Mat3::from_rotation_x(a));
     let rot_y = |a: f32| Mat4::from_mat3(Mat3::from_rotation_y(a));
     let rot_z = |a: f32| Mat4::from_mat3(Mat3::from_rotation_z(a));
     Some(match &joint.kind {
         JointKind::Rigid => Mat4::IDENTITY,
-        JointKind::Slider => Mat4::from_translation(Vec3::X * len(&joint.position)?),
-        JointKind::Revolute => rot_x(ang(&joint.position)?),
+        JointKind::Slider => Mat4::from_translation(Vec3::X * slide(&joint.position)?),
+        JointKind::Revolute => rot_x(turn(&joint.position)?),
         JointKind::Cylindrical => {
-            Mat4::from_translation(Vec3::X * len(&joint.position)?)
-                * rot_x(ang(&joint.position2)?)
+            Mat4::from_translation(Vec3::X * slide(&joint.position)?)
+                * rot_x(turn(&joint.position2)?)
         }
-        // Slide across the plane perpendicular to the primary axis, spin about it.
+        // Slide across the plane perpendicular to the primary axis, spin about it. The
+        // slide limits bound both in-plane freedoms.
         JointKind::Planar => {
             Mat4::from_translation(
-                Vec3::Y * len(&joint.position)? + Vec3::Z * len(&joint.position2)?,
-            ) * rot_x(ang(&joint.position3)?)
+                Vec3::Y * slide(&joint.position)? + Vec3::Z * slide(&joint.position2)?,
+            ) * rot_x(turn(&joint.position3)?)
         }
         JointKind::Ball => {
-            rot_x(ang(&joint.position)?)
-                * rot_y(ang(&joint.position2)?)
-                * rot_z(ang(&joint.position3)?)
+            rot_x(turn(&joint.position)?)
+                * rot_y(turn(&joint.position2)?)
+                * rot_z(turn(&joint.position3)?)
         }
         // Slide along the primary axis while turning about the secondary one.
         JointKind::PinSlot => {
-            Mat4::from_translation(Vec3::X * len(&joint.position)?)
-                * rot_y(ang(&joint.position2)?)
+            Mat4::from_translation(Vec3::X * slide(&joint.position)?)
+                * rot_y(turn(&joint.position2)?)
         }
-        // The turn drives the travel: one full turn advances by the lead.
+        // The turn drives the travel: one full turn advances by the lead. The slide
+        // limits bound the travel too, turned back into an angle through the lead.
         JointKind::Screw { lead } => {
-            let a = ang(&joint.position)?;
-            let travel = a / std::f32::consts::TAU * len(lead)?;
+            let mut a = turn(&joint.position)?;
+            let lead_mm = len(lead)?;
+            if lead_mm.abs() > 1e-6 {
+                let travel_angle = |travel: f32| travel / lead_mm * std::f32::consts::TAU;
+                if let Some(max) = limits.slide_max {
+                    a = a.min(travel_angle(max));
+                }
+                if let Some(min) = limits.slide_min {
+                    a = a.max(travel_angle(min));
+                }
+            }
+            let travel = a / std::f32::consts::TAU * lead_mm;
             Mat4::from_translation(Vec3::X * travel) * rot_x(a)
         }
     })
@@ -526,6 +596,129 @@ mod tests {
         assert!(
             (moved - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-4,
             "advanced to {moved}"
+        );
+    }
+
+    /// #896: expression limits clamp the slide — a position past the max stops there.
+    #[test]
+    fn slider_clamps_to_expression_limits() {
+        let mut doc = Document::default();
+        let a = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
+        j.frame_a = JointFrame {
+            origin: vert(a, Vec3::ZERO),
+            axis: vert(a, Vec3::Z),
+            orient: None,
+        };
+        j.frame_b = j.frame_a;
+        j.frame_b.origin = vert(b, Vec3::ZERO);
+        j.frame_b.axis = vert(b, Vec3::Z);
+        j.position = "7".to_string();
+        j.limits.slide_max = "4".to_string();
+        j.limits.slide_min = "-1".to_string();
+        doc.joints.push(j);
+        let pose = body_joint_pose(&doc, b).unwrap();
+        let moved = pose.transform_point3(Vec3::ZERO);
+        assert!((moved.z - 4.0).abs() < 1e-4, "clamped to the max, got {moved}");
+        doc.joints[0].position = "-9".to_string();
+        let pose = resolve_joint_poses(&doc).member_pose(JointRef::Body(b)).unwrap();
+        let moved = pose.transform_point3(Vec3::ZERO);
+        assert!((moved.z - -1.0).abs() < 1e-4, "clamped to the min, got {moved}");
+    }
+
+    /// #896: turn limits clamp a revolute — 110° one way and not at all the other.
+    #[test]
+    fn revolute_clamps_to_turn_limits() {
+        let mut doc = Document::default();
+        let a = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let mut j = joint(
+            vec![JointRef::Body(a), JointRef::Body(b)],
+            JointKind::Revolute,
+        );
+        j.frame_a = JointFrame {
+            origin: vert(a, Vec3::ZERO),
+            axis: vert(a, Vec3::Z),
+            orient: vert(a, Vec3::X),
+        };
+        j.frame_b = j.frame_a;
+        j.frame_b.origin = vert(b, Vec3::ZERO);
+        j.frame_b.axis = vert(b, Vec3::Z);
+        j.frame_b.orient = vert(b, Vec3::X);
+        j.position = "90".to_string();
+        j.limits.turn_min = "0".to_string();
+        j.limits.turn_max = "45".to_string();
+        doc.joints.push(j);
+        let pose = body_joint_pose(&doc, b).unwrap();
+        let moved = pose.transform_point3(Vec3::X);
+        let expected = Vec3::new(45f32.to_radians().cos(), 45f32.to_radians().sin(), 0.0);
+        assert!((moved - expected).length() < 1e-4, "clamped to 45°, got {moved}");
+        doc.joints[0].position = "-30".to_string();
+        let pose = resolve_joint_poses(&doc).member_pose(JointRef::Body(b)).unwrap();
+        let moved = pose.transform_point3(Vec3::X);
+        assert!((moved - Vec3::X).length() < 1e-4, "no travel the other way, got {moved}");
+    }
+
+    /// #896: a slide stop picked as geometry — the travel ends where the axis meets the
+    /// plane, recomputed as the model changes.
+    #[test]
+    fn slide_stop_resolves_against_a_plane() {
+        let mut doc = Document::default();
+        let a = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::ZERO);
+        // Park the XY datum plane 8 mm up: the slide (along +Z from the origin) must
+        // stop there.
+        doc.construction_planes[0].origin = Vec3::new(0.0, 0.0, 8.0);
+        let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
+        j.frame_a = JointFrame {
+            origin: vert(a, Vec3::ZERO),
+            axis: vert(a, Vec3::Z),
+            orient: None,
+        };
+        j.frame_b = j.frame_a;
+        j.frame_b.origin = vert(b, Vec3::ZERO);
+        j.frame_b.axis = vert(b, Vec3::Z);
+        j.position = "20".to_string();
+        j.limits.slide_max_target = Some(crate::model::ExtrudeTarget::Plane(0));
+        doc.joints.push(j);
+        let limits = resolve_limits(&doc, &doc.joints[0]);
+        assert!(
+            limits.slide_max.is_some_and(|m| (m - 8.0).abs() < 1e-4),
+            "stop resolves to 8 mm, got {limits:?}"
+        );
+        let pose = body_joint_pose(&doc, b).unwrap();
+        let moved = pose.transform_point3(Vec3::ZERO);
+        assert!((moved.z - 8.0).abs() < 1e-4, "clamped at the plane, got {moved}");
+    }
+
+    /// #896: a screw's slide limit bounds the coupled travel through its lead.
+    #[test]
+    fn screw_slide_limit_bounds_the_turn() {
+        let mut doc = Document::default();
+        let a = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let mut j = joint(
+            vec![JointRef::Body(a), JointRef::Body(b)],
+            JointKind::Screw { lead: "2".to_string() },
+        );
+        j.frame_a = JointFrame {
+            origin: vert(a, Vec3::ZERO),
+            axis: vert(a, Vec3::Z),
+            orient: vert(a, Vec3::X),
+        };
+        j.frame_b = j.frame_a;
+        j.frame_b.origin = vert(b, Vec3::ZERO);
+        j.frame_b.axis = vert(b, Vec3::Z);
+        j.frame_b.orient = vert(b, Vec3::X);
+        j.position = "720".to_string();
+        j.limits.slide_max = "1".to_string();
+        doc.joints.push(j);
+        let pose = body_joint_pose(&doc, b).unwrap();
+        let moved = pose.transform_point3(Vec3::ZERO);
+        assert!(
+            (moved.z - 1.0).abs() < 1e-4,
+            "travel bounded to the slide max, got {moved}"
         );
     }
 

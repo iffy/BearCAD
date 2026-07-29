@@ -1240,6 +1240,7 @@ type JointOpArgs = (
     String,
     String,
     String,
+    crate::model::JointLimits,
 );
 
 /// Shared parsing for `joint` / `edit_joint` / `begin_joint` (#894/#901): the members
@@ -1252,7 +1253,8 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
         call,
         &[
             "index", "a", "b", "parts", "kind", "lead", "base", "from", "to", "from_b",
-            "to_b", "from_c", "to_c", "position", "position2", "position3", "name",
+            "to_b", "from_c", "to_c", "position", "position2", "position3", "slide_min",
+            "slide_max", "slide_min_to", "slide_max_to", "turn_min", "turn_max", "name",
         ],
     )?;
     let mut members = Vec::new();
@@ -1324,6 +1326,21 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
     let ends = crate::model::JointFrame { origin: to_a, axis: to_b, orient: to_c };
     let starts = crate::model::JointFrame { origin: from_a, axis: from_b, orient: from_c };
     let (frame_a, frame_b) = if base == 0 { (ends, starts) } else { (starts, ends) };
+    // Travel limits (#896): expressions on either end, or a stop picked as geometry.
+    let limits = crate::model::JointLimits {
+        slide_min: joint_position_arg(opts, "slide_min")?,
+        slide_max: joint_position_arg(opts, "slide_max")?,
+        slide_min_target: opts
+            .get::<Option<Table>>("slide_min_to")?
+            .map(|t| parse_extrude_target_table(&t))
+            .transpose()?,
+        slide_max_target: opts
+            .get::<Option<Table>>("slide_max_to")?
+            .map(|t| parse_extrude_target_table(&t))
+            .transpose()?,
+        turn_min: joint_position_arg(opts, "turn_min")?,
+        turn_max: joint_position_arg(opts, "turn_max")?,
+    };
     Ok((
         members,
         base,
@@ -1333,6 +1350,7 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
         joint_position_arg(opts, "position")?,
         joint_position_arg(opts, "position2")?,
         joint_position_arg(opts, "position3")?,
+        limits,
     ))
 }
 
@@ -4038,12 +4056,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::CreateJointOp {
-                    members, base, kind, frame_a, frame_b, position, position2, position3,
+                    members, base, kind, frame_a, frame_b, position, position2, position3, limits,
                 })?;
             }
             let element = SceneElement::Joint(unsafe {
@@ -4059,12 +4077,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "begin_joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "begin_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::BeginJointOp {
-                    members, base, kind, frame_a, frame_b, position, position2, position3,
+                    members, base, kind, frame_a, frame_b, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -4075,12 +4093,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_joint",
         lua.create_function(|lua, opts: Table| {
             let op: usize = opts.get("index")?;
-            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "edit_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::EditJointOp {
-                    op, members, base, kind, frame_a, frame_b, position, position2, position3,
+                    op, members, base, kind, frame_a, frame_b, position, position2, position3, limits,
                 })?;
             }
             Ok(())

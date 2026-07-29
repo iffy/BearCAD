@@ -1049,6 +1049,8 @@ pub struct CreatingJoint {
     pub position: String,
     pub position2: String,
     pub position3: String,
+    /// Travel limits (#896), carried whole — expressions and stop targets.
+    pub limits: crate::model::JointLimits,
     /// `Some(joint)` while re-editing a committed joint.
     pub editing: Option<usize>,
 }
@@ -1095,6 +1097,7 @@ impl CreatingJoint {
             position: joint.position.clone(),
             position2: joint.position2.clone(),
             position3: joint.position3.clone(),
+            limits: joint.limits.clone(),
             editing: Some(editing),
         }
     }
@@ -2104,6 +2107,7 @@ pub enum Action {
         position: String,
         position2: String,
         position3: String,
+        limits: crate::model::JointLimits,
     },
     /// Re-point an existing joint (#894).
     EditJointOperation {
@@ -2116,6 +2120,7 @@ pub enum Action {
         position: String,
         position2: String,
         position3: String,
+        limits: crate::model::JointLimits,
     },
     /// Commit the in-progress Mirror-tool operation (#523).
     CommitMirror,
@@ -10919,6 +10924,7 @@ label_hidden: false,
                         position: cj.position.clone(),
                         position2: cj.position2.clone(),
                         position3: cj.position3.clone(),
+                        limits: cj.limits.clone(),
                     },
                     None => Action::CreateJointOperation {
                         members: cj.members.clone(),
@@ -10929,6 +10935,7 @@ label_hidden: false,
                         position: cj.position.clone(),
                         position2: cj.position2.clone(),
                         position3: cj.position3.clone(),
+                        limits: cj.limits.clone(),
                     },
                 };
                 let result = self.apply(payload(cj.editing));
@@ -10948,6 +10955,7 @@ label_hidden: false,
                 position,
                 position2,
                 position3,
+                limits,
             } => {
                 if let Err(e) = validate_joint_inputs(&self.doc, &members, &kind, None) {
                     self.status = e.clone();
@@ -10967,7 +10975,7 @@ label_hidden: false,
                     rest: position,
                     rest2: position2,
                     rest3: position3,
-                    limits: Default::default(),
+                    limits,
                     name: None,
                     deleted: false,
                 };
@@ -10997,6 +11005,7 @@ label_hidden: false,
                 position,
                 position2,
                 position3,
+                limits,
             } => {
                 if self.doc.joints.get(op).filter(|j| !j.deleted).is_none() {
                     return ActionResult::Err(format!("Joint {op} not found"));
@@ -11015,6 +11024,7 @@ label_hidden: false,
                 joint.position = position;
                 joint.position2 = position2;
                 joint.position3 = position3;
+                joint.limits = limits;
                 // Refuse an edit that stops the assembly resolving, wholesale (#893).
                 let errors = crate::joints::resolve_joint_poses(&self.doc).errors;
                 if let Some((_, reason)) = errors.iter().find(|(i, _)| *i == op) {

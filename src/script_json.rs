@@ -391,20 +391,20 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
                 joint_op_args(o)?;
-            Ok(Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 })
+            Ok(Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits })
         }
         "begin_joint" => {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
                 joint_op_args(o)?;
-            Ok(Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 })
+            Ok(Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits })
         }
         "edit_joint" => {
             let op = req_usize(o, "index", "edit_joint")?;
-            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
                 joint_op_args(o)?;
-            Ok(Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3 })
+            Ok(Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3, limits })
         }
         "begin_move" => {
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -1168,6 +1168,7 @@ fn joint_op_args(
         String,
         String,
         String,
+        crate::model::JointLimits,
     ),
     String,
 > {
@@ -1242,6 +1243,21 @@ fn joint_op_args(
         orient: move_point_from_json(o.get("to_c"), "to_c")?,
     };
     let (frame_a, frame_b) = if base == 0 { (ends, starts) } else { (starts, ends) };
+    // Travel limits (#896): expressions on either end, or a stop picked as geometry.
+    let stop = |key: &str| -> Result<Option<ExtrudeTarget>, String> {
+        match o.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => Ok(Some(extrude_target_from_json(v)?)),
+        }
+    };
+    let limits = crate::model::JointLimits {
+        slide_min: expr_arg(o, "slide_min")?,
+        slide_max: expr_arg(o, "slide_max")?,
+        slide_min_target: stop("slide_min_to")?,
+        slide_max_target: stop("slide_max_to")?,
+        turn_min: expr_arg(o, "turn_min")?,
+        turn_max: expr_arg(o, "turn_max")?,
+    };
     Ok((
         members,
         base,
@@ -1251,6 +1267,7 @@ fn joint_op_args(
         expr_arg(o, "position")?,
         expr_arg(o, "position2")?,
         expr_arg(o, "position3")?,
+        limits,
     ))
 }
 
@@ -2268,6 +2285,7 @@ mod tests {
                 position: "90".into(),
                 position2: String::new(),
                 position3: String::new(),
+                limits: Default::default(),
             })
         );
         // `base = "b"` swaps which side the frames land on.
@@ -2289,6 +2307,7 @@ mod tests {
                 position: String::new(),
                 position2: String::new(),
                 position3: String::new(),
+                limits: Default::default(),
             })
         );
     }

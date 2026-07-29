@@ -379,6 +379,7 @@ pub enum Instruction {
         position: String,
         position2: String,
         position3: String,
+        limits: crate::model::JointLimits,
     },
     /// Re-point an existing joint.
     EditJointOp {
@@ -391,6 +392,7 @@ pub enum Instruction {
         position: String,
         position2: String,
         position3: String,
+        limits: crate::model::JointLimits,
     },
     /// Arm the Joint tool with a set of picks **without committing** them, so the tool's
     /// live preview can be driven from a script — `bearcad.joint` is the committing
@@ -404,6 +406,7 @@ pub enum Instruction {
         position: String,
         position2: String,
         position3: String,
+        limits: crate::model::JointLimits,
     },
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
@@ -1140,14 +1143,14 @@ impl Instruction {
             Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
-                joint_op_lua("bearcad.joint", None, members, *base, kind, frame_a, frame_b, position, position2, position3)
+            Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
+                joint_op_lua("bearcad.joint", None, members, *base, kind, frame_a, frame_b, position, position2, position3, limits)
             }
-            Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
-                joint_op_lua("bearcad.begin_joint", None, members, *base, kind, frame_a, frame_b, position, position2, position3)
+            Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
+                joint_op_lua("bearcad.begin_joint", None, members, *base, kind, frame_a, frame_b, position, position2, position3, limits)
             }
-            Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3 } => {
-                joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, frame_a, frame_b, position, position2, position3)
+            Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
+                joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, frame_a, frame_b, position, position2, position3, limits)
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {
                 mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
@@ -2002,7 +2005,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 length_target: length_target.clone(),
             })
         }
-        Action::CreateJointOperation { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+        Action::CreateJointOperation { members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
             Some(Instruction::CreateJointOp {
                 members: members.clone(),
                 base: *base,
@@ -2012,9 +2015,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 position: position.clone(),
                 position2: position2.clone(),
                 position3: position3.clone(),
+                limits: limits.clone(),
             })
         }
-        Action::EditJointOperation { op, members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+        Action::EditJointOperation { op, members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
             Some(Instruction::EditJointOp {
                 op: *op,
                 members: members.clone(),
@@ -2025,6 +2029,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 position: position.clone(),
                 position2: position2.clone(),
                 position3: position3.clone(),
+                limits: limits.clone(),
             })
         }
         Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
@@ -2641,6 +2646,7 @@ fn joint_op_lua(
     position: &str,
     position2: &str,
     position3: &str,
+    limits: &crate::model::JointLimits,
 ) -> String {
     let mut parts = Vec::new();
     if let Some(op) = op {
@@ -2688,9 +2694,22 @@ fn joint_op_lua(
         ("position", position),
         ("position2", position2),
         ("position3", position3),
+        // Travel limits (#896): expressions ride as strings, stop targets as face specs.
+        ("slide_min", &limits.slide_min),
+        ("slide_max", &limits.slide_max),
+        ("turn_min", &limits.turn_min),
+        ("turn_max", &limits.turn_max),
     ] {
         if !value.trim().is_empty() {
             parts.push(format!("{name} = \"{value}\""));
+        }
+    }
+    for (name, target) in [
+        ("slide_min_to", &limits.slide_min_target),
+        ("slide_max_to", &limits.slide_max_target),
+    ] {
+        if let Some(target) = target {
+            parts.push(format!("{name} = {}", extrude_target_lua_table(target)));
         }
     }
     format!("{call}{{ {} }}", parts.join(", "))
@@ -4783,7 +4802,7 @@ impl ScriptRunner {
                 });
                 StepResult::Continue
             }
-            Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+            Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
                 let result = state.apply(Action::CreateJointOperation {
                     members,
                     base,
@@ -4793,11 +4812,12 @@ impl ScriptRunner {
                     position,
                     position2,
                     position3,
+                    limits,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+            Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
                 let result = state.apply(Action::EditJointOperation {
                     op,
                     members,
@@ -4808,11 +4828,12 @@ impl ScriptRunner {
                     position,
                     position2,
                     position3,
+                    limits,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+            Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Joint));
                 let probe = crate::model::Joint {
                     members,
@@ -4826,7 +4847,7 @@ impl ScriptRunner {
                     rest: String::new(),
                     rest2: String::new(),
                     rest3: String::new(),
-                    limits: Default::default(),
+                    limits,
                     name: None,
                     deleted: false,
                 };

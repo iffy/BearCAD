@@ -338,6 +338,15 @@ pub struct JointControl {
     pub position: String,
     pub position2: String,
     pub position3: String,
+    /// Travel limits (#896): expressions, plus the picked slide stops' labels.
+    pub slide_min: String,
+    pub slide_max: String,
+    pub turn_min: String,
+    pub turn_max: String,
+    pub slide_min_stop_rows: Vec<String>,
+    pub slide_min_stop_focused: bool,
+    pub slide_max_stop_rows: Vec<String>,
+    pub slide_max_stop_focused: bool,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -353,6 +362,15 @@ pub enum JointEdit {
     Position(String),
     Position2(String),
     Position3(String),
+    /// Travel limits (#896).
+    SlideMin(String),
+    SlideMax(String),
+    TurnMin(String),
+    TurnMax(String),
+    SlideMinStopFocus,
+    ClearSlideMinStop,
+    SlideMaxStopFocus,
+    ClearSlideMaxStop,
     MembersFocus,
     RemoveMember(usize),
     ClearMembers,
@@ -2709,6 +2727,25 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Joint), "Slide") => Some(
             "How far along the axis, as an expression, so the pose stays parametric.",
         ),
+        (Some(Tool::Joint), "Slide min") => Some(
+            "How far back the slide may travel, as an expression. Empty leaves it open.",
+        ),
+        (Some(Tool::Joint), "Slide max") => Some(
+            "How far forward the slide may travel. Empty leaves it open.",
+        ),
+        (Some(Tool::Joint), "Turn min") => Some(
+            "How far the joint may turn one way, in degrees. Empty leaves it open.",
+        ),
+        (Some(Tool::Joint), "Turn max") => Some(
+            "How far the joint may turn the other way. Empty leaves it open.",
+        ),
+        (Some(Tool::Joint), "Min stop") => Some(
+            "A face or plane the slide stops at, instead of a number — the limit follows \
+             the model.",
+        ),
+        (Some(Tool::Joint), "Max stop") => Some(
+            "A face or plane the slide stops at going forward.",
+        ),
         (Some(Tool::Joint), "Angle") => Some("How far around the axis, in degrees."),
         (Some(Tool::Joint), "U") => Some("How far across the plane's first direction."),
         (Some(Tool::Joint), "V") => Some("How far across the plane's second direction."),
@@ -4554,6 +4591,69 @@ pub fn show_pane(
                     field(ui, "Pitch", &control.position2, ValueKind::Angle, &JointEdit::Position2);
                     field(ui, "Roll", &control.position3, ValueKind::Angle, &JointEdit::Position3);
                 }
+            }
+            // Travel limits (#896): slide bounds for the sliding kinds — as expressions
+            // or a picked stop face/plane — and turn bounds for the turning kinds.
+            let slides = matches!(
+                control.kind,
+                K::Slider | K::Cylindrical | K::Planar | K::PinSlot | K::Screw { .. }
+            );
+            let turns = matches!(
+                control.kind,
+                K::Revolute | K::Cylindrical | K::Ball | K::PinSlot | K::Screw { .. }
+            );
+            if slides {
+                field(ui, "Slide min", &control.slide_min, ValueKind::Length, &JointEdit::SlideMin);
+                field(ui, "Slide max", &control.slide_max, ValueKind::Length, &JointEdit::SlideMax);
+            }
+            if turns {
+                field(ui, "Turn min", &control.turn_min, ValueKind::Angle, &JointEdit::TurnMin);
+                field(ui, "Turn max", &control.turn_max, ValueKind::Angle, &JointEdit::TurnMax);
+            }
+            drop(field);
+            if slides {
+                let mut stop_row = |ui: &mut egui::Ui,
+                                    label: &str,
+                                    id: &'static str,
+                                    rows: &[String],
+                                    focused: bool,
+                                    on_focus: JointEdit,
+                                    on_clear: JointEdit| {
+                    labeled_row_top(ui, label, |ui| {
+                        if let Some(event) = crate::element_picker::show_labeled(
+                            ui,
+                            id,
+                            focused,
+                            true,
+                            crate::icons::IconId::Plane,
+                            rows,
+                        ) {
+                            pending = Some(match event {
+                                crate::element_picker::PickerEvent::Focus => on_focus,
+                                crate::element_picker::PickerEvent::Remove(_)
+                                | crate::element_picker::PickerEvent::Clear => on_clear,
+                            });
+                        }
+                    });
+                };
+                stop_row(
+                    ui,
+                    "Min stop",
+                    "joint_slide_min_stop",
+                    &control.slide_min_stop_rows,
+                    control.slide_min_stop_focused,
+                    JointEdit::SlideMinStopFocus,
+                    JointEdit::ClearSlideMinStop,
+                );
+                stop_row(
+                    ui,
+                    "Max stop",
+                    "joint_slide_max_stop",
+                    &control.slide_max_stop_rows,
+                    control.slide_max_stop_focused,
+                    JointEdit::SlideMaxStopFocus,
+                    JointEdit::ClearSlideMaxStop,
+                );
             }
         }
         if let Some(edit) = pending {

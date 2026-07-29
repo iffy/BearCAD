@@ -533,6 +533,10 @@ enum JointFocus {
     StartPointC,
     /// **End point C**: pins the base side's spin about its axis.
     EndPointC,
+    /// The slide's **min stop** (#896): a face or plane the travel ends at.
+    SlideMinStop,
+    /// The slide's **max stop** (#896).
+    SlideMaxStop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -7294,6 +7298,60 @@ impl App {
             return;
         };
         let focus = self.joint_focus();
+        // A slide stop (#896): the click picks a face/plane the travel ends at, through
+        // the same pick the Extrude tool's "to object" uses.
+        if matches!(focus, JointFocus::SlideMinStop | JointFocus::SlideMaxStop) {
+            let (base, normal) = self
+                .state
+                .creating_joint
+                .as_ref()
+                .and_then(|cj| {
+                    let (frame_a, _) = cj.frames();
+                    let origin = extrude::move_point_world(
+                        &self.state.doc,
+                        frame_a.origin.as_ref()?,
+                    )?;
+                    let axis_point = frame_a
+                        .axis
+                        .as_ref()
+                        .and_then(|p| extrude::move_point_world(&self.state.doc, p));
+                    let dir = axis_point
+                        .map(|p| (p - origin).normalize_or_zero())
+                        .filter(|v| v.length_squared() > 0.5)
+                        .unwrap_or(Vec3::Z);
+                    Some((origin, dir))
+                })
+                .unwrap_or((Vec3::ZERO, Vec3::Z));
+            match pick_extrude_target(
+                pp,
+                project,
+                &self.state.doc,
+                base,
+                normal,
+                &[],
+                cam.eye(),
+                None,
+            ) {
+                Some((target, _)) => {
+                    let label = extrude_target_label(&self.state.doc, &target);
+                    if let Some(cj) = self.state.creating_joint.as_mut() {
+                        match focus {
+                            JointFocus::SlideMinStop => {
+                                cj.limits.slide_min_target = Some(target)
+                            }
+                            _ => cj.limits.slide_max_target = Some(target),
+                        }
+                    }
+                    self.release_satisfied_joint_focus();
+                    self.state.status = format!("Joint: stop — {label}");
+                }
+                None => {
+                    self.state.status =
+                        "Pick a plane or flat face for the stop".to_string();
+                }
+            }
+            return;
+        }
         if let Some((on_driven, what)) = match focus {
             JointFocus::StartPointA => Some((true, "start A")),
             JointFocus::EndPointA => Some((false, "end A")),
@@ -7301,7 +7359,7 @@ impl App {
             JointFocus::EndPointB => Some((false, "end B")),
             JointFocus::StartPointC => Some((true, "start C")),
             JointFocus::EndPointC => Some((false, "end C")),
-            JointFocus::Members => None,
+            JointFocus::Members | JointFocus::SlideMinStop | JointFocus::SlideMaxStop => None,
         } {
             // Start points sit on the driven member's bodies, end points on the base's.
             let side_bodies: Vec<usize> = self
@@ -7330,7 +7388,9 @@ impl App {
                             JointFocus::EndPointB => cj.end_point_b = Some(point),
                             JointFocus::StartPointC => cj.start_point_c = Some(point),
                             JointFocus::EndPointC => cj.end_point_c = Some(point),
-                            JointFocus::Members => {}
+                            JointFocus::Members
+                            | JointFocus::SlideMinStop
+                            | JointFocus::SlideMaxStop => {}
                         }
                     }
                     self.release_satisfied_joint_focus();
@@ -10548,6 +10608,20 @@ impl eframe::App for App {
                         position: cj.map(|c| c.position.clone()).unwrap_or_default(),
                         position2: cj.map(|c| c.position2.clone()).unwrap_or_default(),
                         position3: cj.map(|c| c.position3.clone()).unwrap_or_default(),
+                        slide_min: cj.map(|c| c.limits.slide_min.clone()).unwrap_or_default(),
+                        slide_max: cj.map(|c| c.limits.slide_max.clone()).unwrap_or_default(),
+                        turn_min: cj.map(|c| c.limits.turn_min.clone()).unwrap_or_default(),
+                        turn_max: cj.map(|c| c.limits.turn_max.clone()).unwrap_or_default(),
+                        slide_min_stop_rows: cj
+                            .and_then(|c| c.limits.slide_min_target.as_ref())
+                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
+                            .unwrap_or_default(),
+                        slide_min_stop_focused: joint_focus == JointFocus::SlideMinStop,
+                        slide_max_stop_rows: cj
+                            .and_then(|c| c.limits.slide_max_target.as_ref())
+                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
+                            .unwrap_or_default(),
+                        slide_max_stop_focused: joint_focus == JointFocus::SlideMaxStop,
                         editing: cj.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: members.len() >= 2,
                     }
@@ -11561,12 +11635,20 @@ impl eframe::App for App {
                     context::JointEdit::EndCFocus => {
                         self.joint_focus_override = Some(JointFocus::EndPointC)
                     }
+                    context::JointEdit::SlideMinStopFocus => {
+                        self.joint_focus_override = Some(JointFocus::SlideMinStop)
+                    }
+                    context::JointEdit::SlideMaxStopFocus => {
+                        self.joint_focus_override = Some(JointFocus::SlideMaxStop)
+                    }
                     context::JointEdit::ClearStartA
                     | context::JointEdit::ClearEndA
                     | context::JointEdit::ClearStartB
                     | context::JointEdit::ClearEndB
                     | context::JointEdit::ClearStartC
                     | context::JointEdit::ClearEndC
+                    | context::JointEdit::ClearSlideMinStop
+                    | context::JointEdit::ClearSlideMaxStop
                     | context::JointEdit::Commit => self.joint_focus_override = None,
                     _ => {}
                 }
@@ -11617,13 +11699,25 @@ impl eframe::App for App {
                             context::JointEdit::ClearEndB => cj.end_point_b = None,
                             context::JointEdit::ClearStartC => cj.start_point_c = None,
                             context::JointEdit::ClearEndC => cj.end_point_c = None,
+                            context::JointEdit::SlideMin(v) => cj.limits.slide_min = v,
+                            context::JointEdit::SlideMax(v) => cj.limits.slide_max = v,
+                            context::JointEdit::TurnMin(v) => cj.limits.turn_min = v,
+                            context::JointEdit::TurnMax(v) => cj.limits.turn_max = v,
+                            context::JointEdit::ClearSlideMinStop => {
+                                cj.limits.slide_min_target = None
+                            }
+                            context::JointEdit::ClearSlideMaxStop => {
+                                cj.limits.slide_max_target = None
+                            }
                             context::JointEdit::MembersFocus
                             | context::JointEdit::StartAFocus
                             | context::JointEdit::EndAFocus
                             | context::JointEdit::StartBFocus
                             | context::JointEdit::EndBFocus
                             | context::JointEdit::StartCFocus
-                            | context::JointEdit::EndCFocus => {}
+                            | context::JointEdit::EndCFocus
+                            | context::JointEdit::SlideMinStopFocus
+                            | context::JointEdit::SlideMaxStopFocus => {}
                             context::JointEdit::Commit => unreachable!(),
                         }
                     }
@@ -13505,6 +13599,8 @@ fn joint_focus_satisfied(cj: &actions::CreatingJoint, focus: JointFocus) -> bool
         JointFocus::EndPointB => cj.end_point_b.is_some(),
         JointFocus::StartPointC => cj.start_point_c.is_some(),
         JointFocus::EndPointC => cj.end_point_c.is_some(),
+        JointFocus::SlideMinStop => cj.limits.slide_min_target.is_some(),
+        JointFocus::SlideMaxStop => cj.limits.slide_max_target.is_some(),
     }
 }
 
