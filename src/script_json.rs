@@ -186,6 +186,8 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "set_visible" => &["element", "visible"],
         "set_construction" => &["element", "construction"],
         "find" => &["name"],
+        "set_joint_rest" | "revert_joint" => &["index"],
+        "revert_joints" => &[],
         _ => return Err(format!("'{name}' expects named arguments (a table)")),
     };
     let mut map = Map::new();
@@ -400,6 +402,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
                 joint_op_args(o)?;
             Ok(Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits })
         }
+        "set_joint_rest" => Ok(Instruction::SetJointRest {
+            op: req_usize(o, "index", "set_joint_rest")?,
+        }),
+        "revert_joint" => Ok(Instruction::RevertJoint {
+            op: req_usize(o, "index", "revert_joint")?,
+        }),
+        "revert_joints" => Ok(Instruction::RevertAllJoints),
         "edit_joint" => {
             let op = req_usize(o, "index", "edit_joint")?;
             let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =

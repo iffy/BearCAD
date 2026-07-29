@@ -9949,6 +9949,7 @@ impl eframe::App for App {
             let mut activate_component: Option<Option<usize>> = None;
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
+            let mut joint_rest: Option<hierarchy::JointRestCommand> = None;
             let pane_kept_open = show_pane_shell(ui, "tree", "Elements", false, 220.0, None, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
@@ -9970,6 +9971,9 @@ impl eframe::App for App {
                     };
                     let mut queue_edit_operation = |element: hierarchy::SceneElement| {
                         edit_operation = Some(element);
+                    };
+                    let mut queue_joint_rest = |command: hierarchy::JointRestCommand| {
+                        joint_rest = Some(command);
                     };
                     let mut queue_edit_drawing = |index: usize| {
                         edit_drawing = Some(index);
@@ -10079,6 +10083,7 @@ impl eframe::App for App {
                         &mut queue_edit_edge_treatment,
                         &mut queue_edit_edge_treatment_op,
                         &mut queue_edit_operation,
+                        &mut queue_joint_rest,
                         &mut queue_edit_drawing,
                         &mut queue_select_drawing_element,
                         &mut queue_hover_drawing_element,
@@ -10115,6 +10120,20 @@ impl eframe::App for App {
             }
             if let Some(marker) = set_rollback {
                 self.rollback_marker = marker;
+            }
+            // Rest-pose commands from a joint row's context menu (#898).
+            if let Some(command) = joint_rest {
+                match command {
+                    hierarchy::JointRestCommand::SetRest(joint) => {
+                        self.state.apply(Action::SetJointRest { joint });
+                    }
+                    hierarchy::JointRestCommand::Revert(joint) => {
+                        self.state.apply(Action::RevertJoint { joint });
+                    }
+                    hierarchy::JointRestCommand::RevertAll => {
+                        self.state.apply(Action::RevertAllJoints);
+                    }
+                }
             }
             if let Some((element, component)) = move_to_component {
                 self.state.apply(Action::MoveToComponent { element, component });
@@ -11656,6 +11675,34 @@ impl eframe::App for App {
                     context::JointEdit::Commit => {
                         self.state.apply(Action::CommitJoint);
                     }
+                    // Rest-pose commands act on the committed joint being edited (#898):
+                    // Set captures the pane's live position; Revert reloads the pane's
+                    // position fields from the rest pose it restored.
+                    context::JointEdit::SetRest => {
+                        if let Some(op) = self.state.creating_joint.as_ref().and_then(|c| c.editing)
+                        {
+                            let live = self.state.creating_joint.clone().unwrap();
+                            if let Some(j) = self.state.doc.joints.get_mut(op) {
+                                j.position = live.position.clone();
+                                j.position2 = live.position2.clone();
+                                j.position3 = live.position3.clone();
+                            }
+                            self.state.apply(Action::SetJointRest { joint: op });
+                        }
+                    }
+                    context::JointEdit::Revert => {
+                        if let Some(op) = self.state.creating_joint.as_ref().and_then(|c| c.editing)
+                        {
+                            self.state.apply(Action::RevertJoint { joint: op });
+                            if let Some(j) = self.state.doc.joints.get(op).cloned() {
+                                if let Some(cj) = self.state.creating_joint.as_mut() {
+                                    cj.position = j.position;
+                                    cj.position2 = j.position2;
+                                    cj.position3 = j.position3;
+                                }
+                            }
+                        }
+                    }
                     edit => {
                         let cj = self
                             .state
@@ -11718,7 +11765,9 @@ impl eframe::App for App {
                             | context::JointEdit::EndCFocus
                             | context::JointEdit::SlideMinStopFocus
                             | context::JointEdit::SlideMaxStopFocus => {}
-                            context::JointEdit::Commit => unreachable!(),
+                            context::JointEdit::Commit
+                            | context::JointEdit::SetRest
+                            | context::JointEdit::Revert => unreachable!(),
                         }
                     }
                 }

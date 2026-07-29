@@ -2122,6 +2122,12 @@ pub enum Action {
         position3: String,
         limits: crate::model::JointLimits,
     },
+    /// Capture a joint's current position as its rest pose (#898).
+    SetJointRest { joint: usize },
+    /// Put a joint back to its rest pose (#898).
+    RevertJoint { joint: usize },
+    /// Put every joint back to its rest pose in one go (#898).
+    RevertAllJoints,
     /// Commit the in-progress Mirror-tool operation (#523).
     CommitMirror,
     /// Scripted/replayed mirror operation with an explicit payload.
@@ -11035,6 +11041,42 @@ label_hidden: false,
                 }
                 self.refresh_document_health();
                 self.status = "Edited joint".to_string();
+                ActionResult::Ok
+            }
+            Action::SetJointRest { joint } => {
+                let Some(j) = self.doc.joints.get_mut(joint).filter(|j| !j.deleted) else {
+                    return ActionResult::Err(format!("Joint {joint} not found"));
+                };
+                j.rest = j.position.clone();
+                j.rest2 = j.position2.clone();
+                j.rest3 = j.position3.clone();
+                self.status = "Rest position set".to_string();
+                ActionResult::Ok
+            }
+            Action::RevertJoint { joint } => {
+                let Some(j) = self.doc.joints.get_mut(joint).filter(|j| !j.deleted) else {
+                    return ActionResult::Err(format!("Joint {joint} not found"));
+                };
+                j.position = j.rest.clone();
+                j.position2 = j.rest2.clone();
+                j.position3 = j.rest3.clone();
+                self.refresh_document_health();
+                self.status = "Reverted to rest position".to_string();
+                ActionResult::Ok
+            }
+            Action::RevertAllJoints => {
+                let mut count = 0usize;
+                for j in self.doc.joints.iter_mut().filter(|j| !j.deleted) {
+                    if j.position != j.rest || j.position2 != j.rest2 || j.position3 != j.rest3
+                    {
+                        j.position = j.rest.clone();
+                        j.position2 = j.rest2.clone();
+                        j.position3 = j.rest3.clone();
+                        count += 1;
+                    }
+                }
+                self.refresh_document_health();
+                self.status = format!("Reverted {count} joint(s) to rest");
                 ActionResult::Ok
             }
             Action::CommitMirror => {

@@ -277,6 +277,17 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
     }
 }
 
+/// A rest-pose command from a joint row's context menu (#898).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JointRestCommand {
+    /// Capture the joint's current position as its rest pose.
+    SetRest(usize),
+    /// Put the joint back to its rest pose.
+    Revert(usize),
+    /// Put every joint back to its rest pose.
+    RevertAll,
+}
+
 /// Drag-and-drop payload for dragging an Elements-pane row onto the open drawing page (#290):
 /// the dragged body/sketch becomes a projection at the drop point.
 #[derive(Clone, Debug)]
@@ -3357,6 +3368,7 @@ pub fn show_pane(
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(usize),
     on_edit_operation: &mut impl FnMut(SceneElement),
+    on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_edit_drawing: &mut impl FnMut(usize),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
@@ -3569,6 +3581,7 @@ pub fn show_pane(
                         on_edit_edge_treatment,
                         on_edit_edge_treatment_op,
                         on_edit_operation,
+                        on_joint_rest,
                         on_edit_drawing,
                         on_select_drawing_element,
                         on_hover_drawing_element,
@@ -3624,6 +3637,7 @@ pub fn show_pane(
                 on_edit_edge_treatment,
                 on_edit_edge_treatment_op,
                 on_edit_operation,
+                on_joint_rest,
                 on_add_to_drawing,
                 on_export_body,
                 on_export_body_step,
@@ -3803,6 +3817,7 @@ fn show_graph_view(
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(usize),
     on_edit_operation: &mut impl FnMut(SceneElement),
+    on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -4101,6 +4116,7 @@ fn show_graph_view(
                             on_edit_extrusion,
                             on_edit_edge_treatment_op,
                             on_edit_operation,
+                            on_joint_rest,
                             on_add_to_drawing,
                             on_export_body,
                             on_export_body_step,
@@ -4409,6 +4425,7 @@ fn show_row(
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(usize),
     on_edit_operation: &mut impl FnMut(SceneElement),
+    on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_edit_drawing: &mut impl FnMut(usize),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
@@ -4782,6 +4799,7 @@ fn show_row(
                 on_edit_extrusion,
                 on_edit_edge_treatment_op,
                 on_edit_operation,
+                on_joint_rest,
                 on_add_to_drawing,
                 on_export_body,
                 on_export_body_step,
@@ -4842,6 +4860,7 @@ fn element_context_menu(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment_op: &mut impl FnMut(usize),
     on_edit_operation: &mut impl FnMut(SceneElement),
+    on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -4908,6 +4927,26 @@ fn element_context_menu(
         HierarchyNode::UnitInstance(index) => {
             if ui.button("Update from source file").clicked() {
                 on_edit_operation(SceneElement::UnitInstance(index));
+                ui.close();
+            }
+        }
+        // A joint carries its rest pose (#898): capture it, go back to it, or send the
+        // whole assembly home — alongside the universal Edit.
+        HierarchyNode::Joint(index) => {
+            if ui.button("Edit").clicked() {
+                on_edit_operation(element.clone());
+                ui.close();
+            }
+            if ui.button("Set rest to current position").clicked() {
+                on_joint_rest(JointRestCommand::SetRest(index));
+                ui.close();
+            }
+            if ui.button("Revert to rest position").clicked() {
+                on_joint_rest(JointRestCommand::Revert(index));
+                ui.close();
+            }
+            if ui.button("Revert all joints").clicked() {
+                on_joint_rest(JointRestCommand::RevertAll);
                 ui.close();
             }
         }

@@ -408,6 +408,12 @@ pub enum Instruction {
         position3: String,
         limits: crate::model::JointLimits,
     },
+    /// Capture a joint's current position as its rest pose (#898).
+    SetJointRest { op: usize },
+    /// Put a joint back to its rest pose (#898).
+    RevertJoint { op: usize },
+    /// Put every joint back to its rest pose (#898).
+    RevertAllJoints,
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
         plane: FaceId,
@@ -1152,6 +1158,9 @@ impl Instruction {
             Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3, limits } => {
                 joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, frame_a, frame_b, position, position2, position3, limits)
             }
+            Instruction::SetJointRest { op } => format!("bearcad.set_joint_rest({op})"),
+            Instruction::RevertJoint { op } => format!("bearcad.revert_joint({op})"),
+            Instruction::RevertAllJoints => "bearcad.revert_joints()".to_string(),
             Instruction::CreateMirrorOp { plane, targets, mode } => {
                 mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
             }
@@ -2032,6 +2041,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 limits: limits.clone(),
             })
         }
+        Action::SetJointRest { joint } => Some(Instruction::SetJointRest { op: *joint }),
+        Action::RevertJoint { joint } => Some(Instruction::RevertJoint { op: *joint }),
+        Action::RevertAllJoints => Some(Instruction::RevertAllJoints),
         Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
             Some(Instruction::CreateSliceOp {
                 targets: targets.clone(),
@@ -4854,6 +4866,21 @@ impl ScriptRunner {
                 let mut cj = crate::actions::CreatingJoint::from_joint(&probe, 0);
                 cj.editing = None;
                 state.creating_joint = Some(cj);
+                StepResult::Continue
+            }
+            Instruction::SetJointRest { op } => {
+                let result = state.apply(Action::SetJointRest { joint: op });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::RevertJoint { op } => {
+                let result = state.apply(Action::RevertJoint { joint: op });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::RevertAllJoints => {
+                let result = state.apply(Action::RevertAllJoints);
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {

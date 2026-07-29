@@ -4106,6 +4106,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "set_joint_rest",
+        lua.create_function(|lua, op: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetJointRest { op }) }
+        })?,
+    )?;
+
+    api.set(
+        "revert_joint",
+        lua.create_function(|lua, op: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RevertJoint { op }) }
+        })?,
+    )?;
+
+    api.set(
+        "revert_joints",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::RevertAllJoints) }
+        })?,
+    )?;
+
+    api.set(
         "mirror_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -7306,6 +7330,40 @@ mod tests {
         assert_eq!(state.doc.joints.len(), 1);
         assert!(matches!(state.doc.joints[0].kind, crate::model::JointKind::Slider));
         assert_eq!(state.doc.joints[0].position, "3");
+    }
+
+    /// #898: a joint's rest pose — captured at creation, recapturable, and reverted to,
+    /// singly or all at once.
+    #[test]
+    fn lua_joint_rest_set_and_revert() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.joint{ a = 0, b = 1, kind = "slider", position = 5 }
+            -- Drag the joint elsewhere, then revert: back to the rest captured at creation.
+            bearcad.edit_joint{ index = 0, a = 0, b = 1, kind = "slider", position = 12 }
+            bearcad.revert_joint(0)
+            "#,
+        );
+        assert_eq!(state.doc.joints[0].position, "5", "reverted to the creation pose");
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.joint{ a = 0, b = 1, kind = "slider", position = 5 }
+            bearcad.edit_joint{ index = 0, a = 0, b = 1, kind = "slider", position = 12 }
+            -- Recapture: 12 becomes the pose Revert-all returns to.
+            bearcad.set_joint_rest(0)
+            bearcad.edit_joint{ index = 0, a = 0, b = 1, kind = "slider", position = 3 }
+            bearcad.revert_joints()
+            "#,
+        );
+        assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
     }
 
     /// #649/#650: an **edge midpoint** works as either point too.

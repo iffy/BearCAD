@@ -371,6 +371,10 @@ pub enum JointEdit {
     ClearSlideMinStop,
     SlideMaxStopFocus,
     ClearSlideMaxStop,
+    /// Capture the committed joint's current position as its rest pose (#898).
+    SetRest,
+    /// Put the committed joint back to its rest pose (#898).
+    Revert,
     MembersFocus,
     RemoveMember(usize),
     ClearMembers,
@@ -2739,6 +2743,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Joint), "Turn max") => Some(
             "How far the joint may turn the other way. Empty leaves it open.",
         ),
+        (Some(Tool::Joint), "Rest") => Some(
+            "The pose the assembly is meant to sit in. Set captures the current position; \
+             Revert goes back to it.",
+        ),
         (Some(Tool::Joint), "Min stop") => Some(
             "A face or plane the slide stops at, instead of a number — the limit follows \
              the model.",
@@ -4655,6 +4663,26 @@ pub fn show_pane(
                     JointEdit::ClearSlideMaxStop,
                 );
             }
+        }
+        // The rest pose (#898): capture the current position, or go back to it — only
+        // meaningful once the joint exists.
+        if control.editing {
+            labeled_row(ui, "Rest", |ui| {
+                if ui
+                    .button("Set")
+                    .on_hover_text("Set the current position as the rest position")
+                    .clicked()
+                {
+                    pending = Some(JointEdit::SetRest);
+                }
+                if ui
+                    .button("Revert")
+                    .on_hover_text("Put the joint back to its rest position")
+                    .clicked()
+                {
+                    pending = Some(JointEdit::Revert);
+                }
+            });
         }
         if let Some(edit) = pending {
             on_joint_edit(edit);
