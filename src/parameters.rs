@@ -470,9 +470,10 @@ pub fn body_edge_world_segment(
     // A shadow body still has real geometry — it's just consumed by an operation — and a Move
     // shadows its own inputs (#650), so shadows resolve here; only a deleted body doesn't.
     doc.bodies.get(body).filter(|b| !b.deleted)?;
-    // Uncached: a Move's own transform resolves its snap points (#650) from inside the mesh
-    // cache's borrow, so going through the cached wrapper would double-borrow the RefCell.
-    let solid = crate::extrude::body_solid_mesh_uncached_pub(doc, body)?;
+    // Reentrant un-posed access (#650/#897): the cached mesh when the cache is free, a
+    // fresh build when resolving from inside the cache's own borrow. Un-posed on purpose —
+    // Move snap points and joint frames are body-local references.
+    let solid = crate::extrude::body_solid_mesh_unposed(doc, body)?;
     for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
         let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
         let (ka, kb) = (
@@ -495,9 +496,10 @@ pub fn body_vertex_world_position(
 ) -> Option<glam::Vec3> {
     // Shadow bodies resolve too, for the same reason as `body_edge_world_segment`.
     doc.bodies.get(body).filter(|b| !b.deleted)?;
-    // Uncached: a Move's own transform resolves its snap points (#650) from inside the mesh
-    // cache's borrow, so going through the cached wrapper would double-borrow the RefCell.
-    let solid = crate::extrude::body_solid_mesh_uncached_pub(doc, body)?;
+    // Reentrant un-posed access (#650/#897): the cached mesh when the cache is free, a
+    // fresh build when resolving from inside the cache's own borrow. Un-posed on purpose —
+    // Move snap points and joint frames are body-local references.
+    let solid = crate::extrude::body_solid_mesh_unposed(doc, body)?;
     solid
         .triangles
         .iter()

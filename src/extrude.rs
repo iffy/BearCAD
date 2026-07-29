@@ -3120,10 +3120,7 @@ pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.boolean_ops,
             &doc.revolutions,
             &doc.sweeps,
-            // Joints (#893) pose driven bodies in place; the memoized meshes are posed.
-            // Component membership feeds the pose lookup too — a joint can drive a whole
-            // component. (Nested with lofts: serde tuples cap at 16 elements.)
-            (&doc.lofts, &doc.joints, &doc.components, &doc.component_members),
+            &doc.lofts,
             // Imported units (#724): an override/placement edit or a sync that replaces an
             // embedded copy must invalidate the materialized unit bodies' cached meshes.
             &doc.units,
@@ -3148,12 +3145,83 @@ thread_local! {
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
-/// Build the solid mesh for a single body (by index), or `None` if the body is deleted,
-/// missing, or its source feature produces no geometry. Memoized per document state (#162);
-/// see [`BODY_MESH_CACHE`].
-pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+/// Everything the **posed** presentation depends on beyond the un-posed geometry (#897):
+/// the joints themselves (their positions change per drag frame) and component
+/// membership (a joint can drive a whole component). Kept separate from
+/// [`document_mesh_fingerprint`] so dragging a joint never invalidates the expensive
+/// kernel meshes — only the cheap posed copies.
+pub(crate) fn document_pose_fingerprint(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    document_mesh_fingerprint(doc).hash(&mut h);
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(h);
+    serde_json::to_writer(
+        &mut writer,
+        &(&doc.joints, &doc.components, &doc.component_members),
+    )
+    .ok();
+    writer.0.finish()
+}
+
+/// The cached **un-posed** mesh when the cache is free, else a fresh uncached build —
+/// safe both outside and *inside* the mesh cache's own borrow (a Move's transform
+/// resolves its snap points from within it, #650). What feature inputs and the joint
+/// frame resolvers read; the posed presentation is [`body_solid_mesh`].
+pub(crate) fn body_solid_mesh_unposed(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     let fingerprint = document_mesh_fingerprint(doc);
-    BODY_MESH_CACHE.with(|cache| {
+    let outcome = BODY_MESH_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            if let Some(mesh) = cache.1.get(&body_index) {
+                return Some(mesh.clone());
+            }
+            let mesh = body_solid_mesh_uncached(doc, body_index);
+            cache.1.insert(body_index, mesh.clone());
+            Some(mesh)
+        }
+        Err(_) => None,
+    });
+    match outcome {
+        Some(mesh) => mesh,
+        None => body_solid_mesh_uncached(doc, body_index),
+    }
+}
+
+thread_local! {
+    /// Per-thread memo for the **posed** meshes (#893/#897): keyed by the pose
+    /// fingerprint, whose misses cost one rigid transform of the cached un-posed mesh —
+    /// never a kernel rebuild. This is what makes dragging a joint through its motion
+    /// interactive.
+    static POSED_BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<usize, Option<SolidMesh>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// Build the solid mesh for a single body (by index), or `None` if the body is deleted,
+/// missing, or its source feature produces no geometry. Memoized per document state (#162).
+/// Joints (#893) pose the driven body here, at the presentation seam: this is what the
+/// viewport, exports, and measures read, while feature inputs (booleans, moves) keep
+/// reading the un-jointed geometry — a joint is an assembly relationship, not a modelling
+/// operation.
+pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+    let unposed = body_solid_mesh_unposed(doc, body_index);
+    if doc.joints.iter().all(|j| j.deleted) {
+        return unposed;
+    }
+    let fingerprint = document_pose_fingerprint(doc);
+    POSED_BODY_MESH_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.0 != fingerprint {
             cache.0 = fingerprint;
@@ -3162,12 +3230,7 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
         if let Some(mesh) = cache.1.get(&body_index) {
             return mesh.clone();
         }
-        // Joints (#893) pose the driven body here, at the presentation seam: the cached
-        // mesh is what the viewport, exports, and measures read, while feature inputs
-        // (booleans, moves) keep reading the un-jointed `body_solid_mesh_uncached` — a
-        // joint is an assembly relationship, not a modelling operation.
-        let mesh = body_solid_mesh_uncached(doc, body_index)
-            .map(|m| crate::joints::posed_mesh(doc, body_index, m));
+        let mesh = unposed.map(|m| crate::joints::posed_mesh(doc, body_index, m));
         cache.1.insert(body_index, mesh.clone());
         mesh
     })
@@ -3200,7 +3263,7 @@ thread_local! {
 
 /// A body's coplanar face groups, memoized per document state (#845).
 pub fn body_face_groups(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<[Vec3; 3]>>> {
-    let fingerprint = document_mesh_fingerprint(doc);
+    let fingerprint = document_pose_fingerprint(doc);
     // The mesh itself comes from its own cache; take it before borrowing this one.
     let mesh = body_solid_mesh(doc, body_index);
     BODY_FACE_GROUP_CACHE.with(|cache| {
@@ -3225,7 +3288,7 @@ pub fn body_face_groups(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Ve
 /// hover paths walk these every frame, and rebuilding them per body per frame is what made a
 /// heavy document lag.
 pub fn body_edge_chains(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>> {
-    let fingerprint = document_mesh_fingerprint(doc);
+    let fingerprint = document_pose_fingerprint(doc);
     let mesh = body_solid_mesh(doc, body_index);
     BODY_EDGE_CHAIN_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -3247,7 +3310,7 @@ pub fn body_edge_chains(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Ve
 
 /// A body's feature edges (mesh boundaries and creases), memoized per document state (#845).
 pub fn body_feature_edges(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
-    let fingerprint = document_mesh_fingerprint(doc);
+    let fingerprint = document_pose_fingerprint(doc);
     let mesh = body_solid_mesh(doc, body_index);
     BODY_FEATURE_EDGE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();

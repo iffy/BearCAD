@@ -539,6 +539,24 @@ enum JointFocus {
     SlideMaxStop,
 }
 
+/// A Select-tool drag moving a part through its joint (#897): the joint being driven,
+/// the grab-time values, and the posed frame the cursor motion projects onto.
+#[derive(Clone, Debug, PartialEq)]
+struct JointSelectDrag {
+    joint: usize,
+    start_screen: egui::Pos2,
+    /// The three position slots' numeric values at grab time (mm / degrees, per kind).
+    start: (f32, f32, f32),
+    /// The expressions as committed — restored on release so the drag lands as one
+    /// undoable edit instead of a per-frame smear.
+    original: (String, String, String),
+    origin: Vec3,
+    axis: Vec3,
+    y_axis: Vec3,
+    z_axis: Vec3,
+    start_cursor_angle: Option<f32>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ExtrudeGizmoDrag {
     start_screen: egui::Pos2,
@@ -2452,6 +2470,8 @@ struct App {
     /// A hand-picked Joint-tool focus (#894), released once satisfied — the Joint twin of
     /// [`Self::move_focus_override`].
     joint_focus_override: Option<JointFocus>,
+    /// A Select-tool drag moving a part through its joint (#897).
+    joint_select_drag: Option<JointSelectDrag>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -3575,6 +3595,7 @@ impl App {
             sketch_repeat_direction_pick: false,
             move_focus_override: None,
             joint_focus_override: None,
+            joint_select_drag: None,
             move_b_hover: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
@@ -8259,6 +8280,198 @@ impl App {
             model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
             model::MovePointRef::FaceCenter { .. } => format!("Middle of a face of {body}"),
         }
+    }
+
+    /// Drag a jointed part with the Select tool (#897): grabbing an already-selected
+    /// driven part moves it through its joint — a hinge swings, a slider slides — with
+    /// the cursor's motion projected onto the joint's freedom and stopped at its limits.
+    /// Returns true while it owns the pointer, so the selection click path stands down.
+    fn handle_joint_select_drag(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) -> bool {
+        if self.state.tool != Tool::Select || self.state.sketch_session.is_some() {
+            self.joint_select_drag = None;
+            return false;
+        }
+        if let Some(drag) = self.joint_select_drag.clone() {
+            if ui.input(|i| i.pointer.primary_down()) {
+                if let Some(pp) = pointer_screen {
+                    self.update_joint_select_drag(&drag, pp, project, cam);
+                }
+                return true;
+            }
+            self.finish_joint_select_drag(drag);
+            self.joint_select_drag = None;
+            return true;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return false;
+        }
+        let Some(pp) = pointer_screen else { return false };
+        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, pick_occlusion)
+        else {
+            return false;
+        };
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
+            return false;
+        };
+        // Select-then-drag (#239): only an already-selected part drags through its joint;
+        // the first click just selects it. A body reads as selected through any of its
+        // sub-elements too — a viewport click lands on a face, not the whole body.
+        let body_selected = self.state.scene_selection.iter().any(|e| match e {
+            SceneElement::Body(b) => b == bi,
+            SceneElement::BodyFace { body, .. }
+            | SceneElement::BodyEdge { body, .. }
+            | SceneElement::BodyVertex { body, .. } => body == bi,
+            _ => false,
+        });
+        if !body_selected {
+            return false;
+        }
+        match joints::body_drag_joint(&self.state.doc, bi) {
+            joints::BodyDragTarget::Free => false,
+            // A grounded part refuses the drag and says why (#897).
+            joints::BodyDragTarget::Grounded => {
+                self.state.status =
+                    "That part is held by its joints — drag a driven part instead".to_string();
+                false
+            }
+            joints::BodyDragTarget::Joint(ji) => {
+                let Some((origin, axis, y_axis, z_axis)) =
+                    joints::posed_joint_frame(&self.state.doc, ji)
+                else {
+                    self.state.status =
+                        "The joint has no mating frame to drag along".to_string();
+                    return false;
+                };
+                let Some(joint) = self.state.doc.joints.get(ji) else { return false };
+                let start = joints::evaluated_positions(&self.state.doc, joint);
+                let original = (
+                    joint.position.clone(),
+                    joint.position2.clone(),
+                    joint.position3.clone(),
+                );
+                let start_cursor_angle =
+                    project(origin).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
+                self.joint_select_drag = Some(JointSelectDrag {
+                    joint: ji,
+                    start_screen: pp,
+                    start,
+                    original,
+                    origin,
+                    axis,
+                    y_axis,
+                    z_axis,
+                    start_cursor_angle,
+                });
+                true
+            }
+        }
+    }
+
+    /// Project the cursor onto the dragged joint's freedom and write the values back to
+    /// its position expressions (#897), clamped to the limits so the drag stops there.
+    fn update_joint_select_drag(
+        &mut self,
+        drag: &JointSelectDrag,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        cam: &camera::Camera,
+    ) {
+        let Some(joint) = self.state.doc.joints.get(drag.joint).cloned() else {
+            return;
+        };
+        let limits = joints::resolve_limits(&self.state.doc, &joint);
+        let slide_along = |dir: Vec3, start: f32| {
+            limits.clamp_slide(construction::offset_from_normal_drag(
+                drag.origin,
+                dir,
+                project,
+                start,
+                drag.start_screen,
+                pp,
+            ))
+        };
+        // Screen rotation about the projected pivot, signed by which way the axis faces
+        // the camera — the same convention the text rotation ring uses.
+        let turn_about = |axis: Vec3, start_deg: f32| -> f32 {
+            let (Some(c), Some(start_angle)) = (project(drag.origin), drag.start_cursor_angle)
+            else {
+                return start_deg;
+            };
+            let angle = (pp.y - c.y).atan2(pp.x - c.x);
+            let sign = if axis.dot(cam.eye() - drag.origin) > 0.0 { -1.0 } else { 1.0 };
+            let deg = start_deg + (sign * (angle - start_angle)).to_degrees();
+            limits.clamp_turn(deg.to_radians()).to_degrees()
+        };
+        let mut values = drag.start;
+        match &joint.kind {
+            model::JointKind::Rigid => return,
+            model::JointKind::Slider => values.0 = slide_along(drag.axis, drag.start.0),
+            model::JointKind::Revolute | model::JointKind::Screw { .. } => {
+                values.0 = turn_about(drag.axis, drag.start.0)
+            }
+            // Both freedoms follow the one drag: the axial component slides, the swing
+            // around the axis turns.
+            model::JointKind::Cylindrical => {
+                values.0 = slide_along(drag.axis, drag.start.0);
+                values.1 = turn_about(drag.axis, drag.start.1);
+            }
+            model::JointKind::Planar => {
+                values.0 = slide_along(drag.y_axis, drag.start.0);
+                values.1 = slide_along(drag.z_axis, drag.start.1);
+            }
+            model::JointKind::Ball => values.0 = turn_about(drag.axis, drag.start.0),
+            model::JointKind::PinSlot => {
+                values.0 = slide_along(drag.axis, drag.start.0);
+                values.1 = turn_about(drag.y_axis, drag.start.1);
+            }
+        }
+        let fmt = |v: f32| format!("{}", (v * 1000.0).round() / 1000.0);
+        if let Some(j) = self.state.doc.joints.get_mut(drag.joint) {
+            j.position = fmt(values.0);
+            j.position2 = fmt(values.1);
+            j.position3 = fmt(values.2);
+        }
+        self.state.status = joint_drag_status(&joint.kind, values);
+    }
+
+    /// Land the drag as a single undoable edit (#897): the per-frame writes are unwound
+    /// and the final pose goes through the ordinary edit action.
+    fn finish_joint_select_drag(&mut self, drag: JointSelectDrag) {
+        let Some(joint) = self.state.doc.joints.get(drag.joint).cloned() else {
+            return;
+        };
+        let landed = (
+            joint.position.clone(),
+            joint.position2.clone(),
+            joint.position3.clone(),
+        );
+        if let Some(j) = self.state.doc.joints.get_mut(drag.joint) {
+            j.position = drag.original.0.clone();
+            j.position2 = drag.original.1.clone();
+            j.position3 = drag.original.2.clone();
+        }
+        if landed == drag.original {
+            return;
+        }
+        self.state.apply(Action::EditJointOperation {
+            op: drag.joint,
+            members: joint.members,
+            base: joint.base,
+            kind: joint.kind,
+            frame_a: joint.frame_a,
+            frame_b: joint.frame_b,
+            position: landed.0,
+            position2: landed.1,
+            position3: landed.2,
+            limits: joint.limits,
+        });
     }
 
     /// How a joint member reads in the pane (#894): the part's own label.
@@ -13567,6 +13780,22 @@ fn move_snap_connector(
 
 /// The Move picker a viewport click feeds (#656): the hand-picked `override` when there is
 /// one, else the first step the tool still needs. See [`App::move_focus`].
+/// The status line while a joint drags (#897): the number that came out of the drag.
+fn joint_drag_status(kind: &model::JointKind, values: (f32, f32, f32)) -> String {
+    match kind {
+        model::JointKind::Rigid => String::new(),
+        model::JointKind::Slider => format!("Slide {:.1} mm", values.0),
+        model::JointKind::Revolute | model::JointKind::Screw { .. } => {
+            format!("Angle {:.1}°", values.0)
+        }
+        model::JointKind::Cylindrical | model::JointKind::PinSlot => {
+            format!("Slide {:.1} mm, angle {:.1}°", values.0, values.1)
+        }
+        model::JointKind::Planar => format!("U {:.1} mm, V {:.1} mm", values.0, values.1),
+        model::JointKind::Ball => format!("Yaw {:.1}°", values.0),
+    }
+}
+
 fn move_focus_for(
     creating: Option<&actions::CreatingMove>,
     focus_override: Option<MoveFocus>,
@@ -20310,12 +20539,18 @@ impl App {
         // so grabbing one resizes the plane instead of re-selecting what's under it (#833).
         let plane_resizing = self.handle_plane_resize(ui, &project, pointer_screen, &cam, viewport, &vp);
 
+        // Dragging a jointed part with the Select tool (#897): grabbing an already-selected
+        // driven part moves it through its joint, taking the pointer before picking does.
+        let joint_dragging =
+            self.handle_joint_select_drag(ui, &project, pointer_screen, &cam, pick_occlusion);
+
         // Dimension tool also selects in sketch mode (#486/#487): clicks accumulate edges for
         // an angle (or re-click / Enter for a length) instead of immediately locking length.
         if matches!(
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
         ) && !plane_resizing
+            && !joint_dragging
             && !exploder_owns_press
             && (self.state.editing_committed_dim.is_none()
                 || (self.state.tool == Tool::Dimension && additive_modifiers_held))

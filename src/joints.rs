@@ -310,7 +310,7 @@ pub fn joint_resolution(doc: &Document) -> std::rc::Rc<JointResolution> {
     if doc.joints.iter().all(|j| j.deleted) {
         return std::rc::Rc::new(JointResolution::default());
     }
-    let fingerprint = crate::extrude::document_mesh_fingerprint(doc);
+    let fingerprint = crate::extrude::document_pose_fingerprint(doc);
     POSE_CACHE.with(|cache| {
         {
             let cache = cache.borrow();
@@ -397,6 +397,139 @@ pub fn member_bodies(doc: &Document, member: JointRef) -> Vec<usize> {
             })
             .map(|(i, _)| i)
             .collect(),
+    }
+}
+
+/// What a Select-tool drag on a body drives (#897).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyDragTarget {
+    /// The body isn't part of any joint — the drag means nothing here.
+    Free,
+    /// The body is jointed but held: nothing up its chain has freedom to move.
+    Grounded,
+    /// The nearest joint up the chain with freedom — a hinge swings, a slider slides.
+    Joint(usize),
+}
+
+/// Resolve a Select-tool drag on `body` to the joint it should move (#897): the joint
+/// driving the body (directly, as a unit instance's body, or through its component),
+/// walking up through rigid groups to the nearest freedom. A part that's jointed but has
+/// no freedom anywhere up its chain is grounded and refuses the drag.
+pub fn body_drag_joint(doc: &Document, body: usize) -> BodyDragTarget {
+    let mut refs = vec![JointRef::Body(body)];
+    if let Some(b) = doc.bodies.get(body) {
+        match b.source {
+            crate::model::BodySource::UnitInstance(ui)
+            | crate::model::BodySource::UnitCut { instance: ui, .. } => {
+                refs.push(JointRef::UnitInstance(ui));
+            }
+            _ => {}
+        }
+    }
+    if let Some(owning) = crate::hierarchy::owning_component(
+        doc,
+        &crate::hierarchy::SceneElement::Body(body),
+    ) {
+        for c in doc.component_chain(owning) {
+            refs.push(JointRef::Component(c));
+        }
+    }
+    let live = |j: &Joint| !j.deleted && j.members.len() >= 2;
+    let driver_of = |member: JointRef| -> Option<usize> {
+        doc.joints
+            .iter()
+            .enumerate()
+            .find(|(_, j)| live(j) && j.driven_members().any(|m| m == member))
+            .map(|(i, _)| i)
+    };
+    let participates = refs.iter().any(|r| {
+        doc.joints
+            .iter()
+            .any(|j| live(j) && j.members.contains(r))
+    });
+    let Some(mut ji) = refs.iter().find_map(|r| driver_of(*r)) else {
+        return if participates {
+            BodyDragTarget::Grounded
+        } else {
+            BodyDragTarget::Free
+        };
+    };
+    // Walk up through rigid ties to the nearest joint that actually moves.
+    for _ in 0..doc.joints.len() + 1 {
+        let joint = &doc.joints[ji];
+        if !matches!(joint.kind, JointKind::Rigid) {
+            return BodyDragTarget::Joint(ji);
+        }
+        let Some(base) = joint.base_member() else {
+            return BodyDragTarget::Grounded;
+        };
+        match driver_of(base) {
+            Some(next) => ji = next,
+            None => return BodyDragTarget::Grounded,
+        }
+    }
+    BodyDragTarget::Grounded
+}
+
+/// The joint's mating frame in world space with the base side's pose applied (#897):
+/// origin plus the x/y/z axes the drag projects onto. `None` when the frame is unset —
+/// a frameless joint has no axis to drag along.
+pub fn posed_joint_frame(doc: &Document, ji: usize) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
+    let joint = doc.joints.get(ji).filter(|j| !j.deleted)?;
+    let base = joint.base_member()?;
+    let base_pose = joint_resolution(doc)
+        .member_pose(base)
+        .unwrap_or(Mat4::IDENTITY);
+    let base_is_first = joint.base == 0 || joint.base >= joint.members.len();
+    let frame = resolve_frame(
+        doc,
+        if base_is_first { &joint.frame_a } else { &joint.frame_b },
+    )?;
+    let m = base_pose * frame_mat(&frame);
+    Some((
+        m.transform_point3(Vec3::ZERO),
+        m.transform_vector3(Vec3::X).normalize_or_zero(),
+        m.transform_vector3(Vec3::Y).normalize_or_zero(),
+        m.transform_vector3(Vec3::Z).normalize_or_zero(),
+    ))
+}
+
+/// A joint's three position slots evaluated to numbers (#897): mm for slide slots,
+/// degrees for turn slots — the values a drag starts from and writes back.
+pub fn evaluated_positions(doc: &Document, joint: &Joint) -> (f32, f32, f32) {
+    let len = |e: &str| {
+        if e.trim().is_empty() {
+            0.0
+        } else {
+            crate::value::eval_length_mm_in_doc(e, doc).unwrap_or(0.0)
+        }
+    };
+    let deg = |e: &str| {
+        if e.trim().is_empty() {
+            0.0
+        } else {
+            crate::value::eval_angle_rad_in_doc(e, doc)
+                .map(|r| r.to_degrees())
+                .unwrap_or(0.0)
+        }
+    };
+    match &joint.kind {
+        JointKind::Rigid => (0.0, 0.0, 0.0),
+        JointKind::Slider => (len(&joint.position), 0.0, 0.0),
+        JointKind::Revolute | JointKind::Screw { .. } => (deg(&joint.position), 0.0, 0.0),
+        JointKind::Cylindrical | JointKind::PinSlot => {
+            (len(&joint.position), deg(&joint.position2), 0.0)
+        }
+        JointKind::Planar => (
+            len(&joint.position),
+            len(&joint.position2),
+            deg(&joint.position3),
+        ),
+        JointKind::Ball => (
+            deg(&joint.position),
+            deg(&joint.position2),
+            deg(&joint.position3),
+        ),
     }
 }
 
@@ -788,6 +921,71 @@ mod tests {
             (moved.z - 1.0).abs() < 1e-4,
             "travel bounded to the slide max, got {moved}"
         );
+    }
+
+    /// #897: a Select-tool drag resolves to the joint it should move — the driver with
+    /// freedom, walking up through rigid ties — and grounded/free parts read as such.
+    #[test]
+    fn body_drag_resolves_through_the_chain() {
+        let mut doc = Document::default();
+        let ground = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
+        let c = mesh_body(&mut doc, Vec3::new(10.0, 0.0, 0.0));
+        let free = mesh_body(&mut doc, Vec3::new(20.0, 0.0, 0.0));
+        // Hinge ground→B, then C tied rigidly to B.
+        let mut hinge = joint(
+            vec![JointRef::Body(ground), JointRef::Body(b)],
+            JointKind::Revolute,
+        );
+        hinge.frame_a = JointFrame {
+            origin: vert(ground, Vec3::ZERO),
+            axis: vert(ground, Vec3::Z),
+            orient: None,
+        };
+        hinge.frame_b = JointFrame {
+            origin: vert(b, Vec3::new(5.0, 0.0, 0.0)),
+            axis: vert(b, Vec3::new(5.0, 0.0, 1.0)),
+            orient: None,
+        };
+        doc.joints.push(hinge);
+        doc.joints.push(joint(
+            vec![JointRef::Body(b), JointRef::Body(c)],
+            JointKind::Rigid,
+        ));
+        assert_eq!(body_drag_joint(&doc, b), BodyDragTarget::Joint(0), "driven directly");
+        assert_eq!(
+            body_drag_joint(&doc, c),
+            BodyDragTarget::Joint(0),
+            "a rigid tie walks up to the hinge"
+        );
+        assert_eq!(
+            body_drag_joint(&doc, ground),
+            BodyDragTarget::Grounded,
+            "the held side refuses"
+        );
+        assert_eq!(body_drag_joint(&doc, free), BodyDragTarget::Free, "unjointed is free");
+        // The posed drag frame sits at the hinge's mating origin.
+        let (origin, axis, _, _) = posed_joint_frame(&doc, 0).expect("a frame to drag on");
+        assert!((origin - Vec3::ZERO).length() < 1e-4);
+        assert!((axis - Vec3::Z).length() < 1e-4);
+    }
+
+    /// #897: the drag reads its start values from the position expressions, in the units
+    /// the pane shows (mm / degrees).
+    #[test]
+    fn drag_start_values_evaluate_per_kind() {
+        let mut doc = Document::default();
+        let a = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let mut j = joint(
+            vec![JointRef::Body(a), JointRef::Body(b)],
+            JointKind::Cylindrical,
+        );
+        j.position = "7".to_string();
+        j.position2 = "45".to_string();
+        let (slide, turn, _) = evaluated_positions(&doc, &j);
+        assert!((slide - 7.0).abs() < 1e-4);
+        assert!((turn - 45.0).abs() < 1e-4);
     }
 
     /// #895: the preview sweep glides between the limits where they're set — the ends of
