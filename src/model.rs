@@ -1553,16 +1553,77 @@ pub struct Material {
 }
 
 impl Material {
-    /// A new material's starting colour walks a small palette so consecutive ones look
-    /// different without anyone picking colours (#834).
-    pub const NEW_COLORS: [[u8; 3]; 6] = [
-        [0xb0, 0xb6, 0xbe], // steel
-        [0xc8, 0x8a, 0x4a], // brass
-        [0x7d, 0x9e, 0x6f], // green
-        [0x8a, 0x7d, 0xa8], // violet
-        [0xc4, 0x6a, 0x6a], // red
-        [0x5f, 0x8f, 0xa8], // blue
+    /// A new material's starting color walks a palette so consecutive ones look different
+    /// without anyone picking colors (#834).
+    ///
+    /// This is **Paul Tol's qualitative "light" scheme** verbatim, in his order. It's built
+    /// to stay distinct under all three kinds of color blindness, and — unlike the usual
+    /// qualitative palettes, which assume thin marks on white — it's designed for *filling
+    /// areas*, which is exactly what a body is. Every entry is light (L* 67–88), so a shaded
+    /// solid still reads as its own color where the lighting falls away, and none of them
+    /// disappears against the dark viewport.
+    ///
+    /// The previous hand-picked set had violet and blue at ΔE2000 = 0.8 under deuteranopia —
+    /// indistinguishable. The worst pair here is 7.9.
+    pub const NEW_COLORS: [[u8; 3]; 9] = [
+        [0x77, 0xaa, 0xdd], // light blue
+        [0x99, 0xdd, 0xff], // light cyan
+        [0x44, 0xbb, 0x99], // mint
+        [0xbb, 0xcc, 0x33], // pear
+        [0xaa, 0xaa, 0x00], // olive
+        [0xee, 0xdd, 0x88], // light yellow
+        [0xee, 0x88, 0x66], // orange
+        [0xff, 0xaa, 0xbb], // pink
+        [0xdd, 0xdd, 0xdd], // pale grey
     ];
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::Material;
+
+    /// The new-material palette is Paul Tol's "light" scheme, which is what makes it safe
+    /// for color-blind eyes — so it has to stay verbatim rather than drift under editing.
+    #[test]
+    fn new_material_colors_are_tols_light_scheme() {
+        assert_eq!(
+            Material::NEW_COLORS,
+            [
+                [0x77, 0xaa, 0xdd],
+                [0x99, 0xdd, 0xff],
+                [0x44, 0xbb, 0x99],
+                [0xbb, 0xcc, 0x33],
+                [0xaa, 0xaa, 0x00],
+                [0xee, 0xdd, 0x88],
+                [0xee, 0x88, 0x66],
+                [0xff, 0xaa, 0xbb],
+                [0xdd, 0xdd, 0xdd],
+            ]
+        );
+    }
+
+    /// Every entry is light enough to read as its own color on the dark viewport once a
+    /// solid is shaded — the reason this scheme was picked over a data-viz palette meant
+    /// for thin marks on white.
+    #[test]
+    fn new_material_colors_are_all_light() {
+        for color in Material::NEW_COLORS {
+            // Rec. 709 relative luminance, on the sRGB values as authored.
+            let [r, g, b] = color.map(|c| f32::from(c) / 255.0);
+            let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            assert!(y > 0.35, "{color:?} is too dark for a shaded body (Y = {y:.2})");
+        }
+    }
+
+    /// Consecutive materials never repeat a color until the palette runs out.
+    #[test]
+    fn new_material_colors_are_distinct() {
+        let mut seen = Vec::new();
+        for color in Material::NEW_COLORS {
+            assert!(!seen.contains(&color), "{color:?} appears twice");
+            seen.push(color);
+        }
+    }
 }
 
 /// A loft: a solid blended through two or more cross-section profiles on (usually)

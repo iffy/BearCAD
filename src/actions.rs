@@ -1451,7 +1451,7 @@ pub enum Action {
         visible: bool,
     },
     /// Add a material and hand it to `bodies` (#834). The name defaults to "Material N" and
-    /// the colour to the next one in [`Material::NEW_COLORS`].
+    /// the color to the next one in [`Material::NEW_COLORS`].
     AddMaterial {
         name: Option<String>,
         color: Option<[u8; 3]>,

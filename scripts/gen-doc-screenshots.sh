@@ -99,7 +99,7 @@ mkdir -p "$OUT_DIR"
 # ambiguous as soon as another scene's name starts with `<name>-`: chamfer.lua's
 # glob also matches chamfer-sketch.lua's shot. Ownership is the **longest** scene
 # name the file's stem matches, so the more specific scene keeps its own files —
-# otherwise a scene wipes its neighbour's shots on the way in and, having already
+# otherwise a scene wipes its neighbor's shots on the way in and, having already
 # had its turn, the neighbour never regenerates them.
 scene_names=()
 for script in "${scripts[@]}"; do

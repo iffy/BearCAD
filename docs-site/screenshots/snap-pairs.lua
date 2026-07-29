@@ -55,7 +55,7 @@ end
 
 -- Same framing for all three, so only the ghost's pose changes between them: a clean stage
 -- (no datum planes, no grid, no sketch profiles drawn over the solids) and a pinned camera
--- holding both the parked slab and where it's going. The tool colours the cast itself —
+-- holding both the parked slab and where it's going. The tool colors the cast itself —
 -- cyan ghost, dimmed source, green/red/blue marks — so nothing here needs a material.
 local function shoot(name)
   for i = 0, bearcad.count("construction_plane") - 1 do

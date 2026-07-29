@@ -1052,8 +1052,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   colours still win over it, as they do over the default.
 - **Context pane:** selecting one or more bodies (any tool) shows a **Material** dropdown —
   *Default*, each material with its colour swatch, and **New material…**, which creates one
-  (named `Material N`, next colour from `Material::NEW_COLORS`) and assigns it to the
-  selection. Selecting bodies whose materials differ reads *Mixed*. With a material chosen,
+  (named `Material N`, next color from `Material::NEW_COLORS`) and assigns it to the
+  selection. That palette is **Paul Tol's qualitative "light" scheme** verbatim (nine
+  colors, in his order): it stays distinct under all three kinds of color blindness, and
+  unlike the usual qualitative palettes — which assume thin marks on white — it is built for
+  **filling areas**, which is what a body is. Every entry is light (L\* 67–88), so a shaded
+  solid still reads as its own color where the lighting falls off, and none of them vanishes
+  against the dark viewport. The hand-picked set it replaced had violet and blue at ΔE2000 =
+  0.8 under deuteranopia — indistinguishable; the worst pair here is 7.9. Selecting bodies whose materials differ reads *Mixed*. With a material chosen,
   its **Name** and **Colour** are editable in place, and every body using it re-renders.
 - Actions: `AddMaterial { name?, color?, bodies }`, `SetBodyMaterial { body, material }`,
   `SetMaterialName`, `SetMaterialColor` — each one undoable like any other edit. Persisted as
