@@ -148,6 +148,12 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// Save `doc` to `path`, overwriting any existing document content.
 pub fn save(path: &str, doc: &Document) -> Result<()> {
     validate_document_parameters_no_cycles(doc)?;
+    // A `.json` path saves the web build's JSON codec instead of SQLite — the format the
+    // web app's `?open=<url>` fetches, so a docs scene can publish a loadable document.
+    if path.ends_with(".json") {
+        let bytes = crate::storage::to_json_bytes(doc)?;
+        return std::fs::write(path, bytes).map_err(|e| e.to_string());
+    }
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
     init_schema(&conn).map_err(|e| e.to_string())?;
 
@@ -760,6 +766,29 @@ mod tests {
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.components, doc.components);
         assert_eq!(loaded.component_members, doc.component_members);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A `.json` path saves the web JSON codec, and `open` sniffs and loads it — the
+    /// `?open=<url>` document a screenshot scene publishes.
+    #[test]
+    fn json_path_saves_the_web_codec() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_json_save_test.bearcad.json");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.construction_planes[0].name = Some("Ground".to_string());
+        save(&path, &doc).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.first(), Some(&b'{'), "JSON, not SQLite");
+        let loaded = open(&path).unwrap();
+        assert_eq!(
+            loaded.construction_planes[0].name.as_deref(),
+            Some("Ground")
+        );
 
         std::fs::remove_file(&path).unwrap();
     }

@@ -344,6 +344,11 @@ fn main() {
                     if let Some(index) = tutorial::tutorial_from_query(&query) {
                         app.state.apply(Action::StartTutorial { index });
                     }
+                    // `?open=<url>` fetches that document (the web JSON codec) and opens
+                    // it on load, so a docs page can link straight into a live model.
+                    if let Some(url) = open_url_from_query(&query) {
+                        app.queue_web_open_url(url);
+                    }
                     Ok(Box::new(app))
                 }),
             )
@@ -354,6 +359,40 @@ fn main() {
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
+
+/// The `?open=<url>` query value, percent-decoded: a document URL the web app fetches
+/// and opens on load. `None` when absent or empty.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn open_url_from_query(query: &str) -> Option<String> {
+    let raw = query
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == "open")
+        .map(|(_, value)| value)?;
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = |b: u8| (b as char).to_digit(16);
+                match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(bytes[i]),
+                }
+            }
+            b'+' => out.push(b' '),
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).ok().filter(|s| !s.trim().is_empty())
+}
 
 /// Print the result of a CLI install/uninstall action and exit non-zero on failure.
 #[cfg(not(target_arch = "wasm32"))]
@@ -444,6 +483,27 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::script;
+
+    /// `?open=<url>` picks out and percent-decodes the document URL, alongside other
+    /// parameters; absent/empty values read as no request.
+    #[test]
+    fn open_url_from_query_decodes() {
+        assert_eq!(
+            super::open_url_from_query("?open=%2FBearCAD%2Fimg%2Fdoc.bearcad.json"),
+            Some("/BearCAD/img/doc.bearcad.json".to_string())
+        );
+        assert_eq!(
+            super::open_url_from_query("?tutorial=bracket&open=/a/b.json"),
+            Some("/a/b.json".to_string())
+        );
+        assert_eq!(
+            super::open_url_from_query("open=https%3A%2F%2Fexample.com%2Fd.json"),
+            Some("https://example.com/d.json".to_string())
+        );
+        assert_eq!(super::open_url_from_query("?open="), None);
+        assert_eq!(super::open_url_from_query("?tutorial=bracket"), None);
+        assert_eq!(super::open_url_from_query(""), None);
+    }
 
     #[test]
     fn help_outcome_is_distinct_from_default_run() {
@@ -4160,6 +4220,44 @@ impl App {
             Ok(()) => "Script complete".to_string(),
             Err(err) => format!("Script error: {err}"),
         };
+    }
+
+    /// Fetch `url` and queue its bytes as an opened document (`?open=<url>`): how a docs
+    /// page links straight into a live model. A fetch that fails lands as a status line
+    /// instead of a document.
+    #[cfg(target_arch = "wasm32")]
+    fn queue_web_open_url(&self, url: String) {
+        let queue = self.web_io.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let fetched: Result<Vec<u8>, String> = async {
+                let window = web_sys::window().ok_or("no window")?;
+                let resp = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url))
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                let resp: web_sys::Response =
+                    resp.dyn_into().map_err(|_| "not a response".to_string())?;
+                if !resp.ok() {
+                    return Err(format!("HTTP {}", resp.status()));
+                }
+                let buf = wasm_bindgen_futures::JsFuture::from(
+                    resp.array_buffer().map_err(|e| format!("{e:?}"))?,
+                )
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+                Ok(js_sys::Uint8Array::new(&buf).to_vec())
+            }
+            .await;
+            let name = url
+                .rsplit('/')
+                .next()
+                .filter(|n| !n.is_empty())
+                .unwrap_or("document")
+                .to_string();
+            queue.borrow_mut().push(match fetched {
+                Ok(bytes) => WebIoEvent::OpenedDocument { name, bytes },
+                Err(e) => WebIoEvent::Status(format!("Open failed for {url}: {e}")),
+            });
+        });
     }
 
     /// Browser open dialog → queue the picked file's bytes as `make_event`'s event.

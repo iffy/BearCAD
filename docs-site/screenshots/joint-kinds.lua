@@ -93,5 +93,8 @@ bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 bearcad.ui.screenshot(out .. "-all.png")
+-- The same document as the web JSON codec, deployed beside the shot: the docs page links
+-- the screenshot to the web app with `?open=` pointing here.
+bearcad.save(out .. "-all.bearcad.json")
 
 bearcad.quit()

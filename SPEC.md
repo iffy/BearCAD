@@ -3780,6 +3780,13 @@ document is millimeters, so the player is person-scale: eye height
   link straight into "show me" — `…/app/?tutorial=bracket`. The desktop twin is
   **`bearcad --tutorial <name>`** (`ScriptOptions::tutorial`). An unknown name just opens
   the app normally.
+- **`?open=<url>`**: the web build also fetches a document URL (percent-decoded,
+  `main::open_url_from_query`) and opens it at boot through the same queue the browser
+  open dialog feeds — so a docs page can link a screenshot straight into the live model
+  (the Joint page's all-kinds shot does). The document is the web JSON codec
+  (`storage::to_json_bytes`); `bearcad.save("….json")` writes it, which is how a
+  screenshot scene publishes the model beside its PNG. A failed fetch lands as a status
+  line, not a broken app.
 - Scriptable: `bearcad.ui.tutorial("bracket")`, `bearcad.ui.tutorial_next()`,
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).

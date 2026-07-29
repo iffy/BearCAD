@@ -31,7 +31,19 @@ through its range, showing the motion before you commit.
 
 ## The kinds
 
-![All eight joint kinds, each pair posed through its joint](/img/screenshots/joint-kinds-all.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/joint-kinds-all.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img
+    src={useBaseUrl("/img/screenshots/joint-kinds-all.png")}
+    alt="All eight joint kinds, each pair posed through its joint — click to open the model in BearCAD"
+  />
+</a>
+
+*Click the picture to open this model in BearCAD.*
 
 | | Kind | Motion |
 |---|---|---|
