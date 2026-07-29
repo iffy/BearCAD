@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- assembly (#923): two components meshed into one another, each shaded like the body
+       element and drawn in its own colour — the back one in the accent blue, the front one
+       in the theme colour — so it reads as parts joined into a whole rather than as one
+       part. The front block overlaps the back one's corner, which is what makes them read
+       as interlocked. -->
+  <!-- back component -->
+  <path d="M12.5 5.3 L19.1 8.9 L12.5 12.5 L5.9 8.9 Z" fill="#6a9fd7" stroke="none" />
+  <path d="M19.1 8.9 L19.1 16.1 L12.5 19.7 L12.5 12.5 Z" fill="#6a9fd7" fill-opacity="0.78" stroke="none" />
+  <path d="M5.9 8.9 L5.9 16.1 L12.5 19.7 L12.5 12.5 Z" fill="#6a9fd7" fill-opacity="0.55" stroke="none" />
+  <path d="M12.5 5.3 L19.1 8.9 L19.1 16.1 L12.5 19.7 L5.9 16.1 L5.9 8.9 Z" stroke="#6a9fd7" />
+  <!-- front component, its corner sunk into the other -->
+  <path d="M19.5 12.3 L26.1 15.9 L19.5 19.5 L12.9 15.9 Z" fill="currentColor" stroke="none" />
+  <path d="M26.1 15.9 L26.1 23.1 L19.5 26.7 L19.5 19.5 Z" fill="currentColor" fill-opacity="0.78" stroke="none" />
+  <path d="M12.9 15.9 L12.9 23.1 L19.5 26.7 L19.5 19.5 Z" fill="currentColor" fill-opacity="0.55" stroke="none" />
+  <path d="M19.5 12.3 L26.1 15.9 L26.1 23.1 L19.5 26.7 L12.9 23.1 L12.9 15.9 Z" />
+</svg>

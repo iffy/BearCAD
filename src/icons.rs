@@ -36,6 +36,8 @@ pub enum IconId {
     Extrude,
     Loft,
     Revolve,
+    /// An assembly (#923): parts joined into one thing.
+    Assembly,
     /// The Create Shape tool's shapes (#909).
     ShapeCuboid,
     ShapeCylinder,
@@ -133,7 +135,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 91] = [
+    pub const ALL: [Self; 92] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -157,6 +159,7 @@ impl IconId {
         Self::Extrude,
         Self::Loft,
         Self::Revolve,
+        Self::Assembly,
         Self::ShapeCuboid,
         Self::ShapeCylinder,
         Self::ShapeSphere,
@@ -252,6 +255,7 @@ impl IconId {
             Self::Extrude => include_str!("assets/icons/extrude.svg"),
             Self::Loft => include_str!("assets/icons/loft.svg"),
             Self::Revolve => include_str!("assets/icons/revolve.svg"),
+            Self::Assembly => include_str!("assets/icons/assembly.svg"),
             Self::ShapeCuboid => include_str!("assets/icons/shape_cuboid.svg"),
             Self::ShapeCylinder => include_str!("assets/icons/shape_cylinder.svg"),
             Self::ShapeSphere => include_str!("assets/icons/shape_sphere.svg"),
@@ -350,6 +354,7 @@ impl IconId {
             Self::Extrude => "Extrude",
             Self::Loft => "Loft",
             Self::Revolve => "Revolve",
+            Self::Assembly => "Assembly",
             Self::ShapeCuboid => "Cuboid",
             Self::ShapeCylinder => "Cylinder",
             Self::ShapeSphere => "Sphere",

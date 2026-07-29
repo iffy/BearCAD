@@ -3071,7 +3071,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::DrawingProjection { .. } => IconId::Projection,
         HierarchyNode::DrawingAnnotation { .. } => IconId::Text,
         HierarchyNode::DrawingDimension { .. } => IconId::Dimension,
-        HierarchyNode::UnitInstance(_) => IconId::Import,
+        // A placed unit is an assembly of parts, not the import action (#923).
+        HierarchyNode::UnitInstance(_) => IconId::Assembly,
         HierarchyNode::UnitChild { instance, ordinal } => {
             return unit_child_rows(doc, instance)
                 .get(ordinal)

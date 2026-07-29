@@ -60,6 +60,11 @@ action DAG (see §4.2). A component may **reference** other components; such a r
 creates a dependency edge in the DAG, and the referenced component's geometry/parameters
 become inputs to the referencing component.
 
+The Elements pane draws a component as **two bodies fused into one solid** (#922) — the
+union silhouette the extrude tool's "Join body" output icon uses, shaded like the body
+element — and an imported unit instance as the **assembly** icon (#923): two of those
+components meshed together, the back one in the accent blue, the front in the theme colour.
+
 **Implemented today (#423) — components as organizational groups:** `model::Component`
 (`name`, `parent`, per-component `length_unit`/`angle_unit` overrides, tombstoned) plus
 `Document::component_members` mapping top-level elements
