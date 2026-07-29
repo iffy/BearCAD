@@ -41,6 +41,7 @@ mod gpu_view_cube;
 mod gpu_viewport;
 mod hierarchy;
 mod icons;
+mod joint_viewport;
 mod joints;
 mod kernel;
 mod names;
@@ -20058,6 +20059,17 @@ impl App {
         let over_constraint_icon = pointer_screen.is_some_and(|pp| {
             pointer_over_constraint_icon(&constraint_icon_hits, pp).is_some()
         });
+        // Joint badges (#899): every live joint's kind icon at its mating frame,
+        // selectable there like a constraint's badge.
+        let joint_icon_placements = joint_viewport::build_joint_icon_placements(&self.state.doc);
+        let joint_icon_hits =
+            joint_viewport::build_joint_icon_hits(&project, &joint_icon_placements);
+        let hovered_joint_icon = (self.state.tool == Tool::Select && sketch_session.is_none())
+            .then(|| {
+                pointer_screen
+                    .and_then(|pp| joint_viewport::pointer_over_joint_icon(&joint_icon_hits, pp))
+            })
+            .flatten();
         let over_committed_dim_label = self.state.can_edit_sketch_dimensions()
             && (pointer_screen.is_some_and(|pp| {
                 pointer_over_committed_dim_label(layouts_slice, pp)
@@ -20105,7 +20117,7 @@ impl App {
             );
         } else if over_committed_dim_label {
             set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::Grab);
-        } else if over_constraint_icon {
+        } else if over_constraint_icon || hovered_joint_icon.is_some() {
             set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::PointingHand);
         } else if let Some(pp) = pointer_screen {
             let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
@@ -20595,6 +20607,16 @@ impl App {
                     {
                         self.state.apply(Action::ClickSceneElement {
                             element: SceneElement::Constraint(index),
+                            additive,
+                        });
+                    } else if let Some(ji) = (sketch_only.is_none())
+                        .then(|| joint_viewport::pointer_over_joint_icon(&joint_icon_hits, pp))
+                        .flatten()
+                    {
+                        // A joint badge takes the click (#899): selecting the joint, not
+                        // whatever body sits behind it.
+                        self.state.apply(Action::ClickSceneElement {
+                            element: SceneElement::Joint(ji),
                             additive,
                         });
                     } else if let Some(element) = body_vertex {
@@ -22676,7 +22698,8 @@ impl App {
             {
                 // Hovering a Parameters-pane row (or focusing its name/value cell)
                 // green-glows everything that parameter drives in the viewport (#620).
-                self.state
+                let mut highlights: Vec<SceneElement> = self
+                    .state
                     .parameters_pane
                     .hovered_name
                     .clone()
@@ -22686,7 +22709,20 @@ impl App {
                             .into_iter()
                             .collect()
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                // Hovering a joint badge glows the parts it joins (#899).
+                if let Some(ji) = hovered_joint_icon {
+                    if let Some(joint) = doc.joints.get(ji) {
+                        for member in &joint.members {
+                            highlights.extend(
+                                joints::member_bodies(doc, *member)
+                                    .into_iter()
+                                    .map(SceneElement::Body),
+                            );
+                        }
+                    }
+                }
+                highlights
             },
             &gpu_dim_labels,
             planar_label_view,
@@ -22915,6 +22951,21 @@ impl App {
                 &self.state.scene_selection,
                 &constraint_graphics,
                 &hovered_constraints,
+                col::DIM_ANNOTATION,
+                col::DIM_EDGE_HIGHLIGHT,
+            );
+        }
+
+        // Joint badges (#899): each kind's icon at the joint's frame, selectable.
+        if !joint_icon_placements.is_empty() {
+            joint_viewport::draw_joint_icons(
+                &painter,
+                ui.ctx(),
+                &project,
+                &self.state.document_health,
+                &self.state.scene_selection,
+                &joint_icon_placements,
+                hovered_joint_icon,
                 col::DIM_ANNOTATION,
                 col::DIM_EDGE_HIGHLIGHT,
             );

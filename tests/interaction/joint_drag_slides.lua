@@ -46,5 +46,14 @@ local moved = after - before
 assert(moved > 19 and moved < 21,
   "the slab should stop at the 20 mm limit, moved " .. moved)
 
+-- The joint's badge (#899) sits at its mating frame (50, 0) and clicking it selects the
+-- joint itself, outranking the rail behind it.
+bearcad.ui.click_ground(50, 0)
+bearcad.ui.wait(5)
+sel = bearcad.selection()
+assert(#sel == 1 and sel[1].kind == "joint",
+  "clicking the badge should select the joint, got " ..
+  (#sel > 0 and sel[1].kind or "nothing"))
+
 print("ok: a jointed part drags through its slider and stops at the limit")
 bearcad.quit()

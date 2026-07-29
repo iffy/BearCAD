@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Slider: a block riding a rail, arrows either way. -->
+  <line x1="3" y1="22" x2="29" y2="22" />
+  <rect x="11" y="10" width="10" height="8" rx="1.5" />
+  <polyline points="6.5,18.5 3,22 6.5,25.5" />
+  <polyline points="25.5,18.5 29,22 25.5,25.5" />
+</svg>

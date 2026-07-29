@@ -50,6 +50,15 @@ pub enum IconId {
     Slice,
     /// The Joint tool (#894): two links sharing a pin.
     Joint,
+    /// Per-kind joint icons (#899), drawn in the pane and at the joint's frame in 3D.
+    JointRigid,
+    JointSlider,
+    JointRevolute,
+    JointCylindrical,
+    JointPlanar,
+    JointBall,
+    JointPinSlot,
+    JointScrew,
     Text,
     Body,
     Component,
@@ -120,7 +129,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 80] = [
+    pub const ALL: [Self; 88] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -156,6 +165,14 @@ impl IconId {
         Self::Offset,
         Self::Slice,
         Self::Joint,
+        Self::JointRigid,
+        Self::JointSlider,
+        Self::JointRevolute,
+        Self::JointCylindrical,
+        Self::JointPlanar,
+        Self::JointBall,
+        Self::JointPinSlot,
+        Self::JointScrew,
         Self::Text,
         Self::ShadowBody,
         Self::Body,
@@ -240,6 +257,14 @@ impl IconId {
             Self::Offset => include_str!("assets/icons/offset.svg"),
             Self::Slice => include_str!("assets/icons/slice.svg"),
             Self::Joint => include_str!("assets/icons/joint.svg"),
+            Self::JointRigid => include_str!("assets/icons/joint_rigid.svg"),
+            Self::JointSlider => include_str!("assets/icons/joint_slider.svg"),
+            Self::JointRevolute => include_str!("assets/icons/joint_revolute.svg"),
+            Self::JointCylindrical => include_str!("assets/icons/joint_cylindrical.svg"),
+            Self::JointPlanar => include_str!("assets/icons/joint_planar.svg"),
+            Self::JointBall => include_str!("assets/icons/joint_ball.svg"),
+            Self::JointPinSlot => include_str!("assets/icons/joint_pin_slot.svg"),
+            Self::JointScrew => include_str!("assets/icons/joint_screw.svg"),
             Self::Text => include_str!("assets/icons/text.svg"),
             Self::ShadowBody => include_str!("assets/icons/shadow_body.svg"),
             Self::Body => include_str!("assets/icons/body.svg"),
@@ -327,6 +352,14 @@ impl IconId {
             Self::Offset => "Offset",
             Self::Slice => "Slice",
             Self::Joint => "Joint",
+            Self::JointRigid => "Rigid joint",
+            Self::JointSlider => "Slider joint",
+            Self::JointRevolute => "Revolute joint",
+            Self::JointCylindrical => "Cylindrical joint",
+            Self::JointPlanar => "Planar joint",
+            Self::JointBall => "Ball joint",
+            Self::JointPinSlot => "Pin-slot joint",
+            Self::JointScrew => "Screw joint",
             Self::Text => "Text",
             Self::ShadowBody => "Shadow body",
             Self::Body => "Body",
@@ -375,6 +408,20 @@ impl IconId {
             Self::SketchComponents => "Sketch components",
             Self::DrawingComponents => "Drawing components",
         }
+    }
+}
+
+/// The per-kind joint icon (#899).
+pub fn icon_for_joint_kind(kind: &crate::model::JointKind) -> IconId {
+    match kind {
+        crate::model::JointKind::Rigid => IconId::JointRigid,
+        crate::model::JointKind::Slider => IconId::JointSlider,
+        crate::model::JointKind::Revolute => IconId::JointRevolute,
+        crate::model::JointKind::Cylindrical => IconId::JointCylindrical,
+        crate::model::JointKind::Planar => IconId::JointPlanar,
+        crate::model::JointKind::Ball => IconId::JointBall,
+        crate::model::JointKind::PinSlot => IconId::JointPinSlot,
+        crate::model::JointKind::Screw { .. } => IconId::JointScrew,
     }
 }
 
