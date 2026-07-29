@@ -4935,6 +4935,27 @@ impl App {
                 }
             }
 
+            // J joins parts (#921); pressing it again cycles the joint kind. Changing kind
+            // goes through the pane's own edit so the positions reset with it.
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.sketch_session.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::J))
+            {
+                if self.state.tool != Tool::Joint {
+                    self.state.apply(Action::SetTool(Tool::Joint));
+                } else if let Some(cj) = self.state.creating_joint.as_mut() {
+                    cj.kind = cj.kind.next();
+                    cj.position.clear();
+                    cj.position2.clear();
+                    cj.position3.clear();
+                    self.state.status = format!(
+                        "{} joint",
+                        names::joint_kind_label(&self.state.creating_joint.as_ref().unwrap().kind)
+                    );
+                }
+            }
+
             // B places shapes (#909); pressing it again cycles cuboid → cylinder → sphere.
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()

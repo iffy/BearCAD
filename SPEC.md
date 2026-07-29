@@ -1223,10 +1223,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Rest pose (#898):** `Joint::rest*` — captured at creation, recapturable, and reverted
   singly or all at once from the pane's Rest row, the row's right-click menu, or
   scripting.
-  **Presentation (#899):** a hand-drawn icon per kind (`icons::icon_for_joint_kind`), on
-  the pane row and drawn selectable in the 3D view at the joint's posed frame
+  **Presentation (#899/#921):** a hand-drawn icon per kind (`icons::icon_for_joint_kind`), on
+  the pane row, beside the **Type** dropdown and on every one of its entries, and drawn
+  selectable in the 3D view at the joint's posed frame
   (`joint_viewport`); clicking the badge selects the joint, hovering it glows the joined
   parts.
+  **Shortcut (#921):** **J** picks the tool; pressing it again **cycles the kind**
+  (`JointKind::next`, the dropdown's order), clearing the positions as a kind change does.
   Scripting (#901): `bearcad.joint{ a =, b = | parts = {…}, kind =, lead?, base = "a"|"b",
   from?/to?, from_b?/to_b?, from_c?/to_c?, position?, position2?, position3?, slide_min?,
   slide_max?, slide_min_to?, slide_max_to?, turn_min?, turn_max?, name? }`,

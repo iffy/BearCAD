@@ -7,6 +7,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/joint.svg")} width="30" /> Joint
 
+**Shortcut:** `J` — pressing it again cycles the joint type.
+
 Joint connects two parts — bodies, components, or imported units — with a kinematic
 relationship: a hinge swings, a slider slides, a screw turns and advances. The joint
 poses the moving part; it never changes any shape.
@@ -18,7 +20,7 @@ poses the moving part; it never changes any shape.
 1. Pick the **Joint** tool. Parts already selected come along as the joint's parts.
 2. Click the **two parts** to join.
 3. Choose the **Type**: rigid, slider, revolute, cylindrical, planar, ball, pin-slot, or
-   screw.
+   screw — each with its own icon in the dropdown, or press `J` again to step through them.
 4. Snap the mating points: **Start point A** on the moving part, **End point A** on the
    held one. The **B** pair aims the axis, the **C** pair pins the spin.
 5. **Enter** (or the blue button) commits.

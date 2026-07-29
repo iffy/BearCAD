@@ -2218,6 +2218,21 @@ impl JointKind {
         }
     }
 
+    /// The next kind in the Joint tool's cycle (#921), in the order the dropdown lists
+    /// them. A screw keeps no lead — it's a fresh pick each time round.
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Rigid => Self::Slider,
+            Self::Slider => Self::Revolute,
+            Self::Revolute => Self::Cylindrical,
+            Self::Cylindrical => Self::Planar,
+            Self::Planar => Self::Ball,
+            Self::Ball => Self::PinSlot,
+            Self::PinSlot => Self::Screw { lead: String::new() },
+            Self::Screw { .. } => Self::Rigid,
+        }
+    }
+
     /// The kind's script/display name (the inverse of [`JointKind::from_name`]).
     #[allow(dead_code)] // consumed by the Joint tool + scripting (#894/#901)
     pub fn name(&self) -> &'static str {
@@ -4064,6 +4079,31 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 
 #[cfg(test)]
 mod tests {
+
+    /// #921: repeated J walks the joint kinds in the dropdown's order and comes back round.
+    #[test]
+    fn joint_kind_cycles_through_every_kind() {
+        let mut kind = JointKind::Rigid;
+        let mut seen = vec![kind.name()];
+        for _ in 0..7 {
+            kind = kind.next();
+            seen.push(kind.name());
+        }
+        assert_eq!(
+            seen,
+            vec![
+                "rigid",
+                "slider",
+                "revolute",
+                "cylindrical",
+                "planar",
+                "ball",
+                "pin_slot",
+                "screw"
+            ]
+        );
+        assert_eq!(kind.next().name(), "rigid", "and round again");
+    }
     use super::*;
 
     /// #833: documents saved before planes had an extent load with the old symmetric

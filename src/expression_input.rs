@@ -929,8 +929,13 @@ impl<'a> ValueInput<'a> {
     /// the pane rows and the floating tool fields are the same control (#889).
     /// Returns the field's response; `.changed()` reports edits as usual.
     pub fn show(self, ui: &mut egui::Ui, text: &mut String, doc: &Document) -> Response {
+        // An empty field is an unset one, not a complaint — every pane row with an
+        // optional value relies on that.
         let mut errors = match self.kind {
-            ValueKind::Angle => angle_expression_field_errors(text, doc),
+            ValueKind::Angle if !text.trim().is_empty() => {
+                angle_expression_field_errors(text, doc)
+            }
+            ValueKind::Angle => Vec::new(),
             _ => length_expression_field_errors(text, doc, self.parameter_context),
         };
         if !self.allow_definitions && text.contains('=') {

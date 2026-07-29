@@ -4599,6 +4599,7 @@ pub fn show_pane(
             use crate::model::JointKind as K;
             let mut kind = control.kind.clone();
             labeled_row(ui, "Type", |ui| {
+                crate::icons::show_icon(ui, crate::icons::icon_for_joint_kind(&kind));
                 egui::ComboBox::from_id_salt("joint_kind")
                     .selected_text(crate::names::joint_kind_label(&kind))
                     .width(110.0)
@@ -4616,7 +4617,28 @@ pub fn show_pane(
                             let label = crate::names::joint_kind_label(&value);
                             let selected =
                                 std::mem::discriminant(&kind) == std::mem::discriminant(&value);
-                            if ui.selectable_label(selected, label).clicked() && !selected {
+                            // Each kind reads by its icon as well as its name (#921), the
+                            // same glyph the pane row and the 3D badge use.
+                            let icon = crate::icons::sized_texture(
+                                ui.ctx(),
+                                crate::icons::icon_for_joint_kind(&value),
+                            );
+                            let row = ui
+                                .selectable_label(
+                                    selected,
+                                    egui::RichText::new(format!("  {label}")),
+                                )
+                                .on_hover_text(label);
+                            ui.painter().image(
+                                icon.id,
+                                egui::Rect::from_min_size(
+                                    row.rect.left_top() + egui::vec2(3.0, 1.0),
+                                    egui::vec2(14.0, 14.0),
+                                ),
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                ui.visuals().text_color(),
+                            );
+                            if row.clicked() && !selected {
                                 kind = value.clone();
                             }
                         }

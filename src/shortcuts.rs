@@ -90,6 +90,9 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // T also means the Tangent constraint in tangent contexts (#311); the plain-T binding
         // selects the Text tool everywhere else.
         Tool::Text => Some(ShortcutHint::plain("T")),
+        // J for the Joint tool (#921): free of every other tool letter and of the
+        // constraint mnemonics. Repeated J cycles the joint kind.
+        Tool::Joint => Some(ShortcutHint::plain("J")),
         // B for "block" (#909): S — the shape the issue asked for — is the Sketch tool's,
         // and B collides with no other tool letter or constraint mnemonic. Repeated B
         // cycles cuboid → cylinder → sphere.
@@ -106,7 +109,6 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Mirror
         | Tool::Repeat
         | Tool::Slice
-        | Tool::Joint
         | Tool::DrawingAdd
         | Tool::DrawingAlign => None,
         Tool::Select => None,
@@ -242,6 +244,7 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
         (Tool::Fillet, "Fillet tool"),
         (Tool::Text, "Text tool"),
         (Tool::Shape, "Create Shape tool (again cycles cuboid/cylinder/sphere)"),
+        (Tool::Joint, "Joint tool (again cycles the joint kind)"),
     ];
     sections.push(ShortcutSection {
         title: "Tools",
@@ -399,6 +402,9 @@ mod tests {
         );
         // #665: the Move tool has a letter now.
         assert_eq!(tool_shortcut(Tool::Move), Some(ShortcutHint::plain("M")));
+        // #909/#921: the Shape and Joint tools too, both cycling on a repeat press.
+        assert_eq!(tool_shortcut(Tool::Shape), Some(ShortcutHint::plain("B")));
+        assert_eq!(tool_shortcut(Tool::Joint), Some(ShortcutHint::plain("J")));
         assert_eq!(tool_shortcut(Tool::Select), None);
     }
 

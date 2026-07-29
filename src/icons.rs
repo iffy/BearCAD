@@ -569,6 +569,11 @@ pub fn sized_texture_at(ctx: &Context, id: IconId, size: f32) -> egui::load::Siz
     egui::load::SizedTexture::new(texture_for_icon(ctx, id), egui::vec2(size, size))
 }
 
+/// Draw an icon inline in a row, at the pane's usual icon size (#921).
+pub fn show_icon(ui: &mut Ui, id: IconId) {
+    ui.add(egui::Image::new(sized_texture_at(ui.ctx(), id, 16.0)));
+}
+
 pub fn paint_icon(painter: &Painter, ctx: &Context, id: IconId, rect: Rect, tint: Color32) {
     let texture_id = texture_for_icon(ctx, id);
     painter.image(
