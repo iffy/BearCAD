@@ -759,7 +759,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the six axis directions, 45° gives 26: two poles and three rings of eight), and on the
     End-C circle one every that many degrees around it (`SpinCircle::spots`, starting at the
     no-spin position). They're offered alongside the geometry-derived spots, through the same
-    blue/gold marks and dashed pivot guides: after the A translation lands start A on
+    blue/gold marks and dashed pivot guides. **Hovering one draws the sweep that reaches it**
+    (#919), in the candidate gold with the angle in degrees at each arc's middle: for end
+    point B the **azimuth** turned in the ground plane and the **elevation** lifted out of it
+    (`move_direction_sweeps`), for end point C the signed **spin** about the A→B axis
+    (`SpinCircle::sweep_to`): after the A translation lands start A on
     end A, the bodies turn **about end point A** by the shortest rotation taking start B's
     direction onto end B's (`extrude::move_snap_rotation`). End B is confined to the
     **constraint sphere** centred on end point A with radius `|startA - startB|`

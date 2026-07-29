@@ -22615,6 +22615,54 @@ impl App {
             .and_then(|cm| move_snap_connector(&self.state.doc, cm))
             .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR, false)])
             .unwrap_or_default();
+        // The sweep that reaches the hovered candidate (#919): for end point B the azimuth
+        // and elevation arcs about the pivot, for end point C the spin about the A→B axis,
+        // each labelled with its angle.
+        if let Some((_, hovered)) = move_b_hover {
+            let cm = self.state.creating_move.as_ref();
+            let sweeps: Vec<(Vec<Vec3>, f32)> = match self.move_focus() {
+                MoveFocus::EndPointC => cm
+                    .and_then(|cm| {
+                        extrude::snap_spin_candidates(
+                            &self.state.doc,
+                            cm.start_point_a.as_ref(),
+                            cm.start_point_b.as_ref(),
+                            cm.start_point_c.as_ref(),
+                            cm.end_point_a.as_ref(),
+                            cm.end_point_b.as_ref(),
+                        )
+                    })
+                    .and_then(|circle| circle.sweep_to(hovered))
+                    .into_iter()
+                    .collect(),
+                _ => cm
+                    .and_then(|cm| cm.end_point_a.as_ref())
+                    .and_then(|p| extrude::move_point_world(&self.state.doc, p))
+                    .map(|pivot| extrude::move_direction_sweeps(pivot, hovered))
+                    .unwrap_or_default(),
+            };
+            for (points, degrees) in sweeps {
+                for pair in points.windows(2) {
+                    move_connector.push((
+                        pair[0],
+                        pair[1],
+                        theme::MOVE_CANDIDATE_HOVER,
+                        false,
+                    ));
+                }
+                // The angle reads at the arc's middle.
+                if let Some(mid) = points.get(points.len() / 2).and_then(|p| project(*p)) {
+                    paint_bold_text(
+                        &painter,
+                        mid + egui::vec2(0.0, -10.0),
+                        egui::Align2::CENTER_CENTER,
+                        &format!("{:.0}°", degrees),
+                        egui::FontId::proportional(13.0),
+                        theme::MOVE_CANDIDATE_HOVER,
+                    );
+                }
+            }
+        }
         // Dashed guides from the pivot to each mid-air end-B spot (#745), in candidate
         // blue — gold when its landing spot is the one under the cursor.
         for (a, b) in &move_b_guides {

@@ -842,6 +842,86 @@ pub fn snap_rotation_candidates(
     out
 }
 
+/// The sweeps that reach a hovered End-point-B candidate (#919): two arcs about the pivot —
+/// the **azimuth** turned in the ground plane from +X, and the **elevation** lifted out of it
+/// — each returned as a polyline with the angle it stands for, in degrees. A candidate
+/// straight up or down has no azimuth of its own, so only the elevation comes back.
+pub fn move_direction_sweeps(pivot: Vec3, target: Vec3) -> Vec<(Vec<Vec3>, f32)> {
+    let offset = target - pivot;
+    let radius = offset.length();
+    if radius < 1e-4 {
+        return Vec::new();
+    }
+    let dir = offset / radius;
+    let flat = Vec3::new(dir.x, dir.y, 0.0);
+    let mut out = Vec::new();
+    // Azimuth: +X round to the direction's bearing, drawn in the ground plane.
+    if flat.length() > 1e-3 {
+        let azimuth = dir.y.atan2(dir.x);
+        out.push((
+            arc_points(pivot, Vec3::X, Vec3::Z, radius * 0.55, azimuth, 32),
+            azimuth.to_degrees(),
+        ));
+        // Elevation: the flattened bearing up (or down) to the direction itself.
+        let bearing = flat.normalize();
+        let elevation = dir.z.clamp(-1.0, 1.0).asin();
+        if elevation.abs() > 1e-3 {
+            let axis = bearing.cross(Vec3::Z).normalize_or_zero();
+            out.push((
+                arc_points(pivot, bearing, -axis, radius * 0.75, elevation, 32),
+                elevation.to_degrees(),
+            ));
+        }
+    } else {
+        // Straight up or down: one arc from +X to the pole.
+        let elevation = if dir.z > 0.0 {
+            std::f32::consts::FRAC_PI_2
+        } else {
+            -std::f32::consts::FRAC_PI_2
+        };
+        out.push((
+            arc_points(pivot, Vec3::X, -Vec3::Y, radius * 0.75, elevation, 32),
+            elevation.to_degrees(),
+        ));
+    }
+    out
+}
+
+/// A polyline arc: `steps + 1` points from `origin + from * radius`, swept `angle` radians
+/// about `axis` through `origin`.
+fn arc_points(origin: Vec3, from: Vec3, axis: Vec3, radius: f32, angle: f32, steps: usize) -> Vec<Vec3> {
+    let from = from.normalize_or_zero();
+    let axis = axis.normalize_or_zero();
+    if from.length_squared() < 0.5 || axis.length_squared() < 0.5 {
+        return Vec::new();
+    }
+    (0..=steps)
+        .map(|i| {
+            let t = angle * i as f32 / steps as f32;
+            origin + glam::Quat::from_axis_angle(axis, t) * (from * radius)
+        })
+        .collect()
+}
+
+impl SpinCircle {
+    /// The sweep from the no-spin position round to `target` (#919): the arc and its angle
+    /// in degrees, signed about the circle's axis.
+    pub fn sweep_to(&self, target: Vec3) -> Option<(Vec<Vec3>, f32)> {
+        let v = target - self.center;
+        let flat = v - self.axis * v.dot(self.axis);
+        if flat.length() < 1e-4 {
+            return None;
+        }
+        let dir = flat.normalize();
+        let cross = self.reference.cross(dir).dot(self.axis);
+        let angle = cross.atan2(self.reference.dot(dir));
+        Some((
+            arc_points(self.center, self.reference, self.axis, self.radius * 0.8, angle, 48),
+            angle.to_degrees(),
+        ))
+    }
+}
+
 /// Rotation candidates by **angle** (#918): directions on the end-point-B constraint sphere
 /// every `step_deg` degrees about the world axes, as world points at `radius` from `centre`.
 ///
@@ -5575,6 +5655,52 @@ mod tests {
 
     /// #669: the optional B pair turns the bodies about end point A so that start B lands on
     /// end B, and end B is confined to the sphere start B can actually reach.
+    /// #919: the sweeps to a hovered End-B candidate — the bearing turned in the ground
+    /// plane and the lift out of it, each arc starting where the last one left off.
+    #[test]
+    fn direction_sweeps_report_azimuth_and_elevation() {
+        let pivot = Vec3::new(1.0, 2.0, 3.0);
+        // Due +Y at the pivot's height: a quarter turn of azimuth, no lift.
+        let sweeps = move_direction_sweeps(pivot, pivot + Vec3::new(0.0, 10.0, 0.0));
+        assert_eq!(sweeps.len(), 1, "no elevation arc when it's flat");
+        assert!((sweeps[0].1 - 90.0).abs() < 1e-3, "90° of azimuth, got {}", sweeps[0].1);
+        // 45° up along +X: no azimuth turn, 45° of lift.
+        let up = Vec3::new(1.0, 0.0, 1.0).normalize() * 10.0;
+        let sweeps = move_direction_sweeps(pivot, pivot + up);
+        assert_eq!(sweeps.len(), 2);
+        assert!(sweeps[0].1.abs() < 1e-3, "no azimuth, got {}", sweeps[0].1);
+        assert!((sweeps[1].1 - 45.0).abs() < 1e-2, "45° of lift, got {}", sweeps[1].1);
+        // Every arc starts at the pivot's radius and ends on the target.
+        let end = *sweeps[1].0.last().unwrap();
+        assert!(
+            ((end - pivot).length() - 7.5).abs() < 1e-2,
+            "the lift arc is drawn at 0.75 r, got {}",
+            (end - pivot).length()
+        );
+        // Straight up: one arc, 90°.
+        let sweeps = move_direction_sweeps(pivot, pivot + Vec3::Z * 4.0);
+        assert_eq!(sweeps.len(), 1);
+        assert!((sweeps[0].1 - 90.0).abs() < 1e-3);
+    }
+
+    /// #919: end point C's sweep is the signed spin from the no-spin position.
+    #[test]
+    fn spin_circle_sweeps_from_the_reference() {
+        let circle = SpinCircle {
+            center: Vec3::ZERO,
+            axis: Vec3::Z,
+            reference: Vec3::X,
+            radius: 5.0,
+        };
+        let (arc, degrees) = circle.sweep_to(Vec3::new(0.0, 5.0, 0.0)).expect("a sweep");
+        assert!((degrees - 90.0).abs() < 1e-3, "a quarter turn, got {degrees}");
+        assert!(arc.len() > 2 && arc[0].x > 0.0, "it starts at the reference");
+        let (_, back) = circle.sweep_to(Vec3::new(0.0, -5.0, 0.0)).expect("a sweep");
+        assert!((back + 90.0).abs() < 1e-3, "the other way is negative, got {back}");
+        // A target on the axis has no bearing to sweep to.
+        assert!(circle.sweep_to(Vec3::new(0.0, 0.0, 9.0)).is_none());
+    }
+
     /// #918: the angle grid on the sphere — 90° gives the six axis directions, 45° gives
     /// 26 (two poles and three rings of eight), and every spot sits on the sphere.
     #[test]

@@ -74,7 +74,8 @@ end point, then straight on to **Start point B** in case you want the turn too, 
 B and C rows **Rotation** — those four points turn the part, the A pair moves it — and
 **Angle snap** at the top of that section sets how far apart the blue candidate dots sit:
 90° offers the six axis directions, 45° offers the diagonals too. Drag the slider or type
-the angle.
+the angle. Hovering a dot draws the turn that reaches it, in degrees — two arcs for end
+point B, one for end point C.
 
 ## Help
 
