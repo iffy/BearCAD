@@ -354,6 +354,21 @@ pub enum Instruction {
         start_point_c: Option<crate::model::MovePointRef>,
         end_point_c: Option<crate::model::MovePointRef>,
     },
+    /// Arm the Move tool with a set of picks **without committing** them, so the tool's
+    /// live preview — the destination ghost, the A pair's connector, the B and C paths —
+    /// can be driven from a script. `bearcad.move_bodies` is the committing counterpart.
+    BeginMoveOp {
+        targets: Vec<usize>,
+        tx: String,
+        ty: String,
+        tz: String,
+        start_point_a: Option<crate::model::MovePointRef>,
+        end_point_a: Option<crate::model::MovePointRef>,
+        start_point_b: Option<crate::model::MovePointRef>,
+        end_point_b: Option<crate::model::MovePointRef>,
+        start_point_c: Option<crate::model::MovePointRef>,
+        end_point_c: Option<crate::model::MovePointRef>,
+    },
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
         plane: FaceId,
@@ -1082,6 +1097,9 @@ impl Instruction {
             }
             Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            }
+            Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.begin_move", None, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
@@ -4582,6 +4600,27 @@ impl ScriptRunner {
                     tz,
                 });
                 self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Move));
+                state.creating_move = Some(crate::actions::CreatingMove {
+                    targets,
+                    translate_mode: move_translate_mode(&start_point_a, &end_point_a),
+                    start_point_a,
+                    end_point_a,
+                    start_point_b,
+                    end_point_b,
+                    start_point_c,
+                    end_point_c,
+                    plane_targets: Vec::new(),
+                    image_targets: Vec::new(),
+                    instance_targets: Vec::new(),
+                    tx,
+                    ty,
+                    tz,
+                    editing: None,
+                });
                 StepResult::Continue
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {

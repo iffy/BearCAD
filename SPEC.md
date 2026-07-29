@@ -817,7 +817,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
   on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation, and
-  `from_c`/`to_c` the optional C pair, and so the spin; a point table takes
+  `from_c`/`to_c` the optional C pair, and so the spin. `bearcad.begin_move{ … }` takes the
+  same arguments but **arms the tool instead of committing** — the picks land in
+  `creating_move` with the Move tool up, so a script can drive the live preview (the ghost,
+  the A connector, the B and C paths) rather than only the finished operation. A point table takes
   `vertex`, `edge` (its midpoint), or `on_edge` (a position along one). **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,

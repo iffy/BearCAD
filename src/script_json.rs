@@ -386,6 +386,11 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
                  start_point_c, end_point_c) = move_op_args(o)?;
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
+        "begin_move" => {
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) = move_op_args(o)?;
+            Ok(Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+        }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,

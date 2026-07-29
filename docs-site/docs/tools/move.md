@@ -48,19 +48,23 @@ Move slides whole bodies to a new place, producing moved copies.
 
 The same slab landing on the same plate, with one more pair each time.
 
+Each shows the tool mid-pick: the slab still where it started, a ghost where it's going,
+start A green joined to end A red, and the B and C pairs in blue with the path each point
+travels.
+
 **A alone** — start A lands on end A. The slab slides; it faces exactly as it did.
 
-![A slab slid onto a plate by the A pair alone, still facing as it started](/img/screenshots/snap-pairs-a.png)
+![The Move preview with only the A pair picked: a ghost slid onto the plate, facing as the slab does](/img/screenshots/snap-pairs-a.png)
 
 **A and B** — it also turns about end A until start B points at end B. It can still roll
 about the line between the two end points.
 
-![The same slab turned about end point A so its far corner points at end B](/img/screenshots/snap-pairs-ab.png)
+![The same preview with the B pair added, the ghost turned so its far corner points at end B](/img/screenshots/snap-pairs-ab.png)
 
 **A, B and C** — it also spins about that line until start C points at end C, standing it
 on its long edge. Nothing is left to choose.
 
-![The same slab spun up onto its long edge by the C pair](/img/screenshots/snap-pairs-abc.png)
+![The same preview with the C pair added, the ghost spun up onto its long edge](/img/screenshots/snap-pairs-abc.png)
 
 The tool moves you along as you go: pick a body and it's ready for the start point, then the
 end point, then straight on to **Start point B** in case you want the turn too, and then to
@@ -101,6 +105,12 @@ bearcad.move_bodies{ bodies = {0},
   to_b   = { body = 0, vertex = {10, 0, 0} },
   from_c = { body = 0, vertex = {0, 0, 10} },
   to_c   = { body = 0, vertex = {0, 10, 0} } }
+
+-- `begin_move` takes the same arguments but leaves the tool armed rather than committing,
+-- so the preview is on screen: the ghost, the A connector, and the B and C paths.
+bearcad.begin_move{ bodies = {0},
+  from = { body = 0, vertex = {0, 0, 0} },
+  to   = { body = 1, vertex = {40, 0, 0} } }
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or

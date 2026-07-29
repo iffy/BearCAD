@@ -5,18 +5,24 @@
 -- degree of freedom is the point — with A and B the slab is still free to roll about the
 -- end A → end B line, and only C settles it.
 --
+-- Each is the tool's **live preview** (`bearcad.begin_move`, not `move_bodies`): the slab
+-- still sits where it started, the ghost shows where it's going, and the picked pairs are
+-- marked and joined — start A green to end A red, the B and C pairs in blue with the dashed
+-- path each point travels. That's the thing being explained, so it's what the shot shows.
+--
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
 -- falling back to ".". Three PNGs, one per pair, named `<this script>-<pair>` as the
 -- harness expects of a scene that takes several shots.
 
 local out = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 
--- The slab is 22 long, 9 wide, 5 thick, parked clear of the plate. Its near-bottom corner
+-- The slab is 22 long, 9 wide, 5 thick, parked just off the plate so both it and where
+-- it's going fit the same frame. Its near-bottom corner
 -- is start A, the far one along its length start B, and the one straight above start A is
 -- start C.
-local START_A = { 60, 0, 0 }
-local START_B = { 82, 0, 0 }
-local START_C = { 60, 0, 5 }
+local START_A = { 46, 2, 0 }
+local START_B = { 68, 2, 0 }
+local START_C = { 46, 2, 5 }
 
 -- Where they land, all on the plate's top face.
 local TOP = 4
@@ -37,7 +43,7 @@ local function scene()
   bearcad.exit_sketch()
   bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = TOP, name = "Plate" }
 
-  bearcad.rect{ x = 60, y = 0, width = 22, height = 9, name = "Slab" }
+  bearcad.rect{ x = 46, y = 2, width = 22, height = 9, name = "Slab" }
   bearcad.exit_sketch()
   bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 5, name = "Slab" }
 end
@@ -45,9 +51,9 @@ end
 -- Same framing for all three, so only the slab's pose changes between them: a clean stage
 -- (no datum planes, no grid, no sketch profiles drawn over the solids) and a pinned camera.
 local function shoot(name)
-  -- The landed slab in its own colour, so its silhouette reads against the plate rather
-  -- than merging into it. It's the move's output body: plate 0, the consumed original 1.
-  bearcad.material{ name = "Landed", color = "#d8963c", bodies = { 2 } }
+  -- The moving slab in its own colour, so it reads against the plate rather than merging
+  -- into it — and so does the ghost it casts at the destination.
+  bearcad.material{ name = "Moving", color = "#d8963c", bodies = { 1 } }
   for i = 0, bearcad.count("construction_plane") - 1 do
     bearcad.set_visible({ kind = "construction_plane", index = i }, "hide")
   end
@@ -55,43 +61,38 @@ local function shoot(name)
     bearcad.set_visible({ kind = "sketch", index = i }, "hide")
   end
   bearcad.ui.ground("off")
-  bearcad.clear_selection()
-  -- A tool that highlights nothing, so neither solid picks up a selection tint.
-  bearcad.ui.tool("dimension")
   bearcad.ui.auto_zoom(false)
   bearcad.ui.view("corner", "front_left_top")
   bearcad.ui.wait(2)
-  bearcad.ui.camera{ target = { 18, 13, 4 }, distance = 88 }
+  bearcad.ui.camera{ target = { 32, 13, 3 }, distance = 125 }
   bearcad.ui.wait(3)
   bearcad.ui.screenshot(out .. "/" .. name .. ".png")
 end
 
--- A alone: the slab slides until start A sits on end A, facing exactly as it did.
+-- A alone: the ghost sits where start A meets end A, facing exactly as the slab does.
 scene()
-bearcad.move_bodies{
+bearcad.begin_move{
   bodies = { 1 },
   from = { body = 1, vertex = START_A },
   to   = { body = 0, on_edge = END_A },
-  name = "Landed",
 }
 shoot("snap-pairs-a")
 
--- A and B: it also turns about end A until start B points at end B.
+-- A and B: the ghost also turns about end A until start B points at end B.
 scene()
-bearcad.move_bodies{
+bearcad.begin_move{
   bodies = { 1 },
   from   = { body = 1, vertex = START_A },
   to     = { body = 0, on_edge = END_A },
   from_b = { body = 1, vertex = START_B },
   to_b   = { body = 0, on_edge = END_B },
-  name = "Landed",
 }
 shoot("snap-pairs-ab")
 
--- A, B and C: it also spins about the end A → end B line until start C points at end C,
--- which stands the slab on its long edge. Nothing is left to choose.
+-- A, B and C: the ghost also spins about the end A → end B line until start C points at
+-- end C, standing it on its long edge. Nothing is left to choose.
 scene()
-bearcad.move_bodies{
+bearcad.begin_move{
   bodies = { 1 },
   from   = { body = 1, vertex = START_A },
   to     = { body = 0, on_edge = END_A },
@@ -99,7 +100,6 @@ bearcad.move_bodies{
   to_b   = { body = 0, on_edge = END_B },
   from_c = { body = 1, vertex = START_C },
   to_c   = { body = 0, on_edge = END_C },
-  name = "Landed",
 }
 shoot("snap-pairs-abc")
 
