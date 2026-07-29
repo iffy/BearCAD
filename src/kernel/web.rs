@@ -25,6 +25,7 @@ extern "C" {
         radius: f64,
         height: f64,
     ) -> u32;
+    fn kernel_sphere(cx: f64, cy: f64, cz: f64, radius: f64) -> u32;
     fn kernel_loft(bottom: &[f64], top: &[f64]) -> u32;
     fn kernel_revolve(
         xyz: &[f64],
@@ -166,6 +167,19 @@ impl Shape {
             axis.z as f64,
             radius,
             height,
+        ))
+    }
+
+    /// A true BREP sphere (#936); see the native `Shape::sphere`.
+    pub fn sphere(center: glam::Vec3, radius: f64) -> Option<Shape> {
+        if radius <= 0.0 || !kernel_available() {
+            return None;
+        }
+        Self::from_handle(kernel_sphere(
+            center.x as f64,
+            center.y as f64,
+            center.z as f64,
+            radius,
         ))
     }
 

@@ -8,6 +8,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <gp_Ax1.hxx>
@@ -559,6 +560,24 @@ extern "C" BearcadShape* bearcad_shape_cylinder(double cx, double cy, double cz,
         gp_Dir dir(ax, ay, az);
         gp_Ax2 frame(gp_Pnt(cx, cy, cz), dir);
         TopoDS_Shape shape = BRepPrimAPI_MakeCylinder(frame, radius, height).Shape();
+        if (shape.IsNull()) {
+            return nullptr;
+        }
+        return new BearcadShape{shape};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" BearcadShape* bearcad_shape_sphere(double cx, double cy, double cz,
+                                              double radius) {
+    if (radius <= 0.0) {
+        return nullptr;
+    }
+    try {
+        TopoDS_Shape shape = BRepPrimAPI_MakeSphere(gp_Pnt(cx, cy, cz), radius).Shape();
         if (shape.IsNull()) {
             return nullptr;
         }

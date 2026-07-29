@@ -60,6 +60,11 @@ BearcadShape* bearcad_shape_sweep(const double* profile_xyz, unsigned long n_pro
 // 0 = fuse (a ∪ b), 1 = cut (a − b), 2 = common (a ∩ b). NULL on failure.
 BearcadShape* bearcad_shape_boolean(const BearcadShape* a, const BearcadShape* b, int op);
 
+// A true BREP sphere (#936) centred at (cx,cy,cz). The revolve path can't build one —
+// a half-disc profile touches its own axis at both poles — so the primitive is used.
+// Returns NULL on a non-positive radius or an OCCT error.
+BearcadShape* bearcad_shape_sphere(double cx, double cy, double cz, double radius);
+
 // Apply fillets of the given radii to the shape's edges whose two endpoints match
 // each (ax,ay,az,bx,by,bz) 6-tuple in `edges` (n edges, radii[n]). Edge match =
 // both endpoints within tol of the OCCT edge's two vertices (either order). All

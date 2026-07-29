@@ -7541,6 +7541,37 @@ mod tests {
         assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
     }
 
+    /// #936: shapes cut each other properly — the sphere's kernel solid is a real BREP
+    /// sphere, so a boolean against one lands geometry instead of an empty body.
+    #[test]
+    fn lua_a_shape_cuts_another_shape() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 40, height = 40 }
+            bearcad.sphere{ at = {20, 20, 0}, radius = 20 }
+            bearcad.combine{ op = "cut", a = {0}, b = {1}, keep_b = true }
+            "#,
+        );
+        let volume = |i: usize| {
+            crate::extrude::body_solid_mesh(&state.doc, i)
+                .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+                .unwrap_or(0.0)
+        };
+        let cut = state
+            .doc
+            .bodies
+            .iter()
+            .position(|b| !b.deleted && matches!(b.source, crate::model::BodySource::Boolean { .. }))
+            .expect("the cut lands an output body");
+        let carved = volume(cut);
+        assert!(carved > 0.0, "the cut body has geometry");
+        assert!(
+            carved < 64000.0 * 0.98,
+            "and a bite out of it: {carved} vs the cuboid's 64000"
+        );
+    }
+
     /// #926: a new body extruded off another body's face is made of the same material.
     #[test]
     fn lua_extrude_off_a_body_face_inherits_its_material() {

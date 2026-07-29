@@ -1596,9 +1596,10 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   centred on its base rectangle, a cylinder on its base circle, a sphere on the point it
   rests on (centre one radius up the normal). `primitives::mesh` tessellates it analytically
   (64 radial segments, 32 sphere stacks) and `primitives::kernel_shape` builds the solid —
-  a prism for the cuboid, `BRepPrimAPI_MakeCylinder` for the cylinder, and a revolved
-  half-disc for the sphere (the kernel has no sphere primitive, and revolving keeps the
-  surface exact around the sweep). A shape missing a dimension is refused rather than landing
+  a prism for the cuboid, `BRepPrimAPI_MakeCylinder` for the cylinder, and
+  `BRepPrimAPI_MakeSphere` for the sphere (#936 — revolving a half-disc *looks* like the way
+  to build one, but its profile touches the revolution axis at both poles and OCCT refuses
+  it, which left every boolean against a sphere landing an empty body). A shape missing a dimension is refused rather than landing
   an empty body. It's a top-level row in the Elements pane, named by kind ("Cuboid 0"), with
   its body nested under it. Scriptable as `bearcad.cuboid{ at?, normal?, u_axis?, width,
   depth, height, name? }`, `bearcad.cylinder{ radius, height, … }`, `bearcad.sphere{ radius,

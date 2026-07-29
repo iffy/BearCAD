@@ -69,6 +69,12 @@ mod ffi {
             radius: f64,
             height: f64,
         ) -> *mut BearcadShape;
+        pub fn bearcad_shape_sphere(
+            cx: f64,
+            cy: f64,
+            cz: f64,
+            radius: f64,
+        ) -> *mut BearcadShape;
         pub fn bearcad_shape_boolean(
             a: *const BearcadShape,
             b: *const BearcadShape,
@@ -287,6 +293,23 @@ impl Shape {
                 axis.z as f64,
                 radius,
                 height,
+            )
+        };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// A true BREP sphere (#936): the revolve path can't build one — a half-disc profile
+    /// touches its own axis at both poles and OCCT refuses it — so the primitive is used.
+    pub fn sphere(center: glam::Vec3, radius: f64) -> Option<Shape> {
+        if radius <= 0.0 {
+            return None;
+        }
+        let raw = unsafe {
+            ffi::bearcad_shape_sphere(
+                center.x as f64,
+                center.y as f64,
+                center.z as f64,
+                radius,
             )
         };
         (!raw.is_null()).then_some(Shape { raw })

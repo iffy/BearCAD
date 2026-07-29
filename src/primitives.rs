@@ -273,22 +273,10 @@ pub fn kernel_shape(doc: &Document, shape: &Primitive) -> Option<crate::kernel::
             r.radius as f64,
             r.height as f64,
         ),
-        // A sphere is a half-disc revolved about its own diameter: the kernel has no sphere
-        // primitive, and a revolution keeps the surface exact around the sweep.
+        // A true BREP sphere (#936): revolving a half-disc fails, because its profile
+        // touches the revolution axis at both poles.
         PrimitiveKind::Sphere => {
-            let center = r.sphere_center();
-            let mut profile = Vec::with_capacity(SPHERE_STACKS + 1);
-            for i in 0..=SPHERE_STACKS {
-                let phi = i as f32 / SPHERE_STACKS as f32 * std::f32::consts::PI;
-                profile.push(center + (r.u * phi.sin() - r.normal * phi.cos()) * r.radius);
-            }
-            crate::kernel::Shape::revolve(
-                &profile,
-                center,
-                r.normal,
-                std::f64::consts::TAU,
-                false,
-            )
+            crate::kernel::Shape::sphere(r.sphere_center(), r.radius as f64)
         }
     }
 }
@@ -404,6 +392,38 @@ mod tests {
         let sphere = sized(K::Sphere, "", "", "", "8");
         let doc = doc_with(sphere.clone());
         assert_eq!(field_anchors(&doc, &sphere).len(), 1, "a sphere shows its radius");
+    }
+
+    /// #936: every shape builds a **kernel** solid too, not just a mesh — booleans, edge
+    /// treatments and STEP all read that, and a cut with a shape that fails to build lands
+    /// an empty body.
+    #[test]
+    fn every_shape_builds_a_kernel_solid() {
+        if crate::kernel::occt_version().is_none() {
+            return; // no kernel in this build; the mesh path stands alone
+        }
+        let cases = [
+            (sized(K::Cuboid, "40", "20", "10", ""), 8000.0_f32),
+            (
+                sized(K::Cylinder, "", "", "20", "5"),
+                std::f32::consts::PI * 25.0 * 20.0,
+            ),
+            (
+                sized(K::Sphere, "", "", "", "8"),
+                4.0 / 3.0 * std::f32::consts::PI * 512.0,
+            ),
+        ];
+        for (shape, expected) in cases {
+            let doc = doc_with(shape.clone());
+            let solid = kernel_shape(&doc, &shape)
+                .unwrap_or_else(|| panic!("{:?} builds a kernel solid", shape.kind));
+            let volume = solid.volume().unwrap_or(0.0) as f32;
+            assert!(
+                (volume - expected).abs() / expected < 0.02,
+                "{:?} kernel volume {volume} vs {expected}",
+                shape.kind
+            );
+        }
     }
 
     /// A shape with a dimension missing (or zero) has no geometry yet — it isn't an error,

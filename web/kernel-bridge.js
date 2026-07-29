@@ -60,6 +60,14 @@ export function kernel_cylinder(cx, cy, cz, ax, ay, az, radius, height) {
   return m._bearcad_shape_cylinder(cx, cy, cz, ax, ay, az, radius, height);
 }
 
+export function kernel_sphere(cx, cy, cz, radius) {
+  const m = M();
+  // A kernel module built before spheres existed simply has no export for it (#936);
+  // the caller then falls back to the mesh, like any other kernel-op failure.
+  if (!m || typeof m._bearcad_shape_sphere !== "function") return 0;
+  return m._bearcad_shape_sphere(cx, cy, cz, radius);
+}
+
 export function kernel_loft(bottom, top) {
   const m = M();
   if (!m) return 0;
