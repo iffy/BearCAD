@@ -635,6 +635,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
       single circular rims); the **mesh fallback** (previews, kernel failures) builds hole-aware caps
       (`polygon::triangulate_planar_with_holes`, hole loops bridged into the outer loop and
       ear-clipped) plus inner side walls. This works for extrude (`ExtrudeFace`) and revolve alike.
+      **Hover highlighting is hole-aware too** (#942): the region's highlight
+      (`ViewportHoverHighlight::ClosedLoop`, which carries `holes`) fills only the ring and
+      outlines every rim, so hovering a wall shows the wall — not the whole outer shape.
     - **Scope (deliberate, not yet general N-way arrangements)**: only ever two shapes at a
       time — a sketch with three or more mutually-overlapping shapes falls back to today's
       whole-shape picking instead. The single-seam `polygon_boolean::face_boolean` (used for the

@@ -345,11 +345,15 @@ pub enum ViewportHoverHighlight {
     /// whatever its kind — bodies/extrusions get their aura in the hover color, sketch
     /// entities their usual pick highlight.
     Element(crate::hierarchy::SceneElement),
-    /// A closed world-space loop rendered as a filled/outlined polygon (#16/#62/#202): used
+    /// A closed world-space region rendered as a filled/outlined polygon (#16/#62/#202): used
     /// for a computed boolean-combined region (which, unlike `SketchFace`, has no `FaceId` of
     /// its own — it's just `ExtrudeFace::Boolean`'s on-demand geometry) and for a Loft tool
-    /// cross-section profile under the cursor.
-    ClosedLoop { world_loop: Vec<Vec3> },
+    /// cross-section profile under the cursor. `holes` are interior loops the fill leaves
+    /// empty (#942), so hovering a wall/ring shows the wall, not the shape around it.
+    ClosedLoop {
+        world_loop: Vec<Vec3>,
+        holes: Vec<Vec<Vec3>>,
+    },
     /// A whole analytic edge given as its segments (#807): a hole's rim is many chords in the
     /// mesh but one edge to the tools, so it highlights as one.
     Curve { segments: Vec<(Vec3, Vec3)> },
@@ -2821,7 +2825,7 @@ impl<'a> SceneMesh<'a> {
                 }
                 self.set_index_layer(restore_layer);
             }
-            ViewportHoverHighlight::ClosedLoop { world_loop } => {
+            ViewportHoverHighlight::ClosedLoop { world_loop, holes } => {
                 if world_loop.len() >= 3 {
                     let eye = cam.eye();
                     let normal = (world_loop[1] - world_loop[0])
@@ -2829,26 +2833,27 @@ impl<'a> SceneMesh<'a> {
                         .normalize_or_zero();
                     let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
                     let lift = |p: Vec3| offset_toward_camera(p, normal, eye, HOVER_FILL_DEPTH_BIAS);
-                    for i in 1..world_loop.len() - 1 {
-                        self.push_triangle(
-                            lift(world_loop[0]),
-                            lift(world_loop[i]),
-                            lift(world_loop[i + 1]),
-                            fill,
-                        );
+                    // Hole-aware fill (#942): the wall of a ring highlights as the wall, not as
+                    // the whole outline with its interior filled in.
+                    for tri in crate::polygon::triangulate_planar_with_holes(
+                        world_loop, holes, normal,
+                    ) {
+                        self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
                     }
-                    let n = world_loop.len();
-                    for i in 0..n {
-                        let j = (i + 1) % n;
-                        self.push_line_segment(
-                            world_loop[i],
-                            world_loop[j],
-                            color,
-                            2.0,
-                            cam,
-                            viewport,
-                            view_proj,
-                        );
+                    for loop_ in std::iter::once(world_loop).chain(holes.iter()) {
+                        let n = loop_.len();
+                        for i in 0..n {
+                            let j = (i + 1) % n;
+                            self.push_line_segment(
+                                loop_[i],
+                                loop_[j],
+                                color,
+                                2.0,
+                                cam,
+                                viewport,
+                                view_proj,
+                            );
+                        }
                     }
                 }
             }

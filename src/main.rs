@@ -14916,7 +14916,10 @@ fn resolve_viewport_hover_highlight(
             };
             let section = element.and_then(|el| extrude::loft_section_from_element(doc, el))?;
             let (world_loop, _) = extrude::face_profile_world(doc, &section.face)?;
-            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop })
+            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
+                world_loop,
+                holes: Vec::new(),
+            })
         }
         // The Text tool joins the draw tools (#383): outside a sketch it clicks a face to
         // begin sketching there, so it hover-highlights faces the same way.
@@ -14952,7 +14955,10 @@ fn resolve_viewport_hover_highlight(
                     _ => return None,
                 },
             )?;
-            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop })
+            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
+                world_loop,
+                holes: Vec::new(),
+            })
         }
         // Mirror tool in a sketch (#541): glow the line/circle a click would pick — whether the
         // mirror axis or a shape to reflect, both are line/circle picks.
@@ -17096,6 +17102,21 @@ fn resolve_boolean_extrude_face(
 
 fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
     face.face_id()
+}
+
+/// Hover highlight for a face the Extrude/Revolve/Sweep tools would pick. A `Boolean` region has
+/// no `FaceId` of its own (see `ExtrudeFace::face_id()`'s doc comment), so it highlights as its
+/// resolved region — the outer loop **with its holes** (#942), so hovering the wall between two
+/// nested loops shows the wall rather than the whole outer shape filled in.
+fn extrude_face_hover_highlight(
+    doc: &model::Document,
+    face: model::ExtrudeFace,
+) -> Option<gpu_viewport::ViewportHoverHighlight> {
+    if let model::ExtrudeFace::Boolean { .. } = &face {
+        let (world_loop, holes, _) = extrude::face_region_world(doc, &face)?;
+        return Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop, holes });
+    }
+    Some(gpu_viewport::ViewportHoverHighlight::SketchFace(extrude_face_id(face)))
 }
 
 /// Object under the cursor to extrude up to (vertex preferred, then face/plane), with the
@@ -22728,23 +22749,7 @@ impl App {
                             .and_then(|pp| {
                                 pick_extrude_face(pp, &project, doc, cam.eye(), &cam, viewport, &vp)
                             })
-                            .and_then(|f| {
-                                // A `Boolean` region has no `FaceId` of its own (see
-                                // `ExtrudeFace::face_id()`'s doc comment) — highlight its exact
-                                // resolved loop instead of falling back to a whole-shape
-                                // outline, so the user can see the intersection/difference
-                                // area distinctly.
-                                if let model::ExtrudeFace::Boolean { .. } = &f {
-                                    let (profile, _) = extrude::face_profile_world(doc, &f)?;
-                                    Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
-                                        world_loop: profile,
-                                    })
-                                } else {
-                                    Some(gpu_viewport::ViewportHoverHighlight::SketchFace(
-                                        extrude_face_id(f),
-                                    ))
-                                }
-                            })
+                            .and_then(|f| extrude_face_hover_highlight(doc, f))
                     })
                     .or_else(|| {
                         // A bare body face (#122): no sketch profile, but still highlighted so
@@ -22840,18 +22845,7 @@ impl App {
                 .and_then(|pp| {
                     pick_extrude_face(pp, &project, doc, cam.eye(), &cam, viewport, &vp)
                 })
-                .and_then(|f| {
-                    if let model::ExtrudeFace::Boolean { .. } = &f {
-                        let (profile, _) = extrude::face_profile_world(doc, &f)?;
-                        Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
-                            world_loop: profile,
-                        })
-                    } else {
-                        Some(gpu_viewport::ViewportHoverHighlight::SketchFace(
-                            extrude_face_id(f),
-                        ))
-                    }
-                })
+                .and_then(|f| extrude_face_hover_highlight(doc, f))
                 .or_else(|| {
                     // Axis / path pick (#615): with no profile face under the cursor, glow the
                     // sketch line or — for Revolve — the global origin axis a click would set as
@@ -25923,6 +25917,35 @@ fn draw_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #942: hovering the wall between two nested loops highlights the wall — the resolved
+    /// region carries the inner loop as a hole, so the fill leaves the middle alone instead of
+    /// covering the whole outer shape.
+    #[test]
+    fn hovering_a_wall_region_keeps_its_hole() {
+        let mut doc = model::Document::default();
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let outer = construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 40.0, 20.0, [false; 4]);
+        let inner = construction::add_line_rectangle(&mut doc, sketch, 5.0, 5.0, 30.0, 10.0, [false; 4]);
+        let wall = model::ExtrudeFace::Boolean {
+            op: model::BooleanOp::Difference,
+            a: Box::new(model::ExtrudeFace::Polygon(outer.to_vec())),
+            b: Box::new(model::ExtrudeFace::Polygon(inner.to_vec())),
+        };
+        let hover = extrude_face_hover_highlight(&doc, wall).expect("the wall highlights");
+        let gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop, holes } = hover else {
+            panic!("a computed region has no FaceId, so it highlights as a loop: {hover:?}");
+        };
+        assert!(world_loop.len() >= 4, "outer boundary: {world_loop:?}");
+        assert_eq!(holes.len(), 1, "the inner loop must come along as a hole: {holes:?}");
+
+        // A plain shape still highlights as its own face, holes or not.
+        let plain = model::ExtrudeFace::Polygon(outer.to_vec());
+        assert!(matches!(
+            extrude_face_hover_highlight(&doc, plain),
+            Some(gpu_viewport::ViewportHoverHighlight::SketchFace(_))
+        ));
+    }
 
     /// #939: once something is picked, the Offset tool has a push-pull gizmo frame — anchored on
     /// the first pick's midpoint, pointing along the side a positive distance grows toward. This
