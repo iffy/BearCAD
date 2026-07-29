@@ -123,6 +123,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sketch_texts
             .get(index)
             .is_some_and(|t| !t.deleted),
+        SceneElement::Joint(index) => doc
+            .joints
+            .get(index)
+            .is_some_and(|j| !j.deleted),
     }
 }
 
@@ -219,6 +223,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         c.parent = parent;
                     }
                 }
+                tombstone_joints_referencing(doc, crate::model::JointRef::Component(index));
                 changed = true;
             }
         }
@@ -228,6 +233,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::UnitInstance(index) => {
             if doc.unit_instances.get(index).is_some_and(|i| !i.deleted) {
                 doc.unit_instances[index].deleted = true;
+                tombstone_joints_referencing(doc, crate::model::JointRef::UnitInstance(index));
                 changed = true;
             }
         }
@@ -277,6 +283,13 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. } => {}
+        SceneElement::Joint(index) => {
+            if doc.joints.get(index).is_some_and(|j| !j.deleted) {
+                doc.joints[index].deleted = true;
+                remove_shape_order_entry(doc, ShapeKind::Joint, index);
+                changed = true;
+            }
+        }
         SceneElement::RepeatOp(index) => {
             if let Some(op) = doc.repeat_ops.get_mut(index) {
                 if !op.deleted {
@@ -639,7 +652,23 @@ fn tombstone_body(doc: &mut Document, index: usize) -> bool {
     }
     body.deleted = true;
     remove_shape_order_entry(doc, ShapeKind::Body, index);
+    tombstone_joints_referencing(doc, crate::model::JointRef::Body(index));
     true
+}
+
+/// A joint dies with any of the things it joins (#891): tombstone every live joint that
+/// holds `member`.
+fn tombstone_joints_referencing(doc: &mut Document, member: crate::model::JointRef) -> bool {
+    let mut changed = false;
+    for ji in 0..doc.joints.len() {
+        if doc.joints[ji].deleted || !doc.joints[ji].members.contains(&member) {
+            continue;
+        }
+        doc.joints[ji].deleted = true;
+        remove_shape_order_entry(doc, ShapeKind::Joint, ji);
+        changed = true;
+    }
+    changed
 }
 
 /// Tombstone every target in `elements`.
@@ -941,6 +970,106 @@ fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: usize)
 mod tests {
     use super::*;
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line};
+
+    fn push_test_body(doc: &mut Document) -> usize {
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            material: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.shape_order.push(ShapeKind::Body);
+        doc.bodies.len() - 1
+    }
+
+    fn push_test_joint(doc: &mut Document, members: Vec<crate::model::JointRef>) -> usize {
+        doc.joints.push(crate::model::Joint {
+            members,
+            base: 0,
+            kind: crate::model::JointKind::Revolute,
+            frame_a: Default::default(),
+            frame_b: Default::default(),
+            position: String::new(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: Default::default(),
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::Joint);
+        doc.joints.len() - 1
+    }
+
+    /// #891: deleting a joint tombstones it and removes its shape-order entry; nothing it
+    /// joins is touched.
+    #[test]
+    fn tombstone_joint_leaves_members_alone() {
+        let mut doc = Document::default();
+        let a = push_test_body(&mut doc);
+        let b = push_test_body(&mut doc);
+        let ji = push_test_joint(
+            &mut doc,
+            vec![crate::model::JointRef::Body(a), crate::model::JointRef::Body(b)],
+        );
+        let order_len = doc.shape_order.len();
+        assert!(tombstone_element(&mut doc, SceneElement::Joint(ji)));
+        assert!(doc.joints[ji].deleted);
+        assert!(!element_alive(&doc, SceneElement::Joint(ji)));
+        assert!(body_alive(&doc, a));
+        assert!(body_alive(&doc, b));
+        assert_eq!(doc.shape_order.len(), order_len - 1);
+        // Already dead: a second delete is a no-op.
+        assert!(!tombstone_element(&mut doc, SceneElement::Joint(ji)));
+    }
+
+    /// #891: a joint dies with either of the things it joins — here a member body.
+    #[test]
+    fn joint_dies_with_its_member_body() {
+        let mut doc = Document::default();
+        let a = push_test_body(&mut doc);
+        let b = push_test_body(&mut doc);
+        let ji = push_test_joint(
+            &mut doc,
+            vec![crate::model::JointRef::Body(a), crate::model::JointRef::Body(b)],
+        );
+        assert!(tombstone_element(&mut doc, SceneElement::Body(a)));
+        assert!(doc.joints[ji].deleted, "joint must die with its member body");
+        assert!(body_alive(&doc, b));
+    }
+
+    /// #891: a joint on a unit instance dies when that placement is deleted.
+    #[test]
+    fn joint_dies_with_its_unit_instance() {
+        let mut doc = Document::default();
+        let a = push_test_body(&mut doc);
+        doc.units.push(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath("x.bearcad".to_string()),
+            link: Default::default(),
+            document: Document::default(),
+            source_mtime: None,
+            source_hash: None,
+        });
+        doc.unit_instances.push(crate::model::UnitInstance {
+            unit: 0,
+            name: None,
+            parameter_overrides: Vec::new(),
+            placement: Default::default(),
+            deleted: false,
+        });
+        let ji = push_test_joint(
+            &mut doc,
+            vec![
+                crate::model::JointRef::Body(a),
+                crate::model::JointRef::UnitInstance(0),
+            ],
+        );
+        assert!(tombstone_element(&mut doc, SceneElement::UnitInstance(0)));
+        assert!(doc.joints[ji].deleted, "joint must die with its unit instance");
+    }
 
     fn sketch_with_two_lines() -> (Document, SketchId, usize, usize) {
         let mut doc = Document::default();

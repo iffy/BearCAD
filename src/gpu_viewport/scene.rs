@@ -3147,6 +3147,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
             | SceneElement::SweepOp(_)
+            | SceneElement::Joint(_)
             | SceneElement::Component(_) => {}
             // A selected/hovered unit instance outlines its placed meshes (#723).
             SceneElement::UnitInstance(index) => {

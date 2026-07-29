@@ -101,7 +101,8 @@ impl ElementKind {
             | SceneElement::SliceOp(_)
             | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
-            | SceneElement::SweepOp(_) => ElementKind::Operation,
+            | SceneElement::SweepOp(_)
+            | SceneElement::Joint(_) => ElementKind::Operation,
         }
     }
 

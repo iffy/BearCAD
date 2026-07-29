@@ -5211,6 +5211,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {i}"),
         SceneElement::SweepOp(i) => format!("Sweep operation {i}"),
+        SceneElement::Joint(i) => format!("Joint {i}"),
         SceneElement::Origin => "Origin".to_string(),
     }
 }

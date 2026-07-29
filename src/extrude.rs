@@ -3033,6 +3033,32 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            // A joint frames the parts it joins (#891).
+            SceneElement::Joint(ji) => {
+                if let Some(joint) = doc.joints.get(ji).filter(|j| !j.deleted) {
+                    for member in &joint.members {
+                        match *member {
+                            crate::model::JointRef::Body(bi) => {
+                                if let Some((min, max)) =
+                                    body_solid_mesh(doc, bi).and_then(|m| m.bounds())
+                                {
+                                    extend(min);
+                                    extend(max);
+                                }
+                            }
+                            crate::model::JointRef::UnitInstance(ui) => {
+                                for solid in crate::units::placed_instance_meshes(doc, ui) {
+                                    if let Some((min, max)) = solid.bounds() {
+                                        extend(min);
+                                        extend(max);
+                                    }
+                                }
+                            }
+                            crate::model::JointRef::Component(_) => {}
+                        }
+                    }
+                }
+            }
             SceneElement::Sketch(_)
             | SceneElement::ConstructionPlane(_)
             | SceneElement::Constraint(_)

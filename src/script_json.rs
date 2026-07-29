@@ -50,6 +50,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "extrusion" => Some(SceneElement::Extrusion(index)),
         "body" => Some(SceneElement::Body(index)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
+        "joint" => Some(SceneElement::Joint(index)),
         _ => None,
     }
 }
@@ -89,6 +90,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
+        SceneElement::Joint(_) => "joint",
     }
 }
 
@@ -122,7 +124,8 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::Revolution(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i)
-        | SceneElement::UnitInstance(i) => Some(*i),
+        | SceneElement::UnitInstance(i)
+        | SceneElement::Joint(i) => Some(*i),
         SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => Some(0),
@@ -140,6 +143,7 @@ pub fn scene_element_kind_name(element: &SceneElement) -> Option<(&'static str, 
         SceneElement::Constraint(i) => Some(("constraint", *i)),
         SceneElement::Extrusion(i) => Some(("extrusion", *i)),
         SceneElement::Body(i) => Some(("body", *i)),
+        SceneElement::Joint(i) => Some(("joint", *i)),
         _ => None,
     }
 }

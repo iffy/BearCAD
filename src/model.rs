@@ -1965,6 +1965,187 @@ pub struct MoveOperation {
     pub deleted: bool,
 }
 
+/// What a joint holds on each side (#891): a whole body, everything in a component, or a
+/// placed unit instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JointRef {
+    Body(usize),
+    Component(usize),
+    UnitInstance(usize),
+}
+
+/// How a joint lets its driven side move relative to its base (#891).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JointKind {
+    /// No freedom: the driven side is held to the base. The only kind that accepts more
+    /// than two members — a rigid group (#900) is a rigid joint with a longer member list.
+    #[default]
+    Rigid,
+    /// Slide along the frame's primary axis.
+    Slider,
+    /// Turn about the frame's primary axis.
+    Revolute,
+    /// Slide and turn about the same axis, independently.
+    Cylindrical,
+    /// Slide across the frame's plane (both secondary directions) and spin about its
+    /// primary axis.
+    Planar,
+    /// Turn about all three frame axes; no translation.
+    Ball,
+    /// Slide along the primary axis while turning about the secondary one.
+    PinSlot,
+    /// Turn about the primary axis with the slide coupled to it by a lead.
+    Screw {
+        /// Travel per full turn, a mm expression.
+        lead: String,
+    },
+}
+
+/// A mating frame on one side of a joint (#892): an origin and the picked points that aim
+/// its axes, each resolved the way Move points are ([`MovePointRef`]) — body-local keys
+/// re-found on the live mesh, so the frame survives a rebuild and simply stops resolving
+/// if its geometry goes away.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JointFrame {
+    /// The frame's origin.
+    #[serde(default)]
+    pub origin: Option<MovePointRef>,
+    /// Aims the primary axis (the slide direction / turn axis): it runs from `origin`
+    /// toward this point.
+    #[serde(default)]
+    pub axis: Option<MovePointRef>,
+    /// Pins the spin about the primary axis: the secondary axis points from `origin`
+    /// toward this point, with its component along the primary axis removed.
+    #[serde(default)]
+    pub orient: Option<MovePointRef>,
+}
+
+/// Where a joint's travel stops (#896). Every field is optional — an empty expression and
+/// no target leaves that end open.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct JointLimits {
+    /// Slide minimum/maximum, mm expressions.
+    #[serde(default)]
+    pub slide_min: String,
+    #[serde(default)]
+    pub slide_max: String,
+    /// Slide stops as geometry: the travel ends where the driven side meets the target's
+    /// extended plane (the "extrude to object" idea, [`ExtrudeTarget`]). Wins over the
+    /// expression on the same end when both are set.
+    #[serde(default)]
+    pub slide_min_target: Option<ExtrudeTarget>,
+    #[serde(default)]
+    pub slide_max_target: Option<ExtrudeTarget>,
+    /// Turn minimum/maximum, signed degree expressions to either side of zero — a hinge
+    /// that opens 110° one way and not at all the other is `turn_min = "0"`,
+    /// `turn_max = "110"`.
+    #[serde(default)]
+    pub turn_min: String,
+    #[serde(default)]
+    pub turn_max: String,
+}
+
+/// A joint (#891): a kinematic relationship between parts — bodies, components, or unit
+/// instances. A joint changes where things *are*, never their shape: at recompute the
+/// driven members are transformed **in place**, the way a Move's plane targets are — two
+/// (or more) inputs, no output bodies. `members[base]` is held; the rest are driven.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Joint {
+    /// The joined parts. Exactly two for every kind but [`JointKind::Rigid`], which
+    /// accepts more (#900).
+    pub members: Vec<JointRef>,
+    /// Index into `members` of the base (held) side. Defaults to the first picked.
+    #[serde(default)]
+    pub base: usize,
+    #[serde(default)]
+    pub kind: JointKind,
+    /// The mating frame on the base side.
+    #[serde(default)]
+    pub frame_a: JointFrame,
+    /// The mating frame on the driven side.
+    #[serde(default)]
+    pub frame_b: JointFrame,
+    /// The joint's current value along each freedom, as expressions so a pose is
+    /// parametric like a dimension. What each slot means depends on `kind`:
+    /// slider/cylindrical/pin-slot/planar read `position` as mm of slide (planar's u),
+    /// revolute/screw as degrees of turn; `position2` is cylindrical's/pin-slot's degrees
+    /// and planar's v; `position3` is planar's spin. Ball reads all three as degrees
+    /// about the primary/secondary/tertiary axes. Empty = 0.
+    #[serde(default)]
+    pub position: String,
+    #[serde(default)]
+    pub position2: String,
+    #[serde(default)]
+    pub position3: String,
+    /// The set/default pose to revert to (#898), same slots as `position`. Captured from
+    /// wherever the parts were when the joint was made.
+    #[serde(default)]
+    pub rest: String,
+    #[serde(default)]
+    pub rest2: String,
+    #[serde(default)]
+    pub rest3: String,
+    #[serde(default)]
+    pub limits: JointLimits,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+impl JointKind {
+    #[allow(dead_code)] // consumed by the Joint tool + scripting (#894/#901)
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "rigid" => Some(Self::Rigid),
+            "slider" => Some(Self::Slider),
+            "revolute" => Some(Self::Revolute),
+            "cylindrical" => Some(Self::Cylindrical),
+            "planar" => Some(Self::Planar),
+            "ball" => Some(Self::Ball),
+            "pin_slot" | "pinslot" | "pin-slot" => Some(Self::PinSlot),
+            "screw" => Some(Self::Screw { lead: String::new() }),
+            _ => None,
+        }
+    }
+
+    /// The kind's script/display name (the inverse of [`JointKind::from_name`]).
+    #[allow(dead_code)] // consumed by the Joint tool + scripting (#894/#901)
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Rigid => "rigid",
+            Self::Slider => "slider",
+            Self::Revolute => "revolute",
+            Self::Cylindrical => "cylindrical",
+            Self::Planar => "planar",
+            Self::Ball => "ball",
+            Self::PinSlot => "pin_slot",
+            Self::Screw { .. } => "screw",
+        }
+    }
+}
+
+impl Joint {
+    /// The base (held) member, if the joint has any members at all.
+    #[allow(dead_code)] // consumed by the kinematics pass (#893)
+    pub fn base_member(&self) -> Option<JointRef> {
+        self.members.get(self.base).or_else(|| self.members.first()).copied()
+    }
+
+    /// The members the joint moves: everyone but the base.
+    #[allow(dead_code)] // consumed by the kinematics pass (#893)
+    pub fn driven_members(&self) -> impl Iterator<Item = JointRef> + '_ {
+        let base = if self.base < self.members.len() { self.base } else { 0 };
+        self.members
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| *i != base)
+            .map(|(_, m)| *m)
+    }
+}
+
 /// How a [`MirrorOperation`]'s reflections land (#639), the Mirror pane's **Output** row —
 /// the same New body / Join / Cut choice the Revolve tool offers, but each reflection combines
 /// with **its own source body** (there's nothing else to pick): the half-model → whole-model
@@ -2689,6 +2870,8 @@ pub enum ShapeKind {
     SketchVertexTreatmentOperation,
     /// A sketch text element (#282): baked glyph outlines + embedded font.
     SketchText,
+    /// A joint between parts (#891): a kinematic relationship, no output bodies.
+    Joint,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -3478,6 +3661,10 @@ pub struct Document {
     /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
     #[serde(default)]
     pub drawings: Vec<Drawing>,
+    /// Joints between parts (#891): kinematic relationships resolved in place at
+    /// recompute — no output bodies.
+    #[serde(default)]
+    pub joints: Vec<Joint>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -3679,6 +3866,7 @@ impl Default for Document {
             sketch_slice_ops: Vec::new(),
             sketch_texts: Vec::new(),
             drawings: Vec::new(),
+            joints: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

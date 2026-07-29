@@ -105,6 +105,9 @@ pub enum HierarchyNode {
     /// [`HierarchyNode::DrawingProjection`]. `a`/`b` are the dimensioned edge's quantized world
     /// endpoints. A display-only leaf; clicking it opens the drawing and selects the dimension.
     DrawingDimension { drawing: usize, view: usize, a: [i32; 3], b: [i32; 3] },
+    /// A joint between parts (#891): a childless top-level row whose members feed it as
+    /// graph inputs — a relationship, not a feature, so nothing nests under it.
+    Joint(usize),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -189,6 +192,9 @@ pub enum SceneElement {
     /// Selecting, renaming, hiding, and deleting act on the instance; its contents are
     /// read-only from the importing document.
     UnitInstance(usize),
+    /// A joint between parts (#891): a kinematic relationship, selectable and deletable
+    /// like any operation.
+    Joint(usize),
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -247,6 +253,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SweepOp(i) => SceneElement::SweepOp(i),
         HierarchyNode::Component(i) => SceneElement::Component(i),
         HierarchyNode::UnitInstance(i) => SceneElement::UnitInstance(i),
+        HierarchyNode::Joint(i) => SceneElement::Joint(i),
     })
 }
 
@@ -442,6 +449,9 @@ impl ElementVisibility {
             SceneElement::EdgeTreatmentOp(_) => true,
             SceneElement::Revolution(_) => true,
             SceneElement::SweepOp(_) => true,
+            // A joint is a relationship, not geometry — its icon shows whenever its
+            // parts do (#891).
+            SceneElement::Joint(_) => true,
             // The origin is always visible while sketching (#189).
             SceneElement::Origin => true,
         }
@@ -730,6 +740,20 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
         for &ii in &op.image_targets {
             edges.push((HierarchyNode::Image(ii), HierarchyNode::MoveOp(oi)));
+        }
+    }
+    // A joint's members feed it (#891): two (or more) inputs, no outputs.
+    for (ji, joint) in doc.joints.iter().enumerate() {
+        if joint.deleted {
+            continue;
+        }
+        for member in &joint.members {
+            let input = match *member {
+                crate::model::JointRef::Body(bi) => HierarchyNode::Body(bi),
+                crate::model::JointRef::Component(ci) => HierarchyNode::Component(ci),
+                crate::model::JointRef::UnitInstance(ui) => HierarchyNode::UnitInstance(ui),
+            };
+            edges.push((input, HierarchyNode::Joint(ji)));
         }
     }
     // A slice's cutters feed it (#449): construction planes have a node; body faces don't.
@@ -1390,6 +1414,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
         SceneElement::Component(i) => HierarchyNode::Component(*i),
         SceneElement::UnitInstance(i) => HierarchyNode::UnitInstance(*i),
+        SceneElement::Joint(i) => HierarchyNode::Joint(*i),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -1900,6 +1925,16 @@ pub fn build_hierarchy(
             children,
         });
     }
+    // Joints (#891): childless top-level rows — their members feed them as graph inputs,
+    // nothing nests beneath them.
+    for (ji, joint) in doc.joints.iter().enumerate() {
+        if !joint.deleted {
+            roots.push(HierarchyEntry {
+                node: HierarchyNode::Joint(ji),
+                children: Vec::new(),
+            });
+        }
+    }
     // Components (#423): move member roots under their component's entry, then nest
     // component entries by their parent links. Unassigned roots stay at the top level.
     let roots = group_roots_into_components(doc, roots);
@@ -2131,6 +2166,7 @@ impl ElementFilter {
             | HierarchyNode::EdgeTreatmentOp(_)
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
+            | HierarchyNode::Joint(_)
             | HierarchyNode::Loft(_) => self.operations,
             HierarchyNode::Image(_) => self.images,
             HierarchyNode::Drawing(_) => self.drawings,
@@ -2394,6 +2430,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::EdgeTreatmentOp(_) => None,
         SceneElement::Revolution(_) => None,
         SceneElement::SweepOp(_) => None,
+        // A joint is always a top-level row (#891).
+        SceneElement::Joint(_) => None,
     }
 }
 
@@ -2515,6 +2553,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchText(_)
+        // A joint has no outputs — nothing descends from it (#891).
+        | SceneElement::Joint(_)
         | SceneElement::Image(_) => {}
         SceneElement::BooleanOp(index) => {
             if let Some(op) = doc.boolean_ops.get(index) {
@@ -2951,6 +2991,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         }
         HierarchyNode::Revolution(_) => IconId::Revolve,
         HierarchyNode::SweepOp(_) => IconId::Sweep,
+        // Per-kind joint icons land with the 3D icons (#899); the gear reads "operation".
+        HierarchyNode::Joint(_) => IconId::Gear,
         HierarchyNode::Loft(_) => IconId::Loft,
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match edge_treatment_at(doc, extrusion, index).map(|t| t.kind) {

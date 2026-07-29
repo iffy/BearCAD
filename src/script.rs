@@ -1836,6 +1836,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::Joint(i) => ElementScriptTokens {
+            kind: "joint",
+            index: i,
+            point: None,
+        },
         SceneElement::UnitInstance(i) => ElementScriptTokens {
             kind: "unit_instance",
             index: i,

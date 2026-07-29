@@ -259,6 +259,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
+    save_indexed_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
     save_indexed_nodes(&tx, &mut row_id, "unit", &doc.units)?;
     save_indexed_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
     if doc.construction_planes.len() > 1 {
@@ -551,6 +552,7 @@ pub fn open(path: &str) -> Result<Document> {
     let sketch_slice_ops = load_indexed_entities(&conn, "sketch_slice_op")?;
     let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
     let drawings = load_indexed_entities(&conn, "drawing")?;
+    let joints = load_indexed_entities(&conn, "joint")?;
     let units = load_indexed_entities(&conn, "unit")?;
     let unit_instances = load_indexed_entities(&conn, "unit_instance")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
@@ -588,6 +590,7 @@ pub fn open(path: &str) -> Result<Document> {
         sketch_slice_ops,
         sketch_texts,
         drawings,
+        joints,
         shape_order,
         undo_groups,
         default_length_unit,
@@ -757,6 +760,80 @@ mod tests {
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.components, doc.components);
         assert_eq!(loaded.component_members, doc.component_members);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #892: a joint round-trips through the SQLite format — members, kind (with its
+    /// embedded lead expression), frames, positions, rest pose, and limits.
+    #[test]
+    fn round_trips_joints() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_joint_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            material: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(1),
+            name: None,
+            material: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.joints.push(crate::model::Joint {
+            members: vec![
+                crate::model::JointRef::Body(0),
+                crate::model::JointRef::Body(1),
+            ],
+            base: 0,
+            kind: crate::model::JointKind::Screw { lead: "2 * pitch".to_string() },
+            frame_a: crate::model::JointFrame {
+                origin: Some(crate::model::MovePointRef::Vertex { body: 0, p: [0, 0, 0] }),
+                axis: Some(crate::model::MovePointRef::Vertex { body: 0, p: [0, 0, 100] }),
+                orient: None,
+            },
+            frame_b: crate::model::JointFrame {
+                origin: Some(crate::model::MovePointRef::FaceCenter {
+                    body: 1,
+                    centroid: [500, 0, 0],
+                    normal: [0, 0, 100],
+                }),
+                axis: None,
+                orient: None,
+            },
+            position: "90".to_string(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: "0".to_string(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: crate::model::JointLimits {
+                slide_min: "-5".to_string(),
+                slide_max: "height / 2".to_string(),
+                slide_min_target: None,
+                slide_max_target: None,
+                turn_min: String::new(),
+                turn_max: "110".to_string(),
+            },
+            name: Some("Lead screw".to_string()),
+            deleted: false,
+        });
+        doc.shape_order.push(crate::model::ShapeKind::Body);
+        doc.shape_order.push(crate::model::ShapeKind::Body);
+        doc.shape_order.push(crate::model::ShapeKind::Joint);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.joints, doc.joints);
+        assert_eq!(loaded.shape_order, doc.shape_order);
 
         std::fs::remove_file(&path).unwrap();
     }

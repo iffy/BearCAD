@@ -31,7 +31,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Revolution(_)
         | SceneElement::SweepOp(_)
         | SceneElement::Component(_)
-        | SceneElement::UnitInstance(_) => Some(element),
+        | SceneElement::UnitInstance(_)
+        | SceneElement::Joint(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -112,6 +113,15 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::UnitInstance(index));
         }
     }
+    // Joints (#891): findable/selectable by name like any operation.
+    for (index, joint) in doc.joints.iter().enumerate() {
+        if joint.deleted {
+            continue;
+        }
+        if name_matches(joint.name.as_deref(), query) {
+            return Some(SceneElement::Joint(index));
+        }
+    }
     None
 }
 
@@ -162,6 +172,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::SweepOp(index) => doc.sweeps.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
         SceneElement::UnitInstance(index) => doc.unit_instances.get(index)?.name.as_deref(),
+        SceneElement::Joint(index) => doc.joints.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -374,6 +385,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 let _ = crate::parameters::recompute_document_geometry(doc);
             }
         }
+        SceneElement::Joint(index) => {
+            let joint = doc
+                .joints
+                .get_mut(index)
+                .ok_or_else(|| format!("joint {index} not found"))?;
+            joint.name = stored;
+        }
         SceneElement::Point(_) => {
             return Err("points cannot be renamed".to_string());
         }
@@ -491,6 +509,15 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         }
         HierarchyNode::Revolution(i) => format!("Revolve {i}"),
         HierarchyNode::SweepOp(i) => format!("Sweep {i}"),
+        // A joint reads by its kind (#891): "Revolute 0", or "Rigid group 2" once a rigid
+        // joint ties more than two things (#900).
+        HierarchyNode::Joint(i) => match doc.joints.get(i) {
+            Some(j) if matches!(j.kind, crate::model::JointKind::Rigid) && j.members.len() > 2 => {
+                format!("Rigid group {i}")
+            }
+            Some(j) => format!("{} {i}", joint_kind_label(&j.kind)),
+            None => format!("Joint {i}"),
+        },
         HierarchyNode::Drawing(i) => doc
             .drawings
             .get(i)
@@ -571,6 +598,20 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
 /// direct slice indexing) so a stale selection can't panic the picker.
 /// The type word for an in-sketch chamfer/fillet op (#538), derived from its first corner's
 /// kind: "Chamfer" or "Fillet" (falling back to "Chamfer/Fillet" for an empty op).
+/// A joint kind's display word (#891).
+pub fn joint_kind_label(kind: &crate::model::JointKind) -> &'static str {
+    match kind {
+        crate::model::JointKind::Rigid => "Rigid",
+        crate::model::JointKind::Slider => "Slider",
+        crate::model::JointKind::Revolute => "Revolute",
+        crate::model::JointKind::Cylindrical => "Cylindrical",
+        crate::model::JointKind::Planar => "Planar",
+        crate::model::JointKind::Ball => "Ball",
+        crate::model::JointKind::PinSlot => "Pin-slot",
+        crate::model::JointKind::Screw { .. } => "Screw",
+    }
+}
+
 fn sketch_vertex_treatment_label(doc: &Document, index: usize) -> &'static str {
     match doc
         .sketch_vertex_treatment_ops
@@ -630,6 +671,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         },
         SceneElement::Revolution(i) => format!("Revolve {i}"),
         SceneElement::SweepOp(i) => format!("Sweep {i}"),
+        SceneElement::Joint(i) => format!("Joint {i}"),
     }
 }
 

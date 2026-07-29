@@ -114,6 +114,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
+        SceneElement::Joint(_) => "joint",
     }
 }
 
@@ -142,7 +143,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Revolution(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i)
-        | SceneElement::UnitInstance(i) => i,
+        | SceneElement::UnitInstance(i)
+        | SceneElement::Joint(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -173,6 +175,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
         "image" | "tracing_image" => Some(SceneElement::Image(index)),
+        "joint" => Some(SceneElement::Joint(index)),
         _ => None,
     }
 }
