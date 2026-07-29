@@ -6502,7 +6502,24 @@ impl AppState {
                     self.creating_boolean = None;
                 }
                 if tool == Tool::Combine && self.creating_boolean.is_none() {
-                    self.creating_boolean = Some(CreatingBoolean::default());
+                    // Bodies already selected walk straight into the picker (#943): select two
+                    // solids, pick Combine, and they're the operands — they were highlighted in
+                    // the viewport but counted as nothing before.
+                    let mut cb = CreatingBoolean::default();
+                    for element in self.scene_selection.iter() {
+                        if let crate::hierarchy::SceneElement::Body(bi) = element {
+                            if self
+                                .doc
+                                .bodies
+                                .get(bi)
+                                .is_some_and(|b| !b.deleted && !b.shadow)
+                                && !cb.a.contains(&bi)
+                            {
+                                cb.a.push(bi);
+                            }
+                        }
+                    }
+                    self.creating_boolean = Some(cb);
                 }
                 if self.creating_move.is_some() && tool != Tool::Move {
                     self.creating_move = None;
@@ -17633,6 +17650,32 @@ mod tests {
         assert!(co.line_targets.is_empty());
         assert!(co.circle_targets.is_empty());
         assert_eq!(co.sketch, state.sketch_session.unwrap().sketch);
+    }
+
+    /// #943: bodies selected before picking the Combine tool are what you want to combine —
+    /// they carry into the tool's picker instead of looking selected but counting as nothing.
+    #[test]
+    fn set_tool_combine_seeds_from_selection() {
+        let mut state = AppState::default();
+        for ei in 0..2 {
+            state.doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::single(ei),
+                material: None,
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        for bi in 0..2 {
+            crate::selection::click_scene_selection(
+                &mut state.scene_selection,
+                crate::hierarchy::SceneElement::Body(bi),
+                true,
+            );
+        }
+        state.apply(Action::SetTool(Tool::Combine));
+        let cb = state.creating_boolean.as_ref().expect("the Combine draft");
+        assert_eq!(cb.a, vec![0, 1], "both selected bodies seed the picker");
     }
 
     /// #941: Esc inside a sketch falls back to the Select tool, and that fallback must run

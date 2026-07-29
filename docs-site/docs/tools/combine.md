@@ -27,7 +27,8 @@ After — the cutting body is carved away:
 
 ## How to use it
 
-1. Pick the **Combine** tool and choose the operation.
+1. Pick the **Combine** tool and choose the operation. Bodies already selected are
+   side A.
 2. Click bodies to add them. Two-sided operations have **Side A** and **Side B** pickers;
    click a picker to make it the active side. Re-clicking a body removes it.
 3. **Keep B** leaves the B-side bodies as real bodies (by default all inputs become
