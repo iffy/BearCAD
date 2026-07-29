@@ -845,9 +845,13 @@ pub fn snap_rotation_candidates(
     out
 }
 
-/// Below this angle snap the candidate dots would be a cloud, so the tool shows the
-/// constraint sphere/circle itself instead and reads the angle off the cursor (#920).
-pub const ANGLE_SNAP_SURFACE_DEG: f32 = 5.0;
+/// Below this angle snap the End-point-B candidate dots would be a cloud — a sphere carries
+/// roughly `(180/step) × (360/step)` of them, so even 15° is hundreds — and the tool shows the
+/// constraint **sphere** itself instead, reading the angle off the cursor (#920/#950).
+pub const ANGLE_SNAP_SPHERE_DEG: f32 = 30.0;
+/// The same threshold for End point C (#920), which rides a **circle**: one ring of
+/// `360/step` dots stays readable far finer than a sphereful does.
+pub const ANGLE_SNAP_CIRCLE_DEG: f32 = 5.0;
 
 /// Where a ray meets the End-point-B constraint sphere (#920): the near hit if the ray
 /// crosses it, otherwise the point on the sphere nearest the ray, so the pick still lands

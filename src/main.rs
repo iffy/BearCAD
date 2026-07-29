@@ -8542,8 +8542,8 @@ impl App {
         // Angle-grid spots (#918): directions every `angle snap` degrees about the world
         // axes, offered alongside the geometry-derived ones. They're mid-air, so they hang
         // off end point A's body and each gets a guide from the pivot. Below
-        // `ANGLE_SNAP_SURFACE_DEG` they'd be a cloud, so the sphere itself is shown
-        // instead (#920) and the grid stands down.
+        // `ANGLE_SNAP_SPHERE_DEG` they'd be a cloud, so the sphere itself is shown
+        // instead (#920/#950) and the grid stands down.
         // The mid-air spots hang off a body so they render with the rest; end point A's own
         // is the natural host, and when A is the world origin (#946) any moving body will do.
         let body = cm
@@ -8552,7 +8552,7 @@ impl App {
             .body()
             .or_else(|| cm.targets.first().copied())?;
         let grid_step = self.state.move_angle_snap_deg;
-        let grid_step = (grid_step > extrude::ANGLE_SNAP_SURFACE_DEG)
+        let grid_step = (grid_step >= extrude::ANGLE_SNAP_SPHERE_DEG)
             .then_some(grid_step)
             .unwrap_or(0.0);
         for p in extrude::snap_angle_sphere_candidates(centre, radius, grid_step) {
@@ -8582,10 +8582,10 @@ impl App {
             cm.end_point_b.as_ref(),
         )?;
         // How far apart the spots sit is the Angle snap field's (#918); the first is
-        // always the no-extra-spin position. Below `ANGLE_SNAP_SURFACE_DEG` the circle
+        // always the no-extra-spin position. Below `ANGLE_SNAP_CIRCLE_DEG` the circle
         // itself is shown instead (#920).
         let step = self.state.move_angle_snap_deg;
-        if step <= extrude::ANGLE_SNAP_SURFACE_DEG {
+        if step <= extrude::ANGLE_SNAP_CIRCLE_DEG {
             return None;
         }
         let spots = circle.spots(step);
@@ -9799,10 +9799,12 @@ impl App {
         painter.circle_filled(sp, 4.0, color);
     }
 
-    /// The rotation surface the Move tool shows below `ANGLE_SNAP_SURFACE_DEG` (#920): the
-    /// End-point-B constraint **sphere** or the End-point-C **circle**, as the point the
-    /// cursor lands on (snapped to the angle step) plus the geometry to draw. `None` unless
-    /// one of those pickers is armed with a fine angle snap.
+    /// The rotation surface the Move tool shows once the angle snap is too fine for dots
+    /// (#920): the End-point-B constraint **sphere** below `ANGLE_SNAP_SPHERE_DEG`, or the
+    /// End-point-C **circle** below `ANGLE_SNAP_CIRCLE_DEG` — a circle stays readable much
+    /// finer than a sphereful does (#950). Returns the point the cursor lands on (snapped to
+    /// the angle step) plus the geometry to draw. `None` unless one of those pickers is armed
+    /// with a snap that fine.
     fn move_rotation_surface(
         &self,
         pp: egui::Pos2,
@@ -9810,14 +9812,18 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
     ) -> Option<(usize, Vec3, MoveSurface)> {
-        if self.state.tool != Tool::Move
-            || self.state.sketch_session.is_some()
-            || self.state.move_angle_snap_deg > extrude::ANGLE_SNAP_SURFACE_DEG
-        {
+        if self.state.tool != Tool::Move || self.state.sketch_session.is_some() {
             return None;
         }
         let cm = self.state.creating_move.as_ref()?;
         let step = self.state.move_angle_snap_deg;
+        let threshold = match self.move_focus() {
+            MoveFocus::EndPointB => extrude::ANGLE_SNAP_SPHERE_DEG,
+            _ => extrude::ANGLE_SNAP_CIRCLE_DEG,
+        };
+        if step >= threshold {
+            return None;
+        }
         // The surface point is mid-air, so it hangs off a body to render; end point A's own
         // is the natural host, and when A is the world origin (#946) any moving body will do.
         let body = cm

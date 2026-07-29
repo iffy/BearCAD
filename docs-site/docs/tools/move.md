@@ -78,9 +78,9 @@ B and C rows **Rotation** — those four points turn the part, the A pair moves 
 **Angle snap** at the top of that section sets how far apart the candidate dots sit:
 90° offers the six axis directions, 45° offers the diagonals too. Drag the slider or type
 the angle. Hovering a dot draws the turn that reaches it, in degrees — two arcs for end
-point B, one for end point C. At 5° or finer there are no dots: the sphere (or, for end
-point C, its circle) is drawn instead and you pick anywhere on it, with the angle reading
-out as you move.
+point B, one for end point C. Under 30° for end point B — 5° for end point C — there are no
+dots: the sphere (or, for end point C, its circle) is drawn instead and you pick anywhere on
+it, with the angle reading out as you move.
 
 ## Help
 

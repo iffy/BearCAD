@@ -776,8 +776,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (#919), in the candidate gold with the angle in degrees at each arc's middle: for end
     point B the **azimuth** turned in the ground plane and the **elevation** lifted out of it
     (`move_direction_sweeps`), for end point C the signed **spin** about the A→B axis
-    (`SpinCircle::sweep_to`). At **5° or finer** (`ANGLE_SNAP_SURFACE_DEG`) the dots would be
-    a cloud, so the grid stands down and the **surface itself** is shown instead (#920): end
+    (`SpinCircle::sweep_to`). Once the snap is fine enough that the dots would be a cloud the grid
+    stands down and the **surface itself** is shown instead (#920) — **under 30°** for end point
+    B (`ANGLE_SNAP_SPHERE_DEG`, #950: a sphere carries ~`(180/step)×(360/step)` dots, so even 15°
+    is hundreds) and **5° or finer** for end point C (`ANGLE_SNAP_CIRCLE_DEG`, whose one ring of
+    `360/step` stays readable much further down): end
     point B draws the constraint sphere as a translucent ghost solid, end point C its circle
     as a ring, and the cursor's own point on that surface — its ray hit rounded to the angle
     step (`ray_sphere_point`, `snap_direction_to_angle`) — is the candidate, so the sweep
