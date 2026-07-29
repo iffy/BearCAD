@@ -40,6 +40,9 @@ Each step offers its own field, ready for typing: type a size instead of clickin
 dimension stops following the cursor. **Enter** creates it; **Esc** clears what's in
 progress.
 
+**Snapping** — the context pane's toggle, shared with the drawing tools — pulls a
+placement click onto the nearest body corner or edge midpoint.
+
 ## Editing
 
 A shape is its own row in the Elements pane, named by kind. Double-click it to reopen the

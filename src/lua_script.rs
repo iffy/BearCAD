@@ -3077,6 +3077,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #913: snapping while drawing and placing, app-wide.
+    api.set(
+        "snapping",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let on = on.unwrap_or(true);
+            unsafe { tick.exec(Instruction::SetSnapping { on }) }
+        })?,
+    )?;
+
     // #906: the joint preview's sweep, app-wide.
     api.set(
         "animate_joints",
@@ -4934,7 +4944,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints",
+            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "touch",
             "move", "click", "move_ground", "click_ground",

@@ -9409,6 +9409,8 @@ impl App {
             else {
                 return;
             };
+            // Snapping (#913) pulls the anchor onto a corner or an edge midpoint.
+            let origin = self.snap_shape_point(pp, project, origin);
             let mut next = creating.clone();
             next.shape.origin = origin.to_array();
             next.shape.normal = normal.to_array();
@@ -9447,6 +9449,9 @@ impl App {
             (ShapePhase::Base, _) => {
                 let corner = creating.first_corner.unwrap_or(Vec3::from_array(creating.shape.origin));
                 if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
+                    // The base point snaps too, so a cuboid can be drawn corner-to-corner
+                    // off another body's geometry (#913).
+                    let hit = self.snap_shape_point(pp, project, hit);
                     let delta = hit - corner;
                     match kind {
                         K::Cuboid => {
@@ -9520,6 +9525,48 @@ impl App {
         {
             self.state.apply(Action::CommitShape);
         }
+    }
+
+    /// Snap a shape's placement point to the model (#913): with snapping on, the nearest
+    /// body **corner** or edge **midpoint** within the pick radius wins over the raw point
+    /// on the anchor plane. Off, or with nothing near, the raw point stands.
+    fn snap_shape_point(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        raw: Vec3,
+    ) -> Vec3 {
+        if !self.state.snapping_enabled {
+            return raw;
+        }
+        let radius = touch::hit(construction::POINT_PICK_RADIUS_PX);
+        let near = |world: Vec3| -> Option<f32> {
+            let sp = project(world)?;
+            let d = (sp - pp).length();
+            (d <= radius).then_some(d)
+        };
+        let mut best: Option<(f32, Vec3)> = None;
+        let mut consider = |world: Vec3| {
+            if let Some(d) = near(world) {
+                if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                    best = Some((d, world));
+                }
+            }
+        };
+        if let Some(construction::PickTargetKind::BodyVertex { position, .. }) =
+            construction::nearest_body_vertex(pp, project, &self.state.doc).map(|(k, _)| k)
+        {
+            consider(position);
+        }
+        // Edge midpoints: the edge under the cursor is the only one worth offering.
+        if let Some(target) =
+            construction::resolve_pick_target(pp, project, None, &self.state.doc, None)
+        {
+            if let construction::PickTargetKind::BodyEdge { a, b, .. } = target.kind {
+                consider((a + b) * 0.5);
+            }
+        }
+        best.map(|(_, p)| p).unwrap_or(raw)
     }
 
     /// The plane a shape click lands on (#912): the body face or construction plane under the

@@ -1531,6 +1531,10 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   dimension stops following the cursor (`CreatingShape::typed`) until it's cleared. **Enter**
   in a shape field creates it, like the sketch Rectangle's typed dimensions; the height is
   otherwise dragged along the normal (`offset_from_normal_drag`).
+  **Snapping (#913):** the tool joins the sticky **Snapping** toggle (`AppState::snapping_enabled`,
+  shared with the drawing tools, `bearcad.ui.snapping(bool)`). While it's on, the anchor and
+  base clicks land on the nearest body **corner** or edge **midpoint** inside the pick radius
+  instead of the raw point on the anchor plane; off, the cursor's own point stands.
 - **Shapes** *(model, #909)* — cuboids, cylinders and spheres placed straight into 3D, with
   no sketch behind them. A `Primitive { kind, origin, normal, u_axis, width, depth, height,
   radius, name }` in `Document::primitives` stores the anchor frame — the point placed on,

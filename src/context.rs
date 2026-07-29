@@ -882,7 +882,7 @@ pub fn loft_section_row_label(doc: &Document, section: &crate::model::LoftSectio
 pub fn tool_uses_snapping(tool: Tool) -> bool {
     matches!(
         tool,
-        Tool::Select | Tool::Line | Tool::Rectangle | Tool::Circle
+        Tool::Select | Tool::Line | Tool::Rectangle | Tool::Circle | Tool::Shape
     )
 }
 
@@ -1670,7 +1670,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     // so setting it in 3D carries into the sketch the first click opens. The Select tool
     // keeps its sketch-only toggle — there's nothing to snap while picking in 3D.
     let snapping = (tool_uses_snapping(input.tool)
-        && (input.in_sketch || is_draw_tool(input.tool)))
+        && (input.in_sketch || is_draw_tool(input.tool) || input.tool == Tool::Shape))
     .then_some(input.snapping_enabled);
     // #505: always show New/Add/Cut while extruding (Add/Cut need a host body candidate).
     let extrude_body = input.extrude_body_mode.map(|mode| {
