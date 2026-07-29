@@ -2015,6 +2015,15 @@ pub enum Action {
         body: RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// Create a primitive shape (#909) — the Create Shape tool's commit, and the scripted
+    /// `bearcad.cuboid/cylinder/sphere`. The payload is the shape itself: its anchor frame
+    /// and its dimension expressions.
+    CreateShape { shape: crate::model::Primitive },
+    /// Re-point an existing shape (#909): its frame and dimensions, keeping its name.
+    EditShape {
+        index: usize,
+        shape: crate::model::Primitive,
+    },
     /// Finalize the in-progress sweep (reads `creating_sweep`).
     CommitSweep,
     /// Scripted/replayed sweep creation with an explicit payload. `bodies` is the
@@ -4112,6 +4121,55 @@ impl AppState {
         })
     }
 
+    /// Create a primitive shape (#909): the shape, its body, and one
+    /// `ShapeKind::Primitive` undo marker covering both. A shape that resolves to no
+    /// geometry (a missing or zero dimension) is refused, like a degenerate revolve.
+    fn create_shape(&mut self, shape: crate::model::Primitive) -> ActionResult {
+        if crate::primitives::mesh(&self.doc, &shape).is_none() {
+            let e = "Shape failed: every dimension needs a size".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        let label = crate::names::primitive_kind_label(shape.kind);
+        self.doc.primitives.push(shape);
+        self.doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Primitive(self.doc.primitives.len() - 1),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        self.doc.shape_order.push(crate::model::ShapeKind::Primitive);
+        self.tool = Tool::Select;
+        self.refresh_document_health();
+        self.status = format!("Created a {}", label.to_lowercase());
+        ActionResult::Ok
+    }
+
+    /// Re-point an existing shape (#909): replace its frame and dimensions in place,
+    /// keeping its name and its body.
+    fn edit_shape(&mut self, index: usize, shape: crate::model::Primitive) -> ActionResult {
+        if self.doc.primitives.get(index).is_none_or(|s| s.deleted) {
+            let e = format!("No shape {index}");
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        if crate::primitives::mesh(&self.doc, &shape).is_none() {
+            let e = "Shape failed: every dimension needs a size".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        let name = self.doc.primitives[index].name.clone();
+        self.doc.primitives[index] = crate::model::Primitive { name, ..shape };
+        self.tool = Tool::Select;
+        self.refresh_document_health();
+        self.status = format!(
+            "Edited the {}",
+            crate::names::primitive_kind_label(self.doc.primitives[index].kind).to_lowercase()
+        );
+        ActionResult::Ok
+    }
+
     /// Shared revolve commit: validates the solid builds, stores the [`Revolution`], and
     /// (in NewBody mode) its body — one `ShapeKind::Revolution` undo marker covers both.
     fn create_revolution(
@@ -5409,6 +5467,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {i}"),
+        SceneElement::Shape(i) => format!("Shape {i}"),
         SceneElement::SweepOp(i) => format!("Sweep operation {i}"),
         SceneElement::Joint(i) => format!("Joint {i}"),
         SceneElement::Origin => "Origin".to_string(),
@@ -11672,6 +11731,8 @@ label_hidden: false,
                     };
                 self.create_sweep(sketch, faces, path, mode)
             }
+            Action::CreateShape { shape } => self.create_shape(shape),
+            Action::EditShape { index, shape } => self.edit_shape(index, shape),
             Action::CreateRevolution {
                 sketch,
                 faces,
@@ -12261,6 +12322,8 @@ label_hidden: false,
                     SceneElement::SliceOp(i) => Some((CM::SliceOp, *i)),
                     SceneElement::EdgeTreatmentOp(i) => Some((CM::EdgeTreatmentOp, *i)),
                     SceneElement::Revolution(i) => Some((CM::Revolution, *i)),
+                    // A shape isn't a component member of its own (#909).
+                    SceneElement::Shape(_) => None,
                     _ => None,
                 };
                 let Some((kind, index)) = member else {

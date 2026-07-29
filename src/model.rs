@@ -1219,6 +1219,8 @@ pub enum BodySource {
     Loft(usize),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
     Revolve(usize),
+    /// A primitive solid (#909); indexes `Document::primitives`.
+    Primitive(usize),
     /// A swept solid (the Sweep tool, #sweep); indexes `Document::sweeps`.
     Sweep(usize),
     /// One repeated instance of one input of a linear repeat (Repeat tool): `op` indexes
@@ -1320,6 +1322,7 @@ impl BodySource {
             Self::Solid { add, .. } => add.as_slice(),
             Self::Loft(_)
             | Self::Revolve(_)
+            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1344,6 +1347,7 @@ impl BodySource {
             | Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1363,6 +1367,7 @@ impl BodySource {
             | Self::Solid { .. }
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1393,6 +1398,7 @@ impl BodySource {
             Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1428,6 +1434,7 @@ impl BodySource {
             Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1471,6 +1478,7 @@ impl BodySource {
             | Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1690,6 +1698,105 @@ pub enum RevolveMode {
     NewBody,
     AddTo(Vec<usize>),
     Cut(Vec<usize>),
+}
+
+/// Which primitive a [`Primitive`] is (#909): the shapes the Create Shape tool places
+/// directly in 3D, without a sketch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimitiveKind {
+    Cuboid,
+    Cylinder,
+    Sphere,
+}
+
+impl PrimitiveKind {
+    /// Every shape, in the order the tool cycles them (#909).
+    #[allow(dead_code)]
+    pub const ALL: [PrimitiveKind; 3] = [
+        PrimitiveKind::Cuboid,
+        PrimitiveKind::Cylinder,
+        PrimitiveKind::Sphere,
+    ];
+
+    /// The script/serialization name.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            PrimitiveKind::Cuboid => "cuboid",
+            PrimitiveKind::Cylinder => "cylinder",
+            PrimitiveKind::Sphere => "sphere",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "cuboid" | "box" | "cube" => Some(PrimitiveKind::Cuboid),
+            "cylinder" => Some(PrimitiveKind::Cylinder),
+            "sphere" | "ball" => Some(PrimitiveKind::Sphere),
+            _ => None,
+        }
+    }
+
+    /// The next shape in the tool's cycle (#909).
+    #[allow(dead_code)]
+    pub fn next(self) -> Self {
+        match self {
+            PrimitiveKind::Cuboid => PrimitiveKind::Cylinder,
+            PrimitiveKind::Cylinder => PrimitiveKind::Sphere,
+            PrimitiveKind::Sphere => PrimitiveKind::Cuboid,
+        }
+    }
+}
+
+/// A primitive solid placed straight into 3D (#909) — no sketch, no profile. It sits **on**
+/// its anchor plane (the ground, a body face, or a construction plane) and grows along that
+/// plane's normal: a cuboid from the centre of its base rectangle, a cylinder from the centre
+/// of its base circle, a sphere from the point it rests on. Every dimension is an expression,
+/// so a shape is as parametric as anything else.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Primitive {
+    pub kind: PrimitiveKind,
+    /// Where the shape sits, in world mm.
+    pub origin: [f32; 3],
+    /// The anchor plane's normal — the direction the shape grows along.
+    pub normal: [f32; 3],
+    /// The anchor plane's first in-plane direction: a cuboid's width runs along it, its
+    /// depth along `normal × u_axis`.
+    pub u_axis: [f32; 3],
+    /// Cuboid only: the extent along `u_axis`.
+    #[serde(default)]
+    pub width: String,
+    /// Cuboid only: the extent across it.
+    #[serde(default)]
+    pub depth: String,
+    /// Cuboid/cylinder: the extent along the normal.
+    #[serde(default)]
+    pub height: String,
+    /// Cylinder/sphere.
+    #[serde(default)]
+    pub radius: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+impl Primitive {
+    /// A shape of `kind` on the ground at the world origin, with no dimensions yet.
+    pub fn new(kind: PrimitiveKind) -> Self {
+        Self {
+            kind,
+            origin: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            u_axis: [1.0, 0.0, 0.0],
+            width: String::new(),
+            depth: String::new(),
+            height: String::new(),
+            radius: String::new(),
+            name: None,
+            deleted: false,
+        }
+    }
 }
 
 /// A revolved solid: one or more coplanar closed profiles swept around an axis. Parametric
@@ -2840,6 +2947,8 @@ pub enum ShapeKind {
     /// A loft feature (its body is a separate `Body` entry).
     Loft,
     Revolution,
+    /// A primitive shape (#909); its body is a separate `Body` entry.
+    Primitive,
     /// A sweep (its body is a separate `Body` entry).
     Sweep,
     /// A boolean operation between bodies (its output bodies are separate `Body` entries).
@@ -3617,6 +3726,9 @@ pub struct Document {
     /// Revolved solids (#revolve).
     #[serde(default)]
     pub revolutions: Vec<Revolution>,
+    /// Primitive solids placed straight into 3D (#909): cuboids, cylinders, spheres.
+    #[serde(default)]
+    pub primitives: Vec<Primitive>,
     /// Swept solids (the Sweep tool, #sweep).
     #[serde(default)]
     pub sweeps: Vec<Sweep>,
@@ -3852,6 +3964,7 @@ impl Default for Document {
             tracing_images: Vec::new(),
             lofts: Vec::new(),
             revolutions: Vec::new(),
+            primitives: Vec::new(),
             sweeps: Vec::new(),
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),

@@ -1509,6 +1509,24 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   provides the fallback for browsers without WebGPU.
 
 ### 3.5 Advanced features
+- **Shapes** *(model, #909)* — cuboids, cylinders and spheres placed straight into 3D, with
+  no sketch behind them. A `Primitive { kind, origin, normal, u_axis, width, depth, height,
+  radius, name }` in `Document::primitives` stores the anchor frame — the point placed on,
+  the plane normal it grows along, and that plane's first in-plane direction — plus its
+  dimensions as **expressions**, so a shape follows parameters like any other feature. Each
+  shape owns one body via `BodySource::Primitive`, and one `ShapeKind::Primitive` undo marker
+  covers both; deleting the shape takes the body with it. It sits **on** its plane: a cuboid
+  centred on its base rectangle, a cylinder on its base circle, a sphere on the point it
+  rests on (centre one radius up the normal). `primitives::mesh` tessellates it analytically
+  (64 radial segments, 32 sphere stacks) and `primitives::kernel_shape` builds the solid —
+  a prism for the cuboid, `BRepPrimAPI_MakeCylinder` for the cylinder, and a revolved
+  half-disc for the sphere (the kernel has no sphere primitive, and revolving keeps the
+  surface exact around the sweep). A shape missing a dimension is refused rather than landing
+  an empty body. It's a top-level row in the Elements pane, named by kind ("Cuboid 0"), with
+  its body nested under it. Scriptable as `bearcad.cuboid{ at?, normal?, u_axis?, width,
+  depth, height, name? }`, `bearcad.cylinder{ radius, height, … }`, `bearcad.sphere{ radius,
+  … }`, and `bearcad.edit_shape{ index, shape?, … }` (unmentioned fields keep their value);
+  `at` defaults to the world origin and `normal` to +Z.
 - **Sweep** *(implemented)* — sweep one or more coplanar closed profiles
   along a path of sketch lines into a solid. The **Sweep** toolbar tool collects
   profile faces by clicking (same face picking as Extrude), then path lines: any lines —

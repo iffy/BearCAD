@@ -3146,6 +3146,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::SliceOp(_)
             | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
+            | SceneElement::Shape(_)
             | SceneElement::SweepOp(_)
             | SceneElement::Joint(_)
             | SceneElement::Component(_) => {}

@@ -67,6 +67,8 @@ pub enum HierarchyNode {
     EdgeTreatmentOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
     Revolution(usize),
+    /// A primitive shape (Create Shape tool, #909); its body nests under it.
+    Shape(usize),
     /// A sweep (Sweep tool); its output body nests under it.
     SweepOp(usize),
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
@@ -180,6 +182,8 @@ pub enum SceneElement {
     EdgeTreatmentOp(usize),
     /// A revolved solid (Revolve tool, #211).
     Revolution(usize),
+    /// A primitive shape placed straight into 3D (Create Shape tool, #909).
+    Shape(usize),
     /// A sweep (Sweep tool).
     SweepOp(usize),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
@@ -250,6 +254,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
         HierarchyNode::EdgeTreatmentOp(i) => SceneElement::EdgeTreatmentOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
+        HierarchyNode::Shape(i) => SceneElement::Shape(i),
         HierarchyNode::SweepOp(i) => SceneElement::SweepOp(i),
         HierarchyNode::Component(i) => SceneElement::Component(i),
         HierarchyNode::UnitInstance(i) => SceneElement::UnitInstance(i),
@@ -269,6 +274,7 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::RepeatOp(i) => Some(SceneElement::RepeatOp(i)),
         HierarchyNode::SliceOp(i) => Some(SceneElement::SliceOp(i)),
         HierarchyNode::Revolution(i) => Some(SceneElement::Revolution(i)),
+        HierarchyNode::Shape(i) => Some(SceneElement::Shape(i)),
         HierarchyNode::SweepOp(i) => Some(SceneElement::SweepOp(i)),
         HierarchyNode::SketchMirrorOp(i) => Some(SceneElement::SketchMirrorOp(i)),
         HierarchyNode::SketchOffsetOp(i) => Some(SceneElement::SketchOffsetOp(i)),
@@ -460,6 +466,7 @@ impl ElementVisibility {
             SceneElement::SliceOp(_) => true,
             SceneElement::EdgeTreatmentOp(_) => true,
             SceneElement::Revolution(_) => true,
+            SceneElement::Shape(_) => true,
             SceneElement::SweepOp(_) => true,
             // A joint is a relationship, not geometry — its icon shows whenever its
             // parts do (#891).
@@ -1423,6 +1430,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::SliceOp(i) => HierarchyNode::SliceOp(*i),
         SceneElement::EdgeTreatmentOp(i) => HierarchyNode::EdgeTreatmentOp(*i),
         SceneElement::Revolution(i) => HierarchyNode::Revolution(*i),
+        SceneElement::Shape(i) => HierarchyNode::Shape(*i),
         SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
         SceneElement::Component(i) => HierarchyNode::Component(*i),
         SceneElement::UnitInstance(i) => HierarchyNode::UnitInstance(*i),
@@ -1566,6 +1574,8 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Revolve(_)
                     // A swept body nests under its Sweep node, not the root.
                     | crate::model::BodySource::Sweep(_)
+                    // A shape's body nests under its Shape node (#909), not the root.
+                    | crate::model::BodySource::Primitive(_)
                     // A unit's materialized body has no row of its own (#724): the
                     // instance row (#723) stands for it.
                     | crate::model::BodySource::UnitInstance(_)
@@ -1855,6 +1865,27 @@ pub fn build_hierarchy(
             .collect();
         roots.push(HierarchyEntry {
             node: HierarchyNode::Revolution(oi),
+            children,
+        });
+    }
+    // Primitive shapes (#909): the shape is its own top-level element — there's no sketch
+    // to nest under — with its body beneath it.
+    for (oi, shape) in doc.primitives.iter().enumerate() {
+        if shape.deleted {
+            continue;
+        }
+        let children = doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Primitive(oi))
+            .map(|(bi, _)| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::Shape(oi),
             children,
         });
     }
@@ -2165,6 +2196,7 @@ impl ElementFilter {
             | HierarchyNode::EdgeTreatment { .. } => self.sketch_geometry,
             HierarchyNode::Body(_) => self.bodies,
             HierarchyNode::Extrusion(_)
+            | HierarchyNode::Shape(_)
             | HierarchyNode::BooleanOp(_)
             | HierarchyNode::MoveOp(_)
             | HierarchyNode::MirrorOp(_)
@@ -2337,6 +2369,8 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                 BodySource::Imported(_) => None,
                 BodySource::Loft(l) => doc.component_of(CM::Loft, *l),
                 BodySource::Revolve(r) => doc.component_of(CM::Revolution, *r),
+                // A shape has no component membership of its own (#909); the body's does.
+                BodySource::Primitive(_) => None,
                 BodySource::Sweep(f) => doc.component_of(CM::Sweep, *f),
                 BodySource::Repeated { op, .. } => doc.component_of(CM::RepeatOp, *op),
                 BodySource::Moved { op, .. } => doc.component_of(CM::MoveOp, *op),
@@ -2361,6 +2395,8 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
         SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp, *i),
         SceneElement::EdgeTreatmentOp(i) => doc.component_of(CM::EdgeTreatmentOp, *i),
         SceneElement::Revolution(i) => doc.component_of(CM::Revolution, *i),
+        // A shape isn't a component member of its own (#909).
+        SceneElement::Shape(_) => None,
         SceneElement::SweepOp(i) => doc.component_of(CM::Sweep, *i),
         // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
         // own effective-visibility recursion); everything else has no owning component.
@@ -2440,7 +2476,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .map(|t| SceneElement::Sketch(t.sketch)),
         SceneElement::SliceOp(_) => None,
         SceneElement::EdgeTreatmentOp(_) => None,
-        SceneElement::Revolution(_) => None,
+        SceneElement::Revolution(_) | SceneElement::Shape(_) => None,
         SceneElement::SweepOp(_) => None,
         // A joint is always a top-level row (#891).
         SceneElement::Joint(_) => None,
@@ -2668,6 +2704,15 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
             // `outputs` list.
             for (bi, body) in doc.bodies.iter().enumerate() {
                 if !body.deleted && body.source == crate::model::BodySource::Revolve(index) {
+                    out.insert(SceneElement::Body(bi));
+                    collect_descendants(doc, SceneElement::Body(bi), out);
+                }
+            }
+        }
+        SceneElement::Shape(index) => {
+            // A shape's body is linked by `BodySource::Primitive` (#909).
+            for (bi, body) in doc.bodies.iter().enumerate() {
+                if !body.deleted && body.source == crate::model::BodySource::Primitive(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -3002,6 +3047,12 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
             }
         }
         HierarchyNode::Revolution(_) => IconId::Revolve,
+        // Each shape kind carries its own icon (#909).
+        HierarchyNode::Shape(index) => match doc.primitives.get(index).map(|s| s.kind) {
+            Some(crate::model::PrimitiveKind::Cylinder) => IconId::ShapeCylinder,
+            Some(crate::model::PrimitiveKind::Sphere) => IconId::ShapeSphere,
+            _ => IconId::ShapeCuboid,
+        },
         HierarchyNode::SweepOp(_) => IconId::Sweep,
         // Each kind gets its own icon (#899).
         HierarchyNode::Joint(index) => doc
@@ -6789,6 +6840,47 @@ label_hidden: false,
         assert!(deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::SweepOp(0))));
         assert!(deps.contains(&(HierarchyNode::Line(0), HierarchyNode::SweepOp(0))));
         assert!(deps.contains(&(HierarchyNode::Line(1), HierarchyNode::SweepOp(0))));
+    }
+
+    /// #909: a shape is a top-level element with its body nested under it, named by kind.
+    #[test]
+    fn shape_appears_in_the_tree_with_its_body() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Sphere);
+        shape.radius = "6".to_string();
+        doc.primitives.push(shape);
+        doc.bodies.push(Body {
+            source: BodySource::Primitive(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let tree = build_hierarchy(&doc, None);
+        let root = &tree[0];
+        let entry = root
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Shape(0))
+            .expect("the shape is a top-level element");
+        assert!(
+            entry.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            "its body nests under it",
+        );
+        assert!(
+            !root.children.iter().any(|e| e.node == HierarchyNode::Body(0)),
+            "and isn't also a Document-level orphan",
+        );
+        assert_eq!(
+            scene_element_for_node(HierarchyNode::Shape(0)),
+            Some(SceneElement::Shape(0))
+        );
+        assert_eq!(
+            crate::names::default_node_label(&doc, HierarchyNode::Shape(0)),
+            "Sphere 0"
+        );
     }
 
     #[test]

@@ -246,6 +246,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
+    save_indexed_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
     save_indexed_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
@@ -543,6 +544,7 @@ pub fn open(path: &str) -> Result<Document> {
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
     let lofts = load_indexed_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
+    let primitives = load_indexed_entities(&conn, "primitive")?;
     let sweeps = load_indexed_entities(&conn, "sweep")?;
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
     let move_ops = load_indexed_entities(&conn, "move_op")?;
@@ -582,6 +584,7 @@ pub fn open(path: &str) -> Result<Document> {
         tracing_images,
         lofts,
         revolutions,
+        primitives,
         sweeps,
         boolean_ops,
         move_ops,
@@ -862,6 +865,42 @@ mod tests {
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.joints, doc.joints);
+        assert_eq!(loaded.shape_order, doc.shape_order);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #909: a primitive shape round-trips — kind, frame, and its dimension expressions —
+    /// with the body that points back at it.
+    #[test]
+    fn round_trips_primitive_shapes() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_shape_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.origin = [10.0, -4.0, 2.5];
+        shape.normal = [0.0, 1.0, 0.0];
+        shape.u_axis = [0.0, 0.0, 1.0];
+        shape.radius = "bore / 2".to_string();
+        shape.height = "18".to_string();
+        shape.name = Some("Boss".to_string());
+        doc.primitives.push(shape);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Primitive(0),
+            name: None,
+            material: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.shape_order.push(crate::model::ShapeKind::Primitive);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.primitives, doc.primitives);
+        assert_eq!(loaded.bodies, doc.bodies);
         assert_eq!(loaded.shape_order, doc.shape_order);
 
         std::fs::remove_file(&path).unwrap();

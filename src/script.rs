@@ -289,6 +289,13 @@ pub enum Instruction {
         edge1: ((f32, f32, f32), (f32, f32, f32)),
         edge2: ((f32, f32, f32), (f32, f32, f32)),
     },
+    /// Place a primitive shape (#909): a cuboid, cylinder, or sphere, straight into 3D.
+    Shape { shape: crate::model::Primitive },
+    /// Re-point an existing shape (#909).
+    EditShape {
+        index: usize,
+        shape: crate::model::Primitive,
+    },
     /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
     Revolve {
         faces: Vec<crate::model::ExtrudeFace>,
@@ -1051,6 +1058,9 @@ impl Instruction {
                     edge(*edge2)
                 )
             }
+            // A shape replays as its own call, dimensions and frame spelled out (#909).
+            Instruction::Shape { shape } => shape_lua_call(shape, None),
+            Instruction::EditShape { index, shape } => shape_lua_call(shape, Some(*index)),
             Instruction::Revolve {
                 faces,
                 axis,
@@ -1888,6 +1898,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::Shape(i) => ElementScriptTokens {
+            kind: "shape",
+            index: i,
+            point: None,
+        },
         SceneElement::SweepOp(i) => ElementScriptTokens {
             kind: "sweep",
             index: i,
@@ -2468,6 +2483,49 @@ pub fn instruction_for_new_loft(doc: &crate::model::Document) -> Option<Instruct
         body,
         bodies,
     })
+}
+
+/// A shape as its Lua call (#909): `bearcad.cuboid{...}` / `cylinder` / `sphere`, or
+/// `bearcad.edit_shape{ index = i, ... }` when re-pointing one.
+fn shape_lua_call(shape: &crate::model::Primitive, edit: Option<usize>) -> String {
+    use crate::model::PrimitiveKind as K;
+    let num = |v: f32| format!("{}", (v * 1000.0).round() / 1000.0);
+    let point = |p: [f32; 3]| format!("{{{}, {}, {}}}", num(p[0]), num(p[1]), num(p[2]));
+    let mut parts = Vec::new();
+    if let Some(index) = edit {
+        parts.push(format!("index = {index}"));
+        parts.push(format!("shape = {:?}", shape.kind.script_name()));
+    }
+    parts.push(format!("at = {}", point(shape.origin)));
+    if shape.normal != [0.0, 0.0, 1.0] {
+        parts.push(format!("normal = {}", point(shape.normal)));
+    }
+    if shape.u_axis != [1.0, 0.0, 0.0] {
+        parts.push(format!("u_axis = {}", point(shape.u_axis)));
+    }
+    let dim = |name: &str, expression: &String| -> Option<String> {
+        (!expression.trim().is_empty()).then(|| format!("{name} = {expression:?}"))
+    };
+    match shape.kind {
+        K::Cuboid => {
+            parts.extend(dim("width", &shape.width));
+            parts.extend(dim("depth", &shape.depth));
+            parts.extend(dim("height", &shape.height));
+        }
+        K::Cylinder => {
+            parts.extend(dim("radius", &shape.radius));
+            parts.extend(dim("height", &shape.height));
+        }
+        K::Sphere => parts.extend(dim("radius", &shape.radius)),
+    }
+    if let Some(name) = &shape.name {
+        parts.push(format!("name = {name:?}"));
+    }
+    let call = match edit {
+        Some(_) => "edit_shape".to_string(),
+        None => shape.kind.script_name().to_string(),
+    };
+    format!("bearcad.{call}{{ {} }}", parts.join(", "))
 }
 
 /// Replayable `Instruction::Revolve` for the revolution the interactive tool just created
@@ -4684,6 +4742,16 @@ impl ScriptRunner {
                     edge1: key(edge1),
                     edge2: key(edge2),
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::Shape { shape } => {
+                let result = state.apply(Action::CreateShape { shape });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditShape { index, shape } => {
+                let result = state.apply(Action::EditShape { index, shape });
                 self.record_action_error(result);
                 StepResult::Continue
             }

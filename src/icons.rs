@@ -36,6 +36,10 @@ pub enum IconId {
     Extrude,
     Loft,
     Revolve,
+    /// The Create Shape tool's shapes (#909).
+    ShapeCuboid,
+    ShapeCylinder,
+    ShapeSphere,
     Sweep,
     Combine,
     Move,
@@ -129,7 +133,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 88] = [
+    pub const ALL: [Self; 91] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -153,6 +157,9 @@ impl IconId {
         Self::Extrude,
         Self::Loft,
         Self::Revolve,
+        Self::ShapeCuboid,
+        Self::ShapeCylinder,
+        Self::ShapeSphere,
         Self::Sweep,
         Self::Combine,
         Self::Move,
@@ -245,6 +252,9 @@ impl IconId {
             Self::Extrude => include_str!("assets/icons/extrude.svg"),
             Self::Loft => include_str!("assets/icons/loft.svg"),
             Self::Revolve => include_str!("assets/icons/revolve.svg"),
+            Self::ShapeCuboid => include_str!("assets/icons/shape_cuboid.svg"),
+            Self::ShapeCylinder => include_str!("assets/icons/shape_cylinder.svg"),
+            Self::ShapeSphere => include_str!("assets/icons/shape_sphere.svg"),
             Self::Sweep => include_str!("assets/icons/sweep.svg"),
             Self::Combine => include_str!("assets/icons/combine.svg"),
             Self::Move => include_str!("assets/icons/move.svg"),
@@ -340,6 +350,9 @@ impl IconId {
             Self::Extrude => "Extrude",
             Self::Loft => "Loft",
             Self::Revolve => "Revolve",
+            Self::ShapeCuboid => "Cuboid",
+            Self::ShapeCylinder => "Cylinder",
+            Self::ShapeSphere => "Sphere",
             Self::Sweep => "Sweep",
             Self::Combine => "Combine",
             Self::Move => "Move",

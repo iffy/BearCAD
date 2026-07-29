@@ -111,6 +111,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::EdgeTreatmentOp(_) => "edge_treatment_op",
         SceneElement::Revolution(_) => "revolution",
+        SceneElement::Shape(_) => "shape",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
@@ -141,6 +142,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SliceOp(i)
         | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Revolution(i)
+        | SceneElement::Shape(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
@@ -176,6 +178,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
         "image" | "tracing_image" => Some(SceneElement::Image(index)),
         "joint" => Some(SceneElement::Joint(index)),
+        "shape" | "primitive" => Some(SceneElement::Shape(index)),
         _ => None,
     }
 }
@@ -845,6 +848,64 @@ fn parse_move_point(
         a: mm(ends[0].clone())?,
         b: mm(ends[1].clone())?,
     }))
+}
+
+
+/// Keys every shape call accepts (#909).
+fn check_shape_keys(opts: &Table, call: &str) -> mlua::Result<()> {
+    check_keys(
+        opts,
+        call,
+        &[
+            "index", "shape", "at", "normal", "u_axis", "width", "depth", "height",
+            "radius", "name",
+        ],
+    )
+}
+
+/// Parse a shape call's arguments (#909) into a [`crate::model::Primitive`]. Dimensions
+/// take a number or an expression string; the frame defaults to the ground at the origin.
+fn parse_shape_args(
+    lua: &Lua,
+    opts: &Table,
+    kind: crate::model::PrimitiveKind,
+    call: &str,
+) -> mlua::Result<crate::model::Primitive> {
+    check_shape_keys(opts, call)?;
+    let mut shape = crate::model::Primitive::new(kind);
+    let point = |key: &str| -> mlua::Result<Option<[f32; 3]>> {
+        match opts.get::<Option<Vec<f32>>>(key)? {
+            Some(v) if v.len() == 3 => Ok(Some([v[0], v[1], v[2]])),
+            Some(_) => Err(mlua::Error::external(format!(
+                "`{key}` must be {{x, y, z}} in mm"
+            ))),
+            None => Ok(None),
+        }
+    };
+    if let Some(p) = point("at")? {
+        shape.origin = p;
+    }
+    if let Some(p) = point("normal")? {
+        shape.normal = p;
+    }
+    if let Some(p) = point("u_axis")? {
+        shape.u_axis = p;
+    }
+    let expression = |key: &str| -> mlua::Result<String> {
+        Ok(match scalar_arg(lua, opts, key)? {
+            Some((value, Some(expression))) => {
+                let _ = value;
+                expression
+            }
+            Some((value, None)) => format!("{value}"),
+            None => String::new(),
+        })
+    };
+    shape.width = expression("width")?;
+    shape.depth = expression("depth")?;
+    shape.height = expression("height")?;
+    shape.radius = expression("radius")?;
+    Ok(shape)
 }
 
 /// Parses `bearcad.repeat_bodies{}`/`bearcad.edit_repeat{}` arguments.
@@ -4277,6 +4338,72 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Primitive shapes (#909): `bearcad.cuboid{ at = {x,y,z}?, normal = {..}?, u_axis = {..}?,
+    // width =, depth =, height =, name = }`, `bearcad.cylinder{ radius =, height = }`,
+    // `bearcad.sphere{ radius = }`. Every dimension takes a number or an expression string;
+    // `at` defaults to the origin and `normal` to +Z (the ground), so the simplest call is
+    // just the sizes. `bearcad.edit_shape{ index =, shape = "cuboid", ... }` re-points one.
+    for (call, kind) in [
+        ("cuboid", crate::model::PrimitiveKind::Cuboid),
+        ("cylinder", crate::model::PrimitiveKind::Cylinder),
+        ("sphere", crate::model::PrimitiveKind::Sphere),
+    ] {
+        api.set(
+            call,
+            lua.create_function(move |lua, opts: Option<Table>| {
+                let opts = match opts {
+                    Some(t) => t,
+                    None => lua.create_table()?,
+                };
+                let shape = parse_shape_args(lua, &opts, kind, call)?;
+                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                unsafe { tick.exec(Instruction::Shape { shape })? };
+                let element = SceneElement::Shape(unsafe {
+                    tick.state().doc.primitives.len().saturating_sub(1)
+                });
+                drop(tick);
+                apply_optional_name(lua, element, Some(opts))
+            })?,
+        )?;
+    }
+
+    api.set(
+        "edit_shape",
+        lua.create_function(|lua, opts: Table| {
+            check_shape_keys(&opts, "edit_shape")?;
+            let index: usize = opts.get("index")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let existing = unsafe { tick.state().doc.primitives.get(index).cloned() };
+            drop(tick);
+            let kind = match opts.get::<Option<String>>("shape")? {
+                Some(name) => crate::model::PrimitiveKind::from_name(&name).ok_or_else(|| {
+                    mlua::Error::external(format!(
+                        "unknown shape '{name}' (cuboid|cylinder|sphere)"
+                    ))
+                })?,
+                None => existing
+                    .as_ref()
+                    .map(|s| s.kind)
+                    .ok_or_else(|| mlua::Error::external(format!("no shape {index}")))?,
+            };
+            let mut shape = parse_shape_args(lua, &opts, kind, "edit_shape")?;
+            // Unmentioned dimensions keep what the shape already had.
+            if let Some(old) = existing {
+                if !opts.contains_key("width")? { shape.width = old.width.clone(); }
+                if !opts.contains_key("depth")? { shape.depth = old.depth.clone(); }
+                if !opts.contains_key("height")? { shape.height = old.height.clone(); }
+                if !opts.contains_key("radius")? { shape.radius = old.radius.clone(); }
+                if !opts.contains_key("at")? { shape.origin = old.origin; }
+                if !opts.contains_key("normal")? { shape.normal = old.normal; }
+                if !opts.contains_key("u_axis")? { shape.u_axis = old.u_axis; }
+            }
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::EditShape { index, shape })? };
+            drop(tick);
+            apply_optional_name(lua, SceneElement::Shape(index), Some(opts))
+        })?,
+    )?;
+
     // Sweep profiles along a path of sketch lines (SPEC §3.5 Sweep):
     // `bearcad.sweep{ circles = {i, ...} and/or polygon = {line, ...},
     // path = {line, ...}, body = "add"|"cut"?, bodies = {i, ...}? }`. Each face's sketch
@@ -7374,6 +7501,79 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
+    }
+
+    /// #909: the shape calls place primitive solids straight into 3D — each its own body,
+    /// sized by expressions, with no sketch behind it.
+    #[test]
+    fn lua_shapes_place_primitive_solids() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 40, depth = 20, height = 10, name = "Block" }
+            bearcad.cylinder{ at = {100, 0, 0}, radius = 5, height = 20 }
+            bearcad.sphere{ at = {200, 0, 0}, radius = 8 }
+            "#,
+        );
+        assert_eq!(state.doc.primitives.len(), 3, "three shapes");
+        assert_eq!(state.doc.bodies.len(), 3, "each shape owns a body");
+        assert_eq!(state.doc.primitives[0].name.as_deref(), Some("Block"));
+        let volume = |i: usize| {
+            crate::extrude::body_solid_mesh(&state.doc, i)
+                .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+                .unwrap_or(0.0)
+        };
+        assert!((volume(0) - 8000.0).abs() < 1.0, "cuboid {}", volume(0));
+        let cylinder = std::f32::consts::PI * 25.0 * 20.0;
+        assert!((volume(1) - cylinder).abs() / cylinder < 0.02, "cylinder {}", volume(1));
+        let sphere = 4.0 / 3.0 * std::f32::consts::PI * 512.0;
+        assert!((volume(2) - sphere).abs() / sphere < 0.03, "sphere {}", volume(2));
+    }
+
+    /// #909: a shape's dimensions are expressions, so it follows its parameters — and
+    /// `edit_shape` re-points one in place, keeping its name and its body.
+    #[test]
+    fn lua_shapes_are_parametric_and_editable() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "side", "10")
+            bearcad.cuboid{ width = "side", depth = "side", height = "side", name = "Cube" }
+            bearcad.edit_shape{ index = 0, height = "side * 3" }
+            "#,
+        );
+        assert_eq!(state.doc.primitives[0].width, "side");
+        assert_eq!(state.doc.primitives[0].height, "side * 3");
+        assert_eq!(state.doc.primitives[0].name.as_deref(), Some("Cube"), "the name survives");
+        assert_eq!(state.doc.bodies.len(), 1, "editing reuses the body");
+        let stats = crate::extrude::body_solid_mesh(&state.doc, 0)
+            .and_then(|m| m.bounds())
+            .expect("the cube meshes");
+        assert!((stats.1.z - 30.0).abs() < 1e-3, "3 x side tall, got {}", stats.1.z);
+    }
+
+    /// #909: deleting a shape takes its body with it, and a shape missing a dimension is
+    /// refused rather than landing an empty body.
+    #[test]
+    fn lua_shape_delete_and_refusal() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.select{ kind = "shape", index = 0 }
+            bearcad.delete_selection()
+            "#,
+        );
+        assert!(state.doc.primitives[0].deleted, "the shape is gone");
+        assert!(state.doc.bodies[0].deleted, "and so is its body");
+        let mut runner =
+            ScriptRunner::from_lua_source("bearcad.cylinder{ radius = 5 }").unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+        }
+        assert!(runner.error.is_some(), "a cylinder with no height is refused");
+        assert!(state.doc.primitives.is_empty(), "and nothing lands");
     }
 
     /// #906: the joint preview's animation is one app-wide switch, on to begin with.

@@ -47,6 +47,7 @@ mod kernel;
 mod names;
 mod parameters;
 mod polygon;
+mod primitives;
 mod polygon_boolean;
 
 mod model;

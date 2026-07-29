@@ -619,6 +619,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         return None;
     }
     let mut solid = match body.source {
+        crate::model::BodySource::Primitive(pi) => {
+            crate::primitives::kernel_shape(doc, doc.primitives.get(pi)?)?
+        }
         crate::model::BodySource::Revolve(ri) => {
             occt_revolution_shape(doc, doc.revolutions.get(ri).filter(|r| !r.deleted)?)?
         }
@@ -2938,6 +2941,18 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::Shape(op) => {
+                // A shape's body is linked by `BodySource::Primitive` (#909).
+                for bi in 0..doc.bodies.len() {
+                    if doc.bodies[bi].source == crate::model::BodySource::Primitive(op) {
+                        if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
+                        {
+                            extend(min);
+                            extend(max);
+                        }
+                    }
+                }
+            }
             SceneElement::SweepOp(op) => {
                 // The swept solid's body is linked by `BodySource::Sweep` (NewBody mode).
                 for bi in 0..doc.bodies.len() {
@@ -3342,6 +3357,11 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     let body = doc.bodies.get(body_index)?;
     if body.deleted {
         return None;
+    }
+    // A primitive shape (#909): meshed analytically, no sketch behind it.
+    if let crate::model::BodySource::Primitive(pi) = body.source {
+        let shape = doc.primitives.get(pi)?;
+        return crate::primitives::mesh(doc, shape);
     }
     if let Some(idx) = body.source.imported_mesh_index() {
         let imported = doc.imported_meshes.get(idx)?;

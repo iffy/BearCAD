@@ -29,6 +29,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SliceOp(_)
         | SceneElement::EdgeTreatmentOp(_)
         | SceneElement::Revolution(_)
+        | SceneElement::Shape(_)
         | SceneElement::SweepOp(_)
         | SceneElement::Component(_)
         | SceneElement::UnitInstance(_)
@@ -169,6 +170,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
             doc.edge_treatment_ops.get(index)?.name.as_deref()
         }
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
+        SceneElement::Shape(index) => doc.primitives.get(index)?.name.as_deref(),
         SceneElement::SweepOp(index) => doc.sweeps.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
         SceneElement::UnitInstance(index) => doc.unit_instances.get(index)?.name.as_deref(),
@@ -345,6 +347,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("revolution {index} not found"))?;
             rev.name = stored;
         }
+        SceneElement::Shape(index) => {
+            let shape = doc
+                .primitives
+                .get_mut(index)
+                .ok_or_else(|| format!("shape {index} not found"))?;
+            shape.name = stored;
+        }
         SceneElement::SweepOp(index) => {
             let fp = doc
                 .sweeps
@@ -408,6 +417,16 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         }
     }
     Ok(())
+}
+
+/// A primitive shape's kind as it reads in the app (#909).
+pub fn primitive_kind_label(kind: crate::model::PrimitiveKind) -> &'static str {
+    use crate::model::PrimitiveKind as K;
+    match kind {
+        K::Cuboid => "Cuboid",
+        K::Cylinder => "Cylinder",
+        K::Sphere => "Sphere",
+    }
 }
 
 pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
@@ -508,6 +527,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             }
         }
         HierarchyNode::Revolution(i) => format!("Revolve {i}"),
+        // A shape reads by what it is: "Cuboid 0", "Sphere 2" (#909).
+        HierarchyNode::Shape(i) => match doc.primitives.get(i) {
+            Some(shape) => format!("{} {i}", crate::names::primitive_kind_label(shape.kind)),
+            None => format!("Shape {i}"),
+        },
         HierarchyNode::SweepOp(i) => format!("Sweep {i}"),
         // A joint reads by its kind (#891): "Revolute 0", or "Rigid group 2" once a rigid
         // joint ties more than two things (#900).
@@ -670,6 +694,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             _ => format!("Chamfer {i}"),
         },
         SceneElement::Revolution(i) => format!("Revolve {i}"),
+        SceneElement::Shape(i) => format!("Shape {i}"),
         SceneElement::SweepOp(i) => format!("Sweep {i}"),
         SceneElement::Joint(i) => format!("Joint {i}"),
     }
