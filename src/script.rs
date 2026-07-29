@@ -537,6 +537,8 @@ pub enum Instruction {
     SetAutoZoom { on: bool },
     /// Toggle snapping (#913).
     SetSnapping { on: bool },
+    /// The Move tool's rotation-candidate spacing, in degrees (#917).
+    SetMoveAngleSnap { degrees: f32 },
     /// Toggle the joint preview's animation (#906).
     SetJointAnimation { on: bool },
     /// Force touch mode on/off (auto-detected from real touches otherwise).
@@ -1307,6 +1309,9 @@ impl Instruction {
             }
             Instruction::SetSnapping { on } => {
                 format!("bearcad.ui.snapping({on})")
+            }
+            Instruction::SetMoveAngleSnap { degrees } => {
+                format!("bearcad.ui.angle_snap({degrees})")
             }
             Instruction::SetJointAnimation { on } => {
                 format!("bearcad.ui.animate_joints({on})")
@@ -5105,6 +5110,10 @@ impl ScriptRunner {
             }
             Instruction::SetSnapping { on } => {
                 let _ = state.apply(Action::SetSnapping(on));
+                StepResult::Continue
+            }
+            Instruction::SetMoveAngleSnap { degrees } => {
+                let _ = state.apply(Action::SetMoveAngleSnap(degrees));
                 StepResult::Continue
             }
             Instruction::SetJointAnimation { on } => {

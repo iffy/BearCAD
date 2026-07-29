@@ -842,6 +842,86 @@ pub fn snap_rotation_candidates(
     out
 }
 
+/// Rotation candidates by **angle** (#918): directions on the end-point-B constraint sphere
+/// every `step_deg` degrees about the world axes, as world points at `radius` from `centre`.
+///
+/// 90° gives the six axis directions; 45° gives 26 (two poles plus three rings of eight).
+/// A step of zero (or one that doesn't divide the sphere sensibly) yields nothing — the
+/// caller then falls back to the geometry-derived spots alone.
+pub fn snap_angle_sphere_candidates(centre: Vec3, radius: f32, step_deg: f32) -> Vec<Vec3> {
+    let mut out = Vec::new();
+    if !(radius.is_finite() && radius > 1e-4) || !(step_deg > 0.5) {
+        return out;
+    }
+    let step = step_deg.to_radians();
+    let polar_steps = (std::f32::consts::PI / step).round().max(1.0) as i32;
+    let azimuth_steps = (std::f32::consts::TAU / step).round().max(1.0) as i32;
+    for i in 0..=polar_steps {
+        let phi = std::f32::consts::PI * i as f32 / polar_steps as f32;
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        // The poles are one point each, whatever the azimuth.
+        let ring = if sin_phi.abs() < 1e-4 { 1 } else { azimuth_steps };
+        for j in 0..ring {
+            let theta = std::f32::consts::TAU * j as f32 / azimuth_steps as f32;
+            let (sin_t, cos_t) = theta.sin_cos();
+            let dir = Vec3::new(sin_phi * cos_t, sin_phi * sin_t, cos_phi);
+            let p = centre + dir * radius;
+            if !out.iter().any(|q: &Vec3| (*q - p).length() < 1e-3) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// The same idea on the end-point-C circle (#918): every `step_deg` around it, starting at
+/// `reference` (the no-extra-spin direction).
+pub fn snap_angle_circle_candidates(
+    centre: Vec3,
+    axis: Vec3,
+    reference: Vec3,
+    radius: f32,
+    step_deg: f32,
+) -> Vec<Vec3> {
+    let mut out = Vec::new();
+    if !(radius.is_finite() && radius > 1e-4) || !(step_deg > 0.5) {
+        return out;
+    }
+    let steps = (360.0 / step_deg).round().max(1.0) as i32;
+    for i in 0..steps {
+        let angle = std::f32::consts::TAU * i as f32 / steps as f32;
+        let p = centre + glam::Quat::from_axis_angle(axis, angle) * (reference * radius);
+        if !out.iter().any(|q: &Vec3| (*q - p).length() < 1e-3) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// The circle end point C rides (#914/#918): its centre on the `end A → end B` axis, the
+/// axis itself, the no-extra-spin direction, and the radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpinCircle {
+    pub center: Vec3,
+    pub axis: Vec3,
+    /// Unit direction of the zero-spin position, perpendicular to `axis`.
+    pub reference: Vec3,
+    pub radius: f32,
+}
+
+impl SpinCircle {
+    /// The spots on it, `step_deg` apart (#918); the first is the zero-spin position.
+    pub fn spots(&self, step_deg: f32) -> Vec<Vec3> {
+        snap_angle_circle_candidates(
+            self.center,
+            self.axis,
+            self.reference,
+            self.radius,
+            step_deg,
+        )
+    }
+}
+
 /// Where end point C can land (#914): with end points A and B fixed, the part can still
 /// spin about the A→B axis, so start point C sweeps a **circle** — not a sphere. This
 /// returns four spots a quarter turn apart on that circle, together with the circle's
@@ -857,7 +937,7 @@ pub fn snap_spin_candidates(
     start_c: Option<&crate::model::MovePointRef>,
     end_a: Option<&crate::model::MovePointRef>,
     end_b: Option<&crate::model::MovePointRef>,
-) -> Option<(Vec3, Vec<Vec3>)> {
+) -> Option<SpinCircle> {
     let sa = move_point_world(doc, start_a?)?;
     let sb = move_point_world(doc, start_b?)?;
     let sc = move_point_world(doc, start_c?)?;
@@ -888,13 +968,12 @@ pub fn snap_spin_candidates(
         // Re-orthogonalize against float drift so all four sit exactly on the circle.
         (reference - end_dir * reference.dot(end_dir)).normalize_or_zero()
     };
-    let spots = (0..4)
-        .map(|q| {
-            let angle = q as f32 * std::f32::consts::FRAC_PI_2;
-            center + glam::Quat::from_axis_angle(end_dir, angle) * (reference * radius)
-        })
-        .collect();
-    Some((center, spots))
+    Some(SpinCircle {
+        center,
+        axis: end_dir,
+        reference,
+        radius,
+    })
 }
 
 /// Reachable landing spots in **mid-air** (#745): every stationary body's feature edge
@@ -5496,6 +5575,39 @@ mod tests {
 
     /// #669: the optional B pair turns the bodies about end point A so that start B lands on
     /// end B, and end B is confined to the sphere start B can actually reach.
+    /// #918: the angle grid on the sphere — 90° gives the six axis directions, 45° gives
+    /// 26 (two poles and three rings of eight), and every spot sits on the sphere.
+    #[test]
+    fn angle_snap_sphere_candidates_count_and_lie_on_the_sphere() {
+        let centre = Vec3::new(5.0, -2.0, 1.0);
+        let ninety = snap_angle_sphere_candidates(centre, 10.0, 90.0);
+        assert_eq!(ninety.len(), 6, "the six axis directions");
+        for p in &ninety {
+            assert!(((*p - centre).length() - 10.0).abs() < 1e-3, "on the sphere: {p}");
+        }
+        assert_eq!(snap_angle_sphere_candidates(centre, 10.0, 45.0).len(), 26);
+        assert_eq!(snap_angle_sphere_candidates(centre, 10.0, 30.0).len(), 62);
+        // No spacing, no grid — the geometry-derived spots stand alone.
+        assert!(snap_angle_sphere_candidates(centre, 10.0, 0.0).is_empty());
+    }
+
+    /// #918: the same spacing around the end-C circle, starting at the zero-spin position.
+    #[test]
+    fn angle_snap_circle_candidates_ring_the_axis() {
+        let centre = Vec3::ZERO;
+        let spots = snap_angle_circle_candidates(centre, Vec3::Z, Vec3::X, 4.0, 45.0);
+        assert_eq!(spots.len(), 8);
+        assert!((spots[0] - Vec3::new(4.0, 0.0, 0.0)).length() < 1e-3, "starts at the reference");
+        for p in &spots {
+            assert!((p.length() - 4.0).abs() < 1e-3, "on the circle: {p}");
+            assert!(p.z.abs() < 1e-3, "in its plane: {p}");
+        }
+        assert_eq!(
+            snap_angle_circle_candidates(centre, Vec3::Z, Vec3::X, 4.0, 90.0).len(),
+            4
+        );
+    }
+
     /// #914: with end points A and B fixed, end point C rides a circle — four quarter-turn
     /// spots on it, the first carrying the start-side geometry over with no extra spin.
     #[test]
@@ -5521,7 +5633,7 @@ mod tests {
         let (start_a, start_b, start_c) =
             (at([0.0, 0.0, 0.0]), at([10.0, 0.0, 0.0]), at([0.0, 4.0, 0.0]));
         let (end_a, end_b) = (at([0.0, 0.0, 100.0]), at([10.0, 0.0, 100.0]));
-        let (center, spots) = snap_spin_candidates(
+        let circle = snap_spin_candidates(
             &doc,
             start_a.as_ref(),
             start_b.as_ref(),
@@ -5530,6 +5642,7 @@ mod tests {
             end_b.as_ref(),
         )
         .expect("A, B and C give a circle");
+        let (center, spots) = (circle.center, circle.spots(90.0));
         assert!(
             (center - Vec3::new(0.0, 0.0, 100.0)).length() < 1e-3,
             "C is perpendicular to the axis, so its circle centres on end A: {center}"

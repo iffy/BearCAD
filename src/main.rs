@@ -8434,8 +8434,23 @@ impl App {
         .into_iter()
         .filter(|(_, p)| !found.iter().any(|(_, q)| (*q - *p).length() < 1e-3))
         .collect();
-        let guides: Vec<(Vec3, Vec3)> = axis.iter().map(|(_, p)| (centre, *p)).collect();
+        let mut guides: Vec<(Vec3, Vec3)> = axis.iter().map(|(_, p)| (centre, *p)).collect();
         found.extend(axis);
+        // Angle-grid spots (#918): directions every `angle snap` degrees about the world
+        // axes, offered alongside the geometry-derived ones. They're mid-air, so they hang
+        // off end point A's body and each gets a guide from the pivot.
+        let body = cm.end_point_a.as_ref()?.body();
+        for p in extrude::snap_angle_sphere_candidates(
+            centre,
+            radius,
+            self.state.move_angle_snap_deg,
+        ) {
+            if found.iter().any(|(_, q)| (*q - p).length() < 1e-3) {
+                continue;
+            }
+            guides.push((centre, p));
+            found.push((body, p));
+        }
         Some((found, guides))
     }
 
@@ -8447,7 +8462,7 @@ impl App {
             && self.state.sketch_session.is_none()
             && self.move_focus() == MoveFocus::EndPointC;
         let cm = armed.then(|| self.state.creating_move.as_ref()).flatten()?;
-        let (center, spots) = extrude::snap_spin_candidates(
+        let circle = extrude::snap_spin_candidates(
             &self.state.doc,
             cm.start_point_a.as_ref(),
             cm.start_point_b.as_ref(),
@@ -8455,10 +8470,16 @@ impl App {
             cm.end_point_a.as_ref(),
             cm.end_point_b.as_ref(),
         )?;
+        // How far apart the spots sit is the Angle snap field's (#918); the first is
+        // always the no-extra-spin position.
+        let spots = circle.spots(self.state.move_angle_snap_deg);
+        if spots.is_empty() {
+            return None;
+        }
         // The spots are in mid-air, so they hang off end point A's body — the same trick
         // the mid-air end-B spots use (#745).
         let body = cm.end_point_a.as_ref()?.body();
-        let guides = spots.iter().map(|p| (center, *p)).collect();
+        let guides = spots.iter().map(|p| (circle.center, *p)).collect();
         Some((spots.into_iter().map(|p| (body, p)).collect(), guides))
     }
 
@@ -11221,6 +11242,7 @@ impl eframe::App for App {
                     // viewport click feeds.
                     let move_focus = self.move_focus();
                     context::MoveControl {
+                        angle_snap_deg: self.state.move_angle_snap_deg,
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
                         bodies_focused: move_focus == MoveFocus::Bodies,
@@ -12303,6 +12325,9 @@ impl eframe::App for App {
                     _ => {}
                 }
                 match edit {
+                    context::MoveEdit::AngleSnap(degrees) => {
+                        self.state.apply(Action::SetMoveAngleSnap(degrees));
+                    }
                     context::MoveEdit::Commit => {
                         self.state.apply(Action::CommitMove);
                     }
@@ -12337,7 +12362,8 @@ impl eframe::App for App {
                             | context::MoveEdit::EndBFocus
                             | context::MoveEdit::StartCFocus
                             | context::MoveEdit::EndCFocus => {}
-                            context::MoveEdit::Commit => unreachable!(),
+                            context::MoveEdit::Commit
+                            | context::MoveEdit::AngleSnap(_) => unreachable!(),
                         }
                     }
                 }

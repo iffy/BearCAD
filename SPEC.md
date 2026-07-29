@@ -750,7 +750,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
   - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
     B** on stationary geometry, adds the **rotation** — the pane labels the B and C rows
-    **Rotation** (#915), since those four points turn the part rather than move it: after the A translation lands start A on
+    **Rotation** (#915), since those four points turn the part rather than move it, and
+    heads them with an **Angle snap** row (#917): a 0–90° slider beside a value field, both
+    clamped to that range, defaulting to 90° and sticky across moves
+    (`AppState::move_angle_snap_deg`, `bearcad.ui.angle_snap(degrees)`). It sets how far apart
+    the rotation's candidate dots sit (#918): on the End-B sphere, one for every direction
+    that many degrees apart about the world axes (`snap_angle_sphere_candidates` — 90° gives
+    the six axis directions, 45° gives 26: two poles and three rings of eight), and on the
+    End-C circle one every that many degrees around it (`SpinCircle::spots`, starting at the
+    no-spin position). They're offered alongside the geometry-derived spots, through the same
+    blue/gold marks and dashed pivot guides: after the A translation lands start A on
     end A, the bodies turn **about end point A** by the shortest rotation taking start B's
     direction onto end B's (`extrude::move_snap_rotation`). End B is confined to the
     **constraint sphere** centred on end point A with radius `|startA - startB|`

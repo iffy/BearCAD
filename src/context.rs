@@ -269,6 +269,9 @@ pub struct MoveControl {
     /// **End point A** (#668): the picked point's label, if any, and whether its picker is armed.
     pub end_a_rows: Vec<String>,
     pub end_a_focused: bool,
+    /// Angle snap (#917): how far apart the rotation's candidate dots sit, in degrees
+    /// (0–90). The row shows a slider and a value field side by side.
+    pub angle_snap_deg: f32,
     /// The optional **B pair** (#669), which adds the rotation.
     pub start_b_rows: Vec<String>,
     pub start_b_focused: bool,
@@ -310,6 +313,8 @@ pub enum MoveEdit {
     ClearStartC,
     EndCFocus,
     ClearEndC,
+    /// The rotation's candidate spacing in degrees (#917), clamped to 0–90 by the caller.
+    AngleSnap(f32),
     Commit,
 }
 
@@ -2727,6 +2732,10 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "Where start point A lands — a corner or edge midpoint on something that isn't \
              moving.",
         ),
+        (Some(Tool::Move), "Angle snap") => Some(
+            "How far apart the rotation's candidate dots sit, in degrees. 90° gives the six \
+             axis directions; smaller values give more to choose from.",
+        ),
         (Some(Tool::Move), "Start point B") => Some(
             "Optional. A second point on a moving body, to turn the bodies as well as slide \
              them.",
@@ -4377,6 +4386,36 @@ pub fn show_pane(
             // The B and C pairs are the rotation (#915): the label says so, since the
             // four points after it turn the part rather than move it.
             section_label(ui, "Rotation");
+            // How far apart the candidate dots sit on the sphere/circle (#917): a slider
+            // and a value field, both clamped to 0–90°.
+            let mut angle_snap: Option<f32> = None;
+            labeled_row(ui, "Angle snap", |ui| {
+                let mut degrees = control.angle_snap_deg;
+                // Both controls have to fit the pane's right column beside each other.
+                ui.spacing_mut().slider_width = 46.0;
+                let slider = ui.add(
+                    egui::Slider::new(&mut degrees, 0.0..=crate::actions::MAX_ANGLE_SNAP_DEG)
+                        .show_value(false),
+                );
+                let mut text = format!("{}", (degrees * 100.0).round() / 100.0);
+                let typed = crate::expression_input::ValueInput::new(
+                    ("move_field", "Angle snap"),
+                    crate::expression_input::ValueKind::Angle,
+                )
+                .width(62.0)
+                .show(ui, &mut text, doc);
+                if typed.changed() {
+                    if let Some(v) = crate::value::eval_angle_rad_in_doc(&text, doc) {
+                        degrees = v.to_degrees();
+                    }
+                }
+                if slider.changed() || typed.changed() {
+                    angle_snap = Some(degrees.clamp(0.0, crate::actions::MAX_ANGLE_SNAP_DEG));
+                }
+            });
+            if let Some(degrees) = angle_snap {
+                on_move_edit(MoveEdit::AngleSnap(degrees));
+            }
             picker_row(
                 ui,
                 "Start point B",
@@ -7282,6 +7321,7 @@ mod tests {
             tool: Tool::Move,
             in_drawing_workbench: false,
             move_op: Some(MoveControl {
+                angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
                 translate_mode: crate::model::MoveTranslateMode::Free,
                 bodies_focused: true,
                 start_a_rows: Vec::new(),

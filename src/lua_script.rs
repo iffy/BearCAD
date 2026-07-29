@@ -3087,6 +3087,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #917: how far apart the Move tool's rotation candidates sit, in degrees (0–90).
+    api.set(
+        "angle_snap",
+        lua.create_function(|lua, degrees: f32| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetMoveAngleSnap { degrees }) }
+        })?,
+    )?;
+
     // #906: the joint preview's sweep, app-wide.
     api.set(
         "animate_joints",
@@ -4944,7 +4953,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping",
+            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "touch",
             "move", "click", "move_ground", "click_ground",
@@ -7511,6 +7520,22 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
+    }
+
+    /// #917: the Move tool's rotation candidates sit this far apart, in degrees — 90 to
+    /// begin with, and clamped to 0–90 however it's set.
+    #[test]
+    fn lua_move_angle_snap_clamps_to_the_range() {
+        assert_eq!(
+            AppState::default().move_angle_snap_deg,
+            crate::actions::MAX_ANGLE_SNAP_DEG
+        );
+        let state = run_lua("bearcad.ui.angle_snap(45)");
+        assert_eq!(state.move_angle_snap_deg, 45.0);
+        let state = run_lua("bearcad.ui.angle_snap(120)");
+        assert_eq!(state.move_angle_snap_deg, 90.0, "clamped to 90");
+        let state = run_lua("bearcad.ui.angle_snap(-10)");
+        assert_eq!(state.move_angle_snap_deg, 0.0, "and to 0");
     }
 
     /// #909: the shape calls place primitive solids straight into 3D — each its own body,

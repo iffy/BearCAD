@@ -71,7 +71,10 @@ on its long edge. Nothing is left to choose.
 The tool moves you along as you go: pick a body and it's ready for the start point, then the
 end point, then straight on to **Start point B** in case you want the turn too, and then to
 **Start point C** for the spin. Click any picker to jump back to it. The pane labels the
-B and C rows **Rotation** — those four points turn the part, the A pair moves it.
+B and C rows **Rotation** — those four points turn the part, the A pair moves it — and
+**Angle snap** at the top of that section sets how far apart the blue candidate dots sit:
+90° offers the six axis directions, 45° offers the diagonals too. Drag the slider or type
+the angle.
 
 ## Help
 

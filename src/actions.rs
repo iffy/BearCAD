@@ -234,6 +234,9 @@ impl Tool {
 /// Where the first click of the rectangle tool lands (#532): a corner (drag to the opposite
 /// corner — the classic behavior) or the centre (drag to a corner, the rectangle growing
 /// symmetrically).
+/// The coarsest angle snap (#917) — and the default: the six axis directions.
+pub const MAX_ANGLE_SNAP_DEG: f32 = 90.0;
+
 /// Which of a shape's dimensions a value input drives (#909).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShapeDimension {
@@ -2103,6 +2106,8 @@ pub enum Action {
         body: RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// The Move tool's rotation-candidate spacing in degrees (#917), clamped to 0–90.
+    SetMoveAngleSnap(f32),
     /// Choose which shape the Create Shape tool places (#909); repeated presses of the
     /// tool's shortcut cycle through them.
     SetShapeKind { kind: crate::model::PrimitiveKind },
@@ -2918,6 +2923,10 @@ pub struct AppState {
     /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
     /// inside) the viewport re-frames the camera with a short animation. UI-only state.
     pub auto_zoom: bool,
+    /// The rotation candidates' angular spacing (#917), in degrees: how far apart the dots
+    /// on the Move tool's End-point-B sphere and End-point-C circle sit. Sticky across
+    /// moves like the snapping toggle, clamped to `0..=MAX_ANGLE_SNAP_DEG`.
+    pub move_angle_snap_deg: f32,
     /// Joint preview animation (#906): while a joint is created or edited, its ghost sweeps
     /// through the joint's range. One app-wide switch — turning it off on any joint's pane
     /// turns it off for every joint — on to begin with. UI-only state, never persisted.
@@ -3112,6 +3121,7 @@ impl Default for AppState {
         Self {
             auto_zoom: false,
             animate_joints: true,
+            move_angle_snap_deg: MAX_ANGLE_SNAP_DEG,
             help_mode: false,
             settings_open: false,
             dimension_param_name: String::new(),
@@ -11856,6 +11866,10 @@ label_hidden: false,
                         }
                     };
                 self.create_sweep(sketch, faces, path, mode)
+            }
+            Action::SetMoveAngleSnap(degrees) => {
+                self.move_angle_snap_deg = degrees.clamp(0.0, MAX_ANGLE_SNAP_DEG);
+                ActionResult::Ok
             }
             Action::SetShapeKind { kind } => {
                 self.shape_kind = kind;
