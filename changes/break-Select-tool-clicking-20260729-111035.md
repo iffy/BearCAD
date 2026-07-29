@@ -1,0 +1,1 @@
+Select tool: clicking a body's flat face now selects the whole body. Edges and corners still win over the body; the face itself is reachable through the Selection Exploder, which fans the body as a leaf of its own.

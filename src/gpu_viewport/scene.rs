@@ -3250,6 +3250,8 @@ impl<'a> SceneMesh<'a> {
             // A constraint's hover highlight is its badge glowing in the 2D annotation overlay
             // (#568), not a world-geometry marker — nothing to push into the 3D scene here.
             PickTargetKind::Constraint(_) => {}
+            // A whole body (#902) recolors in the main pass, like a hovered body row.
+            PickTargetKind::Body(_) => {}
             // An analytic sketchable face (#625): same fill + border a face-picking tool's own
             // hover uses.
             PickTargetKind::SketchFace(face) => {

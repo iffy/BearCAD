@@ -20,8 +20,9 @@ pans, the wheel zooms, clicking picks.
 - **Lines and edges** — in sketches and on bodies. A smooth curved edge — like the
   circular rim of a revolved body — picks as **one whole curve**: click anywhere along it
   and the entire curve highlights and selects as a single edge.
-- **Faces** — of bodies and construction planes.
-- **Whole bodies** — in the viewport or the Elements pane.
+- **Whole bodies** — click any flat face of a body to select the body. Edges and corners
+  win over the body they belong to.
+- **Faces** — of construction planes, and of bodies through the Selection Exploder.
 
 You can't select things hidden behind a body.
 

@@ -2260,6 +2260,13 @@ modeled on SolveSpace (https://solvespace.com).
   loupe previews all draw the full chain (`body_edge_curve_chain`, endpoint-matched by proximity
   since selection geometry round-trips the coarser `quantize_body_point`). The exploder crowd
   dedupes a curve's facets into a single candidate the same way.
+- **Whole-body selection with the Select tool (#902):** outside sketch mode, clicking a body's
+  flat **face** selects the **whole body** — bodies outrank faces — while an **edge** or a
+  **corner** still outranks the body it belongs to. Hover follows the click: a face under the
+  cursor recolors the whole body. The face itself stays reachable through the Selection Exploder,
+  whose crowd fans a `PickTargetKind::Body` leaf (one per body under the cursor, grouped ahead of
+  its faces) alongside each face/edge/corner leaf; only the Select tool takes that leaf. The
+  Constraint and Dimension tools keep picking the face itself.
 - **Selection Exploder (#551):** pressing **Space** — when no field has the keyboard, so a
   space typed into an expression stays in the expression (#794) — fans the crowd of pickable
   things inside the
@@ -2419,7 +2426,8 @@ modeled on SolveSpace (https://solvespace.com).
   when the focused picker's accepted types exclude edges, faces, and vertices — so the
   body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,
   select a whole body by clicking anywhere on it (edge, corner, or flat face); the Select tool,
-  which accepts sub-elements, picks the edge/vertex/face instead. Regardless of that, a body
+  which accepts sub-elements, picks the edge or corner instead (its **face** picks resolve to the
+  whole body, #902). Regardless of that, a body
   **clicked in the Elements pane** (or otherwise selected) always feeds the active body-set
   tool's picker — so you can gather bodies from the pane even for tools where the viewport is
   picking sub-elements.

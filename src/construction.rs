@@ -115,9 +115,9 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         | PickTargetKind::ConstructionPlane(_)
         | PickTargetKind::Ground(_)
         | PickTargetKind::SketchFace(_) => PlaneAnchorSource::Face,
-        // A constraint badge is never a plane anchor (it only reaches the exploder, #568); classify
-        // it as a point so the arm is total.
-        PickTargetKind::Constraint(_) => PlaneAnchorSource::Point,
+        // Neither a constraint badge (#568) nor a whole body (#902) is a plane anchor — both only
+        // reach the exploder; classify them as a point so the arm is total.
+        PickTargetKind::Constraint(_) | PickTargetKind::Body(_) => PlaneAnchorSource::Point,
     }
 }
 
@@ -755,6 +755,7 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         PickTargetKind::BodyEdge { .. }
         | PickTargetKind::BodyFace { .. }
         | PickTargetKind::BodyVertex { .. }
+        | PickTargetKind::Body(_)
         | PickTargetKind::GlobalAxis(_)
         | PickTargetKind::Ground(_) => None,
     }
@@ -1296,6 +1297,11 @@ pub enum PickTargetKind {
         body: usize,
         position: Vec3,
     },
+    /// A **whole** solid body (#902). The Select tool resolves a click on a body's flat face to
+    /// this — bodies outrank faces, while edges and corners still outrank bodies — and the
+    /// Selection Exploder fans it as a leaf of its own, so the face under it stays reachable.
+    /// Carries only the body index: everything else resolves from the document.
+    Body(usize),
     GlobalAxis(GlobalAxis),
     ConstructionPlane(usize),
     Ground(Vec3),
@@ -1405,7 +1411,8 @@ impl PickOcclusion {
             }
             PickTargetKind::BodyEdge { body, .. }
             | PickTargetKind::BodyFace { body, .. }
-            | PickTargetKind::BodyVertex { body, .. } => {
+            | PickTargetKind::BodyVertex { body, .. }
+            | PickTargetKind::Body(body) => {
                 doc.bodies.get(*body).is_some_and(|b| !b.shadow)
                     && vis.effective_visible(doc, SceneElement::Body(*body))
             }
@@ -1827,8 +1834,18 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
             })
         }
         PickTargetKind::Constraint(index) => Some(SceneElement::Constraint(*index)),
+        // The whole body (#902).
+        PickTargetKind::Body(index) => Some(SceneElement::Body(*index)),
         _ => None,
     }
+}
+
+/// Every feature edge of a body's solid mesh (#902), in world space — what a whole-body
+/// hover/loupe draws. Empty when the body doesn't mesh.
+pub fn body_feature_edges(doc: &Document, body: usize) -> Vec<(Vec3, Vec3)> {
+    crate::extrude::body_solid_mesh(doc, body)
+        .map(|solid| crate::gpu_viewport::solid_mesh_unique_edges(&solid))
+        .unwrap_or_default()
 }
 
 /// World boundary loop of an analytic sketchable face (#625), for the exploder's highlights
@@ -1940,6 +1957,13 @@ pub fn draw_pick_highlight(
         // driven separately via `draw_constraint_icons`'s hovered set — nothing to draw in the
         // world-geometry layer here.
         PickTargetKind::Constraint(_) => {}
+        // The whole body (#902): every feature edge of its mesh lights up, so it reads as the
+        // body rather than one of its faces.
+        PickTargetKind::Body(body) => {
+            for (a, b) in body_feature_edges(doc, body) {
+                draw_segment_highlight(painter, project, a, b, color);
+            }
+        }
         // An analytic face (#625): outline its boundary loop.
         PickTargetKind::SketchFace(face) => {
             if let Some(pts) = sketch_face_boundary_world(doc, &face) {
@@ -2813,6 +2837,31 @@ pub fn collect_pick_candidates(
         if pickable(&kind) {
             raw.push((kind, centroid, dist));
         }
+    }
+
+    // The whole bodies (#902): one candidate per body already represented in the crowd by a
+    // face, edge, or corner, anchored at its nearest of those — so the exploder always offers
+    // "the body" next to "this face of it".
+    let mut bodies: std::collections::BTreeMap<usize, (Vec3, f32)> =
+        std::collections::BTreeMap::new();
+    for (kind, anchor, dist) in &raw {
+        let bi = match kind {
+            PickTargetKind::BodyEdge { body, .. }
+            | PickTargetKind::BodyFace { body, .. }
+            | PickTargetKind::BodyVertex { body, .. } => *body,
+            _ => continue,
+        };
+        bodies
+            .entry(bi)
+            .and_modify(|e| {
+                if *dist < e.1 {
+                    *e = (*anchor, *dist);
+                }
+            })
+            .or_insert((*anchor, *dist));
+    }
+    for (bi, (anchor, dist)) in bodies {
+        raw.push((PickTargetKind::Body(bi), anchor, dist));
     }
 
     // Dedupe per distinct thing (keeping the nearest touch), then order nearest-first.
@@ -3844,6 +3893,34 @@ mod tests {
             normal: -Vec3::Z,
         });
         assert_ne!(a, c, "parallel faces at different depths must be distinct");
+    }
+
+    /// #902: a whole body is its own pick kind, mapping to `SceneElement::Body`.
+    #[test]
+    fn body_pick_becomes_the_whole_body_element() {
+        use crate::hierarchy::SceneElement;
+        assert_eq!(
+            scene_element_from_pick(&PickTargetKind::Body(4)),
+            Some(SceneElement::Body(4))
+        );
+    }
+
+    /// #902: the crowd fans the **whole body** alongside its faces/edges/corners, so the
+    /// exploder can select either the body or the face under the cursor.
+    #[test]
+    fn collect_pick_candidates_includes_the_whole_body() {
+        let doc = box_body_doc();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cands = collect_pick_candidates(Pos2::new(5.0, 5.0), &project, &doc, Vec3::ZERO, None);
+        assert_eq!(
+            cands
+                .iter()
+                .filter(|c| matches!(c.kind, PickTargetKind::Body(0)))
+                .count(),
+            1,
+            "exactly one whole-body candidate: {:?}",
+            cands.iter().map(|c| &c.kind).collect::<Vec<_>>()
+        );
     }
 
     /// #556: the crowd includes every body face near the cursor — front and back — as distinct

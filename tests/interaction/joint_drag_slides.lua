@@ -33,7 +33,8 @@ local before = bearcad.body_stats(1).bbox.min[2]
 bearcad.ui.click_ground(55, 5)
 bearcad.ui.wait(5)
 local sel = bearcad.selection()
-assert(#sel == 1, "the click should select the slab's face, got " .. #sel)
+assert(#sel == 1 and sel[1].kind == "body",
+  "the click should select the slab, got " .. (#sel > 0 and sel[1].kind or "nothing"))
 
 -- Dragging the selected slab slides it through the joint; the 20 mm limit stops a 40 mm
 -- pull at 20.

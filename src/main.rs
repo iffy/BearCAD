@@ -1275,6 +1275,9 @@ fn exploder_tool_accepts(tool: Tool, kind: &construction::PickTargetKind) -> boo
         _ if matches!(kind, K::Constraint(_)) => {
             matches!(tool, Tool::Select | Tool::Constraint | Tool::Dimension)
         }
+        // A whole body (#902) is the Select tool's own leaf — the other tools reach a body
+        // through their own kinds (a face, an edge) or their pickers.
+        _ if matches!(kind, K::Body(_)) => tool == Tool::Select,
         // Analytic face candidates exist for the face-picking tools; everything else keeps its
         // own kinds (a Select fan already offers the same face as a `BodyFace`).
         _ if matches!(kind, K::SketchFace(_)) => false,
@@ -1400,16 +1403,18 @@ fn build_spatial_tree(idxs: &[usize], pts: &[egui::Pos2], max_children: usize) -
 fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
     use construction::PickTargetKind as K;
     match kind {
-        K::BodyFace { .. } | K::SketchFace(_) => 0,
+        // Whole bodies first (#902): the coarsest thing under the cursor, ahead of its faces.
+        K::Body(_) => 0,
+        K::BodyFace { .. } | K::SketchFace(_) => 1,
         // Edges: sketch line segments and body feature edges are one "edges" group — a sketch line
         // and a shape edge are the same kind of thing for the exploder's grouping.
-        K::BodyEdge { .. } | K::Line(_) => 1,
-        K::Circle(_) => 2,
-        K::Point(_) | K::BodyVertex { .. } => 3, // vertices (sketch points + body corners)
-        K::ConstructionPlane(_) => 4,
-        K::GlobalAxis(_) => 5,
-        K::Ground(_) => 6,
-        K::Constraint(_) => 7, // annotation badges, grouped after the geometry they govern
+        K::BodyEdge { .. } | K::Line(_) => 2,
+        K::Circle(_) => 3,
+        K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
+        K::ConstructionPlane(_) => 5,
+        K::GlobalAxis(_) => 6,
+        K::Ground(_) => 7,
+        K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
     }
 }
 
@@ -1558,6 +1563,11 @@ fn fan_reach(doc: &model::Document, kind: &construction::PickTargetKind, anchor:
             .map(|(a, b)| (a + b) * 0.5)
             .unwrap_or(anchor),
         PK::BodyEdge { a, b, .. } => further(*a, *b),
+        // A whole body (#902) aims its loupe at the body's centre.
+        PK::Body(bi) => crate::extrude::body_solid_mesh(doc, *bi)
+            .and_then(|s| s.bounds())
+            .map(|(min, max)| (min + max) * 0.5)
+            .unwrap_or(anchor),
         PK::BodyFace { triangles, .. } => {
             let (sum, n) = triangles.iter().flatten().fold((Vec3::ZERO, 0u32), |(s, n), p| {
                 (s + *p, n + 1)
@@ -1908,6 +1918,12 @@ fn draw_pick_target_loupe(
         PK::ConstructionPlane(_) | PK::Ground(_) => {
             if is_highlight {
                 dot(anchor, width + 1.0);
+            }
+        }
+        // A whole body (#902): its feature edges, so the loupe reads as the entire shape.
+        PK::Body(bi) => {
+            for (a, b) in construction::body_feature_edges(doc, *bi) {
+                seg(a, b);
             }
         }
         // An analytic face (#625): its boundary loop, outline-only (matching a context
@@ -13474,8 +13490,24 @@ fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<usize> {
     match kind {
         construction::PickTargetKind::BodyEdge { body, .. }
         | construction::PickTargetKind::BodyVertex { body, .. }
-        | construction::PickTargetKind::BodyFace { body, .. } => Some(*body),
+        | construction::PickTargetKind::BodyFace { body, .. }
+        | construction::PickTargetKind::Body(body) => Some(*body),
         _ => None,
+    }
+}
+
+/// What the **Select tool** selects for a pick, outside sketch mode (#902): a click on a body's
+/// flat face takes the **whole body** — bodies outrank faces — while an edge or a corner still
+/// outranks the body it belongs to. The face itself stays reachable through the Selection
+/// Exploder, which fans body and face as separate leaves.
+fn select_tool_element_from_pick(
+    kind: &construction::PickTargetKind,
+) -> Option<hierarchy::SceneElement> {
+    match kind {
+        construction::PickTargetKind::BodyFace { body, .. } => {
+            Some(hierarchy::SceneElement::Body(*body))
+        }
+        other => scene_element_from_pick(other),
     }
 }
 
@@ -14266,6 +14298,9 @@ fn resolve_viewport_hover_highlight(
                     }
                 }
             }
+            // Outside a sketch the Select tool hovers the **whole body** over its faces (#902),
+            // matching what the click selects.
+            let whole_body = tool == Tool::Select && sketch_session.is_none();
             if let Some(t) = t {
                 let allowed = match sketch_session {
                     // In a sketch, only that sketch's own geometry glows (#742).
@@ -14277,15 +14312,27 @@ fn resolve_viewport_hover_highlight(
                     }
                 };
                 if allowed {
+                    if let (true, construction::PickTargetKind::BodyFace { body, .. }) =
+                        (whole_body, &t.kind)
+                    {
+                        return Some(gpu_viewport::ViewportHoverHighlight::Element(
+                            SceneElement::Body(*body),
+                        ));
+                    }
                     return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind));
                 }
             }
             if sketch_session.is_some() {
                 return None;
             }
-            crate::face::pick_body_face(pp, project, doc, cam.eye())
-                .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
-                .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
+            let face = crate::face::pick_body_face(pp, project, doc, cam.eye())
+                .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))?;
+            match (whole_body, body_index_from_pick(&face)) {
+                (true, Some(bi)) => Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    SceneElement::Body(bi),
+                )),
+                _ => Some(gpu_viewport::ViewportHoverHighlight::PickTarget(face)),
+            }
         }
         // Move tool with a point picker focused (#659): the click is for a point, so hover
         // shows the exact candidate POINT (#739) — the corner, the edge's midpoint, or the
@@ -20723,7 +20770,14 @@ impl App {
                     } else if let Some(target) =
                         resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
                     {
-                        let element = scene_element_from_pick(&target.kind).filter(|element| {
+                        // Outside a sketch the Select tool resolves a face to its whole body
+                        // (#902); the Constraint/Dimension tools keep picking the face itself.
+                        let resolve = if self.state.tool == Tool::Select && sketch_only.is_none() {
+                            select_tool_element_from_pick
+                        } else {
+                            scene_element_from_pick
+                        };
+                        let element = resolve(&target.kind).filter(|element| {
                             sketch_only.is_none_or(|sketch| {
                                 element_in_sketch(&self.state.doc, sketch, element)
                             })
@@ -25427,6 +25481,47 @@ mod tests {
         );
         assert_eq!(body_index_from_pick(&PickTargetKind::Line(0)), None);
         assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(0)), None);
+    }
+
+    /// #902: with the Select tool a click on a body's flat face selects the **whole body** —
+    /// bodies outrank faces — while an edge or a corner still outranks the body.
+    #[test]
+    fn select_tool_picks_the_body_for_a_face_but_not_for_an_edge() {
+        use super::select_tool_element_from_pick;
+        use crate::construction::PickTargetKind;
+        assert_eq!(
+            select_tool_element_from_pick(&PickTargetKind::BodyFace {
+                body: 2,
+                triangles: vec![],
+                normal: Vec3::Z,
+            }),
+            Some(SceneElement::Body(2))
+        );
+        assert!(matches!(
+            select_tool_element_from_pick(&PickTargetKind::BodyEdge {
+                body: 2,
+                a: Vec3::ZERO,
+                b: Vec3::X,
+            }),
+            Some(SceneElement::BodyEdge { body: 2, .. })
+        ));
+        assert!(matches!(
+            select_tool_element_from_pick(&PickTargetKind::BodyVertex {
+                body: 2,
+                position: Vec3::ZERO,
+            }),
+            Some(SceneElement::BodyVertex { body: 2, .. })
+        ));
+        // The exploder's own body leaf resolves the same way.
+        assert_eq!(
+            select_tool_element_from_pick(&PickTargetKind::Body(7)),
+            Some(SceneElement::Body(7))
+        );
+        // Sketch geometry is untouched.
+        assert_eq!(
+            select_tool_element_from_pick(&PickTargetKind::Line(3)),
+            Some(SceneElement::Line(3))
+        );
     }
 
     fn test_viewport_rect() -> egui::Rect {

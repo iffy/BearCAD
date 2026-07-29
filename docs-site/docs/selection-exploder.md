@@ -27,7 +27,9 @@ which keeps a crowd that all leans one way fanned out on that side.
 - Press **Space** or **Esc**, or click empty space, to dismiss.
 
 It works with every tool and every kind of thing — vertices, lines, circles, body edges and
-faces, even constraint badges. The camera holds still while the fan is open.
+faces, whole bodies, even constraint badges. The camera holds still while the fan is open.
+It's how you pick one **face** of a body with the Select tool, which otherwise selects the
+whole body.
 
 ## See also
 
