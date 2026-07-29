@@ -38,11 +38,12 @@ local cy = (stats.bbox.min[2] + stats.bbox.max[2]) / 2
 assert(math.abs(cx - 40) < 0.2, "the centre snapped to x = 40, got " .. cx)
 assert(math.abs(cy - 20) < 0.2, "the centre snapped to y = 20, got " .. cy)
 
--- With snapping off the same click lands where the cursor really is.
+-- With snapping off a click lands where the cursor really is. Well clear of both bodies,
+-- so the ground is what it anchors on.
 bearcad.ui.snapping(false)
 bearcad.ui.tool("shape")
 bearcad.ui.wait(3)
-bearcad.ui.click_ground(41.5, 21.5)
+bearcad.ui.click_ground(41.5, -20)
 bearcad.ui.wait(4)
 bearcad.ui.type("5")
 bearcad.ui.wait(4)

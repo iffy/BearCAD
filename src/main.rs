@@ -9627,8 +9627,18 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         raw: Vec3,
     ) -> Vec3 {
+        self.shape_snap_candidate(pp, project).unwrap_or(raw)
+    }
+
+    /// The point the Shape tool's snapping would take under the cursor (#913), if any —
+    /// what the placement uses and what the viewport rings (#931).
+    fn shape_snap_candidate(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> Option<Vec3> {
         if !self.state.snapping_enabled {
-            return raw;
+            return None;
         }
         let radius = touch::hit(construction::POINT_PICK_RADIUS_PX);
         let near = |world: Vec3| -> Option<f32> {
@@ -9657,7 +9667,36 @@ impl App {
                 consider((a + b) * 0.5);
             }
         }
-        best.map(|(_, p)| p).unwrap_or(raw)
+        best.map(|(_, p)| p)
+    }
+
+    /// Ring the snap the Shape tool is holding (#931) — the same cyan ring and dot the
+    /// sketch tools draw, so a corner or midpoint reads as caught before the click.
+    fn draw_shape_snap_indicator(
+        &self,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+    ) {
+        if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
+            return;
+        }
+        // Only while a click would still take it: once the shape is fully sized, snapping
+        // has nothing left to catch.
+        if self
+            .state
+            .creating_shape
+            .as_ref()
+            .is_some_and(|c| c.phase == actions::ShapePhase::Done)
+        {
+            return;
+        }
+        let Some(pp) = pointer_screen else { return };
+        let Some(world) = self.shape_snap_candidate(pp, project) else { return };
+        let Some(sp) = project(world) else { return };
+        let color = egui::Color32::from_rgb(120, 215, 230);
+        painter.circle_stroke(sp, 9.0, egui::Stroke::new(2.0, color));
+        painter.circle_filled(sp, 4.0, color);
     }
 
     /// The rotation surface the Move tool shows below `ANGLE_SNAP_SURFACE_DEG` (#920): the
@@ -21739,6 +21778,7 @@ impl App {
             self.handle_shape_tool_keys(ui);
             self.handle_shape_placement(ui, &project, pointer_screen, &cam, viewport, &vp);
             self.draw_shape_dimension_mirrors(&painter, &project, pointer_screen);
+            self.draw_shape_snap_indicator(&painter, &project, pointer_screen);
         }
 
         if self.state.tool == Tool::Loft {

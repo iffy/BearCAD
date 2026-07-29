@@ -43,7 +43,8 @@ edges they drive, with the one you're setting framed in amber. **Enter** creates
 progress.
 
 **Snapping** — the context pane's toggle, shared with the drawing tools — pulls a
-placement click onto the nearest body corner or edge midpoint.
+placement click onto the nearest body corner or edge midpoint, ringed in cyan like the
+snaps in a sketch.
 
 ## Editing
 

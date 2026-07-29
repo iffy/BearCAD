@@ -1583,10 +1583,12 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   away from the cursor as it moves. **Enter**
   in a shape field creates it, like the sketch Rectangle's typed dimensions; the height is
   otherwise dragged along the normal (`offset_from_normal_drag`).
-  **Snapping (#913):** the tool joins the sticky **Snapping** toggle (`AppState::snapping_enabled`,
+  **Snapping (#913/#931):** the tool joins the sticky **Snapping** toggle (`AppState::snapping_enabled`,
   shared with the drawing tools, `bearcad.ui.snapping(bool)`). While it's on, the anchor and
   base clicks land on the nearest body **corner** or edge **midpoint** inside the pick radius
-  instead of the raw point on the anchor plane; off, the cursor's own point stands.
+  instead of the raw point on the anchor plane; off, the cursor's own point stands. The point
+  it has caught is **ringed in the viewport** exactly as the sketch tools ring theirs — the
+  same cyan ring and dot — so it reads before the click (#931).
 - **Shapes** *(model, #909)* — cuboids, cylinders and spheres placed straight into 3D, with
   no sketch behind them. A `Primitive { kind, origin, normal, u_axis, width, depth, height,
   radius, name }` in `Document::primitives` stores the anchor frame — the point placed on,
