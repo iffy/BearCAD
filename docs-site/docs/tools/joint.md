@@ -31,6 +31,8 @@ through its range, showing the motion before you commit.
 
 ## The kinds
 
+![All eight joint kinds, each pair posed through its joint](/img/screenshots/joint-kinds-all.png)
+
 | | Kind | Motion |
 |---|---|---|
 | <img src={useBaseUrl("/img/icons/joint_rigid.svg")} width="22" /> | Rigid | None — the parts move as one. Takes any number of parts. |

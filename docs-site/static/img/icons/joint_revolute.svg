@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Revolute: a hinge pin with a swing arc. -->
+  <circle cx="16" cy="18" r="3.5" />
+  <line x1="16" y1="18" x2="27" y2="18" />
+  <path d="M27 18 a11 11 0 0 0 -5.5 -9.5" />
+  <polyline points="20,5.5 21.5,8.5 24.5,7.5" />
+</svg>

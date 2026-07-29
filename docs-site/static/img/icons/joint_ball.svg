@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Ball: a sphere seated in its socket. -->
+  <circle cx="16" cy="14" r="6" />
+  <path d="M5 18 a11 8 0 0 0 22 0" />
+  <line x1="16" y1="20" x2="16" y2="27" />
+</svg>

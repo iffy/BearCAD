@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Screw: a threaded shaft whose turn advances it. -->
+  <line x1="6" y1="12" x2="26" y2="12" />
+  <line x1="6" y1="20" x2="26" y2="20" />
+  <path d="M8 12 l4 8 M14 12 l4 8 M20 12 l4 8" />
+  <path d="M26 12 a4 4 0 0 1 0 8" />
+  <polyline points="24,6.5 27,9 24.5,11" />
+</svg>
