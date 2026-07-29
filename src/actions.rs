@@ -6324,7 +6324,38 @@ impl AppState {
                     self.creating_joint = None;
                 }
                 if tool == Tool::Joint && self.creating_joint.is_none() {
-                    self.creating_joint = Some(CreatingJoint::default());
+                    // Parts already selected walk straight in (#900): select two or more
+                    // things, pick the Joint tool, and they're the members — the
+                    // tie-together flow without re-picking.
+                    let mut cj = CreatingJoint::default();
+                    for element in self.scene_selection.iter() {
+                        let member = match element {
+                            crate::hierarchy::SceneElement::Body(bi) => {
+                                match self.doc.bodies.get(bi).map(|b| &b.source) {
+                                    Some(crate::model::BodySource::UnitInstance(ui)) => {
+                                        Some(crate::model::JointRef::UnitInstance(*ui))
+                                    }
+                                    Some(_) if !self.doc.bodies[bi].shadow => {
+                                        Some(crate::model::JointRef::Body(bi))
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            crate::hierarchy::SceneElement::Component(ci) => {
+                                Some(crate::model::JointRef::Component(ci))
+                            }
+                            crate::hierarchy::SceneElement::UnitInstance(ui) => {
+                                Some(crate::model::JointRef::UnitInstance(ui))
+                            }
+                            _ => None,
+                        };
+                        if let Some(member) = member {
+                            if !cj.members.contains(&member) {
+                                cj.members.push(member);
+                            }
+                        }
+                    }
+                    self.creating_joint = Some(cj);
                 }
                 if self.creating_mirror.is_some() && tool != Tool::Mirror {
                     self.creating_mirror = None;

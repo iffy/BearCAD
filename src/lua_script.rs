@@ -7366,6 +7366,57 @@ mod tests {
         assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
     }
 
+    /// #900: a rigid joint takes more than two parts — a rigid group — and the pane label
+    /// says so. Tying things together never moves them, and selected parts walk straight
+    /// into the tool.
+    #[test]
+    fn lua_rigid_group_ties_three_parts() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.rect{ x = 80, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {8, 9, 10, 11}, distance = 5 }
+            bearcad.joint{ parts = {0, 1, 2}, kind = "rigid" }
+            -- A slider with three parts is refused: only rigid ties more than two.
+            local ok, err = pcall(function()
+                bearcad.joint{ parts = {0, 1, 2}, kind = "slider" }
+            end)
+            assert(not ok and tostring(err):find("rigid"), tostring(err))
+            "#,
+        );
+        assert_eq!(state.doc.joints[0].members.len(), 3);
+        assert_eq!(
+            crate::names::node_label(&state.doc, crate::hierarchy::HierarchyNode::Joint(0)),
+            "Rigid group 0"
+        );
+        // Tying in place moves nothing: every driven pose is identity.
+        for bi in 1..=2 {
+            let pose = crate::joints::body_joint_pose(&state.doc, bi).unwrap();
+            assert!(
+                pose.abs_diff_eq(glam::Mat4::IDENTITY, 1e-5),
+                "body {bi} must stay put"
+            );
+        }
+        // Selected parts walk straight into the tool (#900).
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.exit_sketch()
+            bearcad.select({ kind = "body", index = 0 })
+            bearcad.select({ kind = "body", index = 1 }, true)
+            bearcad.ui.tool("joint")
+            "#,
+        );
+        let cj = state.creating_joint.as_ref().expect("tool armed");
+        assert_eq!(cj.members.len(), 2, "the selection seeds the members");
+    }
+
     /// #649/#650: an **edge midpoint** works as either point too.
     #[test]
     fn lua_move_snaps_from_an_edge_midpoint() {

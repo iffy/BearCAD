@@ -11723,7 +11723,13 @@ impl eframe::App for App {
                                 }
                             }
                             context::JointEdit::SwapBase => {
-                                cj.base = if cj.base == 0 && cj.members.len() > 1 { 1 } else { 0 };
+                                // Cycle the held side through the members — a rigid
+                                // group (#900) can have more than two.
+                                cj.base = if cj.members.is_empty() {
+                                    0
+                                } else {
+                                    (cj.base + 1) % cj.members.len()
+                                };
                             }
                             context::JointEdit::Position(v) => cj.position = v,
                             context::JointEdit::Position2(v) => cj.position2 = v,
