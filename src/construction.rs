@@ -2633,6 +2633,21 @@ pub fn nearest_body_vertex(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
 ) -> Option<(PickTargetKind, f32)> {
+    nearest_body_vertex_where(screen, project, doc, |_, _| true)
+}
+
+/// [`nearest_body_vertex`] restricted to the corners `accept` allows (#908).
+///
+/// The filter belongs *inside* the search, not after it: a box seen head-on projects its
+/// near and far corners onto the same pixel, so filtering the single winner afterwards
+/// throws the pick away whenever the hidden corner happened to be found first — the corner
+/// then reads as unpickable and the click lands on an edge instead.
+pub fn nearest_body_vertex_where(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    accept: impl Fn(&PickTargetKind, Vec3) -> bool,
+) -> Option<(PickTargetKind, f32)> {
     let mut best: Option<(PickTargetKind, f32)> = None;
     for (bi, body) in doc.bodies.iter().enumerate() {
         if body.deleted || body.shadow {
@@ -2647,8 +2662,14 @@ pub fn nearest_body_vertex(
                     continue;
                 };
                 let dist = (screen - sp).length();
-                if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX) && best.as_ref().is_none_or(|(_, d)| dist < *d) {
-                    best = Some((PickTargetKind::BodyVertex { body: bi, position: p }, dist));
+                if dist > crate::touch::hit(POINT_PICK_RADIUS_PX)
+                    || best.as_ref().is_some_and(|(_, d)| dist >= *d)
+                {
+                    continue;
+                }
+                let kind = PickTargetKind::BodyVertex { body: bi, position: p };
+                if accept(&kind, p) {
+                    best = Some((kind, dist));
                 }
             }
         }
@@ -3893,6 +3914,28 @@ mod tests {
             normal: -Vec3::Z,
         });
         assert_ne!(a, c, "parallel faces at different depths must be distinct");
+    }
+
+    /// #908: seen head-on, a box's near and far corners project onto the same pixel — the
+    /// visible one must win, not whichever the mesh happens to list first.
+    #[test]
+    fn nearest_visible_body_vertex_beats_the_hidden_one_behind_it() {
+        let doc = box_body_doc();
+        // Looking straight down -Z from above: (0,0,0) and (0,0,5) share a screen point.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(0.0, 0.0, 500.0);
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occlusion = PickOcclusion::new(&doc, &visibility, eye);
+        let picked = nearest_body_vertex_where(Pos2::new(0.0, 0.0), &project, &doc, |kind, p| {
+            occlusion.pickable(&doc, kind) && !occlusion.occluded(p)
+        });
+        match picked {
+            Some((PickTargetKind::BodyVertex { position, .. }, _)) => assert!(
+                (position.z - 5.0).abs() < 1e-4,
+                "the top corner is the pickable one, got {position}"
+            ),
+            other => panic!("expected the visible corner, got {other:?}"),
+        }
     }
 
     /// #902: a whole body is its own pick kind, mapping to `SceneElement::Body`.

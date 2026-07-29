@@ -1,5 +1,5 @@
--- #902: with the Select tool, clicking a body's flat face selects the **whole body** —
--- bodies outrank faces — while its edges still outrank the body they belong to.
+-- #902/#908: with the Select tool, clicking a body's flat face selects the **whole body**
+-- — bodies outrank faces — while its edges and corners still outrank the body.
 bearcad.new()
 bearcad.rect{ width = 50, height = 30 }
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
@@ -14,7 +14,8 @@ bearcad.ui.tool("select")
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
 bearcad.ui.camera{ target = {25, 15, 0}, distance = 220 }
-bearcad.ui.wait(5)
+-- Give the first frame after the camera move time to land before picking.
+bearcad.ui.wait(10)
 
 -- The middle of the top cap: the whole body.
 bearcad.ui.click_ground(40, 15)
@@ -33,5 +34,15 @@ assert(#sel == 1 and sel[1].kind == "body_edge",
   "clicking an edge should select the edge, got " ..
   (#sel > 0 and sel[1].kind or "nothing"))
 
-print("ok: the select tool picks a body through its face, and its edges first")
+-- And a corner outranks the edges through it, even seen head-on where the hidden
+-- corner below shares its pixel (#908).
+bearcad.clear_selection()
+bearcad.ui.click_ground(50, 30)
+bearcad.ui.wait(5)
+sel = bearcad.selection()
+assert(#sel == 1 and sel[1].kind == "body_vertex",
+  "clicking a corner should select the corner, got " ..
+  (#sel > 0 and sel[1].kind or "nothing"))
+
+print("ok: the select tool picks a body through its face, and its edges and corners first")
 bearcad.quit()

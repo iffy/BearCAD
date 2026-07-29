@@ -14218,17 +14218,13 @@ fn pickable_body_vertex(
     doc: &model::Document,
     occlusion: Option<&construction::PickOcclusion>,
 ) -> Option<construction::PickTargetKind> {
-    construction::nearest_body_vertex(pp, project, doc)
-        .filter(|(kind, _)| {
-            occlusion.is_none_or(|occ| occ.pickable(doc, kind))
-                && match kind {
-                    construction::PickTargetKind::BodyVertex { position, .. } => {
-                        occlusion.is_none_or(|occ| !occ.occluded(*position))
-                    }
-                    _ => true,
-                }
-        })
-        .map(|(kind, _)| kind)
+    // The visibility/occlusion test runs *inside* the search (#908): head-on, a body's near
+    // and far corners land on the same pixel, and filtering the winner afterwards would drop
+    // the pick whenever the hidden one was found first.
+    construction::nearest_body_vertex_where(pp, project, doc, |kind, position| {
+        occlusion.is_none_or(|occ| occ.pickable(doc, kind) && !occ.occluded(position))
+    })
+    .map(|(kind, _)| kind)
 }
 
 /// Whether the Repeat tool's **axis** picker is the focused one (#643) — the axis is unset and
