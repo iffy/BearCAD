@@ -34,6 +34,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/mirror.svg")} width="22" /> | [Mirror](/docs/tools/mirror) | — | Reflect bodies or sketch shapes across a plane or line. |
 | <img src={useBaseUrl("/img/icons/repeat.svg")} width="22" /> | [Repeat](/docs/tools/repeat) | — | Copies of bodies spaced along an axis. |
 | <img src={useBaseUrl("/img/icons/slice.svg")} width="22" /> | [Slice](/docs/tools/slice) | — | Cut bodies into fragments with planes or faces. |
+| <img src={useBaseUrl("/img/icons/joint.svg")} width="22" /> | [Joint](/docs/tools/joint) | — | Connect parts with a kinematic relationship: hinge, slider, screw, … |
 | <img src={useBaseUrl("/img/icons/dimension.svg")} width="22" /> | [Dimension](/docs/tools/dimension) | `D` | Set exact lengths, distances, and angles. |
 | <img src={useBaseUrl("/img/icons/constraint.svg")} width="22" /> | [Constraint](/docs/tools/constraint) | `C` | Relate geometry: parallel, equal, coincident, … |
 

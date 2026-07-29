@@ -113,11 +113,11 @@ The full referenced-component/assembly model above remains future work.
 
 ### 2.3 Assembly
 
-Components can be placed into an **assembly**: instances of components positioned in
-space and related by **joints/mates** (e.g. rigid, revolute, slider, coincident-face).
-Joints are themselves parametric and participate in the DAG. A document may contain
-multiple assemblies. (Detailed joint catalog: **TBD**, but at minimum rigid and revolute
-for v1.)
+Parts — bodies, components, and imported unit instances — are related by **joints**
+(#891, §3.3's Joint tool): parametric kinematic relationships that pose the driven side
+in place at recompute. The catalog covers rigid (including rigid groups of 2+ parts),
+slider, revolute, cylindrical, planar, ball, pin-slot, and screw. Path/cam joints, gear
+ratios, and belt couplings remain future work.
 
 ### 2.4 Feature
 
@@ -1141,6 +1141,67 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     Slice button; Enter commits. The draft is cleared when the tool changes or the sketch is
     exited.
   Picking side-wall faces as cutters remains a tracked follow-up (#191).
+
+- **Joint tool (#891/#894):** joins two parts — bodies, components, or unit instances
+  (`model::JointRef`) — with a kinematic relationship (`model::Joint`,
+  `Document::joints`, `ShapeKind::Joint`). A joint changes where things *are*, never
+  their shape: at recompute the **driven** side is posed **in place** (`joints::
+  resolve_joint_poses`), the way a Move's plane/image/instance targets are — in the node
+  graph the joint has **two input edges and no output edge**, reading as a relationship,
+  not a feature. Bodies pose at the presentation seam: the cached posed mesh
+  (`extrude::body_solid_mesh`) and STEP body export (`extrude::posed_body_shape`) show
+  the assembly, while feature inputs (booleans, moves) keep reading the un-jointed
+  geometry (`extrude::body_solid_mesh_unposed`) — a part that needs to be cut in its
+  jointed pose is served by an explicit Move.
+  **Kinds (#892, `model::JointKind`):** `rigid` (the only kind that ties **more than two**
+  members — a rigid group (#900) is a rigid joint with a longer member list), `slider`,
+  `revolute`, `cylindrical`, `planar` (two in-plane slides + a spin about the normal),
+  `ball` (three turns, no travel), `pin_slot` (slide along the primary axis, turn about
+  the secondary), and `screw { lead }` (turn coupled to travel by a mm-per-turn lead
+  expression).
+  **Frames (#892/#894, `model::JointFrame`):** each side carries a mating frame — an
+  origin, an axis point, and a spin-pinning point — picked with the Move tool's snap
+  pairs (start points on the driven part, end points on the base;
+  `main::JointFocus` steps one focused picker at a time) and stored as
+  `model::MovePointRef`s, body-local keys re-found on the live mesh so frames survive a
+  rebuild. The joint's transform mates the driven frame onto the base's
+  (`FA · M(position) · FB⁻¹`); unset frames mate as **identity**, so joining two parts
+  already in place moves nothing. Positions (`Joint::position`/`position2`/`position3`)
+  are expressions — mm for slides, degrees for turns — so poses are parametric.
+  **Grounded tree (#893):** one side is the **base** (default the first picked; the pane
+  swaps it), the rest are driven. Joints resolve in dependency order so chains compose;
+  a joint that would close a **loop**, or drive a part another joint already drives, is
+  refused at commit with the reason, and one that decays into that state reads through
+  document health (`document_health::mark_broken_joints`). Whatever no joint drives is
+  grounded.
+  **Limits (#896, `model::JointLimits`):** slide min/max as mm expressions or **up to a
+  face/plane** (`ExtrudeTarget` stops resolved where the joint's axis meets the target's
+  extended plane, via `extrude::target_distance`); turn min/max as signed degree
+  expressions; either end open. The motion clamp (`joints::resolve_limits`) covers every
+  kind, including the screw's coupled travel through its lead.
+  **Preview (#895):** while a joint is created or edited its ghost sweeps slowly back and
+  forth through its range (`joints::sweep_positions`) — between its limits, ±20 mm/±30°
+  where open, the full turn for a free revolute — on an eased, looping glide; rigid shows
+  the static mated pose. Committing leaves the joint at its position.
+  **Drag (#897):** with the Select tool, grabbing an already-selected driven part (its
+  face/edge/vertex counts) moves it through its joint — the cursor projects onto the
+  joint's freedom (`joints::body_drag_joint` walks rigid ties up to the nearest freedom),
+  stops at the limits, writes the number back to the position expressions, and lands as
+  one undoable edit on release. A part held by its joints refuses with the reason.
+  **Rest pose (#898):** `Joint::rest*` — captured at creation, recapturable, and reverted
+  singly or all at once from the pane's Rest row, the row's right-click menu, or
+  scripting.
+  **Presentation (#899):** a hand-drawn icon per kind (`icons::icon_for_joint_kind`), on
+  the pane row and drawn selectable in the 3D view at the joint's posed frame
+  (`joint_viewport`); clicking the badge selects the joint, hovering it glows the joined
+  parts.
+  Scripting (#901): `bearcad.joint{ a =, b = | parts = {…}, kind =, lead?, base = "a"|"b",
+  from?/to?, from_b?/to_b?, from_c?/to_c?, position?, position2?, position3?, slide_min?,
+  slide_max?, slide_min_to?, slide_max_to?, turn_min?, turn_max?, name? }`,
+  `bearcad.edit_joint{ index, … }`, `bearcad.begin_joint{ … }` (arms the tool without
+  committing, like `begin_move`), `bearcad.set_joint_rest(i)` / `bearcad.revert_joint(i)`
+  / `bearcad.revert_joints()`, and `bearcad.count("joint")`; session-command export
+  replays them all.
 
 ### 3.4 Modifying solids
 - **Fillet** and **Chamfer**, 2D sketch vertices: the tools described in §3.1 (#37/#38) —
@@ -3893,7 +3954,9 @@ sheets suitable for printing/manufacturing.
 1. Topological persistent-naming algorithm (§4.5).
 2. ~~Constraint solver implementation choice (§6.3).~~ **Resolved:** native Rust LM solver.
 3. Canonical internal units & full math function library (§5.2–5.3).
-4. Full assembly joint catalog (§2.3).
+4. ~~Full assembly joint catalog (§2.3).~~ **Resolved:** the Joint tool (§3.3, #891) —
+   eight kinds, limits, rest poses, and drag-through-joint; path/cam/gear/belt couplings
+   remain future work.
 5. OCCT binding strategy and the exact C++ shim surface (§10).
 6. Lua API module layout and function signatures (§8).
 7. Per-feature `payload` encoding in the SQLite schema (§7.3).
