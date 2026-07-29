@@ -9730,9 +9730,16 @@ impl App {
         }
     }
 
-    /// The plane a shape click lands on (#912): the body face or construction plane under the
-    /// cursor, else the ground. Returns the anchor point, the plane normal the shape grows
-    /// along, and the in-plane direction its width runs along.
+    /// The plane a shape click lands on (#912/#932): the face or construction plane under
+    /// the cursor **nearest the camera**, else the ground. Returns the anchor point, the
+    /// plane normal the shape grows along, and the in-plane direction its width runs along.
+    ///
+    /// Both kinds of face are considered and the nearer one wins: an analytic face or a
+    /// construction plane (which brings its own frame, so a cuboid's width lines up with the
+    /// plane's directions) and any body's flat **mesh** face — which is how a shape lands on
+    /// another shape, since primitives have no analytic faces of their own. Taking the
+    /// analytic one outright put shapes on a construction plane *behind* the body under the
+    /// cursor (#932).
     fn shape_anchor_frame(
         &self,
         pp: egui::Pos2,
@@ -9741,27 +9748,24 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
     ) -> Option<(Vec3, Vec3, Vec3)> {
-        // An analytic face or a construction plane first — it comes with a frame, so a
-        // cuboid's width lines up with the plane's own directions.
-        if let Some(face) = face::pick_sketch_face(pp, project, &self.state.doc, cam.eye()) {
-            if let Some(frame) = face::sketch_frame(&self.state.doc, face) {
-                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal) {
-                    return Some((hit, frame.normal, frame.u_axis));
-                }
+        let analytic = face::pick_sketch_face(pp, project, &self.state.doc, cam.eye())
+            .and_then(|f| face::sketch_frame(&self.state.doc, f))
+            .and_then(|frame| {
+                cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal)
+                    .map(|hit| (hit, frame.normal, frame.u_axis))
+            });
+        let mesh = match face::pick_body_face(pp, project, &self.state.doc, cam.eye()) {
+            Some(construction::PickTargetKind::BodyFace { triangles, normal, .. }) => {
+                let center = extrude::face_group_center(&triangles);
+                cam.ray_plane_hit(pp, viewport, vp, center, normal)
+                    .map(|hit| (hit, normal, normal.any_orthonormal_vector()))
             }
-        }
-        // Any body's flat mesh face, which is how a shape lands on another shape (#912):
-        // primitives have no analytic faces of their own.
-        if let Some(construction::PickTargetKind::BodyFace { triangles, normal, .. }) =
-            face::pick_body_face(pp, project, &self.state.doc, cam.eye())
-        {
-            let center = extrude::face_group_center(&triangles);
-            if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, center, normal) {
-                return Some((hit, normal, normal.any_orthonormal_vector()));
-            }
-        }
-        let ground = cam.ground_point(pp, viewport, vp)?;
-        Some((ground, Vec3::Z, Vec3::X))
+            _ => None,
+        };
+        nearest_anchor(cam.eye(), analytic, mesh).or_else(|| {
+            let ground = cam.ground_point(pp, viewport, vp)?;
+            Some((ground, Vec3::Z, Vec3::X))
+        })
     }
 
     /// The in-progress shape's dimensions, mirrored **in the 3D view** beside the edges they
@@ -14119,6 +14123,20 @@ fn rotation_ring_hit(
         prev = sp;
     }
     false
+}
+
+/// Whichever anchor candidate is nearer the eye (#932) — what the cursor is actually
+/// pointing at, rather than whatever kind of face was looked for first.
+fn nearest_anchor(
+    eye: Vec3,
+    a: Option<(Vec3, Vec3, Vec3)>,
+    b: Option<(Vec3, Vec3, Vec3)>,
+) -> Option<(Vec3, Vec3, Vec3)> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if (a.0 - eye).length() <= (b.0 - eye).length() { a } else { b }),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
 }
 
 /// Evaluate one of an in-progress shape's dimension expressions while placing it (#912).
@@ -26156,6 +26174,22 @@ mod tests {
         );
         assert_eq!(body_index_from_pick(&PickTargetKind::Line(0)), None);
         assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(0)), None);
+    }
+
+    /// #932: the anchor a shape lands on is whichever candidate the cursor is really
+    /// pointing at — the nearest to the eye — not whichever kind of face was looked up
+    /// first. A construction plane behind a body used to win over the body's own face.
+    #[test]
+    fn nearest_anchor_prefers_what_is_in_front() {
+        use super::nearest_anchor;
+        let eye = Vec3::new(0.0, 0.0, 100.0);
+        let near = (Vec3::new(0.0, 0.0, 40.0), Vec3::Z, Vec3::X);
+        let far = (Vec3::new(0.0, 0.0, -10.0), Vec3::Y, Vec3::X);
+        assert_eq!(nearest_anchor(eye, Some(far), Some(near)), Some(near));
+        assert_eq!(nearest_anchor(eye, Some(near), Some(far)), Some(near));
+        assert_eq!(nearest_anchor(eye, None, Some(far)), Some(far));
+        assert_eq!(nearest_anchor(eye, Some(near), None), Some(near));
+        assert_eq!(nearest_anchor(eye, None, None), None);
     }
 
     /// #902: with the Select tool a click on a body's flat face selects the **whole body** —

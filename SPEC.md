@@ -1566,10 +1566,11 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   same translucent `preview_solid` the revolve/loft ghosts use. A cuboid's ghost hangs its
   **corner** on the cursor (#929, `primitives::ghost_origin`) — its first click places a
   corner, so straddling the cursor would misread; a cylinder and a sphere are placed by their
-  centre and sit on it. Click 1 **anchors** it: on the
-  analytic face or construction plane under the cursor (which brings its own frame), else on
-  any body's flat **mesh** face (how a shape lands on another shape — primitives have no
-  analytic faces), else on the ground; the shape then grows along that plane's normal. What
+  centre and sit on it. Click 1 **anchors** it on whatever the
+  cursor is really pointing at — the candidate **nearest the eye** (#932, `nearest_anchor`):
+  the analytic face or construction plane under it (which brings its own frame), or any
+  body's flat **mesh** face (how a shape lands on another shape — primitives have no analytic
+  faces of their own), else the ground; the shape then grows along that plane's normal. What
   the next clicks set is per kind — cuboid: the opposite base corner, then the height;
   cylinder: the radius, then the height; sphere: the radius (and it's done). Each phase
   focuses its own ValueInput, so the size can be typed the moment the click lands, and a typed
