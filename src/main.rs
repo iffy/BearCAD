@@ -615,6 +615,15 @@ struct JointSelectDrag {
     start_cursor_angle: Option<f32>,
 }
 
+/// What the Move tool draws instead of candidate dots at a fine angle snap (#920).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MoveSurface {
+    /// End point B's constraint sphere.
+    Sphere { centre: Vec3, radius: f32 },
+    /// End point C's circle.
+    Circle(extrude::SpinCircle),
+}
+
 /// A press on a jointed part that hasn't become a drag yet (#903). The press itself still
 /// selects; only once the cursor leaves [`JOINT_DRAG_THRESHOLD_PX`] does the grab turn into a
 /// [`JointSelectDrag`], so a plain click can't nudge the joint (and a click on a *held* part
@@ -8438,13 +8447,15 @@ impl App {
         found.extend(axis);
         // Angle-grid spots (#918): directions every `angle snap` degrees about the world
         // axes, offered alongside the geometry-derived ones. They're mid-air, so they hang
-        // off end point A's body and each gets a guide from the pivot.
+        // off end point A's body and each gets a guide from the pivot. Below
+        // `ANGLE_SNAP_SURFACE_DEG` they'd be a cloud, so the sphere itself is shown
+        // instead (#920) and the grid stands down.
         let body = cm.end_point_a.as_ref()?.body();
-        for p in extrude::snap_angle_sphere_candidates(
-            centre,
-            radius,
-            self.state.move_angle_snap_deg,
-        ) {
+        let grid_step = self.state.move_angle_snap_deg;
+        let grid_step = (grid_step > extrude::ANGLE_SNAP_SURFACE_DEG)
+            .then_some(grid_step)
+            .unwrap_or(0.0);
+        for p in extrude::snap_angle_sphere_candidates(centre, radius, grid_step) {
             if found.iter().any(|(_, q)| (*q - p).length() < 1e-3) {
                 continue;
             }
@@ -8471,8 +8482,13 @@ impl App {
             cm.end_point_b.as_ref(),
         )?;
         // How far apart the spots sit is the Angle snap field's (#918); the first is
-        // always the no-extra-spin position.
-        let spots = circle.spots(self.state.move_angle_snap_deg);
+        // always the no-extra-spin position. Below `ANGLE_SNAP_SURFACE_DEG` the circle
+        // itself is shown instead (#920).
+        let step = self.state.move_angle_snap_deg;
+        if step <= extrude::ANGLE_SNAP_SURFACE_DEG {
+            return None;
+        }
+        let spots = circle.spots(step);
         if spots.is_empty() {
             return None;
         }
@@ -9607,6 +9623,76 @@ impl App {
             }
         }
         best.map(|(_, p)| p).unwrap_or(raw)
+    }
+
+    /// The rotation surface the Move tool shows below `ANGLE_SNAP_SURFACE_DEG` (#920): the
+    /// End-point-B constraint **sphere** or the End-point-C **circle**, as the point the
+    /// cursor lands on (snapped to the angle step) plus the geometry to draw. `None` unless
+    /// one of those pickers is armed with a fine angle snap.
+    fn move_rotation_surface(
+        &self,
+        pp: egui::Pos2,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> Option<(usize, Vec3, MoveSurface)> {
+        if self.state.tool != Tool::Move
+            || self.state.sketch_session.is_some()
+            || self.state.move_angle_snap_deg > extrude::ANGLE_SNAP_SURFACE_DEG
+        {
+            return None;
+        }
+        let cm = self.state.creating_move.as_ref()?;
+        let step = self.state.move_angle_snap_deg;
+        let body = cm.end_point_a.as_ref()?.body();
+        let (origin, dir) = cam.screen_ray(pp, viewport, vp)?;
+        match self.move_focus() {
+            MoveFocus::EndPointB => {
+                let centre = extrude::move_point_world(&self.state.doc, cm.end_point_a.as_ref()?)?;
+                let radius = extrude::snap_rotation_radius(
+                    &self.state.doc,
+                    cm.start_point_a.as_ref(),
+                    cm.start_point_b.as_ref(),
+                )?;
+                let hit = extrude::ray_sphere_point(origin, dir, centre, radius)?;
+                let snapped = centre
+                    + extrude::snap_direction_to_angle((hit - centre).normalize_or_zero(), step)
+                        * radius;
+                Some((body, snapped, MoveSurface::Sphere { centre, radius }))
+            }
+            MoveFocus::EndPointC => {
+                let circle = extrude::snap_spin_candidates(
+                    &self.state.doc,
+                    cm.start_point_a.as_ref(),
+                    cm.start_point_b.as_ref(),
+                    cm.start_point_c.as_ref(),
+                    cm.end_point_a.as_ref(),
+                    cm.end_point_b.as_ref(),
+                )?;
+                let hit = cam.ray_plane_hit(pp, viewport, vp, circle.center, circle.axis)?;
+                let out = (hit - circle.center).normalize_or_zero();
+                if out.length_squared() < 0.5 {
+                    return None;
+                }
+                // Round the spin to the step, then push back out onto the circle.
+                let angle = {
+                    let cross = circle.reference.cross(out).dot(circle.axis);
+                    let raw = cross.atan2(circle.reference.dot(out));
+                    match step > 0.01 {
+                        true => {
+                            let s = step.to_radians();
+                            (raw / s).round() * s
+                        }
+                        false => raw,
+                    }
+                };
+                let p = circle.center
+                    + glam::Quat::from_axis_angle(circle.axis, angle)
+                        * (circle.reference * circle.radius);
+                Some((body, p, MoveSurface::Circle(circle)))
+            }
+            _ => None,
+        }
     }
 
     /// The plane a shape click lands on (#912): the body face or construction plane under the
@@ -22551,6 +22637,12 @@ impl App {
             });
             (found, hovered, guides)
         };
+        // At a fine angle snap there are no dots — the sphere/circle itself is shown and
+        // the cursor's own point on it is what a click takes (#920).
+        let move_surface = pointer_screen
+            .and_then(|pp| self.move_rotation_surface(pp, &cam, viewport, &vp));
+        let move_b_hover =
+            move_b_hover.or_else(|| move_surface.map(|(body, p, _)| (body, p)));
         self.move_b_hover = move_b_hover;
         // Hovering a candidate previews the move you'd get by clicking it (#670, and end
         // point A too): the ghost is built from a copy of the in-progress move with the
@@ -22615,6 +22707,33 @@ impl App {
             .and_then(|cm| move_snap_connector(&self.state.doc, cm))
             .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR, false)])
             .unwrap_or_default();
+        // The rotation surface itself (#920): the sphere translucent, the circle as an
+        // outline ring in candidate blue.
+        let mut move_surface_solid: Option<extrude::SolidMesh> = None;
+        if let Some((_, _, surface)) = move_surface {
+            match surface {
+                MoveSurface::Sphere { centre, radius } => {
+                    move_surface_solid = Some(primitives::sphere_mesh(centre, radius));
+                }
+                MoveSurface::Circle(circle) => {
+                    let ring = extrude::snap_angle_circle_candidates(
+                        circle.center,
+                        circle.axis,
+                        circle.reference,
+                        circle.radius,
+                        3.0,
+                    );
+                    for i in 0..ring.len() {
+                        move_connector.push((
+                            ring[i],
+                            ring[(i + 1) % ring.len()],
+                            theme::MOVE_CANDIDATE,
+                            false,
+                        ));
+                    }
+                }
+            }
+        }
         // The sweep that reaches the hovered candidate (#919): for end point B the azimuth
         // and elevation arcs about the pivot, for end point C the spin about the A→B axis,
         // each labelled with its angle.
@@ -23230,7 +23349,7 @@ impl App {
             // The sweep is an animation: keep frames coming while it plays.
             ui.ctx().request_repaint();
         }
-        let scene_input = build_viewport_scene_input(
+        let mut scene_input = build_viewport_scene_input(
             doc,
             &cam,
             viewport,
@@ -23304,6 +23423,11 @@ impl App {
             sketch_mirror_ghost,
             edit_preview_meshes,
         );
+        // The rotation sphere rides the ghost-solid slot (#920) — nothing else uses it
+        // while the Move tool is up.
+        if let Some(sphere) = move_surface_solid {
+            scene_input.preview_solid = Some(sphere);
+        }
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
             self.gpu_viewport && gpu_viewport::paint(render_state, &painter, viewport, scene);

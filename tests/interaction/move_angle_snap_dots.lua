@@ -43,5 +43,16 @@ bearcad.ui.wait(5)
 assert(bearcad.status():find("end B point"),
   "at 45 degrees the diagonal is a candidate, got: " .. bearcad.status())
 
+-- #920: at 5° or finer there are no dots at all — the sphere itself is shown, and the
+-- cursor's own point on it is what a click takes, wherever it is.
+arm()
+bearcad.ui.wait(5)
+bearcad.ui.angle_snap(2)
+bearcad.ui.wait(3)
+bearcad.ui.click_ground(50, -30)
+bearcad.ui.wait(5)
+assert(bearcad.status():find("end B point"),
+  "on the sphere, any click lands as end point B, got: " .. bearcad.status())
+
 print("ok: the angle snap sets which rotation dots are offered")
 bearcad.quit()

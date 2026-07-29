@@ -182,6 +182,23 @@ fn sphere_triangles(r: &Resolved) -> Vec<[Vec3; 3]> {
     out
 }
 
+/// A bare sphere mesh at a point (#920): the Move tool draws the rotation's constraint
+/// sphere with it, translucent, when the angle snap is too fine for dots.
+pub fn sphere_mesh(center: Vec3, radius: f32) -> SolidMesh {
+    let r = Resolved {
+        kind: PrimitiveKind::Sphere,
+        origin: center - Vec3::Z * radius,
+        normal: Vec3::Z,
+        u: Vec3::X,
+        v: Vec3::Y,
+        width: 0.0,
+        depth: 0.0,
+        height: 0.0,
+        radius,
+    };
+    SolidMesh { triangles: sphere_triangles(&r) }
+}
+
 /// A shape's kernel solid, for booleans, edge treatments and STEP export. `None` without a
 /// kernel (the mesh above still draws the shape).
 pub fn kernel_shape(doc: &Document, shape: &Primitive) -> Option<crate::kernel::Shape> {

@@ -842,6 +842,61 @@ pub fn snap_rotation_candidates(
     out
 }
 
+/// Below this angle snap the candidate dots would be a cloud, so the tool shows the
+/// constraint sphere/circle itself instead and reads the angle off the cursor (#920).
+pub const ANGLE_SNAP_SURFACE_DEG: f32 = 5.0;
+
+/// Where a ray meets the End-point-B constraint sphere (#920): the near hit if the ray
+/// crosses it, otherwise the point on the sphere nearest the ray, so the pick still lands
+/// somewhere sensible when the cursor slips off the silhouette.
+pub fn ray_sphere_point(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32) -> Option<Vec3> {
+    if !(radius.is_finite() && radius > 1e-4) {
+        return None;
+    }
+    let dir = dir.normalize_or_zero();
+    if dir.length_squared() < 0.5 {
+        return None;
+    }
+    let f = origin - centre;
+    let b = 2.0 * f.dot(dir);
+    let c = f.dot(f) - radius * radius;
+    let disc = b * b - 4.0 * c;
+    if disc >= 0.0 {
+        let root = disc.sqrt();
+        for t in [(-b - root) / 2.0, (-b + root) / 2.0] {
+            if t > 0.0 {
+                return Some(origin + dir * t);
+            }
+        }
+    }
+    // A miss: take the closest approach and push it out onto the sphere.
+    let t = (-f).dot(dir).max(0.0);
+    let closest = origin + dir * t;
+    let out = (closest - centre).normalize_or_zero();
+    (out.length_squared() > 0.5).then(|| centre + out * radius)
+}
+
+/// Snap a direction to the angle grid (#920): its azimuth and elevation each rounded to the
+/// nearest multiple of `step_deg`. A step of zero leaves the direction alone.
+pub fn snap_direction_to_angle(dir: Vec3, step_deg: f32) -> Vec3 {
+    let dir = dir.normalize_or_zero();
+    if dir.length_squared() < 0.5 || !(step_deg > 0.01) {
+        return dir;
+    }
+    let step = step_deg.to_radians();
+    let round = |a: f32| (a / step).round() * step;
+    let elevation = round(dir.z.clamp(-1.0, 1.0).asin());
+    let flat = Vec3::new(dir.x, dir.y, 0.0);
+    let azimuth = if flat.length() > 1e-4 {
+        round(dir.y.atan2(dir.x))
+    } else {
+        0.0
+    };
+    let (sin_e, cos_e) = elevation.sin_cos();
+    let (sin_a, cos_a) = azimuth.sin_cos();
+    Vec3::new(cos_e * cos_a, cos_e * sin_a, sin_e)
+}
+
 /// The sweeps that reach a hovered End-point-B candidate (#919): two arcs about the pivot —
 /// the **azimuth** turned in the ground plane from +X, and the **elevation** lifted out of it
 /// — each returned as a polyline with the angle it stands for, in degrees. A candidate
@@ -5655,6 +5710,29 @@ mod tests {
 
     /// #669: the optional B pair turns the bodies about end point A so that start B lands on
     /// end B, and end B is confined to the sphere start B can actually reach.
+    /// #920: the cursor ray meets the constraint sphere — the near side when it crosses,
+    /// the nearest point on it when it misses — and the direction rounds to the angle grid.
+    #[test]
+    fn ray_sphere_and_angle_rounding() {
+        let centre = Vec3::new(10.0, 0.0, 0.0);
+        // Straight at the sphere from -X: the near face.
+        let hit = ray_sphere_point(Vec3::ZERO, Vec3::X, centre, 4.0).expect("a hit");
+        assert!((hit - Vec3::new(6.0, 0.0, 0.0)).length() < 1e-3, "near side, got {hit}");
+        // A miss still lands on the sphere, on the side the ray passes.
+        let miss = ray_sphere_point(Vec3::new(0.0, 20.0, 0.0), Vec3::X, centre, 4.0)
+            .expect("the nearest point");
+        assert!(((miss - centre).length() - 4.0).abs() < 1e-3, "on the sphere, got {miss}");
+        assert!(miss.y > 0.0, "on the side the ray went by, got {miss}");
+        // Rounding: 40° of azimuth snaps to 45° at a 45° step.
+        let dir = Vec3::new(40.0_f32.to_radians().cos(), 40.0_f32.to_radians().sin(), 0.0);
+        let snapped = snap_direction_to_angle(dir, 45.0);
+        let azimuth = snapped.y.atan2(snapped.x).to_degrees();
+        assert!((azimuth - 45.0).abs() < 1e-2, "rounded to 45°, got {azimuth}");
+        // A zero step leaves the direction where it is.
+        let free = snap_direction_to_angle(dir, 0.0);
+        assert!((free - dir.normalize()).length() < 1e-4);
+    }
+
     /// #919: the sweeps to a hovered End-B candidate — the bearing turned in the ground
     /// plane and the lift out of it, each arc starting where the last one left off.
     #[test]

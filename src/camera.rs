@@ -1242,6 +1242,19 @@ impl Camera {
     }
 
     /// Cast a ray from the screen pixel onto an arbitrary plane and return the hit.
+    /// The world-space ray under a screen point: `(origin, unit direction)` (#920).
+    pub fn screen_ray(&self, screen: Pos2, viewport: Rect, vp: &Mat4) -> Option<(Vec3, Vec3)> {
+        let inv = vp.inverse();
+        let ndc_x = ((screen.x - viewport.min.x) / viewport.width()) * 2.0 - 1.0;
+        let ndc_y = (1.0 - (screen.y - viewport.min.y) / viewport.height()) * 2.0 - 1.0;
+        let near = inv * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inv * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near_w = near.truncate() / near.w;
+        let far_w = far.truncate() / far.w;
+        let dir = far_w - near_w;
+        (dir.length_squared() > 1e-12).then(|| (near_w, dir.normalize()))
+    }
+
     pub fn ray_plane_hit(
         &self,
         screen: Pos2,
