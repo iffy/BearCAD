@@ -27,8 +27,9 @@ rests on.
 
 ## Placing one
 
-The shape follows your cursor until you click. The **first click** puts it down — on a face
-or plane under the cursor, otherwise on the ground — and it grows away from there.
+The shape follows your cursor until you click — a cuboid by its corner, a cylinder and a
+sphere by their centre. The **first click** puts it down — on a face or plane under the
+cursor, otherwise on the ground — and it grows away from there.
 
 | Shape | Click 1 | Click 2 | Click 3 |
 |---|---|---|---|
@@ -37,7 +38,8 @@ or plane under the cursor, otherwise on the ground — and it grows away from th
 | Sphere | Where it rests | The radius | — |
 
 Each step offers its own field, ready for typing: type a size instead of clicking and that
-dimension stops following the cursor. **Enter** creates it; **Esc** clears what's in
+dimension stops following the cursor. The sizes also read out in the 3D view beside the
+edges they drive, with the one you're setting framed in amber. **Enter** creates it; **Esc** clears what's in
 progress.
 
 **Snapping** — the context pane's toggle, shared with the drawing tools — pulls a

@@ -1563,14 +1563,23 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   tool with it loaded (`CreatingShape::editing`), where the button reads **Apply changes**.
   **Placement (#912):** before the first click a generic ghost of the shape follows the
   cursor, sized to the view (`cam.distance / 8`) rather than the model, drawn through the
-  same translucent `preview_solid` the revolve/loft ghosts use. Click 1 **anchors** it: on the
+  same translucent `preview_solid` the revolve/loft ghosts use. A cuboid's ghost hangs its
+  **corner** on the cursor (#929, `primitives::ghost_origin`) — its first click places a
+  corner, so straddling the cursor would misread; a cylinder and a sphere are placed by their
+  centre and sit on it. Click 1 **anchors** it: on the
   analytic face or construction plane under the cursor (which brings its own frame), else on
   any body's flat **mesh** face (how a shape lands on another shape — primitives have no
   analytic faces), else on the ground; the shape then grows along that plane's normal. What
   the next clicks set is per kind — cuboid: the opposite base corner, then the height;
   cylinder: the radius, then the height; sphere: the radius (and it's done). Each phase
   focuses its own ValueInput, so the size can be typed the moment the click lands, and a typed
-  dimension stops following the cursor (`CreatingShape::typed`) until it's cleared. **Enter**
+  dimension stops following the cursor (`CreatingShape::typed`) until it's cleared. Every
+  dimension is **mirrored in the 3D view** beside the edge it drives (#930,
+  `primitives::field_anchors` → `draw_shape_dimension_mirrors`), in the value field's own
+  boxed style with the phase's one framed in amber. The mirrors are *drawn*, not widgets: a
+  field under the cursor would swallow the next placement click (the viewport stops being
+  hovered), so the pane's rows stay the ones taking the keyboard, and each mirror is pushed
+  away from the cursor as it moves. **Enter**
   in a shape field creates it, like the sketch Rectangle's typed dimensions; the height is
   otherwise dragged along the normal (`offset_from_normal_drag`).
   **Snapping (#913):** the tool joins the sticky **Snapping** toggle (`AppState::snapping_enabled`,

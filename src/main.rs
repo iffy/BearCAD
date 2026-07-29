@@ -9510,6 +9510,20 @@ impl App {
                 if next.shape.depth.is_empty() { next.shape.depth = fmt(size); }
                 if next.shape.height.is_empty() { next.shape.height = fmt(size); }
                 if next.shape.radius.is_empty() { next.shape.radius = fmt(size * 0.5); }
+                // A cuboid's first click is a **corner**, so the ghost hangs its corner on
+                // the cursor rather than straddling it (#929): the stored origin is the
+                // base rectangle's centre, half a diagonal away. A cylinder and a sphere
+                // are placed by their centre, so they stay where the cursor is.
+                let v_axis = normal.cross(u_axis).normalize_or_zero();
+                next.shape.origin = primitives::ghost_origin(
+                    kind,
+                    origin,
+                    u_axis,
+                    v_axis,
+                    next_length(&self.state.doc, &next.shape.width),
+                    next_length(&self.state.doc, &next.shape.depth),
+                )
+                .to_array();
             }
             self.state.creating_shape = Some(next);
             return;
@@ -9748,6 +9762,98 @@ impl App {
         }
         let ground = cam.ground_point(pp, viewport, vp)?;
         Some((ground, Vec3::Z, Vec3::X))
+    }
+
+    /// The in-progress shape's dimensions, mirrored **in the 3D view** beside the edges they
+    /// drive (#930): each value in the same boxed style the pane's fields use, the one the
+    /// current phase is asking for framed in amber like a focused field. They're drawn, not
+    /// widgets — a field under the cursor would swallow the next placement click (the
+    /// viewport stops being hovered) — so the pane's rows stay the ones you type into, and
+    /// the keyboard already lands there while placing.
+    fn draw_shape_dimension_mirrors(
+        &self,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+    ) {
+        use actions::{ShapeDimension as D, ShapePhase};
+        if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
+            return;
+        }
+        let Some(creating) = self.state.creating_shape.as_ref() else { return };
+        // Nothing to size until the shape is anchored — before that the ghost is generic.
+        if creating.phase == ShapePhase::Anchor {
+            return;
+        }
+        let asking = match (creating.shape.kind, creating.phase) {
+            (_, ShapePhase::Height) => Some(D::Height),
+            (_, ShapePhase::Done) => None,
+            (model::PrimitiveKind::Cuboid, _) => Some(D::Width),
+            _ => Some(D::Radius),
+        };
+        for (field, world) in primitives::field_anchors(&self.state.doc, &creating.shape) {
+            let Some(anchor) = project(world) else { continue };
+            let (label, text) = match field {
+                D::Width => ("W", creating.shape.width.clone()),
+                D::Depth => ("D", creating.shape.depth.clone()),
+                D::Height => ("H", creating.shape.height.clone()),
+                D::Radius => ("R", creating.shape.radius.clone()),
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            // Each label is pushed away from the cursor, so it never sits over the point
+            // the next click is aimed at.
+            let away = pointer_screen
+                .map(|pp| anchor - pp)
+                .filter(|d| d.length() > 1.0)
+                .map(|d| d.normalized())
+                .unwrap_or(egui::vec2(1.0, -1.0).normalized());
+            let centre = anchor + away * 34.0;
+            let value = crate::value::computed_length_in_doc(&text, &self.state.doc)
+                .map(|v| {
+                    crate::value::format_length_display_in(v, self.state.doc.default_length_unit)
+                })
+                .unwrap_or_else(|| text.clone());
+            let caption = format!("{label} {value}");
+            let font = egui::FontId::monospace(12.0);
+            let galley = painter.layout_no_wrap(
+                caption,
+                font,
+                if asking == Some(field) {
+                    expression_input::boxed::TEXT_FOCUS
+                } else {
+                    expression_input::boxed::TEXT
+                },
+            );
+            let rect = egui::Rect::from_center_size(
+                centre,
+                galley.size() + egui::vec2(10.0, 6.0),
+            );
+            painter.rect_filled(
+                rect,
+                3.0,
+                if asking == Some(field) {
+                    expression_input::boxed::BG_FOCUS
+                } else {
+                    expression_input::boxed::BG
+                },
+            );
+            painter.rect_stroke(
+                rect,
+                3.0,
+                egui::Stroke::new(
+                    1.0,
+                    if asking == Some(field) {
+                        expression_input::boxed::BORDER_FOCUS
+                    } else {
+                        expression_input::boxed::BORDER
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(rect.center() - galley.size() * 0.5, galley, egui::Color32::WHITE);
+        }
     }
 
     /// Create Shape tool (#909): while it's active, Enter commits the shape once every
@@ -21614,6 +21720,7 @@ impl App {
         if self.state.tool == Tool::Shape {
             self.handle_shape_tool_keys(ui);
             self.handle_shape_placement(ui, &project, pointer_screen, &cam, viewport, &vp);
+            self.draw_shape_dimension_mirrors(&painter, &project, pointer_screen);
         }
 
         if self.state.tool == Tool::Loft {

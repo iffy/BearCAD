@@ -182,6 +182,66 @@ fn sphere_triangles(r: &Resolved) -> Vec<[Vec3; 3]> {
     out
 }
 
+/// Where each of a shape's dimension fields sits in 3D (#930): the middle of the edge it
+/// measures, so the width/depth/height (or radius) read against the geometry they drive.
+/// Uses the raw frame rather than [`resolve`], so half-placed shapes still get anchors.
+pub fn field_anchors(doc: &Document, shape: &Primitive) -> Vec<(crate::actions::ShapeDimension, Vec3)> {
+    use crate::actions::ShapeDimension as D;
+    let origin = Vec3::from_array(shape.origin);
+    let normal = Vec3::from_array(shape.normal).normalize_or_zero();
+    if normal.length_squared() < 0.5 {
+        return Vec::new();
+    }
+    let raw_u = Vec3::from_array(shape.u_axis);
+    let mut u = (raw_u - normal * raw_u.dot(normal)).normalize_or_zero();
+    if u.length_squared() < 0.5 {
+        u = normal.any_orthonormal_vector();
+    }
+    let v = normal.cross(u).normalize_or_zero();
+    let (w, d, h, r) = (
+        length(doc, &shape.width).abs(),
+        length(doc, &shape.depth).abs(),
+        length(doc, &shape.height).abs(),
+        length(doc, &shape.radius).abs(),
+    );
+    match shape.kind {
+        PrimitiveKind::Cuboid => {
+            let (hu, hv) = (u * w * 0.5, v * d * 0.5);
+            vec![
+                // The middle of the base edge each dimension runs along, and the middle of
+                // a vertical edge for the height.
+                (D::Width, origin - hv),
+                (D::Depth, origin + hu),
+                (D::Height, origin + hu - hv + normal * h * 0.5),
+            ]
+        }
+        PrimitiveKind::Cylinder => vec![
+            (D::Radius, origin + u * r * 0.5),
+            (D::Height, origin + u * r + normal * h * 0.5),
+        ],
+        // The sphere's radius reads across its equator.
+        PrimitiveKind::Sphere => vec![(D::Radius, origin + normal * r + u * r * 0.5)],
+    }
+}
+
+/// Where a shape's ghost sits while it follows the cursor (#929): a cuboid hangs its
+/// **corner** on the cursor — its first click places a corner — so the stored base centre
+/// is half a diagonal away; a cylinder and a sphere are placed by their centre, and stay
+/// on the cursor.
+pub fn ghost_origin(
+    kind: PrimitiveKind,
+    cursor: Vec3,
+    u: Vec3,
+    v: Vec3,
+    width: f32,
+    depth: f32,
+) -> Vec3 {
+    match kind {
+        PrimitiveKind::Cuboid => cursor + u * width * 0.5 + v * depth * 0.5,
+        PrimitiveKind::Cylinder | PrimitiveKind::Sphere => cursor,
+    }
+}
+
 /// A bare sphere mesh at a point (#920): the Move tool draws the rotation's constraint
 /// sphere with it, translucent, when the angle snap is too fine for dots.
 pub fn sphere_mesh(center: Vec3, radius: f32) -> SolidMesh {
@@ -292,6 +352,58 @@ mod tests {
         let volume = crate::extrude::mesh_signed_volume(&mesh).abs();
         let exact = 4.0 / 3.0 * std::f32::consts::PI * 512.0;
         assert!((volume - exact).abs() / exact < 0.02, "{volume} vs {exact}");
+    }
+
+    /// #929: a cuboid's ghost hangs its **corner** on the cursor — its first click places a
+    /// corner — while a cylinder and a sphere are placed by their centre.
+    #[test]
+    fn ghost_origin_hangs_a_cuboid_by_its_corner() {
+        let cursor = Vec3::new(10.0, 5.0, 0.0);
+        let centre = ghost_origin(K::Cuboid, cursor, Vec3::X, Vec3::Y, 40.0, 20.0);
+        assert!(
+            (centre - Vec3::new(30.0, 15.0, 0.0)).length() < 1e-4,
+            "half a base diagonal from the cursor, got {centre}"
+        );
+        // The cursor really is a corner of the resulting base rectangle.
+        let mut shape = sized(K::Cuboid, "40", "20", "5", "");
+        shape.origin = centre.to_array();
+        let doc = doc_with(shape.clone());
+        let r = resolve(&doc, &shape).unwrap();
+        assert!(
+            r.cuboid_base().iter().any(|c| (*c - cursor).length() < 1e-4),
+            "the cursor is one of {:?}",
+            r.cuboid_base()
+        );
+        for kind in [K::Cylinder, K::Sphere] {
+            assert_eq!(
+                ghost_origin(kind, cursor, Vec3::X, Vec3::Y, 40.0, 20.0),
+                cursor,
+                "{kind:?} is placed by its centre"
+            );
+        }
+    }
+
+    /// #930: each dimension's mirror sits on the edge it measures.
+    #[test]
+    fn field_anchors_sit_on_the_edges_they_measure() {
+        use crate::actions::ShapeDimension as D;
+        let shape = sized(K::Cuboid, "40", "20", "10", "");
+        let doc = doc_with(shape.clone());
+        let anchors = field_anchors(&doc, &shape);
+        let at = |field: D| anchors.iter().find(|(f, _)| *f == field).map(|(_, p)| *p);
+        // Width runs along +X, so its label sits on the -Y base edge's middle.
+        assert!((at(D::Width).unwrap() - Vec3::new(0.0, -10.0, 0.0)).length() < 1e-4);
+        assert!((at(D::Depth).unwrap() - Vec3::new(20.0, 0.0, 0.0)).length() < 1e-4);
+        // Height rides a vertical edge, halfway up.
+        assert!((at(D::Height).unwrap() - Vec3::new(20.0, -10.0, 5.0)).length() < 1e-4);
+
+        let cylinder = sized(K::Cylinder, "", "", "12", "5");
+        let doc = doc_with(cylinder.clone());
+        let anchors = field_anchors(&doc, &cylinder);
+        assert_eq!(anchors.len(), 2, "a cylinder shows its radius and height");
+        let sphere = sized(K::Sphere, "", "", "", "8");
+        let doc = doc_with(sphere.clone());
+        assert_eq!(field_anchors(&doc, &sphere).len(), 1, "a sphere shows its radius");
     }
 
     /// A shape with a dimension missing (or zero) has no geometry yet — it isn't an error,
