@@ -243,13 +243,50 @@ pub enum ShapeDimension {
     Radius,
 }
 
-/// The Create Shape tool's in-progress shape (#909): the shape as it stands, and which
-/// committed shape it re-points (if any).
+impl ShapeDimension {
+    fn slot(self) -> usize {
+        match self {
+            ShapeDimension::Width => 0,
+            ShapeDimension::Depth => 1,
+            ShapeDimension::Height => 2,
+            ShapeDimension::Radius => 3,
+        }
+    }
+}
+
+/// How far a shape's placement has got (#912). Every kind starts at `Anchor`; the sphere
+/// finishes at the end of `Base`, the others take a height too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ShapePhase {
+    /// Nothing placed yet: the ghost follows the cursor, and the next click anchors it.
+    #[default]
+    Anchor,
+    /// Anchored: the cursor drives the base (a cuboid's opposite corner, a radius).
+    Base,
+    /// The base is set: the cursor drives the height off the anchor plane.
+    Height,
+    /// Everything is set — the shape only waits to be committed.
+    Done,
+}
+
+/// The Create Shape tool's in-progress shape (#909): the shape as it stands, how far its
+/// placement has got, and which committed shape it re-points (if any).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingShape {
     pub shape: crate::model::Primitive,
     /// `Some(index)` while editing a committed shape rather than placing a new one.
     pub editing: Option<usize>,
+    pub phase: ShapePhase,
+    /// A cuboid's first clicked corner, in world mm: the base centre and the width/depth
+    /// follow from it and the opposite corner (#912).
+    pub first_corner: Option<Vec3>,
+    /// Screen position of the click that started the current phase, so a height drag
+    /// measures from where it began.
+    pub phase_screen: Option<egui::Pos2>,
+    /// Dimensions the user typed: a typed one stops following the cursor (#912).
+    pub typed: [bool; 4],
+    /// Ask the pane to focus this phase's field next frame.
+    pub pending_focus: bool,
 }
 
 impl CreatingShape {
@@ -257,7 +294,22 @@ impl CreatingShape {
         Self {
             shape: crate::model::Primitive::new(kind),
             editing: None,
+            phase: ShapePhase::Anchor,
+            first_corner: None,
+            phase_screen: None,
+            typed: [false; 4],
+            pending_focus: false,
         }
+    }
+
+    /// Whether `field` still follows the cursor (nothing typed into it yet).
+    pub fn follows_cursor(&self, field: ShapeDimension) -> bool {
+        !self.typed[field.slot()]
+    }
+
+    /// Mark a dimension as typed, so the cursor stops driving it.
+    pub fn mark_typed(&mut self, field: ShapeDimension) {
+        self.typed[field.slot()] = true;
     }
 
     /// Whether every dimension the kind needs has something in it.
@@ -11833,10 +11885,17 @@ label_hidden: false,
                     return ActionResult::Err("No shape in progress".to_string());
                 };
                 match field {
-                    ShapeDimension::Width => creating.shape.width = text,
-                    ShapeDimension::Depth => creating.shape.depth = text,
-                    ShapeDimension::Height => creating.shape.height = text,
-                    ShapeDimension::Radius => creating.shape.radius = text,
+                    ShapeDimension::Width => creating.shape.width = text.clone(),
+                    ShapeDimension::Depth => creating.shape.depth = text.clone(),
+                    ShapeDimension::Height => creating.shape.height = text.clone(),
+                    ShapeDimension::Radius => creating.shape.radius = text.clone(),
+                }
+                // A typed dimension stops following the cursor (#912); clearing it hands
+                // the field back to the drag.
+                if text.trim().is_empty() {
+                    creating.typed[field.slot()] = false;
+                } else {
+                    creating.mark_typed(field);
                 }
                 ActionResult::Ok
             }

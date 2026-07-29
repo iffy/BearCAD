@@ -25,7 +25,20 @@ anything else. The shape sits **on** the plane it's placed on and grows along th
 normal: a cuboid and a cylinder from the middle of their base, a sphere from the point it
 rests on.
 
-**Enter** creates it; **Esc** clears what's in progress.
+## Placing one
+
+The shape follows your cursor until you click. The **first click** puts it down — on a face
+or plane under the cursor, otherwise on the ground — and it grows away from there.
+
+| Shape | Click 1 | Click 2 | Click 3 |
+|---|---|---|---|
+| Cuboid | One base corner | The opposite corner | The height |
+| Cylinder | The centre | The radius | The height |
+| Sphere | Where it rests | The radius | — |
+
+Each step offers its own field, ready for typing: type a size instead of clicking and that
+dimension stops following the cursor. **Enter** creates it; **Esc** clears what's in
+progress.
 
 ## Editing
 

@@ -1519,6 +1519,18 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   in-progress shape, and leaving the tool drops it. Switching shape mid-placement keeps the
   frame and the dimensions already typed. Double-clicking a shape's Elements row reopens the
   tool with it loaded (`CreatingShape::editing`), where the button reads **Apply changes**.
+  **Placement (#912):** before the first click a generic ghost of the shape follows the
+  cursor, sized to the view (`cam.distance / 8`) rather than the model, drawn through the
+  same translucent `preview_solid` the revolve/loft ghosts use. Click 1 **anchors** it: on the
+  analytic face or construction plane under the cursor (which brings its own frame), else on
+  any body's flat **mesh** face (how a shape lands on another shape — primitives have no
+  analytic faces), else on the ground; the shape then grows along that plane's normal. What
+  the next clicks set is per kind — cuboid: the opposite base corner, then the height;
+  cylinder: the radius, then the height; sphere: the radius (and it's done). Each phase
+  focuses its own ValueInput, so the size can be typed the moment the click lands, and a typed
+  dimension stops following the cursor (`CreatingShape::typed`) until it's cleared. **Enter**
+  in a shape field creates it, like the sketch Rectangle's typed dimensions; the height is
+  otherwise dragged along the normal (`offset_from_normal_drag`).
 - **Shapes** *(model, #909)* — cuboids, cylinders and spheres placed straight into 3D, with
   no sketch behind them. A `Primitive { kind, origin, normal, u_axis, width, depth, height,
   radius, name }` in `Document::primitives` stores the anchor frame — the point placed on,

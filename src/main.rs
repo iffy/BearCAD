@@ -7639,11 +7639,17 @@ impl App {
             // fresh shape, so the existing one is loaded after it.
             SE::Shape(op) => {
                 if let Some(existing) = self.state.doc.primitives.get(op).cloned() {
+                    let kind_placeholder = existing.kind;
                     self.state.shape_kind = existing.kind;
                     self.state.apply(Action::SetTool(Tool::Shape));
                     self.state.creating_shape = Some(actions::CreatingShape {
                         shape: existing,
                         editing: Some(op),
+                        // An existing shape is fully placed: its pane edits it, its
+                        // dimensions don't chase the cursor.
+                        phase: actions::ShapePhase::Done,
+                        typed: [true; 4],
+                        ..actions::CreatingShape::new(kind_placeholder)
                     });
                 }
             }
@@ -9368,6 +9374,188 @@ impl App {
         }
     }
 
+
+    /// Create Shape placement (#912): where the shape lands and how big it is, from clicks
+    /// and cursor motion.
+    ///
+    /// Click 1 anchors it — on a body face or construction plane if one is under the cursor,
+    /// otherwise on the ground — and the shape then grows along that plane's normal. What the
+    /// following clicks set depends on the shape: a cuboid takes its opposite base corner then
+    /// its height, a cylinder its radius then its height, a sphere just its radius. A dimension
+    /// typed into the pane stops following the cursor.
+    fn handle_shape_placement(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) {
+        use actions::{ShapeDimension as D, ShapePhase};
+        use model::PrimitiveKind as K;
+        if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
+            return;
+        }
+        let Some(pp) = pointer_screen else { return };
+        let Some(creating) = self.state.creating_shape.clone() else { return };
+        let pressed = ui.input(|i| i.pointer.primary_pressed());
+        let kind = creating.shape.kind;
+
+        // Before the anchor lands, the ghost follows the cursor on whatever plane is under
+        // it (the ground when nothing is), sized to read at the current zoom.
+        if creating.phase == ShapePhase::Anchor {
+            let Some((origin, normal, u_axis)) = self.shape_anchor_frame(pp, project, cam, viewport, vp)
+            else {
+                return;
+            };
+            let mut next = creating.clone();
+            next.shape.origin = origin.to_array();
+            next.shape.normal = normal.to_array();
+            next.shape.u_axis = u_axis.to_array();
+            if pressed {
+                next.phase = ShapePhase::Base;
+                next.phase_screen = Some(pp);
+                next.first_corner = Some(origin);
+                next.pending_focus = true;
+                self.state.status = match kind {
+                    K::Cuboid => "Cuboid — click the opposite corner, or type the sizes".to_string(),
+                    K::Cylinder => "Cylinder — click to set the radius, or type it".to_string(),
+                    K::Sphere => "Sphere — click to set the radius, or type it".to_string(),
+                };
+            } else {
+                // A generic preview, sized to the view rather than the model.
+                let size = (cam.distance / 8.0).max(1.0);
+                let fmt = |v: f32| format!("{}", (v * 100.0).round() / 100.0);
+                if next.shape.width.is_empty() { next.shape.width = fmt(size); }
+                if next.shape.depth.is_empty() { next.shape.depth = fmt(size); }
+                if next.shape.height.is_empty() { next.shape.height = fmt(size); }
+                if next.shape.radius.is_empty() { next.shape.radius = fmt(size * 0.5); }
+            }
+            self.state.creating_shape = Some(next);
+            return;
+        }
+
+        let anchor_normal = Vec3::from_array(creating.shape.normal).normalize_or_zero();
+        let anchor_u = Vec3::from_array(creating.shape.u_axis).normalize_or_zero();
+        let anchor_v = anchor_normal.cross(anchor_u).normalize_or_zero();
+        let mut next = creating.clone();
+        let fmt = |v: f32| format!("{}", (v.abs() * 1000.0).round() / 1000.0);
+
+        match (creating.phase, kind) {
+            // The base: an in-plane point drives the cuboid's opposite corner, or the radius.
+            (ShapePhase::Base, _) => {
+                let corner = creating.first_corner.unwrap_or(Vec3::from_array(creating.shape.origin));
+                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
+                    let delta = hit - corner;
+                    match kind {
+                        K::Cuboid => {
+                            let (du, dv) = (delta.dot(anchor_u), delta.dot(anchor_v));
+                            if next.follows_cursor(D::Width) {
+                                next.shape.width = fmt(du);
+                            }
+                            if next.follows_cursor(D::Depth) {
+                                next.shape.depth = fmt(dv);
+                            }
+                            // The stored origin is the base rectangle's centre, so it rides
+                            // between the first corner and the cursor.
+                            let half_u = anchor_u * next_length(&self.state.doc, &next.shape.width) * 0.5;
+                            let half_v = anchor_v * next_length(&self.state.doc, &next.shape.depth) * 0.5;
+                            let sign_u = if du < 0.0 { -1.0 } else { 1.0 };
+                            let sign_v = if dv < 0.0 { -1.0 } else { 1.0 };
+                            next.shape.origin = (corner + half_u * sign_u + half_v * sign_v).to_array();
+                        }
+                        K::Cylinder | K::Sphere => {
+                            if next.follows_cursor(D::Radius) {
+                                next.shape.radius = fmt(delta.length());
+                            }
+                        }
+                    }
+                }
+                if pressed {
+                    next.phase_screen = Some(pp);
+                    next.pending_focus = true;
+                    match kind {
+                        // A sphere is done at its radius; the others take a height next.
+                        K::Sphere => next.phase = ShapePhase::Done,
+                        _ => {
+                            next.phase = ShapePhase::Height;
+                            self.state.status =
+                                "Drag away from the plane to set the height, or type it".to_string();
+                        }
+                    }
+                }
+            }
+            // The height: measured along the anchor normal from where the phase began.
+            (ShapePhase::Height, _) => {
+                if next.follows_cursor(D::Height) {
+                    let origin = Vec3::from_array(next.shape.origin);
+                    let start = creating.phase_screen.unwrap_or(pp);
+                    let offset = construction::offset_from_normal_drag(
+                        origin,
+                        anchor_normal,
+                        project,
+                        0.0,
+                        start,
+                        pp,
+                    );
+                    next.shape.height = fmt(offset);
+                }
+                if pressed {
+                    next.phase = ShapePhase::Done;
+                }
+            }
+            (ShapePhase::Anchor, _) | (ShapePhase::Done, _) => {}
+        }
+
+        let committed = next.phase == ShapePhase::Done && creating.phase != ShapePhase::Done;
+        self.state.creating_shape = Some(next);
+        // The last click of a placement commits it, like the Rectangle tool's does.
+        if committed
+            && self
+                .state
+                .creating_shape
+                .as_ref()
+                .is_some_and(|c| c.can_commit(&self.state.doc))
+        {
+            self.state.apply(Action::CommitShape);
+        }
+    }
+
+    /// The plane a shape click lands on (#912): the body face or construction plane under the
+    /// cursor, else the ground. Returns the anchor point, the plane normal the shape grows
+    /// along, and the in-plane direction its width runs along.
+    fn shape_anchor_frame(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> Option<(Vec3, Vec3, Vec3)> {
+        // An analytic face or a construction plane first — it comes with a frame, so a
+        // cuboid's width lines up with the plane's own directions.
+        if let Some(face) = face::pick_sketch_face(pp, project, &self.state.doc, cam.eye()) {
+            if let Some(frame) = face::sketch_frame(&self.state.doc, face) {
+                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal) {
+                    return Some((hit, frame.normal, frame.u_axis));
+                }
+            }
+        }
+        // Any body's flat mesh face, which is how a shape lands on another shape (#912):
+        // primitives have no analytic faces of their own.
+        if let Some(construction::PickTargetKind::BodyFace { triangles, normal, .. }) =
+            face::pick_body_face(pp, project, &self.state.doc, cam.eye())
+        {
+            let center = extrude::face_group_center(&triangles);
+            if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, center, normal) {
+                return Some((hit, normal, normal.any_orthonormal_vector()));
+            }
+        }
+        let ground = cam.ground_point(pp, viewport, vp)?;
+        Some((ground, Vec3::Z, Vec3::X))
+    }
+
     /// Create Shape tool (#909): while it's active, Enter commits the shape once every
     /// dimension it needs has a size. The placement clicks live in `handle_shape_placement`.
     fn handle_shape_tool_keys(&mut self, ui: &egui::Ui) {
@@ -11018,6 +11206,13 @@ impl eframe::App for App {
                     });
                     context::ShapeControl {
                         kind: creating.shape.kind,
+                        focus_field: creating.pending_focus.then(|| {
+                            match (creating.shape.kind, creating.phase) {
+                                (_, actions::ShapePhase::Height) => actions::ShapeDimension::Height,
+                                (model::PrimitiveKind::Cuboid, _) => actions::ShapeDimension::Width,
+                                _ => actions::ShapeDimension::Radius,
+                            }
+                        }),
                         width: creating.shape.width.clone(),
                         depth: creating.shape.depth.clone(),
                         height: creating.shape.height.clone(),
@@ -13627,6 +13822,14 @@ fn rotation_ring_hit(
     false
 }
 
+/// Evaluate one of an in-progress shape's dimension expressions while placing it (#912).
+fn next_length(doc: &model::Document, expression: &str) -> f32 {
+    if expression.trim().is_empty() {
+        return 0.0;
+    }
+    crate::value::eval_length_mm_in_doc(expression, doc).unwrap_or(0.0)
+}
+
 /// The body index a pick target identifies, if it's a body sub-element (#218): an edge, vertex,
 /// or face all belong to one body.
 fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<usize> {
@@ -14594,6 +14797,7 @@ fn build_viewport_scene_input<'a>(
     creating_mirror: Option<&actions::CreatingMirror>,
     creating_move: Option<&actions::CreatingMove>,
     creating_joint: Option<&actions::CreatingJoint>,
+    creating_shape: Option<&actions::CreatingShape>,
     // The eased ghost pose while it glides between destinations; `None` draws the live one.
     move_ghost_override: Option<glam::Mat4>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
@@ -14784,6 +14988,10 @@ fn build_viewport_scene_input<'a>(
         }
         extrude::sweep_mesh(doc, sweep_probe.as_ref()?)
     });
+    // Live ghost of the shape being placed (#912): the same mesh a commit would build,
+    // including the generic one that follows the cursor before the first click.
+    let preview_solid = preview_solid
+        .or_else(|| crate::primitives::mesh(doc, &creating_shape?.shape));
 
     let preview_extrusion = creating_extrusion
         .and_then(|ce| {
@@ -21296,8 +21504,12 @@ impl App {
             self.show_extrude_distance_input(ui, &project);
         }
 
-        if self.state.tool == Tool::Loft {
+        if self.state.tool == Tool::Shape {
             self.handle_shape_tool_keys(ui);
+            self.handle_shape_placement(ui, &project, pointer_screen, &cam, viewport, &vp);
+        }
+
+        if self.state.tool == Tool::Loft {
             self.handle_loft_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
@@ -22979,6 +23191,7 @@ impl App {
             self.state.creating_mirror.as_ref(),
             move_hover_preview.as_ref().or(self.state.creating_move.as_ref()),
             swept_joint.as_ref().or(self.state.creating_joint.as_ref()),
+            self.state.creating_shape.as_ref(),
             move_ghost_override,
             self.pending_extrude_target.clone(),
             plane_gizmo,
@@ -25778,6 +25991,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -25871,6 +26085,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Vec::new(),
             None,
             None,
@@ -25943,6 +26158,7 @@ mod tests {
                 None,
                 None,
                 cm,
+                None,
                 None,
                 None,
                 None,
@@ -26147,6 +26363,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Vec::new(),
                 None,
                 None,
@@ -26239,6 +26456,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             None,

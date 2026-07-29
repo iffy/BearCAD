@@ -318,6 +318,9 @@ pub enum MoveEdit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeControl {
     pub kind: crate::model::PrimitiveKind,
+    /// The dimension the current placement phase is asking for (#912): its field takes the
+    /// keyboard, so a size can be typed the moment a click lands.
+    pub focus_field: Option<crate::actions::ShapeDimension>,
     pub width: String,
     pub depth: String,
     pub height: String,
@@ -4460,6 +4463,7 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         let mut pending: Option<ShapeEdit> = None;
+        let mut enter_commit = false;
         labeled_row(ui, "Shape", |ui| {
             for (value, icon, tooltip) in [
                 (K::Cuboid, crate::icons::IconId::ShapeCuboid, "Cuboid (B cycles)"),
@@ -4477,14 +4481,27 @@ pub fn show_pane(
         let mut dimension = |ui: &mut egui::Ui, label: &str, field: D, value: &str| {
             labeled_row(ui, label, |ui| {
                 let mut text = value.to_string();
-                let resp = crate::expression_input::ValueInput::new(
-                    ("shape_field", label),
+                let id = egui::Id::new(("shape_field", label));
+                let resp = crate::expression_input::ValueInput::from_id(
+                    id,
                     crate::expression_input::ValueKind::Length,
                 )
                 .width(90.0)
                 .show(ui, &mut text, doc);
+                // The phase's own field takes the keyboard, so its size can be typed
+                // straight after the click that asked for it (#912).
+                if control.focus_field == Some(field) && !resp.has_focus() {
+                    resp.request_focus();
+                }
                 if resp.changed() {
-                    pending = Some(ShapeEdit::Dimension(field, text));
+                    pending = Some(ShapeEdit::Dimension(field, text.clone()));
+                }
+                // Enter in a shape field creates the shape, like the sketch Rectangle's
+                // typed dimensions do (#912) — the field holds the keyboard, so the
+                // viewport's own Enter never sees it.
+                let has_keyboard = ui.ctx().memory(|m| m.focused()) == Some(id);
+                if has_keyboard && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    enter_commit = true;
                 }
             });
         };
@@ -4504,11 +4521,12 @@ pub fn show_pane(
             on_shape_edit(edit);
         }
         ui.add_space(2.0);
-        if primary_button(
+        let create = primary_button(
             ui,
             control.can_commit && controls_enabled,
             if control.editing { "Apply changes" } else { "Create" },
-        ) {
+        );
+        if create || (enter_commit && control.can_commit) {
             on_shape_edit(ShapeEdit::Commit);
         }
     }
