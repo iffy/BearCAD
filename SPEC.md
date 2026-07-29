@@ -1191,6 +1191,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the joint's freedom (`joints::body_drag_joint` walks rigid ties up to the nearest freedom),
   stops at the limits, writes the number back to the position expressions, and lands as
   one undoable edit on release. A part held by its joints refuses with the reason.
+  **Auto-zoom stands down for the drag (#905):** the part is meant to travel, so framing
+  never chases it — the camera holds still until the drag lands.
   **Rest pose (#898):** `Joint::rest*` — captured at creation, recapturable, and reverted
   singly or all at once from the pane's Rest row, the row's right-click menu, or
   scripting.
@@ -3868,6 +3870,10 @@ visible selection never moves the camera at all. "Changed" is judged by an
 order-independent fingerprint of the selection set (`scene_selection_fingerprint`;
 empty → never frames), so orbiting or panning away from a still-selected face doesn't
 snap the view back.
+
+**Stands down for a joint drag (#905):** while a part is being dragged through its joint
+the whole watch is skipped (its growth baselines and selection fingerprint are refreshed
+instead), so the camera can't swing out from under the drag or snap when it lands.
 
 ### 11.x Help mode (#672)
 

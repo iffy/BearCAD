@@ -2747,6 +2747,17 @@ impl App {
             return;
         }
         let Some(viewport) = self.last_viewport else { return };
+        // A joint drag moves the part under the cursor every frame (#905), and the part is
+        // meant to travel — auto-zoom chasing it would swing the camera out from under the
+        // drag. It stands down for the duration, keeping its baselines current so the
+        // landing edit doesn't read as a sudden jump either.
+        if self.joint_select_drag.is_some() {
+            self.auto_zoom_selection = scene_selection_fingerprint(&self.state.scene_selection);
+            self.auto_zoom_last_extent = None;
+            self.auto_zoom_doc_extent = extrude::document_world_bounds(&self.state.doc)
+                .map(|(min, max)| (max - min).length());
+            return;
+        }
         if self.tick_auto_zoom_selection(viewport) {
             return;
         }
