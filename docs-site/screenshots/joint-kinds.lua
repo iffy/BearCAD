@@ -15,8 +15,52 @@ local kinds = {
   { kind = "planar", label = "Planar", position = 8, position2 = 5, position3 = 15 },
   { kind = "ball", label = "Ball", position = 20, position2 = 15 },
   { kind = "pin_slot", label = "Pin-slot", position = 8, position2 = 25 },
-  { kind = "screw", label = "Screw", lead = 2, position = 540 },
+  -- The screw is a rod threaded through a hole in the plate, so its turn-into-travel
+  -- reads as what it is: two full turns at 4 mm of lead drive it 8 mm up.
+  { kind = "screw", label = "Screw", rod = true, lead = 4, position = 720 },
 }
+
+-- Build one kind's pair at (ox, oy) — the base body first, then the moveable one —
+-- advancing the sketch's line/circle counters in `idx`. Returns the joint's mating
+-- points for the two body indices `a` (base) and `b` (moveable).
+local function build_pair(spec, ox, oy, idx, a, b)
+  if spec.rod then
+    bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
+    local plate = { idx.line, idx.line + 1, idx.line + 2, idx.line + 3 }
+    idx.line = idx.line + 4
+    bearcad.circle{ x = ox + 15, y = oy + 10, r = 4 }
+    bearcad.circle{ x = ox + 15, y = oy + 10, r = 3.5 }
+    local hole, rod = idx.circle, idx.circle + 1
+    idx.circle = idx.circle + 2
+    -- The plate is the rectangle minus the hole; the rod passes through it.
+    bearcad.extrude{
+      boolean = { op = "difference", a = { polygon = plate }, b = { circle = hole } },
+      distance = 5,
+    }
+    bearcad.extrude{ circle = rod, distance = 24, symmetric = true }
+    return {
+      from   = { body = b, on_edge = { ox + 15, oy + 10, 0 } },
+      to     = { body = a, on_edge = { ox + 15, oy + 10, 0 } },
+      from_b = { body = b, on_edge = { ox + 15, oy + 10, 10 } },
+      to_b   = { body = a, on_edge = { ox + 15, oy + 10, 10 } },
+    }
+  end
+  bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
+  local slab = { idx.line, idx.line + 1, idx.line + 2, idx.line + 3 }
+  bearcad.rect{ x = ox + 40, y = oy, width = 25, height = 8 }
+  local arm = { idx.line + 4, idx.line + 5, idx.line + 6, idx.line + 7 }
+  idx.line = idx.line + 8
+  bearcad.extrude{ polygon = slab, distance = 5 }
+  bearcad.extrude{ polygon = arm, distance = 5 }
+  local axis_to = { ox + 30, oy, 5 }
+  if spec.axis_to then axis_to = { ox + spec.axis_to[1], oy + spec.axis_to[2], spec.axis_to[3] } end
+  return {
+    from   = { body = b, vertex = { ox + 40, oy, 0 } },
+    to     = { body = a, vertex = { ox + 30, oy, 0 } },
+    from_b = { body = b, vertex = { ox + 40, oy, 5 } },
+    to_b   = { body = a, vertex = axis_to },
+  }
+end
 
 for _, spec in ipairs(kinds) do
   bearcad.new()
@@ -24,18 +68,12 @@ for _, spec in ipairs(kinds) do
   bearcad.ui.pane("context", "hide")
   bearcad.ui.pane("parameters", "hide")
 
-  bearcad.rect{ width = 30, height = 20 }
-  bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-  bearcad.rect{ x = 40, y = 0, width = 25, height = 8 }
-  bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+  local frames = build_pair(spec, 0, 0, { line = 0, circle = 0 }, 0, 1)
   bearcad.exit_sketch()
 
   bearcad.joint{
     a = 0, b = 1, kind = spec.kind, lead = spec.lead,
-    from   = { body = 1, vertex = {40, 0, 0} },
-    to     = { body = 0, vertex = {30, 0, 0} },
-    from_b = { body = 1, vertex = {40, 0, 5} },
-    to_b   = { body = 0, vertex = spec.axis_to or {30, 0, 5} },
+    from = frames.from, to = frames.to, from_b = frames.from_b, to_b = frames.to_b,
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }
 
@@ -55,35 +93,20 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-local vertex_count = 0
+local idx = { line = 0, circle = 0 }
 for i, spec in ipairs(kinds) do
   local col = (i - 1) % 4
   local row = math.floor((i - 1) / 4)
   local ox = col * 100
   local oy = row * -70
-  bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
-  bearcad.extrude{
-    polygon = { vertex_count, vertex_count + 1, vertex_count + 2, vertex_count + 3 },
-    distance = 5,
-  }
-  bearcad.rect{ x = ox + 40, y = oy, width = 25, height = 8 }
-  bearcad.extrude{
-    polygon = { vertex_count + 4, vertex_count + 5, vertex_count + 6, vertex_count + 7 },
-    distance = 5,
-  }
-  vertex_count = vertex_count + 8
   local base = (i - 1) * 2
+  local frames = build_pair(spec, ox, oy, idx, base, base + 1)
   -- Named after their joint, so the linked document reads as eight labelled pairs.
   bearcad.set_name(bearcad.element("body", base), spec.label .. " Base")
   bearcad.set_name(bearcad.element("body", base + 1), spec.label .. " Moveable")
-  local axis_to = { ox + 30, oy, 5 }
-  if spec.axis_to then axis_to = { ox + spec.axis_to[1], oy + spec.axis_to[2], spec.axis_to[3] } end
   bearcad.joint{
     a = base, b = base + 1, kind = spec.kind, lead = spec.lead,
-    from   = { body = base + 1, vertex = { ox + 40, oy, 0 } },
-    to     = { body = base, vertex = { ox + 30, oy, 0 } },
-    from_b = { body = base + 1, vertex = { ox + 40, oy, 5 } },
-    to_b   = { body = base, vertex = axis_to },
+    from = frames.from, to = frames.to, from_b = frames.from_b, to_b = frames.to_b,
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }
 end
