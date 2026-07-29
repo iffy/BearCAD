@@ -2230,7 +2230,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   so the red text and error tooltip stay away while the field has the keyboard, and appear
   once Enter says "I meant that" (and go away again on the next keystroke). The computed value
   sits inside the box under the expression, and the **autocomplete dropdown opens below the
-  box**, so the two never overlap (#793). Kinds: `Length` (document
+  box**, so the two never overlap (#793). **Tab** belongs to the autocomplete only while
+  there is a name to complete (`autocomplete_has_candidates` gates the field's `lock_focus`);
+  with nothing to complete it walks to the **next input** in the pane (#937). Kinds: `Length` (document
   length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and
   cycle checking; the repeat panes (3D + in-sketch), the pane's Move X/Y/Z/Angle,

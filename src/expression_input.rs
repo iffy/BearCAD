@@ -502,6 +502,27 @@ pub fn interp_autocomplete_handle_keys(
     )
 }
 
+/// Whether the field's caret sits on a token an autocomplete would offer names for (#937).
+///
+/// While it does, **Tab** belongs to the dropdown (it accepts the highlighted name); with
+/// nothing to complete it should walk to the next input instead, which is what the field's
+/// `lock_focus` is gated on.
+pub fn autocomplete_has_candidates(
+    ctx: &egui::Context,
+    id: Id,
+    text: &str,
+    doc: &Document,
+    exclude_names: &[&str],
+) -> bool {
+    let state = TextEditState::load(ctx, id);
+    let cursor = cursor_char_index(state.as_ref(), text);
+    let Some(token) = identifier_token_at_cursor(text, cursor) else {
+        return false;
+    };
+    let query = token_query(text, token);
+    !parameter_autocomplete_candidates(doc, &query, exclude_names).is_empty()
+}
+
 fn autocomplete_handle_keys_with(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -771,6 +792,9 @@ pub mod boxed {
             Some(w) => text_width(text).max(w),
             None => text_width(text),
         };
+        // Tab belongs to the autocomplete only while there's a name to complete (#507);
+        // with nothing to complete it walks to the next input in the pane (#937).
+        let lock_tab = autocomplete_has_candidates(&ctx, id, text, doc, exclude_names);
         // #501: the computed value sits *below* the typed expression, inside the box.
         let frame_output = frame.show(ui, |ui| {
             ui.set_width(width);
@@ -791,9 +815,7 @@ pub mod boxed {
                         TEXT
                     })
                     .margin(egui::vec2(0.0, 0.0))
-                    // lock_focus so Tab reaches the autocomplete (#507) instead of moving
-                    // keyboard focus to the next widget.
-                    .lock_focus(true)
+                    .lock_focus(lock_tab)
                     .show(ui);
                 match computed {
                     Some(v) => {
@@ -1038,6 +1060,33 @@ pub(crate) fn canonical_value_text(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// #937: Tab belongs to the autocomplete only while there's a name to complete — with
+    /// nothing to complete the field lets it walk to the next input.
+    #[test]
+    fn autocomplete_candidates_gate_the_tab_key() {
+        let ctx = egui::Context::default();
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "thickness".to_string(), "5mm".to_string()).unwrap();
+        let id = Id::new("tab_gate_test");
+        // No text-edit state stored, so the caret is taken to be at the end.
+        assert!(
+            autocomplete_has_candidates(&ctx, id, "thi", &doc, &[]),
+            "a half-typed parameter name has something to complete"
+        );
+        assert!(
+            !autocomplete_has_candidates(&ctx, id, "12", &doc, &[]),
+            "a plain number has nothing to complete"
+        );
+        assert!(
+            !autocomplete_has_candidates(&ctx, id, "", &doc, &[]),
+            "and neither has an empty field"
+        );
+        assert!(
+            !autocomplete_has_candidates(&ctx, id, "zzz", &doc, &[]),
+            "nor a name nothing matches"
+        );
+    }
     use super::*;
     use crate::parameters::add_parameter;
 
