@@ -1727,28 +1727,14 @@ pub fn build_hierarchy(
             children,
         });
     }
-    // 2D in-sketch offsets: the op is its own element with its parallel lines/circles
-    // nested beneath it (they're excluded from the sketch's own listing).
+    // 2D in-sketch offsets nest under the sketch they offset (#941, see `build_sketch_entry`);
+    // only an offset whose sketch died falls back to a top-level orphan here so it stays
+    // reachable.
     for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
-        if op.deleted {
+        if op.deleted || crate::document_lifecycle::sketch_alive(doc, op.sketch) {
             continue;
         }
-        let mut children: Vec<HierarchyEntry> = op
-            .line_outputs
-            .iter()
-            .filter(|&&li| doc.lines.get(li).is_some_and(|l| !l.deleted))
-            .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
-            .collect();
-        children.extend(
-            op.circle_outputs
-                .iter()
-                .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
-                .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
-        );
-        roots.push(HierarchyEntry {
-            node: HierarchyNode::SketchOffsetOp(oi),
-            children,
-        });
+        roots.push(build_sketch_offset_entry(doc, oi));
     }
     // 2D in-sketch mirrors (#523): the op with its reflected lines/circles nested beneath.
     for (oi, op) in doc.sketch_mirror_ops.iter().enumerate() {
@@ -3235,6 +3221,28 @@ fn is_sketch_repeat_circle_output(doc: &Document, ci: usize) -> bool {
             .any(|op| !op.deleted && op.circle_outputs.contains(&ci))
 }
 
+/// One in-sketch offset's row: the op with its parallel lines/circles nested beneath it
+/// (they're excluded from the sketch's own listing, see `is_sketch_repeat_line_output`).
+fn build_sketch_offset_entry(doc: &Document, oi: usize) -> HierarchyEntry {
+    let op = &doc.sketch_offset_ops[oi];
+    let mut children: Vec<HierarchyEntry> = op
+        .line_outputs
+        .iter()
+        .filter(|&&li| doc.lines.get(li).is_some_and(|l| !l.deleted))
+        .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
+        .collect();
+    children.extend(
+        op.circle_outputs
+            .iter()
+            .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+            .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
+    );
+    HierarchyEntry {
+        node: HierarchyNode::SketchOffsetOp(oi),
+        children,
+    }
+}
+
 fn build_sketch_entry(
     doc: &Document,
     sketch: SketchId,
@@ -3318,6 +3326,13 @@ fn build_sketch_entry(
         }
     }
 
+    // Offsets of this sketch's geometry nest under it (#941): the op belongs to the sketch,
+    // so it reads as a sketch feature rather than a document-level sibling.
+    for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
+        if !op.deleted && op.sketch == sketch {
+            children.push(build_sketch_offset_entry(doc, oi));
+        }
+    }
     // Extrusions built from this sketch nest under it (each owns its Body).
     children.extend(build_sketch_extrusions(doc, sketch, sketch_session));
     // Sweeps whose profile faces live in this sketch nest under it too (#478), each
@@ -6022,6 +6037,74 @@ label_hidden: false,
             }
         }
         None
+    }
+
+    /// #941: an in-sketch offset belongs to the sketch it offsets, so its row nests under
+    /// that sketch (with its output lines under it) instead of standing as a root sibling.
+    #[test]
+    fn sketch_offset_op_nests_under_its_sketch() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
+        doc.sketch_offset_ops.push(crate::model::SketchOffsetOperation {
+            sketch,
+            line_targets: vec![0],
+            circle_targets: Vec::new(),
+            distance: "5".to_string(),
+            construction: false,
+            line_outputs: vec![1],
+            circle_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::SketchOffsetOperation);
+
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let roots = &tree[0].children;
+        assert!(
+            !roots.iter().any(|e| e.node == HierarchyNode::SketchOffsetOp(0)),
+            "the offset must not be a document-level root: {roots:?}"
+        );
+        let sketch_entry = find_entry(&tree, HierarchyNode::Sketch(sketch)).expect("sketch entry");
+        let op = sketch_entry
+            .children
+            .iter()
+            .find(|c| c.node == HierarchyNode::SketchOffsetOp(0))
+            .expect("offset nests under its sketch");
+        assert_eq!(op.children, vec![HierarchyEntry {
+            node: HierarchyNode::Line(1),
+            children: vec![],
+        }]);
+    }
+
+    /// #941: an offset whose sketch is gone still surfaces somewhere, so it never becomes
+    /// unreachable in the tree.
+    #[test]
+    fn sketch_offset_op_surfaces_at_root_when_its_sketch_is_gone() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.sketches[sketch].deleted = true;
+        doc.sketch_offset_ops.push(crate::model::SketchOffsetOperation {
+            sketch,
+            line_targets: Vec::new(),
+            circle_targets: Vec::new(),
+            distance: "5".to_string(),
+            construction: false,
+            line_outputs: Vec::new(),
+            circle_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::SketchOffsetOperation);
+        let tree = build_hierarchy(&doc, None);
+        assert!(tree[0]
+            .children
+            .iter()
+            .any(|e| e.node == HierarchyNode::SketchOffsetOp(0)));
     }
 
     #[test]

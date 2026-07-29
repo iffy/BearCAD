@@ -6986,9 +6986,14 @@ impl AppState {
                         self.creating_rect = None;
                         self.discard_creating_line();
                         self.creating_circle = None;
-                        self.tool = Tool::Select;
+                        // Route through SetTool for the same reason the no-sketch branch
+                        // below does (#941): a bare `self.tool = …` left the in-sketch
+                        // Offset/Repeat/Mirror drafts alive, so their context blocks (and
+                        // their own Construction checkbox) stayed up under the Select tool.
+                        let result = self.apply_inner(Action::SetTool(Tool::Select));
                         self.status =
                             "Select tool — Delete/Backspace removes selection".to_string();
+                        return result;
                     }
                 } else if self.tool != Tool::Select {
                     // Route through SetTool so every tool's in-progress state gets its
@@ -17628,6 +17633,27 @@ mod tests {
         assert!(co.line_targets.is_empty());
         assert!(co.circle_targets.is_empty());
         assert_eq!(co.sketch, state.sketch_session.unwrap().sketch);
+    }
+
+    /// #941: Esc inside a sketch falls back to the Select tool, and that fallback must run
+    /// the same draft cleanup a tool switch does — otherwise the Offset draft outlives the
+    /// tool and its context block (with its own Construction checkbox) stays on screen.
+    #[test]
+    fn escape_to_select_in_sketch_drops_the_offset_draft() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.apply(Action::SetTool(Tool::Offset));
+        assert!(state.creating_sketch_offset.is_some());
+        state.apply(Action::CancelOperation);
+        assert_eq!(state.tool, Tool::Select);
+        assert!(state.sketch_session.is_some(), "Esc leaves the sketch open");
+        assert!(
+            state.creating_sketch_offset.is_none(),
+            "the Offset draft must not outlive the Offset tool"
+        );
     }
 
     /// #512: pre-selected sketch lines seed the Offset draft when the tool is enabled.

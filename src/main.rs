@@ -5996,12 +5996,15 @@ impl App {
         segs
     }
 
-    /// Ghost preview for the in-progress offset: the parallel copies at the live
-    /// distance, as dashed world segments (circles sampled as polylines).
-    fn sketch_offset_ghost_segments(&self) -> Vec<(Vec3, Vec3)> {
+    /// Ghost preview for the in-progress offset: the parallel copies at the live distance, as
+    /// world segments (circles sampled as polylines). Each carries a `dashed` flag that is only
+    /// set when Construction is checked (#940) — a substantial offset previews as a solid
+    /// preview-coloured line, like the mirror/extrude/revolve previews.
+    fn sketch_offset_ghost_segments(&self) -> Vec<(Vec3, Vec3, bool)> {
         let Some(co) = self.state.creating_sketch_offset.as_ref() else {
             return Vec::new();
         };
+        let dashed = co.construction;
         if !co.has_targets() {
             return Vec::new();
         }
@@ -6042,7 +6045,7 @@ impl App {
                         + seg.b * t.powi(3);
                     let w = crate::face::local_to_world(&frame, p.x, p.y);
                     if let Some(q) = prev {
-                        segs.push((q, w));
+                        segs.push((q, w, dashed));
                     }
                     prev = Some(w);
                 }
@@ -6050,6 +6053,7 @@ impl App {
                 segs.push((
                     crate::face::local_to_world(&frame, seg.a.x, seg.a.y),
                     crate::face::local_to_world(&frame, seg.b.x, seg.b.y),
+                    dashed,
                 ));
             }
         }
@@ -6063,13 +6067,46 @@ impl App {
                     let p =
                         crate::face::local_to_world(&frame, c.cx + r * t.cos(), c.cy + r * t.sin());
                     if let Some(q) = prev {
-                        segs.push((q, p));
+                        segs.push((q, p, dashed));
                     }
                     prev = Some(p);
                 }
             }
         }
         segs
+    }
+
+    /// World-space frame of the in-sketch Offset tool's push-pull gizmo, or `None` until
+    /// something is picked. See [`sketch_offset_gizmo_world`].
+    fn sketch_offset_gizmo_world(
+        &self,
+    ) -> Option<(Vec3, Vec3, f32, glam::Vec2, glam::Vec2)> {
+        sketch_offset_gizmo_world(
+            &self.state.doc,
+            self.state.creating_sketch_offset.as_ref()?,
+        )
+    }
+
+    /// Screen-space hit test for the offset push-pull handle (#939), matched to where the GPU
+    /// scene draws it: at the gizmo's minimum *display* distance so it stays grabbable at a
+    /// small or zero offset (#515), like the extrude and construction-plane gizmos.
+    fn sketch_offset_gizmo_hovered(
+        &self,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+    ) -> bool {
+        const HIT_PX: f32 = 10.0;
+        let Some((anchor_w, normal_w, dist, ..)) = self.sketch_offset_gizmo_world() else {
+            return false;
+        };
+        let handle_w = construction::offset_handle(
+            anchor_w,
+            normal_w,
+            construction::gizmo_display_offset(dist),
+        );
+        pointer_screen
+            .zip(project(handle_w))
+            .is_some_and(|(pp, h)| (pp - h).length() <= HIT_PX)
     }
 
     /// Offset tool inside a sketch: click lines/circles to toggle them into the
@@ -6085,6 +6122,7 @@ impl App {
         cam: &camera::Camera,
         viewport: egui::Rect,
         vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
         session: SketchSession,
     ) {
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -6103,41 +6141,22 @@ impl App {
         };
 
         // Push-pull gizmo: a handle at the first pick's offset position, dragged along
-        // the offset normal. Negative pulls flip the side.
-        const HIT_PX: f32 = 10.0;
-        let gizmo = self.state.creating_sketch_offset.as_ref().and_then(|c| {
-            if !c.has_targets() {
-                return None;
+        // the offset normal. Negative pulls flip the side. The arrow itself is drawn through the
+        // GPU scene (see `arrow_gizmos`) so it lands *on top* of the rendered scene (#939) — the
+        // 2D painter here runs before the viewport callback, which buried it.
+        if let Some((anchor_w, normal_w, dist, anchor, normal)) = self.sketch_offset_gizmo_world() {
+            let hovered = self.sketch_offset_gizmo_hovered(project, pointer_screen);
+            if !self.gpu_viewport {
+                draw_offset_gizmo(
+                    painter,
+                    project,
+                    anchor_w,
+                    normal_w,
+                    dist,
+                    col::PREVIEW,
+                    hovered || self.offset_gizmo_drag,
+                );
             }
-            let (anchor, normal) = c.gizmo_frame(&self.state.doc)?;
-            Some((anchor, normal, c.distance_mm(&self.state.doc).unwrap_or(0.0)))
-        });
-        if let Some((anchor, normal, dist)) = gizmo {
-            let anchor_w = local_to_world(&frame, anchor.x, anchor.y);
-            // Offset direction in world (unit): the sketch-plane basis applied to the UV normal.
-            let normal_w =
-                (local_to_world(&frame, anchor.x + normal.x, anchor.y + normal.y) - anchor_w)
-                    .normalize_or_zero();
-            // The handle sits at a minimum *display* distance so the push-pull gizmo stays
-            // visible and grabbable even at a small or zero offset (#515), matching the
-            // extrude and construction-plane gizmos. Dragging still maps to the true distance.
-            let handle_w = construction::offset_handle(
-                anchor_w,
-                normal_w,
-                construction::gizmo_display_offset(dist),
-            );
-            let hovered = pointer_screen
-                .zip(project(handle_w))
-                .is_some_and(|(pp, h)| (pp - h).length() <= HIT_PX);
-            draw_offset_gizmo(
-                painter,
-                project,
-                anchor_w,
-                normal_w,
-                dist,
-                col::PREVIEW,
-                hovered || self.offset_gizmo_drag,
-            );
             if hovered && ui.input(|i| i.pointer.primary_pressed()) {
                 self.offset_gizmo_drag = true;
             }
@@ -6167,64 +6186,117 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
-        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
-            return;
-        };
-        // Clicking a body edge — e.g. the boundary of the body face this sketch sits on (#595) —
-        // projects it into the sketch as a construction line and adds that to the offset set, so a
-        // face's own outline (like a rectangle) can be offset without projecting it by hand first.
-        if let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind {
-            let (qa, qb) = (
-                hierarchy::quantize_body_point(a),
-                hierarchy::quantize_body_point(b),
-            );
-            let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
-            let source = model::ProjectionSource::BodyEdge { body, a: qa, b: qb };
-            self.state
-                .creating_sketch_offset
-                .get_or_insert_with(|| actions::CreatingSketchOffset::new(session.sketch));
-            let before = self.state.doc.lines.len();
-            self.state.apply(Action::ProjectSources { sources: vec![source] });
-            if self.state.doc.lines.len() > before {
-                let li = self.state.doc.lines.len() - 1;
-                if let Some(co) = self.state.creating_sketch_offset.as_mut() {
-                    if !co.line_targets.contains(&li) {
-                        co.line_targets.push(li);
-                    }
-                }
-            }
-            if let Some(co) = self.state.creating_sketch_offset.as_ref() {
-                let n = co.line_targets.len() + co.circle_targets.len();
-                self.state.status = format!(
-                    "Offset: {n} entities — drag the handle or type a distance, Enter commits"
-                );
-            }
-            return;
-        }
+        let target = resolve_pick_target(pp, project, None, &self.state.doc, pick_occlusion);
         let co = self
             .state
             .creating_sketch_offset
             .get_or_insert_with(|| actions::CreatingSketchOffset::new(session.sketch));
-        match target.kind {
-            construction::PickTargetKind::Line(li) => {
+        match target.map(|t| t.kind) {
+            Some(construction::PickTargetKind::Line(li)) => {
                 if let Some(pos) = co.line_targets.iter().position(|x| *x == li) {
                     co.line_targets.remove(pos);
                 } else {
                     co.line_targets.push(li);
                 }
             }
-            construction::PickTargetKind::Circle(ci) => {
+            Some(construction::PickTargetKind::Circle(ci)) => {
                 if let Some(pos) = co.circle_targets.iter().position(|x| *x == ci) {
                     co.circle_targets.remove(pos);
                 } else {
                     co.circle_targets.push(ci);
                 }
             }
-            _ => return,
+            // Clicking a body edge — e.g. the boundary of the body face this sketch sits on
+            // (#595) — projects it into the sketch as a construction line and adds that to the
+            // offset set, so a face's own outline (like a rectangle) can be offset without
+            // projecting it by hand first.
+            Some(construction::PickTargetKind::BodyEdge { body, a, b }) => {
+                self.add_projected_edges_to_offset(vec![(body, a, b)]);
+            }
+            // A whole body **face** takes all of its edges at once (#938) — the same projection
+            // path, run over the face's boundary loop, so one click offsets the outline.
+            Some(construction::PickTargetKind::BodyFace { body, triangles, .. }) => {
+                let edges = construction::coplanar_face_boundary(&triangles)
+                    .into_iter()
+                    .map(|(a, b)| (body, a, b))
+                    .collect();
+                self.add_projected_edges_to_offset(edges);
+            }
+            // Nothing pickable under the cursor: a click inside one of this sketch's own closed
+            // profiles takes every line of that loop (#938), so a rectangle offsets in one click.
+            _ => {
+                let face = pick_sketch_face(pp, project, &self.state.doc, self.state.cam.eye());
+                let lines = match face {
+                    Some(model::FaceId::Polygon(lines)) => lines,
+                    Some(model::FaceId::Circle(ci))
+                        if self.state.doc.circles.get(ci).is_some_and(|c| {
+                            !c.deleted && c.sketch == session.sketch
+                        }) =>
+                    {
+                        if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                            if !co.circle_targets.contains(&ci) {
+                                co.circle_targets.push(ci);
+                            }
+                        }
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                };
+                let Some(co) = self.state.creating_sketch_offset.as_mut() else {
+                    return;
+                };
+                for li in lines {
+                    if self
+                        .state
+                        .doc
+                        .lines
+                        .get(li)
+                        .is_some_and(|l| !l.deleted && l.sketch == session.sketch)
+                        && !co.line_targets.contains(&li)
+                    {
+                        co.line_targets.push(li);
+                    }
+                }
+            }
         }
-        let n = co.line_targets.len() + co.circle_targets.len();
-        self.state.status =
-            format!("Offset: {n} entities — drag the handle or type a distance, Enter commits");
+        self.set_sketch_offset_status();
+    }
+
+    /// Project body edges into the open sketch and add every resulting line to the offset set
+    /// (#595/#938). Each edge becomes one construction line; edges already projected reuse
+    /// their line rather than adding a duplicate.
+    fn add_projected_edges_to_offset(&mut self, edges: Vec<(usize, Vec3, Vec3)>) {
+        let sources: Vec<model::ProjectionSource> = edges
+            .into_iter()
+            .map(|(body, a, b)| {
+                let (qa, qb) = (
+                    hierarchy::quantize_body_point(a),
+                    hierarchy::quantize_body_point(b),
+                );
+                let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
+                model::ProjectionSource::BodyEdge { body, a: qa, b: qb }
+            })
+            .collect();
+        if sources.is_empty() {
+            return;
+        }
+        let before = self.state.doc.lines.len();
+        self.state.apply(Action::ProjectSources { sources });
+        for li in before..self.state.doc.lines.len() {
+            if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                if !co.line_targets.contains(&li) {
+                    co.line_targets.push(li);
+                }
+            }
+        }
+    }
+
+    fn set_sketch_offset_status(&mut self) {
+        if let Some(co) = self.state.creating_sketch_offset.as_ref() {
+            let n = co.line_targets.len() + co.circle_targets.len();
+            self.state.status =
+                format!("Offset: {n} entities — drag the handle or type a distance, Enter commits");
+        }
     }
 
     fn commit_sketch_offset(&mut self) {
@@ -8116,7 +8188,7 @@ impl App {
     /// line/circle reflected across the mirror line, in the sketch plane.
     /// World-space preview segments for the in-progress in-sketch mirror (#528/#535): each
     /// target line/circle reflected across the mirror line, tagged with whether its source is
-    /// construction geometry. Rendered through the GPU scene's own solid `sketch_mirror_ghost`
+    /// construction geometry. Rendered through the GPU scene's own solid `sketch_ghost_lines`
     /// (#542) — a solid preview line matching the repeat/extrude/revolve preview styling, dashed
     /// only when the reflected source is itself a (dashed) construction line.
     fn sketch_mirror_ghost_segments(&self) -> Vec<(Vec3, Vec3, bool)> {
@@ -14854,15 +14926,33 @@ fn resolve_viewport_hover_highlight(
             pick_sketch_face(pp, project, doc, cam.eye())
                 .map(gpu_viewport::ViewportHoverHighlight::SketchFace)
         }
-        // Offset tool in a sketch: glow the line/circle a click would pick.
+        // Offset tool in a sketch: glow the line/circle a click would pick, the body edge or
+        // face it would project (#595/#938), or — over open sketch space — the closed profile
+        // whose whole outline one click takes (#938).
         Tool::Offset => {
             let gp = cam.ground_point(pp, viewport, vp);
-            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
-            matches!(
-                target.kind,
-                construction::PickTargetKind::Line(_) | construction::PickTargetKind::Circle(_)
-            )
-            .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion);
+            if let Some(target) = target.filter(|t| {
+                matches!(
+                    t.kind,
+                    construction::PickTargetKind::Line(_)
+                        | construction::PickTargetKind::Circle(_)
+                        | construction::PickTargetKind::BodyEdge { .. }
+                        | construction::PickTargetKind::BodyFace { .. }
+                )
+            }) {
+                return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind));
+            }
+            let face = pick_sketch_face(pp, project, doc, cam.eye())?;
+            let (world_loop, _) = extrude::face_profile_world(
+                doc,
+                &match face {
+                    model::FaceId::Polygon(lines) => model::ExtrudeFace::Polygon(lines),
+                    model::FaceId::Circle(ci) => model::ExtrudeFace::Circle(ci),
+                    _ => return None,
+                },
+            )?;
+            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop })
         }
         // Mirror tool in a sketch (#541): glow the line/circle a click would pick — whether the
         // mirror axis or a shape to reflect, both are line/circle picks.
@@ -15156,7 +15246,7 @@ fn build_viewport_scene_input<'a>(
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     vertex_treatment_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
-    move_gizmos: Vec<gpu_viewport::ViewportExtrudeGizmo>,
+    arrow_gizmos: Vec<gpu_viewport::ViewportExtrudeGizmo>,
     move_rotation_gizmo: Option<gpu_viewport::MoveRotationGizmo>,
     revolve_arc_gizmo: Option<gpu_viewport::RevolveArcGizmo>,
     vertex_treatment_preview: Option<Vec<Vec3>>,
@@ -15173,7 +15263,7 @@ fn build_viewport_scene_input<'a>(
     cut_highlight_bodies: Vec<usize>,
     faded_bodies: Vec<usize>,
     sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
-    sketch_mirror_ghost: Vec<(Vec3, Vec3, bool)>,
+    sketch_ghost_lines: Vec<(Vec3, Vec3, bool)>,
     edit_preview_meshes: std::collections::HashMap<usize, extrude::SolidMesh>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
@@ -15605,7 +15695,7 @@ fn build_viewport_scene_input<'a>(
         cut_highlight_bodies,
         faded_bodies,
         sketch_repeat_ghost,
-        sketch_mirror_ghost,
+        sketch_ghost_lines,
         edit_preview_meshes,
         element_visibility,
         preview_rect,
@@ -15625,7 +15715,7 @@ fn build_viewport_scene_input<'a>(
         plane_gizmo,
         extrude_gizmo,
         vertex_treatment_gizmo,
-        move_gizmos,
+        arrow_gizmos,
         move_rotation_gizmo,
         revolve_arc_gizmo,
         vertex_treatment_preview: vertex_treatment_preview
@@ -17151,6 +17241,30 @@ fn vertex_treatment_preview_points(
     } else {
         Some(world)
     }
+}
+
+/// World-space frame of the in-sketch Offset tool's push-pull gizmo (#939):
+/// `(anchor, unit normal, live distance)` in world, plus the sketch-local `(anchor, normal)`
+/// the drag maths works in. `None` until something is picked, or if the sketch plane or the
+/// offset side is degenerate.
+fn sketch_offset_gizmo_world(
+    doc: &model::Document,
+    co: &actions::CreatingSketchOffset,
+) -> Option<(Vec3, Vec3, f32, glam::Vec2, glam::Vec2)> {
+    if !co.has_targets() {
+        return None;
+    }
+    let frame = sketch_geometry_frame(doc, co.sketch)?;
+    let (anchor, normal) = co.gizmo_frame(doc)?;
+    let anchor_w = local_to_world(&frame, anchor.x, anchor.y);
+    // Offset direction in world (unit): the sketch-plane basis applied to the UV normal.
+    let normal_w =
+        (local_to_world(&frame, anchor.x + normal.x, anchor.y + normal.y) - anchor_w)
+            .normalize_or_zero();
+    if normal_w == Vec3::ZERO {
+        return None;
+    }
+    Some((anchor_w, normal_w, co.distance_mm(doc).unwrap_or(0.0), anchor, normal))
 }
 
 /// Where the extrude gizmo handle is drawn along the normal: the actual extrude
@@ -21821,7 +21935,8 @@ impl App {
         if self.state.tool == Tool::Offset {
             if let Some(session) = self.state.sketch_session {
                 self.handle_sketch_offset_tool(
-                    ui, &painter, &project, pointer_screen, &cam, viewport, &vp, session,
+                    ui, &painter, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion,
+                    session,
                 );
                 self.show_sketch_offset_distance_input(ui, &project);
             } else if let Some(pp) = pointer_screen {
@@ -23343,7 +23458,7 @@ impl App {
             }
         }
         // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
-        let move_gizmos = if self.state.tool == Tool::Move {
+        let mut arrow_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()
                 .map(|(anchor, axes)| {
                     axes.iter()
@@ -23373,6 +23488,21 @@ impl App {
         } else {
             Vec::new()
         };
+        // Offset tool (#939): the in-sketch push-pull handle rides the same arrow-gizmo path, so
+        // it draws over the scene instead of underneath the viewport's GPU render.
+        if self.state.tool == Tool::Offset {
+            if let Some((anchor, normal, dist, ..)) = self.sketch_offset_gizmo_world() {
+                arrow_gizmos.push(gpu_viewport::ViewportExtrudeGizmo {
+                    origin: anchor,
+                    normal,
+                    // Raw distance: `push_offset_gizmo` applies the minimum-display clamp itself.
+                    offset: dist,
+                    color: col::PREVIEW,
+                    hovered: self.offset_gizmo_drag
+                        || self.sketch_offset_gizmo_hovered(&project, pointer_screen),
+                });
+            }
+        }
         // Rotation-ring gizmo (#216/#286): a selected sketch text turns about its origin. The
         // body-rotation ring is gone with the Move tool's rotation half (#663).
         let move_rotation_gizmo = None
@@ -23396,12 +23526,12 @@ impl App {
             });
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
         // the picked lines/circles at every computed offset, so the result previews before commit.
-        let mut sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
-        sketch_repeat_ghost.extend(self.sketch_offset_ghost_segments());
-        // The mirror reflection previews as a solid line (dashed only for construction sources),
-        // matching the repeat/extrude/revolve preview styling (#542) — its own ghost, not the
-        // dashed sketch-repeat path.
-        let sketch_mirror_ghost = self.sketch_mirror_ghost_segments();
+        let sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
+        // The mirror reflection (#542) and the offset's parallel copies (#940) preview as solid
+        // preview-coloured lines — matching the repeat/extrude/revolve preview styling — and only
+        // go dashed when the result will be construction geometry.
+        let mut sketch_ghost_lines = self.sketch_mirror_ghost_segments();
+        sketch_ghost_lines.extend(self.sketch_offset_ghost_segments());
         // Live-updated descendant geometry for the operation being edited (#260): recomputed from
         // a scratch doc so faded downstream bodies follow the gizmo drag in preview styling.
         let edit_preview_meshes = self.edit_preview_descendant_meshes();
@@ -23563,7 +23693,7 @@ impl App {
             plane_gizmo,
             extrude_gizmo,
             vertex_treatment_gizmo,
-            move_gizmos,
+            arrow_gizmos,
             move_rotation_gizmo,
             revolve_arc_gizmo,
             vertex_treatment_preview,
@@ -23606,7 +23736,7 @@ impl App {
             cut_highlight_bodies,
             faded_bodies,
             sketch_repeat_ghost,
-            sketch_mirror_ghost,
+            sketch_ghost_lines,
             edit_preview_meshes,
         );
         // The rotation sphere rides the ghost-solid slot (#920) — nothing else uses it
@@ -25793,6 +25923,29 @@ fn draw_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #939: once something is picked, the Offset tool has a push-pull gizmo frame — anchored on
+    /// the first pick's midpoint, pointing along the side a positive distance grows toward. This
+    /// is what the arrow gizmo is built from, so an empty frame means no handle on screen.
+    #[test]
+    fn sketch_offset_gizmo_frame_anchors_on_the_first_pick() {
+        let mut doc = model::Document::default();
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        doc.lines.push(model::Line::from_local_endpoints(sketch, -10.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(model::ShapeKind::Line);
+
+        let mut co = actions::CreatingSketchOffset::new(sketch);
+        // Nothing picked: no handle.
+        assert!(sketch_offset_gizmo_world(&doc, &co).is_none());
+
+        co.line_targets.push(0);
+        let (anchor, normal, dist, ..) =
+            sketch_offset_gizmo_world(&doc, &co).expect("a picked line gives the handle a frame");
+        // XY construction plane: sketch (u, v) is world (x, y).
+        assert!((anchor - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-3, "{anchor:?}");
+        assert!((normal - Vec3::Y).length() < 1e-3, "positive grows to the left: {normal:?}");
+        assert!((dist - 5.0).abs() < 1e-3, "the default distance: {dist}");
+    }
 
     /// #874: the guide only becomes "type this" once the keyboard is in the box the orb marks;
     /// with the keyboard in the box beside it, the ring still has somewhere to point.

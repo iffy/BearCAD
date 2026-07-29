@@ -1130,7 +1130,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     area picks the normal side), a circle's radius increases; negative shrinks (collapsed
     circles clamp to `MIN_CIRCLE_RADIUS`); an open chain's positive side is left of its first
     segment. Outputs are real lines/circles (never dimension-locked, bezier flattened,
-    projection stripped) nested under the op in the Elements pane, excluded from the sketch's
+    projection stripped) nested under the op in the Elements pane — and the op itself nests
+    **under its sketch** (#941) — excluded from the sketch's
     own listing, deleted with the op, and **re-offset on every geometry recompute**
     (`rebuild_sketch_offset` from `recompute_document_geometry`) so they track source drags
     and parameter-driven distances. A **construction toggle** emits the copies as construction
@@ -1139,11 +1140,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     sketch-edit tool, #594) toggles lines/circles into the pick set with hover glow. Clicking a
     **body edge** — e.g. the boundary of the body face the sketch sits on — **projects it into the
     sketch** as a construction line and adds that to the offset set (#595), so a face's own outline
-    (a rectangle, say) can be offset without projecting it by hand first. It previews the result as
-    dashed ghosts, and sets the distance via an in-plane
-    **push-pull handle** (dragged along the offset normal, negative flips side) or the context
+    (a rectangle, say) can be offset without projecting it by hand first. Clicking a **face** takes
+    all of its edges in one go (#938): a body face projects its whole boundary loop
+    (`construction::coplanar_face_boundary`), and a click over open sketch space inside one of the
+    sketch's own closed profiles (`face::pick_sketch_face`) adds every line of that loop. Faces and
+    profiles hover-highlight like the rest. It previews the result as **solid preview-coloured**
+    lines — dashed only when Construction is checked (#940), matching the mirror/extrude/revolve
+    preview styling — and sets the distance via an in-plane
+    **push-pull handle** (an arrow gizmo drawn through the GPU scene's `arrow_gizmos` so it lands
+    on top of the render, #939; dragged along the offset normal, negative flips side) or the context
     pane's expression input with computed preview; Enter or the pane button commits; Esc
-    clears the picks. Selecting a committed op offers **Edit offset**, which re-opens the
+    clears the picks (a second Esc drops the draft and its context block with it, #941). Selecting a committed op offers **Edit offset**, which re-opens the
     tool (and the op's sketch) with the existing inputs. Scripting:
     `bearcad.offset_sketch{ sketch, lines, circles, distance, construction }` /
     `bearcad.edit_sketch_offset{ index, … }`; selectable as kind `sketch_offset_op`.
