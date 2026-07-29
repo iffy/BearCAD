@@ -8,14 +8,14 @@
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/joint-kinds"
 
 local kinds = {
-  { kind = "rigid" },
-  { kind = "slider", axis_to = {0, 0, 0}, position = 12 },
-  { kind = "revolute", position = 45 },
-  { kind = "cylindrical", position = 6, position2 = 30 },
-  { kind = "planar", position = 8, position2 = 5, position3 = 15 },
-  { kind = "ball", position = 20, position2 = 15 },
-  { kind = "pin_slot", position = 8, position2 = 25 },
-  { kind = "screw", lead = 2, position = 540 },
+  { kind = "rigid", label = "Rigid" },
+  { kind = "slider", label = "Sliding", axis_to = {0, 0, 0}, position = 12 },
+  { kind = "revolute", label = "Revolute", position = 45 },
+  { kind = "cylindrical", label = "Cylindrical", position = 6, position2 = 30 },
+  { kind = "planar", label = "Planar", position = 8, position2 = 5, position3 = 15 },
+  { kind = "ball", label = "Ball", position = 20, position2 = 15 },
+  { kind = "pin_slot", label = "Pin-slot", position = 8, position2 = 25 },
+  { kind = "screw", label = "Screw", lead = 2, position = 540 },
 }
 
 for _, spec in ipairs(kinds) do
@@ -73,6 +73,9 @@ for i, spec in ipairs(kinds) do
   }
   vertex_count = vertex_count + 8
   local base = (i - 1) * 2
+  -- Named after their joint, so the linked document reads as eight labelled pairs.
+  bearcad.set_name(bearcad.element("body", base), spec.label .. " Base")
+  bearcad.set_name(bearcad.element("body", base + 1), spec.label .. " Moveable")
   local axis_to = { ox + 30, oy, 5 }
   if spec.axis_to then axis_to = { ox + spec.axis_to[1], oy + spec.axis_to[2], spec.axis_to[3] } end
   bearcad.joint{
