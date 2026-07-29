@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Cylinder: top ellipse, two silhouette walls, and the visible front half of the
+       bottom rim — the same viewing angle as the cuboid icon. -->
+  <path d="M6 22 L6 10" />
+  <path d="M26 22 L26 10" />
+  <ellipse cx="16" cy="10" rx="10" ry="4" fill="currentColor" fill-opacity="0.18" />
+  <path d="M6 22 A10 4 0 0 0 26 22" />
+</svg>

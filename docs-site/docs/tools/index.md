@@ -25,6 +25,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/text.svg")} width="22" /> | [Text](/docs/tools/text) | `T` | Place editable lettering in a sketch. |
 | <img src={useBaseUrl("/img/icons/project.svg")} width="22" /> | [Projection](/docs/tools/projection) | — | In a sketch: pull outside edges in as references (or select and press `Y`). |
 | <img src={useBaseUrl("/img/icons/plane.svg")} width="22" /> | [Construction Plane](/docs/tools/construction-plane) | — | Add a flat reference plane to sketch on. |
+| <img src={useBaseUrl("/img/icons/shape_cuboid.svg")} width="22" /> | [Shape](/docs/tools/shape) | `B` | Place a cuboid, cylinder, or sphere straight into 3D. |
 | <img src={useBaseUrl("/img/icons/extrude.svg")} width="22" /> | [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |
 | <img src={useBaseUrl("/img/icons/loft.svg")} width="22" /> | [Loft](/docs/tools/loft) | — | Blend a solid through two or more cross-section profiles. |
 | <img src={useBaseUrl("/img/icons/revolve.svg")} width="22" /> | [Revolve](/docs/tools/revolve) | — | Spin a profile around an axis into a solid. |

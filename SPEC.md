@@ -1509,6 +1509,16 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   provides the fallback for browsers without WebGPU.
 
 ### 3.5 Advanced features
+- **Create Shape tool** *(#909)* — `Tool::Shape`, 3D only (picking it from a sketch leaves
+  the sketch). Its toolbar button shows the **last used** shape's icon
+  (`AppState::shape_kind`), and its plain-letter shortcut **B** picks the tool, then cycles
+  cuboid → cylinder → sphere on each further press (like Rectangle's anchor toggle). The
+  context pane shows a **Shape** row of three icon buttons and that shape's own labelled
+  ValueInputs (cuboid: Width/Depth/Height; cylinder: Radius/Height; sphere: Radius) over a
+  Create button; **Enter** commits when every dimension has a size, **Esc** clears the
+  in-progress shape, and leaving the tool drops it. Switching shape mid-placement keeps the
+  frame and the dimensions already typed. Double-clicking a shape's Elements row reopens the
+  tool with it loaded (`CreatingShape::editing`), where the button reads **Apply changes**.
 - **Shapes** *(model, #909)* — cuboids, cylinders and spheres placed straight into 3D, with
   no sketch behind them. A `Primitive { kind, origin, normal, u_axis, width, depth, height,
   radius, name }` in `Document::primitives` stores the anchor frame — the point placed on,

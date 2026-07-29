@@ -4930,6 +4930,20 @@ impl App {
                 }
             }
 
+            // B places shapes (#909); pressing it again cycles cuboid → cylinder → sphere.
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.sketch_session.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::B))
+            {
+                if self.state.tool != Tool::Shape {
+                    self.state.apply(Action::SetTool(Tool::Shape));
+                } else {
+                    let next = self.state.shape_kind.next();
+                    self.state.apply(Action::SetShapeKind { kind: next });
+                }
+            }
+
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()
                 && ctx.input(|i| i.key_pressed(egui::Key::L))
@@ -7621,6 +7635,18 @@ impl App {
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
             }
+            // A committed shape reopens in the tool it was made with (#909). SetTool arms a
+            // fresh shape, so the existing one is loaded after it.
+            SE::Shape(op) => {
+                if let Some(existing) = self.state.doc.primitives.get(op).cloned() {
+                    self.state.shape_kind = existing.kind;
+                    self.state.apply(Action::SetTool(Tool::Shape));
+                    self.state.creating_shape = Some(actions::CreatingShape {
+                        shape: existing,
+                        editing: Some(op),
+                    });
+                }
+            }
             SE::Joint(op) => {
                 if let Some(existing) = self.state.doc.joints.get(op).cloned() {
                     self.state.creating_joint =
@@ -9342,6 +9368,25 @@ impl App {
         }
     }
 
+    /// Create Shape tool (#909): while it's active, Enter commits the shape once every
+    /// dimension it needs has a size. The placement clicks live in `handle_shape_placement`.
+    fn handle_shape_tool_keys(&mut self, ui: &egui::Ui) {
+        if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
+            return;
+        }
+        let ready = self
+            .state
+            .creating_shape
+            .as_ref()
+            .is_some_and(|c| c.can_commit(&self.state.doc));
+        if ready
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !ui.ctx().egui_wants_keyboard_input()
+        {
+            self.state.apply(Action::CommitShape);
+        }
+    }
+
     /// Loft tool (SPEC §3.5): click closed sketch profiles (circles or line loops) to
     /// collect cross sections; Enter blends them into a lofted solid. The picked set shows
     /// in the context-pane selection picker (#167), where rows can be removed.
@@ -10029,6 +10074,17 @@ impl eframe::App for App {
                 self.tool_button(ui, icons::IconId::Sweep, Tool::Sweep, "Sweep");
                 self.tool_button(ui, icons::IconId::Loft, Tool::Loft, "Loft");
                 self.tool_button(ui, icons::IconId::Revolve, Tool::Revolve, "Revolve");
+                // The Shape tool shows the shape it will place (#909).
+                self.tool_button(
+                    ui,
+                    match self.state.shape_kind {
+                        model::PrimitiveKind::Cuboid => icons::IconId::ShapeCuboid,
+                        model::PrimitiveKind::Cylinder => icons::IconId::ShapeCylinder,
+                        model::PrimitiveKind::Sphere => icons::IconId::ShapeSphere,
+                    },
+                    Tool::Shape,
+                    names::primitive_kind_label(self.state.shape_kind),
+                );
                 self.tool_button(ui, icons::IconId::Combine, Tool::Combine, "Combine");
                 self.tool_button(ui, icons::IconId::Move, Tool::Move, "Move");
                 self.tool_button(ui, icons::IconId::Mirror, Tool::Mirror, "Mirror");
@@ -10954,6 +11010,22 @@ impl eframe::App for App {
                     }
                 }),
                 move_edit_start: None,
+                shape: (self.state.tool == Tool::Shape
+                    && self.state.sketch_session.is_none())
+                .then(|| {
+                    let creating = self.state.creating_shape.clone().unwrap_or_else(|| {
+                        actions::CreatingShape::new(self.state.shape_kind)
+                    });
+                    context::ShapeControl {
+                        kind: creating.shape.kind,
+                        width: creating.shape.width.clone(),
+                        depth: creating.shape.depth.clone(),
+                        height: creating.shape.height.clone(),
+                        radius: creating.shape.radius.clone(),
+                        editing: creating.editing.is_some(),
+                        can_commit: creating.can_commit(&self.state.doc),
+                    }
+                }),
                 joint: (self.state.tool == Tool::Joint
                     && self.state.sketch_session.is_none())
                 .then(|| {
@@ -11627,6 +11699,7 @@ impl eframe::App for App {
             context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
             let mut construction_change: Option<bool> = None;
             let mut rect_anchor_change: Option<actions::RectAnchor> = None;
+            let mut shape_edit: Option<context::ShapeEdit> = None;
             let mut circle_anchor_change: Option<actions::CircleAnchor> = None;
             let mut curve_mode_change: Option<bool> = None;
             let mut tangent_constraint_change: Option<bool> = None;
@@ -11727,6 +11800,7 @@ impl eframe::App for App {
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
                         &mut |op| move_edit_begin = Some(op),
+                        &mut |edit| shape_edit = Some(edit),
                         &mut |edit| joint_edit = Some(edit),
                         &mut |op| joint_edit_begin = Some(op),
                         &mut |edit| mirror_edit = Some(edit),
@@ -12009,6 +12083,20 @@ impl eframe::App for App {
             }
             if let Some(op) = move_edit_begin {
                 self.begin_operation_edit(hierarchy::SceneElement::MoveOp(op));
+            }
+            // The Create Shape tool's pane edits (#909).
+            if let Some(edit) = shape_edit {
+                match edit {
+                    context::ShapeEdit::Kind(kind) => {
+                        self.state.apply(Action::SetShapeKind { kind });
+                    }
+                    context::ShapeEdit::Dimension(field, text) => {
+                        self.state.apply(Action::SetShapeDimension { field, text });
+                    }
+                    context::ShapeEdit::Commit => {
+                        self.state.apply(Action::CommitShape);
+                    }
+                }
             }
             if let Some(edit) = joint_edit {
                 // Clicking a picker overrides the automatic step-through, like Move (#656).
@@ -21209,6 +21297,7 @@ impl App {
         }
 
         if self.state.tool == Tool::Loft {
+            self.handle_shape_tool_keys(ui);
             self.handle_loft_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
@@ -24216,6 +24305,10 @@ impl App {
             }
             Tool::Sketch => {
                 "s: sketch  •  Click a plane or any flat face  •  Esc: cancel"
+            }
+            // #909: the phases themselves come with placement; this is the tool's resting hint.
+            Tool::Shape => {
+                "Shape — b cycles cuboid/cylinder/sphere • type the sizes • Enter: create • Esc: cancel"
             }
             Tool::Project => {
                 "Projection — click an outside edge or body to bring it in as a dashed reference • Esc: done"

@@ -87,6 +87,8 @@ pub struct ContextInput<'a> {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Create Shape tool state (#909): `Some` while the Shape tool is active.
+    pub shape: Option<ShapeControl>,
     /// Joint tool state (#894): `Some` while the Joint tool is active.
     pub joint: Option<JointControl>,
     /// "Edit joint" entry point: `Some(op)` when exactly one joint is selected (#894).
@@ -308,6 +310,27 @@ pub enum MoveEdit {
     ClearStartC,
     EndCFocus,
     ClearEndC,
+    Commit,
+}
+
+/// What the Create Shape tool's context section shows (#909): which shape, its labelled
+/// dimensions, and whether it can be committed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeControl {
+    pub kind: crate::model::PrimitiveKind,
+    pub width: String,
+    pub depth: String,
+    pub height: String,
+    pub radius: String,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Shape context section (#909).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShapeEdit {
+    Kind(crate::model::PrimitiveKind),
+    Dimension(crate::actions::ShapeDimension, String),
     Commit,
 }
 
@@ -965,6 +988,8 @@ pub struct ContextPaneContent {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Create Shape tool state (#909): `Some` while the Shape tool is active.
+    pub shape: Option<ShapeControl>,
     /// Joint tool state (#894): `Some` while the Joint tool is active.
     pub joint: Option<JointControl>,
     /// "Edit joint" entry point: `Some(op)` when exactly one joint is selected (#894).
@@ -1463,6 +1488,15 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
         Tool::Project => "Projection",
         Tool::Loft => "Loft",
         Tool::Revolve => "Revolve",
+        Tool::Shape => match (input.shape.as_ref().map(|c| c.kind), editing) {
+            (Some(kind), true) => return Some(match kind {
+                crate::model::PrimitiveKind::Cuboid => "Edit cuboid",
+                crate::model::PrimitiveKind::Cylinder => "Edit cylinder",
+                crate::model::PrimitiveKind::Sphere => "Edit sphere",
+            }),
+            (Some(kind), false) => crate::names::primitive_kind_label(kind),
+            (None, _) => "Shape",
+        },
         Tool::Sweep => "Sweep",
         Tool::Combine => {
             if editing {
@@ -1881,6 +1915,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let drawing_annotation = input.drawing_annotation.clone();
     let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
+    let shape = input.shape.clone();
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
     let revolve_edit_start = input.revolve_edit_start;
@@ -1924,6 +1959,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            shape: shape.clone(),
             joint: joint.clone(),
             joint_edit_start,
             mirror_op: mirror_op.clone(),
@@ -1986,6 +2022,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            shape: shape.clone(),
             joint: joint.clone(),
             joint_edit_start,
             mirror_op: mirror_op.clone(),
@@ -2050,6 +2087,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            shape: shape.clone(),
             joint: joint.clone(),
             joint_edit_start,
             mirror_op: mirror_op.clone(),
@@ -2120,6 +2158,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         boolean_op,
         boolean_edit_start,
         move_op,
+        shape,
         joint,
         joint_edit_start,
         move_edit_start,
@@ -2700,6 +2739,13 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Move), "Y") => Some("How far along Y."),
         (Some(Tool::Move), "Z") => Some("How far along Z."),
 
+        (Some(Tool::Shape), "Shape") => Some(
+            "Which shape to place: cuboid, cylinder, or sphere. B cycles them.",
+        ),
+        (Some(Tool::Shape), "Width") => Some("The cuboid's size across the plane's first direction."),
+        (Some(Tool::Shape), "Depth") => Some("The cuboid's size across the other direction."),
+        (Some(Tool::Shape), "Height") => Some("How far the shape rises off the plane it sits on."),
+        (Some(Tool::Shape), "Radius") => Some("The cylinder's or sphere's radius."),
         (Some(Tool::Joint), "Parts") => Some(
             "The two parts to join — bodies, components, or imported units. Click one to \
              add it, click it again to drop it.",
@@ -3325,6 +3371,7 @@ pub fn show_pane(
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
     on_move_edit_start: &mut impl FnMut(usize),
+    on_shape_edit: &mut impl FnMut(ShapeEdit),
     on_joint_edit: &mut impl FnMut(JointEdit),
     on_joint_edit_start: &mut impl FnMut(usize),
     on_mirror_edit: &mut impl FnMut(MirrorEdit),
@@ -4403,6 +4450,66 @@ pub fn show_pane(
         ui.separator();
         if ui.button("Edit move").clicked() {
             on_move_edit_start(op);
+        }
+    }
+
+    // The Create Shape tool (#909): which shape, then that shape's own dimensions.
+    if let Some(control) = &content.shape {
+        use crate::actions::ShapeDimension as D;
+        use crate::model::PrimitiveKind as K;
+        any_control = true;
+        ui.separator();
+        let mut pending: Option<ShapeEdit> = None;
+        labeled_row(ui, "Shape", |ui| {
+            for (value, icon, tooltip) in [
+                (K::Cuboid, crate::icons::IconId::ShapeCuboid, "Cuboid (B cycles)"),
+                (K::Cylinder, crate::icons::IconId::ShapeCylinder, "Cylinder (B cycles)"),
+                (K::Sphere, crate::icons::IconId::ShapeSphere, "Sphere (B cycles)"),
+            ] {
+                if crate::icons::selectable_icon_button(ui, icon, control.kind == value, tooltip)
+                    .clicked()
+                    && control.kind != value
+                {
+                    pending = Some(ShapeEdit::Kind(value));
+                }
+            }
+        });
+        let mut dimension = |ui: &mut egui::Ui, label: &str, field: D, value: &str| {
+            labeled_row(ui, label, |ui| {
+                let mut text = value.to_string();
+                let resp = crate::expression_input::ValueInput::new(
+                    ("shape_field", label),
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    pending = Some(ShapeEdit::Dimension(field, text));
+                }
+            });
+        };
+        match control.kind {
+            K::Cuboid => {
+                dimension(ui, "Width", D::Width, &control.width);
+                dimension(ui, "Depth", D::Depth, &control.depth);
+                dimension(ui, "Height", D::Height, &control.height);
+            }
+            K::Cylinder => {
+                dimension(ui, "Radius", D::Radius, &control.radius);
+                dimension(ui, "Height", D::Height, &control.height);
+            }
+            K::Sphere => dimension(ui, "Radius", D::Radius, &control.radius),
+        }
+        if let Some(edit) = pending {
+            on_shape_edit(edit);
+        }
+        ui.add_space(2.0);
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Create" },
+        ) {
+            on_shape_edit(ShapeEdit::Commit);
         }
     }
 
@@ -6597,6 +6704,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -6884,6 +6992,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -6974,6 +7083,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7401,6 +7511,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7475,6 +7586,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7539,6 +7651,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7613,6 +7726,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7695,6 +7809,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7817,6 +7932,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7891,6 +8007,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -7957,6 +8074,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,
@@ -8022,6 +8140,7 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            shape: None,
             joint: None,
             joint_edit_start: None,
             mirror_op: None,

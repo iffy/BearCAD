@@ -90,6 +90,10 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // T also means the Tangent constraint in tangent contexts (#311); the plain-T binding
         // selects the Text tool everywhere else.
         Tool::Text => Some(ShortcutHint::plain("T")),
+        // B for "block" (#909): S — the shape the issue asked for — is the Sketch tool's,
+        // and B collides with no other tool letter or constraint mnemonic. Repeated B
+        // cycles cuboid → cylinder → sphere.
+        Tool::Shape => Some(ShortcutHint::plain("B")),
         // No plain-letter shortcut; toolbar/palette only. (Plane creation isn't
         // common enough to spend a letter on, #462.)
         Tool::ConstructionPlane
@@ -237,6 +241,7 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
         (Tool::Chamfer, "Chamfer tool"),
         (Tool::Fillet, "Fillet tool"),
         (Tool::Text, "Text tool"),
+        (Tool::Shape, "Create Shape tool (again cycles cuboid/cylinder/sphere)"),
     ];
     sections.push(ShortcutSection {
         title: "Tools",

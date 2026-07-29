@@ -104,6 +104,9 @@ pub enum Tool {
     /// revolve a solid (SPEC §3.5 Revolve). New body / fuse into touching bodies / cut
     /// picked bodies.
     Revolve,
+    /// Place a cuboid, cylinder, or sphere straight into 3D — no sketch (#909). 3D only;
+    /// pressing its shortcut again cycles which shape it places.
+    Shape,
     /// Pick coplanar profile faces plus a path of sketch lines that intersects their
     /// plane, and sweep the profiles along it (SPEC §3.5 Sweep). New body / fuse
     /// into touching bodies / cut picked bodies.
@@ -189,6 +192,7 @@ impl Tool {
             "fillet" => Some(Tool::Fillet),
             "loft" => Some(Tool::Loft),
             "revolve" => Some(Tool::Revolve),
+            "shape" | "cuboid" | "cylinder" | "sphere" => Some(Tool::Shape),
             "sweep" => Some(Tool::Sweep),
             "combine" | "boolean" => Some(Tool::Combine),
             "move" => Some(Tool::Move),
@@ -230,6 +234,38 @@ impl Tool {
 /// Where the first click of the rectangle tool lands (#532): a corner (drag to the opposite
 /// corner — the classic behavior) or the centre (drag to a corner, the rectangle growing
 /// symmetrically).
+/// Which of a shape's dimensions a value input drives (#909).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeDimension {
+    Width,
+    Depth,
+    Height,
+    Radius,
+}
+
+/// The Create Shape tool's in-progress shape (#909): the shape as it stands, and which
+/// committed shape it re-points (if any).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingShape {
+    pub shape: crate::model::Primitive,
+    /// `Some(index)` while editing a committed shape rather than placing a new one.
+    pub editing: Option<usize>,
+}
+
+impl CreatingShape {
+    pub fn new(kind: crate::model::PrimitiveKind) -> Self {
+        Self {
+            shape: crate::model::Primitive::new(kind),
+            editing: None,
+        }
+    }
+
+    /// Whether every dimension the kind needs has something in it.
+    pub fn can_commit(&self, doc: &crate::model::Document) -> bool {
+        crate::primitives::mesh(doc, &self.shape).is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RectAnchor {
     #[default]
@@ -2015,6 +2051,13 @@ pub enum Action {
         body: RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// Choose which shape the Create Shape tool places (#909); repeated presses of the
+    /// tool's shortcut cycle through them.
+    SetShapeKind { kind: crate::model::PrimitiveKind },
+    /// Type into one of the in-progress shape's dimensions (#909).
+    SetShapeDimension { field: ShapeDimension, text: String },
+    /// Commit the in-progress shape (reads `creating_shape`).
+    CommitShape,
     /// Create a primitive shape (#909) — the Create Shape tool's commit, and the scripted
     /// `bearcad.cuboid/cylinder/sphere`. The payload is the shape itself: its anchor frame
     /// and its dimension expressions.
@@ -2921,6 +2964,10 @@ pub struct AppState {
     pub draw_construction: bool,
     /// Persisted rectangle anchor mode (#532): the first click is a corner or the centre.
     pub rect_anchor: RectAnchor,
+    /// The Create Shape tool's in-progress shape (#909), while the tool is active.
+    pub creating_shape: Option<CreatingShape>,
+    /// Which shape the tool places next (#909): the last one used, so the toolbar shows it.
+    pub shape_kind: crate::model::PrimitiveKind,
     /// Persisted circle anchor mode: the first click is the centre or one edge.
     pub circle_anchor: CircleAnchor,
     /// Persisted "next point gets bezier handles" toggle for the line tool (`B`, #73); mirrors
@@ -3056,6 +3103,8 @@ impl Default for AppState {
             compact_layout: false,
             draw_construction: false,
             rect_anchor: RectAnchor::default(),
+            creating_shape: None,
+            shape_kind: crate::model::PrimitiveKind::Cuboid,
             circle_anchor: CircleAnchor::default(),
             draw_curve_mode: false,
             draw_tangent_constraint: true,
@@ -4131,6 +4180,7 @@ impl AppState {
             return ActionResult::Err(e);
         }
         let label = crate::names::primitive_kind_label(shape.kind);
+        self.creating_shape = None;
         self.doc.primitives.push(shape);
         self.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Primitive(self.doc.primitives.len() - 1),
@@ -4160,6 +4210,7 @@ impl AppState {
             return ActionResult::Err(e);
         }
         let name = self.doc.primitives[index].name.clone();
+        self.creating_shape = None;
         self.doc.primitives[index] = crate::model::Primitive { name, ..shape };
         self.tool = Tool::Select;
         self.refresh_document_health();
@@ -6553,6 +6604,14 @@ impl AppState {
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
+                // The Create Shape tool arms a fresh shape of the last-used kind (#909);
+                // leaving the tool drops it.
+                if self.creating_shape.is_some() && tool != Tool::Shape {
+                    self.creating_shape = None;
+                }
+                if tool == Tool::Shape && self.creating_shape.is_none() {
+                    self.creating_shape = Some(CreatingShape::new(self.shape_kind));
+                }
                 if self.creating_sweep.is_some() && tool != Tool::Sweep {
                     self.creating_sweep = None;
                 }
@@ -6586,8 +6645,10 @@ impl AppState {
                 }
                 // Extruding/lofting act on the 3D model, not sketch geometry: leave
                 // sketch editing when either tool is picked from inside a sketch.
-                if matches!(tool, Tool::Extrude | Tool::Loft | Tool::Revolve | Tool::Sweep)
-                    && self.sketch_session.is_some()
+                if matches!(
+                    tool,
+                    Tool::Extrude | Tool::Loft | Tool::Revolve | Tool::Sweep | Tool::Shape
+                ) && self.sketch_session.is_some()
                 {
                     self.exit_sketch_session();
                 }
@@ -6664,6 +6725,10 @@ impl AppState {
                     Tool::Revolve => {
                         "Revolve tool — click profile faces, then an axis line".to_string()
                     }
+                    Tool::Shape => format!(
+                        "{} tool — click to place it",
+                        crate::names::primitive_kind_label(self.shape_kind)
+                    ),
                     Tool::Combine => {
                         "Combine tool — click bodies to pick them, choose the operation, Enter commits"
                             .to_string()
@@ -6777,6 +6842,15 @@ impl AppState {
                     self.status = "Cancelled revolve".to_string();
                 } else if self.creating_sweep.take().is_some() {
                     self.status = "Cancelled sweep".to_string();
+                } else if self
+                    .creating_shape
+                    .as_ref()
+                    .is_some_and(|c| c.editing.is_some() || c.can_commit(&self.doc))
+                {
+                    // Esc drops the shape being placed (#909), leaving the tool armed and
+                    // empty; a second Esc returns to Select through the usual path.
+                    self.creating_shape = Some(CreatingShape::new(self.shape_kind));
+                    self.status = "Cancelled shape".to_string();
                 } else if self.creating_calibration.take().is_some() {
                     self.status = "Cancelled calibration".to_string();
                 } else if self
@@ -11730,6 +11804,50 @@ label_hidden: false,
                         }
                     };
                 self.create_sweep(sketch, faces, path, mode)
+            }
+            Action::SetShapeKind { kind } => {
+                self.shape_kind = kind;
+                let editing = self.creating_shape.as_ref().and_then(|c| c.editing);
+                let mut creating = CreatingShape::new(kind);
+                // Keep the frame and any dimensions already set, so switching shape
+                // mid-placement keeps where it's being placed.
+                if let Some(old) = self.creating_shape.take() {
+                    creating.shape.origin = old.shape.origin;
+                    creating.shape.normal = old.shape.normal;
+                    creating.shape.u_axis = old.shape.u_axis;
+                    creating.shape.width = old.shape.width;
+                    creating.shape.depth = old.shape.depth;
+                    creating.shape.height = old.shape.height;
+                    creating.shape.radius = old.shape.radius;
+                }
+                creating.editing = editing;
+                self.creating_shape = Some(creating);
+                self.status = format!(
+                    "{} tool",
+                    crate::names::primitive_kind_label(kind)
+                );
+                ActionResult::Ok
+            }
+            Action::SetShapeDimension { field, text } => {
+                let Some(creating) = self.creating_shape.as_mut() else {
+                    return ActionResult::Err("No shape in progress".to_string());
+                };
+                match field {
+                    ShapeDimension::Width => creating.shape.width = text,
+                    ShapeDimension::Depth => creating.shape.depth = text,
+                    ShapeDimension::Height => creating.shape.height = text,
+                    ShapeDimension::Radius => creating.shape.radius = text,
+                }
+                ActionResult::Ok
+            }
+            Action::CommitShape => {
+                let Some(creating) = self.creating_shape.clone() else {
+                    return ActionResult::Err("No shape in progress".to_string());
+                };
+                match creating.editing {
+                    Some(index) => self.edit_shape(index, creating.shape),
+                    None => self.create_shape(creating.shape),
+                }
             }
             Action::CreateShape { shape } => self.create_shape(shape),
             Action::EditShape { index, shape } => self.edit_shape(index, shape),
@@ -16799,6 +16917,68 @@ mod tests {
     /// #732: a dynamic unit picks up a changed source (updating every instance at once);
     /// a static one waits until told; a sync that orphans a reference reports unhealthy
     /// and undoes cleanly; a missing source leaves the document fully usable.
+
+    /// #909/#911: the Shape tool arms a shape of the last-used kind, its shortcut cycles
+    /// which shape, and committing lands a body.
+    #[test]
+    fn shape_tool_arms_cycles_and_commits() {
+        use crate::model::PrimitiveKind as K;
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        let creating = state.creating_shape.as_ref().expect("the tool arms a shape");
+        assert_eq!(creating.shape.kind, K::Cuboid, "the first shape is a cuboid");
+        assert!(!creating.can_commit(&state.doc), "with no dimensions yet");
+
+        // Cycling keeps the tool armed and remembers the choice for next time.
+        state.apply(Action::SetShapeKind { kind: state.shape_kind.next() });
+        assert_eq!(state.shape_kind, K::Cylinder);
+        assert_eq!(state.creating_shape.as_ref().unwrap().shape.kind, K::Cylinder);
+
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Radius,
+            text: "5".to_string(),
+        });
+        assert!(!state.creating_shape.as_ref().unwrap().can_commit(&state.doc));
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Height,
+            text: "20".to_string(),
+        });
+        assert!(state.creating_shape.as_ref().unwrap().can_commit(&state.doc));
+
+        state.apply(Action::CommitShape);
+        assert_eq!(state.doc.primitives.len(), 1);
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert!(state.creating_shape.is_none(), "committing disarms the tool");
+        assert_eq!(state.tool, Tool::Select);
+    }
+
+    /// #911: leaving the tool drops the in-progress shape, and Esc clears it without
+    /// leaving the tool.
+    #[test]
+    fn shape_tool_cancels_cleanly() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Width,
+            text: "10".to_string(),
+        });
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Depth,
+            text: "10".to_string(),
+        });
+        state.apply(Action::SetShapeDimension {
+            field: ShapeDimension::Height,
+            text: "10".to_string(),
+        });
+        state.apply(Action::CancelOperation);
+        let creating = state.creating_shape.as_ref().expect("still armed");
+        assert!(creating.shape.width.is_empty(), "the sizes are cleared");
+        assert_eq!(state.tool, Tool::Shape);
+        state.apply(Action::SetTool(Tool::Select));
+        assert!(state.creating_shape.is_none(), "leaving drops it");
+        assert!(state.doc.primitives.is_empty(), "and nothing was created");
+    }
+
     #[test]
     fn syncing_replaces_the_embedded_copy() {
         let unit_path = write_solid_unit_file("bearcad_unit_sync_a.bearcad");

@@ -3094,6 +3094,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Offset => "offset",
         Tool::Loft => "loft",
         Tool::Revolve => "revolve",
+        Tool::Shape => "shape",
         Tool::Sweep => "sweep",
         Tool::Combine => "combine",
         Tool::Move => "move",

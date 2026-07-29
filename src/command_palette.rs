@@ -33,6 +33,8 @@ pub enum PaletteCommandId {
     ToolProject,
     ToolLoft,
     ToolRevolve,
+    /// The Create Shape tool (#909).
+    ToolShape,
     ToolSweep,
     ToolCombine,
     ToolMove,
@@ -146,6 +148,7 @@ impl PaletteCommand {
             PaletteCommandId::ToolProject => PaletteOutcome::Action(Action::SetTool(Tool::Project)),
             PaletteCommandId::ToolLoft => PaletteOutcome::Action(Action::SetTool(Tool::Loft)),
             PaletteCommandId::ToolRevolve => PaletteOutcome::Action(Action::SetTool(Tool::Revolve)),
+            PaletteCommandId::ToolShape => PaletteOutcome::Action(Action::SetTool(Tool::Shape)),
             PaletteCommandId::ToolSweep => PaletteOutcome::Action(Action::SetTool(Tool::Sweep)),
             PaletteCommandId::ToolCombine => PaletteOutcome::Action(Action::SetTool(Tool::Combine)),
             PaletteCommandId::ToolMove => PaletteOutcome::Action(Action::SetTool(Tool::Move)),
@@ -524,6 +527,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ToolRevolve,
         "Revolve Tool",
         "revolve tool lathe axis rotate 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolShape,
+        "Shape Tool",
+        "shape tool cuboid box cube cylinder sphere ball primitive solid 3d",
     ),
     PaletteCommand::new(
         PaletteCommandId::ToolSweep,
