@@ -1716,7 +1716,11 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         .flatten();
     // Material picker (#834): shown whenever the selection is bodies, so what a body is made
     // of sits right where its name does.
-    let material = material_control_from_selection(input.doc, input.selection);
+    // Materials belong to the Select tool's pane (#934): while a tool is running, the pane
+    // is that tool's controls, and a body's material isn't one of them.
+    let material = (input.tool == Tool::Select)
+        .then(|| material_control_from_selection(input.doc, input.selection))
+        .flatten();
     let edge_picker = input
         .edge_treatment_rows
         .clone()
@@ -4296,12 +4300,15 @@ pub fn show_pane(
         // The side-A / side-B body sets render as element pickers above (see `tool_pickers`);
         // clicking a picker makes it the active side. Only the "keep B" toggle stays here.
         if two_sided {
+            // Two-column like every other checkbox row (#933): the label in the left
+            // column, the box itself in the right one.
             let mut keep_b = control.keep_b;
-            let resp = ui
-                .checkbox(&mut keep_b, "Keep B bodies")
-                .on_hover_text("Leave the B-side inputs as real bodies instead of shadows");
-            note_help(ui, "Keep B bodies", resp.rect);
-            if resp.changed() {
+            let changed = labeled_row(ui, "Keep B bodies", |ui| {
+                ui.checkbox(&mut keep_b, "")
+                    .on_hover_text("Leave the B-side inputs as real bodies instead of shadows")
+                    .changed()
+            });
+            if changed {
                 on_boolean_edit(BooleanEdit::KeepB(keep_b));
             }
         }
@@ -7357,6 +7364,13 @@ mod tests {
         // A non-body in the selection takes the picker away.
         selection.insert(SceneElement::Line(0));
         assert!(context_pane_content(&input(&doc, &selection)).material.is_none());
+
+        // And so does running a tool (#934): the pane is that tool's controls then.
+        let mut bodies = SceneSelection::default();
+        bodies.insert(SceneElement::Body(0));
+        let mut tool_input = input(&doc, &bodies);
+        tool_input.tool = Tool::Move;
+        assert!(context_pane_content(&tool_input).material.is_none());
     }
 
     #[test]
