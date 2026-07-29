@@ -294,7 +294,54 @@ pub fn recompute_document_health(doc: &Document) -> DocumentHealth {
     mark_invalid_parameters(doc, &mut health);
     mark_broken_unit_instances(doc, &mut health);
     mark_orphaned_unit_face_sketches(doc, &mut health);
+    mark_broken_joints(doc, &mut health);
     health
+}
+
+/// Joints (#891/#893) that can't hold: too few parts, a dead member, a loop of joints,
+/// or a part two joints both claim. The joint is reported and skipped rather than taking
+/// the assembly down — the same containment broken units get.
+fn mark_broken_joints(doc: &Document, health: &mut DocumentHealth) {
+    let mut invalid = |ji: usize, reason: String| {
+        let element = SceneElement::Joint(ji);
+        health.elements.insert(element.clone(), HealthStatus::Invalid);
+        health.element_reasons.insert(element, reason);
+    };
+    let mut any_live = false;
+    for (ji, joint) in doc.joints.iter().enumerate() {
+        if joint.deleted {
+            continue;
+        }
+        any_live = true;
+        if joint.members.len() < 2 {
+            invalid(ji, "A joint needs two parts".to_string());
+            continue;
+        }
+        if joint.members.len() > 2 && !matches!(joint.kind, crate::model::JointKind::Rigid) {
+            invalid(ji, "Only a rigid joint ties more than two parts".to_string());
+            continue;
+        }
+        let member_dead = joint.members.iter().any(|m| match *m {
+            crate::model::JointRef::Body(bi) => {
+                !doc.bodies.get(bi).is_some_and(|b| !b.deleted)
+            }
+            crate::model::JointRef::Component(ci) => {
+                !doc.components.get(ci).is_some_and(|c| !c.deleted)
+            }
+            crate::model::JointRef::UnitInstance(ui) => {
+                !doc.unit_instances.get(ui).is_some_and(|i| !i.deleted)
+            }
+        });
+        if member_dead {
+            invalid(ji, "A part this joint joins was deleted".to_string());
+        }
+    }
+    if !any_live {
+        return;
+    }
+    for (ji, reason) in &crate::joints::joint_resolution(doc).errors {
+        invalid(*ji, reason.clone());
+    }
 }
 
 /// A sketch hosted on an imported unit's face (#725) goes **invalid** when that face no

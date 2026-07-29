@@ -3084,7 +3084,7 @@ pub fn selection_world_bounds(
 /// straight into a hasher — no allocation of the encoded form); imported meshes are
 /// append-only after load, so their name + triangle count suffices. Two documents with equal
 /// fingerprints mesh identically, which keys [`body_solid_mesh`]'s cache.
-fn document_mesh_fingerprint(doc: &Document) -> u64 {
+pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
     use std::hash::Hasher;
     struct HashWriter(std::collections::hash_map::DefaultHasher);
     impl std::io::Write for HashWriter {
@@ -3120,7 +3120,10 @@ fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.boolean_ops,
             &doc.revolutions,
             &doc.sweeps,
-            &doc.lofts,
+            // Joints (#893) pose driven bodies in place; the memoized meshes are posed.
+            // Component membership feeds the pose lookup too — a joint can drive a whole
+            // component. (Nested with lofts: serde tuples cap at 16 elements.)
+            (&doc.lofts, &doc.joints, &doc.components, &doc.component_members),
             // Imported units (#724): an override/placement edit or a sync that replaces an
             // embedded copy must invalidate the materialized unit bodies' cached meshes.
             &doc.units,
@@ -3159,10 +3162,26 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
         if let Some(mesh) = cache.1.get(&body_index) {
             return mesh.clone();
         }
-        let mesh = body_solid_mesh_uncached(doc, body_index);
+        // Joints (#893) pose the driven body here, at the presentation seam: the cached
+        // mesh is what the viewport, exports, and measures read, while feature inputs
+        // (booleans, moves) keep reading the un-jointed `body_solid_mesh_uncached` — a
+        // joint is an assembly relationship, not a modelling operation.
+        let mesh = body_solid_mesh_uncached(doc, body_index)
+            .map(|m| crate::joints::posed_mesh(doc, body_index, m));
         cache.1.insert(body_index, mesh.clone());
         mesh
     })
+}
+
+/// A body's kernel solid **with its joint pose applied** (#893) — what STEP export and
+/// anything else presenting the assembly should read, while feature inputs keep the
+/// un-jointed [`occt_body_shape`].
+pub fn posed_body_shape(doc: &Document, body_index: usize) -> Option<crate::kernel::Shape> {
+    let shape = occt_body_shape(doc, body_index)?;
+    match crate::joints::body_joint_pose(doc, body_index) {
+        Some(pose) => shape.transformed(&mat4_to_rows_3x4(&pose)),
+        None => Some(shape),
+    }
 }
 
 thread_local! {

@@ -41,6 +41,7 @@ mod gpu_view_cube;
 mod gpu_viewport;
 mod hierarchy;
 mod icons;
+mod joints;
 mod kernel;
 mod names;
 mod parameters;

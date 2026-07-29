@@ -3490,7 +3490,8 @@ impl AppState {
     /// to the hand-rolled faceted-BREP mesh path.
     fn write_step_body_file(&mut self, path: &str, name: &str, body: usize) -> ActionResult {
         {
-            if let Some(shape) = crate::extrude::occt_body_shape(&self.doc, body) {
+            // The posed shape (#893): a jointed part exports where the assembly holds it.
+            if let Some(shape) = crate::extrude::posed_body_shape(&self.doc, body) {
                 if shape.write_step(std::path::Path::new(path)) {
                     self.status = format!("Exported body '{name}' to {path} (STEP BREP)");
                     return ActionResult::Ok;
