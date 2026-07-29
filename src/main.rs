@@ -22308,6 +22308,46 @@ impl App {
                 }
             }
         };
+        // Joint-tool preview sweep (#895): while a joint is being created or edited, the
+        // driven part's ghost glides slowly back and forth through the joint's range —
+        // between its limits where set — so the motion it allows is visible before
+        // committing. Rigid has nothing to sweep and shows the static mated pose. The
+        // committed positions are untouched: the sweep only feeds the ghost's probe.
+        let swept_joint: Option<actions::CreatingJoint> = (self.state.tool == Tool::Joint
+            && self.state.sketch_session.is_none())
+        .then(|| self.state.creating_joint.clone())
+        .flatten()
+        .filter(|c| c.members.len() >= 2)
+        .and_then(|cj| {
+            let (frame_a, frame_b) = cj.frames();
+            let probe = model::Joint {
+                members: cj.members.clone(),
+                base: cj.base,
+                kind: cj.kind.clone(),
+                frame_a,
+                frame_b,
+                position: cj.position.clone(),
+                position2: cj.position2.clone(),
+                position3: cj.position3.clone(),
+                rest: String::new(),
+                rest2: String::new(),
+                rest3: String::new(),
+                limits: cj.limits.clone(),
+                name: None,
+                deleted: false,
+            };
+            let time = ui.input(|i| i.time);
+            let (p1, p2, p3) = joints::sweep_positions(&self.state.doc, &probe, time)?;
+            let mut swept = cj;
+            swept.position = format!("{p1}");
+            swept.position2 = format!("{p2}");
+            swept.position3 = format!("{p3}");
+            Some(swept)
+        });
+        if swept_joint.is_some() {
+            // The sweep is an animation: keep frames coming while it plays.
+            ui.ctx().request_repaint();
+        }
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -22329,7 +22369,7 @@ impl App {
             self.state.creating_repeat.as_ref(),
             self.state.creating_mirror.as_ref(),
             move_hover_preview.as_ref().or(self.state.creating_move.as_ref()),
-            self.state.creating_joint.as_ref(),
+            swept_joint.as_ref().or(self.state.creating_joint.as_ref()),
             move_ghost_override,
             self.pending_extrude_target.clone(),
             plane_gizmo,

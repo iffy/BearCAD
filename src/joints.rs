@@ -400,6 +400,74 @@ pub fn member_bodies(doc: &Document, member: JointRef) -> Vec<usize> {
     }
 }
 
+/// One round trip of the create/edit preview sweep (#895), seconds.
+pub const JOINT_SWEEP_PERIOD_SECS: f64 = 6.0;
+
+/// The preview sweep's position values at `time` (#895): each of the joint's freedoms
+/// glides back and forth through its range — between its limits where they're set, a
+/// sensible default span where they aren't (±20 mm, ±30°, or the full turn for a
+/// revolute with no limits). Slow, eased (a cosine glide, not a linear scrub), looping.
+/// Returns the three position-slot values in the units their expressions read (mm or
+/// degrees, per kind); slots the kind doesn't use come back zero. `None` for rigid —
+/// there is nothing to sweep.
+pub fn sweep_positions(doc: &Document, joint: &Joint, time: f64) -> Option<(f32, f32, f32)> {
+    let limits = resolve_limits(doc, joint);
+    // Eased ping-pong: 0 → 1 → 0 over one period, easing out at both ends.
+    let t = 0.5 - 0.5 * (time * std::f64::consts::TAU / JOINT_SWEEP_PERIOD_SECS).cos() as f32;
+    let span = |lo: Option<f32>, hi: Option<f32>, default_lo: f32, default_hi: f32| {
+        let lo = lo.unwrap_or(default_lo);
+        let hi = hi.unwrap_or(default_hi);
+        lo + (hi - lo) * t
+    };
+    let slide = || span(limits.slide_min, limits.slide_max, -20.0, 20.0);
+    let turn_deg = || {
+        span(
+            limits.turn_min.map(|r| r.to_degrees()),
+            limits.turn_max.map(|r| r.to_degrees()),
+            -30.0,
+            30.0,
+        )
+    };
+    Some(match &joint.kind {
+        JointKind::Rigid => return None,
+        JointKind::Slider => (slide(), 0.0, 0.0),
+        // The full turn for a revolute with no limits at all.
+        JointKind::Revolute => {
+            if limits.turn_min.is_none() && limits.turn_max.is_none() {
+                (360.0 * t, 0.0, 0.0)
+            } else {
+                (turn_deg(), 0.0, 0.0)
+            }
+        }
+        // Both freedoms sweep together, so the coupling reads.
+        JointKind::Cylindrical => (slide(), turn_deg(), 0.0),
+        JointKind::Planar => (slide(), slide(), turn_deg()),
+        JointKind::Ball => (turn_deg(), turn_deg(), turn_deg()),
+        JointKind::PinSlot => (slide(), turn_deg(), 0.0),
+        // The turn drives the travel; sweep the angle between whatever bounds bite —
+        // turn limits first, else the slide limits turned into angles by the lead,
+        // else a full turn either way.
+        JointKind::Screw { lead } => {
+            let lead_mm = crate::value::eval_length_mm_in_doc(lead, doc).unwrap_or(0.0);
+            let angle = if limits.turn_min.is_some() || limits.turn_max.is_some() {
+                turn_deg()
+            } else if lead_mm.abs() > 1e-6
+                && (limits.slide_min.is_some() || limits.slide_max.is_some())
+            {
+                span(
+                    limits.slide_min.map(|s| s / lead_mm * 360.0),
+                    limits.slide_max.map(|s| s / lead_mm * 360.0),
+                    -360.0,
+                    360.0,
+                )
+            } else {
+                span(None, None, -360.0, 360.0)
+            };
+            (angle, 0.0, 0.0)
+        }
+    })
+}
+
 /// The pose an in-progress joint would impose on its driven side (#894): the committed
 /// assembly's base pose composed with the probe's mate — what the tool's ghost shows.
 /// `None` when it works out to identity (nothing to ghost).
@@ -720,6 +788,28 @@ mod tests {
             (moved.z - 1.0).abs() < 1e-4,
             "travel bounded to the slide max, got {moved}"
         );
+    }
+
+    /// #895: the preview sweep glides between the limits where they're set — the ends of
+    /// the period land exactly on them — and a limitless revolute sweeps the full turn.
+    #[test]
+    fn sweep_glides_between_the_limits() {
+        let mut doc = Document::default();
+        let a = mesh_body(&mut doc, Vec3::ZERO);
+        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
+        j.limits.slide_min = "-1".to_string();
+        j.limits.slide_max = "4".to_string();
+        let (lo, _, _) = sweep_positions(&doc, &j, 0.0).unwrap();
+        assert!((lo - -1.0).abs() < 1e-3, "starts at the min, got {lo}");
+        let (hi, _, _) = sweep_positions(&doc, &j, JOINT_SWEEP_PERIOD_SECS / 2.0).unwrap();
+        assert!((hi - 4.0).abs() < 1e-3, "reaches the max half way, got {hi}");
+        j.kind = JointKind::Revolute;
+        j.limits = JointLimits::default();
+        let (turn, _, _) = sweep_positions(&doc, &j, JOINT_SWEEP_PERIOD_SECS / 2.0).unwrap();
+        assert!((turn - 360.0).abs() < 1e-3, "a free revolute sweeps the full turn, got {turn}");
+        j.kind = JointKind::Rigid;
+        assert!(sweep_positions(&doc, &j, 1.0).is_none(), "rigid has nothing to sweep");
     }
 
     /// #893: a chain A→B→C composes — C carries B's pose on top of its own slide.
