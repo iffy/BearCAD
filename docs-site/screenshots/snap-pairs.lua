@@ -11,46 +11,55 @@
 
 local out = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 
--- The slab is 24 long, 10 wide, 4 thick, parked clear of the plate. Its near-bottom corner
+-- The slab is 22 long, 9 wide, 5 thick, parked clear of the plate. Its near-bottom corner
 -- is start A, the far one along its length start B, and the one straight above start A is
 -- start C.
-local START_A = { 80, 0, 0 }
-local START_B = { 104, 0, 0 }
-local START_C = { 80, 0, 4 }
+local START_A = { 60, 0, 0 }
+local START_B = { 82, 0, 0 }
+local START_C = { 60, 0, 5 }
 
--- Where they land, all on the plate's top face (6 up).
-local TOP = 6
-local END_A = { 12, 8, TOP }
--- End B lies 24 from end A — the distance start B has to reach — at 40° across the plate.
-local BEARING = math.rad(40)
-local END_B = { END_A[1] + 24 * math.cos(BEARING), END_A[2] + 24 * math.sin(BEARING), TOP }
+-- Where they land, all on the plate's top face.
+local TOP = 4
+local END_A = { 9, 7, TOP }
+-- End B lies 22 from end A — the distance start B has to reach — at 35° across the plate.
+local BEARING = math.rad(35)
+local END_B = { END_A[1] + 22 * math.cos(BEARING), END_A[2] + 22 * math.sin(BEARING), TOP }
 -- End C only says which way round the slab sits about that line. Square to it, on the side
 -- that stands the slab up rather than sinking it into the plate.
-local END_C = { END_A[1] + 4 * math.sin(BEARING), END_A[2] - 4 * math.cos(BEARING), TOP }
+local END_C = { END_A[1] + 5 * math.sin(BEARING), END_A[2] - 5 * math.cos(BEARING), TOP }
 
 local function scene()
   bearcad.new()
   bearcad.ui.pane("context", "hide")
   bearcad.ui.pane("parameters", "hide")
 
-  bearcad.rect{ x = 0, y = 0, width = 60, height = 40, name = "Plate" }
+  bearcad.rect{ x = 0, y = 0, width = 40, height = 30, name = "Plate" }
   bearcad.exit_sketch()
   bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = TOP, name = "Plate" }
 
-  bearcad.rect{ x = 80, y = 0, width = 24, height = 10, name = "Slab" }
+  bearcad.rect{ x = 60, y = 0, width = 22, height = 9, name = "Slab" }
   bearcad.exit_sketch()
-  bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 4, name = "Slab" }
+  bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 5, name = "Slab" }
 end
 
--- Same framing for all three, so only the slab's pose changes between them.
+-- Same framing for all three, so only the slab's pose changes between them: a clean stage
+-- (no datum planes, no grid, no sketch profiles drawn over the solids) and a pinned camera.
 local function shoot(name)
-  for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+  for i = 0, bearcad.count("construction_plane") - 1 do
+    bearcad.set_visible({ kind = "construction_plane", index = i }, "hide")
+  end
+  for i = 0, bearcad.count("sketch") - 1 do
+    bearcad.set_visible({ kind = "sketch", index = i }, "hide")
+  end
   bearcad.ui.ground("off")
+  bearcad.clear_selection()
+  -- A tool that highlights nothing, so neither solid picks up a selection tint.
+  bearcad.ui.tool("dimension")
   bearcad.ui.auto_zoom(false)
   bearcad.ui.view("corner", "front_left_top")
   bearcad.ui.wait(2)
-  bearcad.ui.camera{ target = { 26, 14, 4 }, distance = 150 }
-  bearcad.ui.wait(2)
+  bearcad.ui.camera{ target = { 18, 13, 4 }, distance = 88 }
+  bearcad.ui.wait(3)
   bearcad.ui.screenshot(out .. "/" .. name .. ".png")
 end
 
