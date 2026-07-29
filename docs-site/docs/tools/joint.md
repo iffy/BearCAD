@@ -27,7 +27,8 @@ Skip the points to join parts right where they sit — the joint records the exi
 relationship and nothing moves.
 
 While the joint is being created or edited, the moving part sweeps back and forth
-through its range, showing the motion before you commit.
+through its range, showing the motion before you commit. **Animate** turns that sweep
+off — one switch for every joint.
 
 ## The kinds
 
@@ -118,4 +119,6 @@ bearcad.joint{ a = 0, b = 3, kind = "screw", lead = 2, position = 720 }
 
 -- Arm the tool with picks, without committing (for live-preview shots).
 bearcad.begin_joint{ a = 0, b = 1, kind = "slider" }
+
+bearcad.ui.animate_joints(false)   -- the preview sweep, for every joint
 ```

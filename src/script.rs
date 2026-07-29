@@ -528,6 +528,8 @@ pub enum Instruction {
     },
     /// Toggle auto-zoom (#438).
     SetAutoZoom { on: bool },
+    /// Toggle the joint preview's animation (#906).
+    SetJointAnimation { on: bool },
     /// Force touch mode on/off (auto-detected from real touches otherwise).
     SetTouchMode { on: bool },
     /// Start / advance / end an interactive tutorial.
@@ -1290,6 +1292,9 @@ impl Instruction {
             }
             Instruction::SetAutoZoom { on } => {
                 format!("bearcad.ui.auto_zoom({on})")
+            }
+            Instruction::SetJointAnimation { on } => {
+                format!("bearcad.ui.animate_joints({on})")
             }
             Instruction::SetTouchMode { on } => {
                 format!("bearcad.ui.touch({on})")
@@ -5022,6 +5027,10 @@ impl ScriptRunner {
             }
             Instruction::SetAutoZoom { on } => {
                 state.auto_zoom = on;
+                StepResult::Continue
+            }
+            Instruction::SetJointAnimation { on } => {
+                state.animate_joints = on;
                 StepResult::Continue
             }
             Instruction::SetTouchMode { on } => {

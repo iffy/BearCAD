@@ -1182,7 +1182,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Preview (#895):** while a joint is created or edited its ghost sweeps slowly back and
   forth through its range (`joints::sweep_positions`) — between its limits, ±20 mm/±30°
   where open, the full turn for a free revolute — on an eased, looping glide; rigid shows
-  the static mated pose. Committing leaves the joint at its position.
+  the static mated pose. Committing leaves the joint at its position. The pane's **Animate**
+  checkbox (#906) turns the sweep off — one app-wide switch (`AppState::animate_joints`, on by
+  default, `bearcad.ui.animate_joints(bool)`), so turning it off on any joint's pane turns it
+  off for every joint; the preview then holds the joint's own position.
   **Drag (#897/#903):** with the Select tool, press-and-drag a driven part anywhere on it —
   face, edge, or corner — and it moves through its joint, with **nothing selected first**.
   The press arms a grab (`JointSelectGrab`) and still selects normally; only once the cursor

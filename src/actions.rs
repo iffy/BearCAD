@@ -2814,6 +2814,10 @@ pub struct AppState {
     /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
     /// inside) the viewport re-frames the camera with a short animation. UI-only state.
     pub auto_zoom: bool,
+    /// Joint preview animation (#906): while a joint is created or edited, its ghost sweeps
+    /// through the joint's range. One app-wide switch — turning it off on any joint's pane
+    /// turns it off for every joint — on to begin with. UI-only state, never persisted.
+    pub animate_joints: bool,
     /// Help mode (#672): every control in the Context pane gets a floating note beside it
     /// saying what it wants. Off by default — the pane itself stays controls and values only
     /// — and never persisted. The documentation's pane pictures are captured with it on, so
@@ -2999,6 +3003,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             auto_zoom: false,
+            animate_joints: true,
             help_mode: false,
             settings_open: false,
             dimension_param_name: String::new(),

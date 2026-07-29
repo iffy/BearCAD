@@ -3016,6 +3016,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #906: the joint preview's sweep, app-wide.
+    api.set(
+        "animate_joints",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let on = on.unwrap_or(true);
+            unsafe { tick.exec(Instruction::SetJointAnimation { on }) }
+        })?,
+    )?;
+
     // Read a line's current endpoints (sketch-local mm) — the assertion hook for
     // interaction regression tests.
     api.set(
@@ -4797,7 +4807,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "zoom_fit", "elements_view", "auto_zoom",
+            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "touch",
             "move", "click", "move_ground", "click_ground",
@@ -7364,6 +7374,19 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
+    }
+
+    /// #906: the joint preview's animation is one app-wide switch, on to begin with.
+    #[test]
+    fn lua_joint_animation_toggles_app_wide() {
+        assert!(
+            AppState::default().animate_joints,
+            "the joint preview animates until it's turned off"
+        );
+        let state = run_lua("bearcad.ui.animate_joints(false)");
+        assert!(!state.animate_joints, "the script turned the animation off");
+        let state = run_lua("bearcad.ui.animate_joints(false) bearcad.ui.animate_joints(true)");
+        assert!(state.animate_joints, "and back on");
     }
 
     /// #900: a rigid joint takes more than two parts — a rigid group — and the pane label

@@ -11021,6 +11021,7 @@ impl eframe::App for App {
                         slide_max_stop_focused: joint_focus == JointFocus::SlideMaxStop,
                         editing: cj.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: members.len() >= 2,
+                        animate: self.state.animate_joints,
                     }
                 }),
                 joint_edit_start: None,
@@ -12053,6 +12054,8 @@ impl eframe::App for App {
                     context::JointEdit::Commit => {
                         self.state.apply(Action::CommitJoint);
                     }
+                    // One app-wide switch (#906): every joint's pane shows the same one.
+                    context::JointEdit::Animate(on) => self.state.animate_joints = on,
                     // Rest-pose commands act on the committed joint being edited (#898):
                     // Set captures the pane's live position; Revert reloads the pane's
                     // position fields from the rest pose it restored.
@@ -12150,6 +12153,7 @@ impl eframe::App for App {
                             | context::JointEdit::SlideMinStopFocus
                             | context::JointEdit::SlideMaxStopFocus => {}
                             context::JointEdit::Commit
+                            | context::JointEdit::Animate(_)
                             | context::JointEdit::SetRest
                             | context::JointEdit::Revert => unreachable!(),
                         }
@@ -22828,6 +22832,7 @@ impl App {
         // committing. Rigid has nothing to sweep and shows the static mated pose. The
         // committed positions are untouched: the sweep only feeds the ghost's probe.
         let swept_joint: Option<actions::CreatingJoint> = (self.state.tool == Tool::Joint
+            && self.state.animate_joints
             && self.state.sketch_session.is_none())
         .then(|| self.state.creating_joint.clone())
         .flatten()

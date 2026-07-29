@@ -349,6 +349,9 @@ pub struct JointControl {
     pub slide_max_stop_focused: bool,
     pub editing: bool,
     pub can_commit: bool,
+    /// Whether the preview sweep animates (#906) — one app-wide switch, shown on every
+    /// joint's pane.
+    pub animate: bool,
 }
 
 /// One edit from the Joint context section (#894).
@@ -371,6 +374,8 @@ pub enum JointEdit {
     ClearSlideMinStop,
     SlideMaxStopFocus,
     ClearSlideMaxStop,
+    /// Turn the preview sweep's animation on/off for every joint (#906).
+    Animate(bool),
     /// Capture the committed joint's current position as its rest pose (#898).
     SetRest,
     /// Put the committed joint back to its rest pose (#898).
@@ -2743,6 +2748,9 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Joint), "Turn max") => Some(
             "How far the joint may turn the other way. Empty leaves it open.",
         ),
+        (Some(Tool::Joint), "Animate") => Some(
+            "Whether the preview sweeps through the joint's range. Applies to every joint.",
+        ),
         (Some(Tool::Joint), "Rest") => Some(
             "The pose the assembly is meant to sit in. Set captures the current position; \
              Revert goes back to it.",
@@ -4663,6 +4671,15 @@ pub fn show_pane(
                     JointEdit::ClearSlideMaxStop,
                 );
             }
+        }
+        // The preview sweep's animation (#906): one switch for every joint.
+        {
+            let mut animate = control.animate;
+            labeled_row(ui, "Animate", |ui| {
+                if ui.checkbox(&mut animate, "").changed() {
+                    pending = Some(JointEdit::Animate(animate));
+                }
+            });
         }
         // The rest pose (#898): capture the current position, or go back to it — only
         // meaningful once the joint exists.
