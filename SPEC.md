@@ -820,8 +820,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     Re-picking or clearing start C clears end C, the way B cascades, and the focus chain arms
     Start point C once the B pair completes.
     **Hover previews both end pickers:** with End point A or End point B armed, hovering a
-    valid point shows the ghost as if that point had been chosen (`move_hover_preview` — a
-    probe copy of the in-progress move with the hovered point filled in). The ghost's pose
+    valid point shows the ghost as if that point had been chosen (`move_hover_probe` — a
+    probe copy of the in-progress move with the hovered point filled in). A C pair that's
+    already set **rides along** in that probe (#948), since taking the hovered end B keeps it;
+    a C pair the new axis can't satisfy simply derives no spin, so the ghost falls back to what
+    B alone gives. The ghost's pose
     **eases** toward its target (`move_ghost_pose`, exponential glide,
     `MOVE_GHOST_EASE_SECS`), so hopping the hover between candidates reads as the body
     sweeping over — quick, but smooth — never teleporting. The ease is a rotation **about the

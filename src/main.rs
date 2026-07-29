@@ -17138,6 +17138,29 @@ fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
     face.face_id()
 }
 
+/// A probe copy of the in-progress move with a hovered point filled into whichever end picker
+/// is armed (#670/#914) — what the ghost preview is built from, so hovering a candidate shows
+/// the move that click would make. The **C pair rides along** (#948): a preview of a new end B
+/// that dropped the spin showed a pose the click would never produce, since taking end B keeps
+/// C. A C pair the new axis can't satisfy simply derives no spin (`move_snap_roll_axis_angle`),
+/// so the ghost falls back to what B alone gives.
+fn move_hover_probe(
+    cm: &actions::CreatingMove,
+    focus: MoveFocus,
+    point: model::MovePointRef,
+) -> actions::CreatingMove {
+    match focus {
+        MoveFocus::EndPointC => actions::CreatingMove {
+            end_point_c: Some(point),
+            ..cm.clone()
+        },
+        _ => actions::CreatingMove {
+            end_point_b: Some(point),
+            ..cm.clone()
+        },
+    }
+}
+
 /// Hover highlight for a face the Extrude/Revolve/Sweep tools would pick. A `Boolean` region has
 /// no `FaceId` of its own (see `ExtrudeFace::face_id()`'s doc comment), so it highlights as its
 /// resolved region — the outer loop **with its holes** (#942), so hovering the wall between two
@@ -22984,18 +23007,7 @@ impl App {
                     p: hierarchy::quantize_body_point(world),
                 };
                 // Whichever end picker is armed takes the hovered spot (#670/#914).
-                Some(match self.move_focus() {
-                    MoveFocus::EndPointC => actions::CreatingMove {
-                        end_point_c: Some(point),
-                        ..cm.clone()
-                    },
-                    _ => actions::CreatingMove {
-                        end_point_b: Some(point),
-                        start_point_c: None,
-                        end_point_c: None,
-                        ..cm.clone()
-                    },
-                })
+                Some(move_hover_probe(cm, self.move_focus(), point))
             })
             .or_else(|| {
                 if !(self.state.tool == Tool::Move
@@ -27905,6 +27917,36 @@ mod tests {
             MoveFocus::StartPointB,
             "the chain resumes at start B once the held picker is satisfied (#741)"
         );
+    }
+
+    /// #948: hovering a new end point B previews the move a click there would actually make,
+    /// so a C pair that's already set stays in the probe — dropping it showed a pose without
+    /// the spin, which taking end B never produces.
+    #[test]
+    fn end_b_hover_preview_keeps_the_c_pair() {
+        let point = |body| model::MovePointRef::Vertex { body, p: [0; 3] };
+        let cm = actions::CreatingMove {
+            targets: vec![0],
+            translate_mode: model::MoveTranslateMode::Snap,
+            start_point_a: Some(point(0)),
+            end_point_a: Some(point(1)),
+            start_point_b: Some(point(0)),
+            end_point_b: Some(point(1)),
+            start_point_c: Some(point(0)),
+            end_point_c: Some(point(1)),
+            ..Default::default()
+        };
+        let hovered = model::MovePointRef::OnEdge { body: 1, p: [1, 2, 3] };
+
+        let probe = move_hover_probe(&cm, MoveFocus::EndPointB, hovered);
+        assert_eq!(probe.end_point_b, Some(hovered), "the hover fills end B");
+        assert_eq!(probe.start_point_c, cm.start_point_c, "start C rides along");
+        assert_eq!(probe.end_point_c, cm.end_point_c, "and so does end C");
+
+        // The C picker's own hover fills C and leaves B alone.
+        let probe = move_hover_probe(&cm, MoveFocus::EndPointC, hovered);
+        assert_eq!(probe.end_point_c, Some(hovered));
+        assert_eq!(probe.end_point_b, cm.end_point_b);
     }
 
     /// #659: with a Move point picker focused, the viewport hovers body corners and edges —
