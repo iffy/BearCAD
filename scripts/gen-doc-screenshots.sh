@@ -93,6 +93,34 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# --- Which scene owns which PNG ------------------------------------------------
+# A scene writes <name>.png, or <name>-<variant>.png when it takes several shots
+# (a tool's Context pane in each of its modes). That makes the `<name>-*` glob
+# ambiguous as soon as another scene's name starts with `<name>-`: chamfer.lua's
+# glob also matches chamfer-sketch.lua's shot. Ownership is the **longest** scene
+# name the file's stem matches, so the more specific scene keeps its own files —
+# otherwise a scene wipes its neighbour's shots on the way in and, having already
+# had its turn, the neighbour never regenerates them.
+scene_names=()
+for script in "${scripts[@]}"; do
+  scene="$(basename "$script" .lua)"
+  [[ "$scene" == _* ]] && continue
+  scene_names+=("$scene")
+done
+
+# owns <scene> <png-path> — true when <scene> is that PNG's owner.
+owns() {
+  local scene="$1" stem best="" candidate
+  stem="$(basename "$2" .png)"
+  for candidate in ${scene_names[@]+"${scene_names[@]}"}; do
+    if [[ "$stem" == "$candidate" || "$stem" == "$candidate"-* ]] \
+      && (( ${#candidate} > ${#best} )); then
+      best="$candidate"
+    fi
+  done
+  [[ "$best" == "$scene" ]]
+}
+
 # --- Style swatches (#160) ------------------------------------------------------
 # Drawn directly from the renderer's color constants into PNGs — no GPU or display
 # needed, so this works everywhere the tests build.
@@ -110,7 +138,9 @@ for script in "${scripts[@]}"; do
   # A script writes either <name>.png or, when one scene yields several shots (a
   # tool's Context pane in each of its modes), <name>-<variant>.png.
   out_png="$OUT_DIR/$name.png"
-  rm -f "$out_png" "$OUT_DIR/$name"-*.png
+  for png in "$out_png" "$OUT_DIR/$name"-*.png; do
+    owns "$name" "$png" && rm -f "$png"
+  done
   echo "==> $script -> $OUT_DIR/$name*.png"
 
   # Give the app a self-timeout a little under the outer budget so it exits on
@@ -126,7 +156,9 @@ for script in "${scripts[@]}"; do
 
   produced=()
   for png in "$out_png" "$OUT_DIR/$name"-*.png; do
-    [[ -s "$png" ]] && produced+=("$png")
+    [[ -s "$png" ]] || continue
+    owns "$name" "$png" || continue
+    produced+=("$png")
   done
   if [[ ${#produced[@]} -gt 0 ]]; then
     for png in "${produced[@]}"; do

@@ -6,9 +6,8 @@
 -- end A → end B line, and only C settles it.
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
--- falling back to ".". Three PNGs, one per pair. Named `snap-pairs-*` rather than
--- `move-*`: the harness clears `<script name>-*.png` before each run, so anything under
--- `move-` would be wiped by move.lua's own turn.
+-- falling back to ".". Three PNGs, one per pair, named `<this script>-<pair>` as the
+-- harness expects of a scene that takes several shots.
 
 local out = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 

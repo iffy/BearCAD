@@ -2932,9 +2932,11 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
 one shot per mode where the tool has modes — captured with **help mode** on, so each control
 is explained beside it. The shots come from `docs-site/screenshots/pane-*.lua`, which turn help
 mode on with `bearcad.ui.help(true)` and capture `bearcad.ui.screenshot(path, "context")`; a
-scene that yields several shots writes them as `<script-name>-<variant>.png` — and only
-under that prefix, since the harness clears `<script-name>-*.png` before each run and would
-otherwise wipe a neighbouring script's shots. Because the
+scene that yields several shots writes them as `<script-name>-<variant>.png`. A PNG belongs
+to the **longest** scene name its file stem matches, which is how the harness knows what to
+clear before a scene's turn and what to count as its output: `chamfer-*` would otherwise
+also match `chamfer-sketch.lua`'s shot, and `chamfer.lua` — running later — would delete a
+picture nothing regenerates. Because the
 explanations are the app's own help text, a page cannot drift from the pane it documents.
 
 **Comparison series.** A scene may also shoot the *same* geometry more than once to show what
