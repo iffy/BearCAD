@@ -749,7 +749,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   middle (#738) — never the whole edge or face it sits on.
 
   - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
-    B** on stationary geometry, adds the **rotation**: after the A translation lands start A on
+    B** on stationary geometry, adds the **rotation** — the pane labels the B and C rows
+    **Rotation** (#915), since those four points turn the part rather than move it: after the A translation lands start A on
     end A, the bodies turn **about end point A** by the shortest rotation taking start B's
     direction onto end B's (`extrude::move_snap_rotation`). End B is confined to the
     **constraint sphere** centred on end point A with radius `|startA - startB|`
@@ -777,8 +778,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     already-rotated start C onto end C, measured from their directions **flattened onto the
     plane perpendicular to the axis**: only C's bearing about the axis is C's to decide, since
     how far along the axis and how far out from it are already A's and B's. So — unlike end
-    point B — **any** end C gives a well-defined answer and none is refused; there is no
-    constraint surface to pick on, and no candidate marks. A start C **on the axis itself**
+    point B — **any** end C gives a well-defined answer and none is refused. Start C does
+    ride a **circle** about the axis, though (#914): while End point C is armed, four spots a
+    quarter turn apart on it are offered as the same blue/gold candidate marks the B pair
+    uses, each with a dashed guide from the circle's centre (`extrude::snap_spin_candidates`).
+    The first is the **no-extra-spin** position — start C carried over by the minimal rotation
+    between the two axes — and the rest follow at 90°, 180° and 270°. They sit in mid-air, so
+    they hang off end point A's body like the mid-air end-B spots, and clicking one takes it. A start C **on the axis itself**
     has no bearing to line up, so no spin is derived and the move is what B alone gives.
     Re-picking or clearing start C clears end C, the way B cascades, and the focus chain arms
     Start point C once the B pair completes.

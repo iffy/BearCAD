@@ -7346,7 +7346,7 @@ impl App {
             };
             // The highlighted candidate wins for end point B (#670): it's a spot *on* an edge,
             // not a corner, so the ordinary corner/midpoint pick would never find it.
-            let candidate = (focus == MoveFocus::EndPointB)
+            let candidate = matches!(focus, MoveFocus::EndPointB | MoveFocus::EndPointC)
                 .then_some(self.move_b_hover)
                 .flatten()
                 .map(|(body, world)| model::MovePointRef::OnEdge {
@@ -8437,6 +8437,29 @@ impl App {
         let guides: Vec<(Vec3, Vec3)> = axis.iter().map(|(_, p)| (centre, *p)).collect();
         found.extend(axis);
         Some((found, guides))
+    }
+
+    /// End-point-C candidates (#914): the four quarter-turn spots on the circle start
+    /// point C can reach once A and B are fixed, plus a guide from the circle's centre to
+    /// each. `None` unless that picker is armed with everything it needs.
+    fn move_end_c_candidates(&self) -> Option<(Vec<(usize, Vec3)>, Vec<(Vec3, Vec3)>)> {
+        let armed = self.state.tool == Tool::Move
+            && self.state.sketch_session.is_none()
+            && self.move_focus() == MoveFocus::EndPointC;
+        let cm = armed.then(|| self.state.creating_move.as_ref()).flatten()?;
+        let (center, spots) = extrude::snap_spin_candidates(
+            &self.state.doc,
+            cm.start_point_a.as_ref(),
+            cm.start_point_b.as_ref(),
+            cm.start_point_c.as_ref(),
+            cm.end_point_a.as_ref(),
+            cm.end_point_b.as_ref(),
+        )?;
+        // The spots are in mid-air, so they hang off end point A's body — the same trick
+        // the mid-air end-B spots use (#745).
+        let body = cm.end_point_a.as_ref()?.body();
+        let guides = spots.iter().map(|p| (center, *p)).collect();
+        Some((spots.into_iter().map(|p| (body, p)).collect(), guides))
     }
 
     /// How a picked Move point reads in its element picker (#649/#650): the body's name plus
@@ -19882,7 +19905,10 @@ impl App {
         candidates.retain(|c| exploder_tool_accepts(tool, &c.kind));
         // End point B takes only its sphere candidates (#747): the fan offers exactly the
         // blue spots — never faces, edges, or corners that picker can't use.
-        if let Some((spots, _)) = self.move_end_b_candidates() {
+        if let Some((spots, _)) = self
+            .move_end_b_candidates()
+            .or_else(|| self.move_end_c_candidates())
+        {
             candidates = spots
                 .into_iter()
                 .filter_map(|(bi, p)| {
@@ -22482,7 +22508,12 @@ impl App {
         // constraint sphere a body edge crosses is offered in blue, and the one under the
         // cursor reads yellow — the pick a click would take.
         let (move_b_candidates, move_b_hover, move_b_guides) = {
-            let (found, guides) = self.move_end_b_candidates().unwrap_or_default();
+            // End point C offers the same kind of spots (#914), so they ride the same
+            // hover/marks/guides channel.
+            let (found, guides) = self
+                .move_end_b_candidates()
+                .or_else(|| self.move_end_c_candidates())
+                .unwrap_or_default();
             // The nearest candidate under the cursor, within the usual point pick radius.
             let hovered = pointer_screen.and_then(|pp| {
                 found
@@ -22501,14 +22532,22 @@ impl App {
         let move_hover_preview = move_b_hover
             .and_then(|(body, world)| {
                 let cm = self.state.creating_move.as_ref()?;
-                Some(actions::CreatingMove {
-                    end_point_b: Some(model::MovePointRef::OnEdge {
-                        body,
-                        p: hierarchy::quantize_body_point(world),
-                    }),
-                    start_point_c: None,
-                    end_point_c: None,
-                    ..cm.clone()
+                let point = model::MovePointRef::OnEdge {
+                    body,
+                    p: hierarchy::quantize_body_point(world),
+                };
+                // Whichever end picker is armed takes the hovered spot (#670/#914).
+                Some(match self.move_focus() {
+                    MoveFocus::EndPointC => actions::CreatingMove {
+                        end_point_c: Some(point),
+                        ..cm.clone()
+                    },
+                    _ => actions::CreatingMove {
+                        end_point_b: Some(point),
+                        start_point_c: None,
+                        end_point_c: None,
+                        ..cm.clone()
+                    },
                 })
             })
             .or_else(|| {

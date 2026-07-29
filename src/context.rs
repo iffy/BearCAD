@@ -4374,6 +4374,9 @@ pub fn show_pane(
                 MoveEdit::EndAFocus,
                 MoveEdit::ClearEndA,
             );
+            // The B and C pairs are the rotation (#915): the label says so, since the
+            // four points after it turn the part rather than move it.
+            section_label(ui, "Rotation");
             picker_row(
                 ui,
                 "Start point B",

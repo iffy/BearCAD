@@ -39,7 +39,9 @@ Move slides whole bodies to a new place, producing moved copies.
      C** wherever it should end up. The bodies spin about that line until start C points at
      end C, and the placement is then completely decided. End point C can be anywhere — only
      which way round it sits matters, since how far along and how far out are already set by
-     the other two pairs.
+     the other two pairs. Because of that it can only ride a circle, so four spots a quarter
+     turn apart on it are marked in blue: as it sits now, a quarter turn either way, and
+     upside down.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
@@ -68,7 +70,8 @@ on its long edge. Nothing is left to choose.
 
 The tool moves you along as you go: pick a body and it's ready for the start point, then the
 end point, then straight on to **Start point B** in case you want the turn too, and then to
-**Start point C** for the spin. Click any picker to jump back to it.
+**Start point C** for the spin. Click any picker to jump back to it. The pane labels the
+B and C rows **Rotation** — those four points turn the part, the A pair moves it.
 
 ## Help
 

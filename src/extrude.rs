@@ -842,6 +842,61 @@ pub fn snap_rotation_candidates(
     out
 }
 
+/// Where end point C can land (#914): with end points A and B fixed, the part can still
+/// spin about the A→B axis, so start point C sweeps a **circle** — not a sphere. This
+/// returns four spots a quarter turn apart on that circle, together with the circle's
+/// centre (which the viewport draws a guide to each spot from).
+///
+/// The first spot is the **no extra spin** position: the start-side geometry carried over
+/// by the minimal rotation that takes the start axis onto the end axis. The others follow
+/// at 90°, 180° and 270° about the end axis.
+pub fn snap_spin_candidates(
+    doc: &Document,
+    start_a: Option<&crate::model::MovePointRef>,
+    start_b: Option<&crate::model::MovePointRef>,
+    start_c: Option<&crate::model::MovePointRef>,
+    end_a: Option<&crate::model::MovePointRef>,
+    end_b: Option<&crate::model::MovePointRef>,
+) -> Option<(Vec3, Vec<Vec3>)> {
+    let sa = move_point_world(doc, start_a?)?;
+    let sb = move_point_world(doc, start_b?)?;
+    let sc = move_point_world(doc, start_c?)?;
+    let ea = move_point_world(doc, end_a?)?;
+    let eb = move_point_world(doc, end_b?)?;
+    let start_dir = (sb - sa).normalize_or_zero();
+    let end_dir = (eb - ea).normalize_or_zero();
+    if start_dir.length_squared() < 0.5 || end_dir.length_squared() < 0.5 {
+        return None;
+    }
+    // Split start C into its along-axis and perpendicular parts about the start axis.
+    let v = sc - sa;
+    let axial = v.dot(start_dir);
+    let perp = v - start_dir * axial;
+    let radius = perp.length();
+    if radius < 1e-4 {
+        // C sits on the axis: spinning moves it nowhere, so there's nothing to offer.
+        return None;
+    }
+    let center = ea + end_dir * axial;
+    // The zero-spin reference: the perpendicular carried over by the minimal rotation
+    // between the two axes.
+    let carry = glam::Quat::from_rotation_arc(start_dir, end_dir);
+    let reference = (carry * perp).normalize_or_zero();
+    let reference = if reference.length_squared() < 0.5 {
+        end_dir.any_orthonormal_vector()
+    } else {
+        // Re-orthogonalize against float drift so all four sit exactly on the circle.
+        (reference - end_dir * reference.dot(end_dir)).normalize_or_zero()
+    };
+    let spots = (0..4)
+        .map(|q| {
+            let angle = q as f32 * std::f32::consts::FRAC_PI_2;
+            center + glam::Quat::from_axis_angle(end_dir, angle) * (reference * radius)
+        })
+        .collect();
+    Some((center, spots))
+}
+
 /// Reachable landing spots in **mid-air** (#745): every stationary body's feature edge
 /// whose line passes through end point A (the sphere's centre), extended straight out to
 /// where it crosses the constraint sphere — so start point B can land along an edge's
@@ -5441,6 +5496,97 @@ mod tests {
 
     /// #669: the optional B pair turns the bodies about end point A so that start B lands on
     /// end B, and end B is confined to the sphere start B can actually reach.
+    /// #914: with end points A and B fixed, end point C rides a circle — four quarter-turn
+    /// spots on it, the first carrying the start-side geometry over with no extra spin.
+    #[test]
+    fn spin_candidates_ring_the_axis_a_quarter_turn_apart() {
+        use crate::model::MovePointRef;
+        let mut doc = Document::default();
+        // One body is enough: the points are read by position, not by which body they name.
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let at = |p: [f32; 3]| {
+            Some(MovePointRef::OnEdge {
+                body: 0,
+                p: crate::hierarchy::quantize_body_point(Vec3::from_array(p)),
+            })
+        };
+        // Start: A at the origin, B 10 up +X, C 4 out along +Y from A.
+        // End: A at (0, 0, 100), B 10 along +X from it — the same axis, moved.
+        let (start_a, start_b, start_c) =
+            (at([0.0, 0.0, 0.0]), at([10.0, 0.0, 0.0]), at([0.0, 4.0, 0.0]));
+        let (end_a, end_b) = (at([0.0, 0.0, 100.0]), at([10.0, 0.0, 100.0]));
+        let (center, spots) = snap_spin_candidates(
+            &doc,
+            start_a.as_ref(),
+            start_b.as_ref(),
+            start_c.as_ref(),
+            end_a.as_ref(),
+            end_b.as_ref(),
+        )
+        .expect("A, B and C give a circle");
+        assert!(
+            (center - Vec3::new(0.0, 0.0, 100.0)).length() < 1e-3,
+            "C is perpendicular to the axis, so its circle centres on end A: {center}"
+        );
+        assert_eq!(spots.len(), 4, "four spots");
+        for p in &spots {
+            assert!(
+                ((*p - center).length() - 4.0).abs() < 1e-3,
+                "each sits at C's radius, got {p}"
+            );
+            // The circle's plane is perpendicular to the +X axis, through end A.
+            assert!(p.x.abs() < 1e-3, "and in the circle's plane, got {p}");
+        }
+        // The first is the no-extra-spin position: straight over from start C.
+        assert!(
+            (spots[0] - Vec3::new(0.0, 4.0, 100.0)).length() < 1e-3,
+            "the first spot carries C over unspun, got {}",
+            spots[0]
+        );
+        // A quarter turn about +X takes +Y to +Z.
+        assert!(
+            (spots[1] - Vec3::new(0.0, 0.0, 104.0)).length() < 1e-3,
+            "a quarter turn about the axis, got {}",
+            spots[1]
+        );
+    }
+
+    /// #914: a start point C sitting **on** the axis can't be spun anywhere, so nothing is
+    /// offered rather than four coincident spots.
+    #[test]
+    fn spin_candidates_refuse_a_point_on_the_axis() {
+        use crate::model::MovePointRef;
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let at = |p: [f32; 3]| {
+            Some(MovePointRef::OnEdge {
+                body: 0,
+                p: crate::hierarchy::quantize_body_point(Vec3::from_array(p)),
+            })
+        };
+        assert!(snap_spin_candidates(
+            &doc,
+            at([0.0, 0.0, 0.0]).as_ref(),
+            at([10.0, 0.0, 0.0]).as_ref(),
+            at([5.0, 0.0, 0.0]).as_ref(),
+            at([0.0, 0.0, 100.0]).as_ref(),
+            at([10.0, 0.0, 100.0]).as_ref(),
+        )
+        .is_none());
+    }
+
     #[test]
     fn snap_b_pair_rotates_start_b_onto_end_b() {
         use crate::hierarchy::quantize_body_point as q;
