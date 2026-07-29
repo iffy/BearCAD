@@ -2932,8 +2932,15 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
 one shot per mode where the tool has modes — captured with **help mode** on, so each control
 is explained beside it. The shots come from `docs-site/screenshots/pane-*.lua`, which turn help
 mode on with `bearcad.ui.help(true)` and capture `bearcad.ui.screenshot(path, "context")`; a
-scene that yields several shots writes them as `<script-name>-<variant>.png`. Because the
+scene that yields several shots writes them as `<script-name>-<variant>.png` — and only
+under that prefix, since the harness clears `<script-name>-*.png` before each run and would
+otherwise wipe a neighbouring script's shots. Because the
 explanations are the app's own help text, a page cannot drift from the pane it documents.
+
+**Comparison series.** A scene may also shoot the *same* geometry more than once to show what
+one control changes: `docs-site/screenshots/snap-pairs.lua` lands one slab on one plate three
+times from one pinned camera — the A pair alone, then A + B, then A + B + C — so the Move
+page can show what each snap pair decides side by side.
 
 Framing is part of that determinism: `gen-doc-screenshots.sh` pins `BEARCAD_WINDOW` (default
 `1600x900`, overridable) instead of letting the window maximize, and sizes the `xvfb` screen to
