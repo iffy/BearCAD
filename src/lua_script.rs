@@ -1199,6 +1199,143 @@ fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, O
     }
 }
 
+/// One joint member (#894): a bare body index, an element table/name, or anything
+/// `resolve_element` takes — as long as it lands on a body, component, or unit instance.
+fn parse_joint_member(lua: &Lua, value: Value) -> mlua::Result<crate::model::JointRef> {
+    match value {
+        Value::Integer(i) => Ok(crate::model::JointRef::Body(i as usize)),
+        Value::Number(n) => Ok(crate::model::JointRef::Body(n as usize)),
+        other => match resolve_element(lua, other)? {
+            SceneElement::Body(i) => Ok(crate::model::JointRef::Body(i)),
+            SceneElement::Component(i) => Ok(crate::model::JointRef::Component(i)),
+            SceneElement::UnitInstance(i) => Ok(crate::model::JointRef::UnitInstance(i)),
+            element => Err(mlua::Error::external(format!(
+                "a joint joins bodies, components, or unit instances, got {}",
+                element_kind_name(element)
+            ))),
+        },
+    }
+}
+
+/// A position expression: a number (mm or degrees, per the freedom) or an expression
+/// string; missing reads as the empty expression (zero).
+fn joint_position_arg(opts: &Table, key: &str) -> mlua::Result<String> {
+    match opts.get::<Option<Value>>(key)? {
+        None => Ok(String::new()),
+        Some(Value::String(s)) => Ok(s.to_str()?.to_string()),
+        Some(Value::Integer(i)) => Ok(i.to_string()),
+        Some(Value::Number(n)) => Ok(n.to_string()),
+        Some(other) => Err(mlua::Error::external(format!(
+            "{key} takes a number or an expression string, got {other:?}"
+        ))),
+    }
+}
+
+type JointOpArgs = (
+    Vec<crate::model::JointRef>,
+    usize,
+    crate::model::JointKind,
+    crate::model::JointFrame,
+    crate::model::JointFrame,
+    String,
+    String,
+    String,
+);
+
+/// Shared parsing for `joint` / `edit_joint` / `begin_joint` (#894/#901): the members
+/// (`a`/`b`, or `parts` for a rigid group), the kind (+ `lead` for a screw), which side is
+/// the base, the `from`/`to` mating pairs (starts on the driven part, ends on the base),
+/// and the position expressions.
+fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<JointOpArgs> {
+    check_keys(
+        opts,
+        call,
+        &[
+            "index", "a", "b", "parts", "kind", "lead", "base", "from", "to", "from_b",
+            "to_b", "from_c", "to_c", "position", "position2", "position3", "name",
+        ],
+    )?;
+    let mut members = Vec::new();
+    if let Some(parts) = opts.get::<Option<Table>>("parts")? {
+        for value in parts.sequence_values::<Value>() {
+            members.push(parse_joint_member(lua, value?)?);
+        }
+    } else {
+        if let Some(a) = opts.get::<Option<Value>>("a")? {
+            members.push(parse_joint_member(lua, a)?);
+        }
+        if let Some(b) = opts.get::<Option<Value>>("b")? {
+            members.push(parse_joint_member(lua, b)?);
+        }
+    }
+    let mut kind = match opts.get::<Option<String>>("kind")? {
+        None => crate::model::JointKind::Rigid,
+        Some(name) => crate::model::JointKind::from_name(&name).ok_or_else(|| {
+            mlua::Error::external(format!(
+                "unknown joint kind '{name}' (rigid|slider|revolute|cylindrical|planar|ball|pin_slot|screw)"
+            ))
+        })?,
+    };
+    if let Some(lead) = opts.get::<Option<Value>>("lead")? {
+        let lead = match lead {
+            Value::String(s) => s.to_str()?.to_string(),
+            Value::Integer(i) => i.to_string(),
+            Value::Number(n) => n.to_string(),
+            other => {
+                return Err(mlua::Error::external(format!(
+                    "lead takes a number or an expression string, got {other:?}"
+                )))
+            }
+        };
+        match &mut kind {
+            crate::model::JointKind::Screw { lead: l } => *l = lead,
+            _ => {
+                return Err(mlua::Error::external(
+                    "lead only applies to a screw joint",
+                ))
+            }
+        }
+    }
+    let base = match opts.get::<Option<String>>("base")?.as_deref() {
+        None | Some("a") => 0,
+        Some("b") => 1,
+        Some(other) => {
+            return Err(mlua::Error::external(format!(
+                "unknown base '{other}' (expected 'a' or 'b')"
+            )))
+        }
+    };
+    let pair = |from_key: &str, to_key: &str| -> mlua::Result<(Option<crate::model::MovePointRef>, Option<crate::model::MovePointRef>)> {
+        let from = match opts.get::<Option<Value>>(from_key)? {
+            Some(v) => parse_move_point(v, from_key)?,
+            None => None,
+        };
+        let to = match opts.get::<Option<Value>>(to_key)? {
+            Some(v) => parse_move_point(v, to_key)?,
+            None => None,
+        };
+        Ok((from, to))
+    };
+    let (from_a, to_a) = pair("from", "to")?;
+    let (from_b, to_b) = pair("from_b", "to_b")?;
+    let (from_c, to_c) = pair("from_c", "to_c")?;
+    // `to` points sit on the base side, `from` points on the driven; `frame_a` always
+    // belongs to the first member.
+    let ends = crate::model::JointFrame { origin: to_a, axis: to_b, orient: to_c };
+    let starts = crate::model::JointFrame { origin: from_a, axis: from_b, orient: from_c };
+    let (frame_a, frame_b) = if base == 0 { (ends, starts) } else { (starts, ends) };
+    Ok((
+        members,
+        base,
+        kind,
+        frame_a,
+        frame_b,
+        joint_position_arg(opts, "position")?,
+        joint_position_arg(opts, "position2")?,
+        joint_position_arg(opts, "position3")?,
+    ))
+}
+
 fn apply_optional_name(
     lua: &Lua,
     element: SceneElement,
@@ -1960,11 +2097,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 "component" => doc.components.iter().filter(|e| !e.deleted).count(),
                 "image" => doc.tracing_images.iter().filter(|e| !e.deleted).count(),
+                "joint" => doc.joints.iter().filter(|e| !e.deleted).count(),
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
                          constraint, construction_plane, extrusion, body, drawing, parameter, \
-                         sketch_text, image)"
+                         sketch_text, image, joint)"
                     )))
                 }
             };
@@ -3891,6 +4029,58 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.exec(Instruction::EditMoveOp {
                     op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
                     start_point_c, end_point_c,
+                })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "joint",
+        lua.create_function(|lua, opts: Table| {
+            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+                parse_joint_op_args(lua, &opts, "joint")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::CreateJointOp {
+                    members, base, kind, frame_a, frame_b, position, position2, position3,
+                })?;
+            }
+            let element = SceneElement::Joint(unsafe {
+                tick.state().doc.joints.len().saturating_sub(1)
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // Arm the Joint tool with a set of picks without committing them (#894), so a script
+    // can shoot the tool's live preview — the counterpart begin_move gives the Move tool.
+    api.set(
+        "begin_joint",
+        lua.create_function(|lua, opts: Table| {
+            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+                parse_joint_op_args(lua, &opts, "begin_joint")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::BeginJointOp {
+                    members, base, kind, frame_a, frame_b, position, position2, position3,
+                })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "edit_joint",
+        lua.create_function(|lua, opts: Table| {
+            let op: usize = opts.get("index")?;
+            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+                parse_joint_op_args(lua, &opts, "edit_joint")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::EditJointOp {
+                    op, members, base, kind, frame_a, frame_b, position, position2, position3,
                 })?;
             }
             Ok(())
@@ -7011,6 +7201,93 @@ mod tests {
         ] {
             assert!(point.is_some(), "{what} should be armed");
         }
+    }
+
+    /// #891/#894: `bearcad.joint` commits a joint whose revolute position turns the
+    /// driven body about the mated axis, and the joint lands in the document.
+    #[test]
+    fn lua_joint_commits_a_revolute_that_poses_the_driven_body() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.joint{
+                a = 0, b = 1, kind = "revolute",
+                from   = { body = 1, vertex = {40, 0, 0} },
+                to     = { body = 0, vertex = {0, 0, 0} },
+                from_b = { body = 1, vertex = {40, 0, 5} },
+                to_b   = { body = 0, vertex = {0, 0, 5} },
+                position = 90,
+                name = "Hinge",
+            }
+            "#,
+        );
+        assert_eq!(state.doc.joints.len(), 1);
+        let joint = &state.doc.joints[0];
+        assert_eq!(joint.members.len(), 2);
+        assert_eq!(joint.name.as_deref(), Some("Hinge"));
+        assert_eq!(joint.rest, "90", "rest pose captured from creation (#898)");
+        let pose = crate::joints::body_joint_pose(&state.doc, 1).expect("driven body posed");
+        // B's mating corner (40,0,0) lands on A's (0,0,0); B's (50,0,0) — 10 mm along +X
+        // of the axis point — swings 90° about +Z to (0,10,0).
+        let landed = pose.transform_point3(glam::Vec3::new(50.0, 0.0, 0.0));
+        assert!(
+            (landed - glam::Vec3::new(0.0, 10.0, 0.0)).length() < 1e-2,
+            "swung corner lands at {landed:?}"
+        );
+        // The status names the joint and both parts.
+        assert!(state.status.contains("Revolute"), "{}", state.status);
+    }
+
+    /// #894: `bearcad.begin_joint` arms the tool with its picks instead of committing.
+    #[test]
+    fn lua_begin_joint_arms_the_tool_without_committing() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.begin_joint{
+                a = 0, b = 1, kind = "slider",
+                from = { body = 1, vertex = {40, 0, 0} },
+                to   = { body = 0, vertex = {0, 0, 0} },
+            }
+            "#,
+        );
+        assert_eq!(state.tool, crate::actions::Tool::Joint, "the Joint tool comes up armed");
+        assert!(state.doc.joints.is_empty(), "nothing is committed");
+        let cj = state.creating_joint.as_ref().expect("a joint in progress");
+        assert_eq!(cj.members.len(), 2);
+        assert!(cj.start_point_a.is_some() && cj.end_point_a.is_some());
+        assert!(matches!(cj.kind, crate::model::JointKind::Slider));
+    }
+
+    /// #894: `bearcad.edit_joint` re-points a committed joint; a loop-closing edit is
+    /// refused loudly.
+    #[test]
+    fn lua_edit_joint_repoints_and_refuses_loops() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.joint{ a = 0, b = 1, kind = "rigid" }
+            bearcad.edit_joint{ index = 0, a = 0, b = 1, kind = "slider", position = 3 }
+            -- A second joint driving the already-driven body 1 is refused.
+            local ok, err = pcall(function()
+                bearcad.joint{ a = 0, b = 1, kind = "rigid" }
+            end)
+            assert(not ok, "a second joint on the same driven part must fail")
+            assert(tostring(err):find("already driven"), tostring(err))
+            "#,
+        );
+        assert_eq!(state.doc.joints.len(), 1);
+        assert!(matches!(state.doc.joints[0].kind, crate::model::JointKind::Slider));
+        assert_eq!(state.doc.joints[0].position, "3");
     }
 
     /// #649/#650: an **edge midpoint** works as either point too.

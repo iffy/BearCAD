@@ -124,6 +124,10 @@ pub enum Tool {
     /// fragments on either side of the cutter planes. Inputs become shadow bodies; the
     /// fragments are new bodies; the operation is editable.
     Slice,
+    /// Join two parts with a kinematic relationship (Joint tool, #891/#894): pick the
+    /// parts, snap their mating frames with Move-style point pairs, choose a kind, commit.
+    /// No output bodies — the driven side is posed in place at recompute.
+    Joint,
     /// Place text in a sketch (Text tool, #282): click to drop a text element whose glyph
     /// outlines are baked from a system font; edit its string/font/size/style in the context pane.
     Text,
@@ -140,7 +144,7 @@ pub enum Tool {
 impl Tool {
     /// Every tool, for exhaustive checks (e.g. that no two claim the same shortcut letter).
     #[cfg(test)]
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -162,6 +166,7 @@ impl Tool {
         Self::Mirror,
         Self::Repeat,
         Self::Slice,
+        Self::Joint,
         Self::Text,
         Self::DrawingAdd,
         Self::DrawingAlign,
@@ -191,6 +196,7 @@ impl Tool {
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             "offset" => Some(Tool::Offset),
             "slice" | "split" => Some(Tool::Slice),
+            "joint" => Some(Tool::Joint),
             "text" => Some(Tool::Text),
             "project" | "projection" => Some(Tool::Project),
             "drawing_add" | "add_view" => Some(Tool::DrawingAdd),
@@ -1022,6 +1028,76 @@ pub struct CreatingMove {
     pub tz: String,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<usize>,
+}
+
+/// In-progress joint (Joint tool, #894): the picked parts, the mating pairs (Move-style
+/// start/end points — starts on the driven part, ends on the base), the kind, and the
+/// joint being re-edited. The pairs mean "these features mate": A sets the origins, B the
+/// axis, C the remaining spin.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CreatingJoint {
+    pub members: Vec<crate::model::JointRef>,
+    /// Index into `members` of the held side — the first picked, unless the pane swaps it.
+    pub base: usize,
+    pub kind: crate::model::JointKind,
+    pub start_point_a: Option<crate::model::MovePointRef>,
+    pub end_point_a: Option<crate::model::MovePointRef>,
+    pub start_point_b: Option<crate::model::MovePointRef>,
+    pub end_point_b: Option<crate::model::MovePointRef>,
+    pub start_point_c: Option<crate::model::MovePointRef>,
+    pub end_point_c: Option<crate::model::MovePointRef>,
+    pub position: String,
+    pub position2: String,
+    pub position3: String,
+    /// `Some(joint)` while re-editing a committed joint.
+    pub editing: Option<usize>,
+}
+
+impl CreatingJoint {
+    /// The mating frames the picked pairs imply: end points sit on the base side, start
+    /// points on the driven — `frame_a` always belongs to `members[0]`.
+    pub fn frames(&self) -> (crate::model::JointFrame, crate::model::JointFrame) {
+        let ends = crate::model::JointFrame {
+            origin: self.end_point_a,
+            axis: self.end_point_b,
+            orient: self.end_point_c,
+        };
+        let starts = crate::model::JointFrame {
+            origin: self.start_point_a,
+            axis: self.start_point_b,
+            orient: self.start_point_c,
+        };
+        if self.base == 0 {
+            (ends, starts)
+        } else {
+            (starts, ends)
+        }
+    }
+
+    /// Load a committed joint back into the tool (#894): frames unpack into the pairs,
+    /// base-side frames as the end points.
+    pub fn from_joint(joint: &crate::model::Joint, editing: usize) -> Self {
+        let (base_frame, driven_frame) = if joint.base == 0 {
+            (&joint.frame_a, &joint.frame_b)
+        } else {
+            (&joint.frame_b, &joint.frame_a)
+        };
+        Self {
+            members: joint.members.clone(),
+            base: joint.base,
+            kind: joint.kind.clone(),
+            start_point_a: driven_frame.origin,
+            end_point_a: base_frame.origin,
+            start_point_b: driven_frame.axis,
+            end_point_b: base_frame.axis,
+            start_point_c: driven_frame.orient,
+            end_point_c: base_frame.orient,
+            position: joint.position.clone(),
+            position2: joint.position2.clone(),
+            position3: joint.position3.clone(),
+            editing: Some(editing),
+        }
+    }
 }
 
 /// In-progress in-sketch mirror (Mirror tool inside a sketch, #523): the mirror line, the
@@ -2016,6 +2092,31 @@ pub enum Action {
         ty: String,
         tz: String,
     },
+    /// Commit the in-progress Joint-tool operation (#894).
+    CommitJoint,
+    /// Scripted/replayed joint with an explicit payload (#891/#894).
+    CreateJointOperation {
+        members: Vec<crate::model::JointRef>,
+        base: usize,
+        kind: crate::model::JointKind,
+        frame_a: crate::model::JointFrame,
+        frame_b: crate::model::JointFrame,
+        position: String,
+        position2: String,
+        position3: String,
+    },
+    /// Re-point an existing joint (#894).
+    EditJointOperation {
+        op: usize,
+        members: Vec<crate::model::JointRef>,
+        base: usize,
+        kind: crate::model::JointKind,
+        frame_a: crate::model::JointFrame,
+        frame_b: crate::model::JointFrame,
+        position: String,
+        position2: String,
+        position3: String,
+    },
     /// Commit the in-progress Mirror-tool operation (#523).
     CommitMirror,
     /// Scripted/replayed mirror operation with an explicit payload.
@@ -2747,6 +2848,8 @@ pub struct AppState {
     pub creating_boolean: Option<CreatingBoolean>,
     /// In-progress move operation (Move tool).
     pub creating_move: Option<CreatingMove>,
+    /// In-progress joint (Joint tool, #894).
+    pub creating_joint: Option<CreatingJoint>,
     /// In-progress mirror operation (Mirror tool, #523).
     pub creating_mirror: Option<CreatingMirror>,
     /// In-progress in-sketch mirror (Mirror tool inside a sketch, #523).
@@ -2910,6 +3013,7 @@ impl Default for AppState {
             creating_sweep: None,
             creating_boolean: None,
             creating_move: None,
+            creating_joint: None,
             creating_mirror: None,
             creating_sketch_mirror: None,
             creating_repeat: None,
@@ -4904,6 +5008,84 @@ fn validate_move_inputs(
     Ok(())
 }
 
+/// Validation for creating/editing a joint (#891/#894): two live, distinct parts — more
+/// only for a rigid group (#900). A joint holds parts in place rather than consuming
+/// them, so shadow bodies are refused (they're already inside some other operation) but
+/// nothing gets shadowed here.
+fn validate_joint_inputs(
+    doc: &Document,
+    members: &[crate::model::JointRef],
+    kind: &crate::model::JointKind,
+    _editing: Option<usize>,
+) -> Result<(), String> {
+    if members.len() < 2 {
+        return Err("Pick two parts to join".to_string());
+    }
+    if members.len() > 2 && !matches!(kind, crate::model::JointKind::Rigid) {
+        return Err("Only a rigid joint ties more than two parts".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for member in members {
+        match *member {
+            crate::model::JointRef::Body(bi) => {
+                let Some(body) = doc.bodies.get(bi).filter(|b| !b.deleted) else {
+                    return Err(format!("Body {bi} not found"));
+                };
+                let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
+                if body.shadow && !is_unit {
+                    return Err(format!("Body {bi} is already consumed by another operation"));
+                }
+            }
+            crate::model::JointRef::Component(ci) => {
+                if doc.components.get(ci).filter(|c| !c.deleted).is_none() {
+                    return Err(format!("Component {ci} not found"));
+                }
+            }
+            crate::model::JointRef::UnitInstance(ui) => {
+                if doc.unit_instances.get(ui).filter(|i| !i.deleted).is_none() {
+                    return Err(format!("Unit instance {ui} not found"));
+                }
+            }
+        }
+        if !seen.insert(*member) {
+            return Err("The same part is picked twice".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The status line a fresh joint reports: its kind label plus the parts it joins.
+fn joint_status(doc: &Document, ji: usize) -> String {
+    let label = crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Joint(ji));
+    let members = doc
+        .joints
+        .get(ji)
+        .map(|j| {
+            j.members
+                .iter()
+                .map(|m| match *m {
+                    crate::model::JointRef::Body(bi) => crate::names::scene_element_label(
+                        doc,
+                        &crate::hierarchy::SceneElement::Body(bi),
+                    ),
+                    crate::model::JointRef::Component(ci) => crate::names::scene_element_label(
+                        doc,
+                        &crate::hierarchy::SceneElement::Component(ci),
+                    ),
+                    crate::model::JointRef::UnitInstance(ui) => {
+                        crate::names::scene_element_label(
+                            doc,
+                            &crate::hierarchy::SceneElement::UnitInstance(ui),
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" and ")
+        })
+        .unwrap_or_default();
+    format!("{label} joins {members}")
+}
+
 /// Validation for creating/editing a mirror operation (#523): at least one target, each a
 /// live non-shadow body, no duplicates, and never the op's own reflected output (which would
 /// recurse). Unlike Move, mirror inputs are kept, so a target isn't consumed/shadowed.
@@ -6127,6 +6309,12 @@ impl AppState {
                 if tool == Tool::Move && self.creating_move.is_none() {
                     self.creating_move = Some(CreatingMove::default());
                 }
+                if self.creating_joint.is_some() && tool != Tool::Joint {
+                    self.creating_joint = None;
+                }
+                if tool == Tool::Joint && self.creating_joint.is_none() {
+                    self.creating_joint = Some(CreatingJoint::default());
+                }
                 if self.creating_mirror.is_some() && tool != Tool::Mirror {
                     self.creating_mirror = None;
                 }
@@ -6378,6 +6566,10 @@ impl AppState {
                         "Move tool — click bodies to pick them, set the offset/rotation, Enter commits"
                             .to_string()
                     }
+                    Tool::Joint => {
+                        "Joint tool — pick two parts, snap their mating points, choose a kind, Enter commits"
+                            .to_string()
+                    }
                     Tool::Mirror => {
                         "Mirror tool — pick a mirror plane/face, then bodies to mirror, Enter commits"
                             .to_string()
@@ -6517,6 +6709,12 @@ impl AppState {
                     // point marks follow the picked state, so clearing it clears them.
                     self.creating_move = Some(CreatingMove::default());
                     self.status = "Cancelled move".to_string();
+                } else if self.creating_joint.as_ref().is_some_and(|c| {
+                    !c.members.is_empty() || c.start_point_a.is_some() || c.editing.is_some()
+                }) {
+                    // Esc drops the in-progress joint (#894), like a move.
+                    self.creating_joint = Some(CreatingJoint::default());
+                    self.status = "Cancelled joint".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()
@@ -10705,6 +10903,130 @@ label_hidden: false,
                 self.status = "Edited move".to_string();
                 ActionResult::Ok
             }
+            Action::CommitJoint => {
+                let Some(cj) = self.creating_joint.take() else {
+                    return ActionResult::Err("No joint in progress".to_string());
+                };
+                let (frame_a, frame_b) = cj.frames();
+                let payload = |op: Option<usize>| match op {
+                    Some(op) => Action::EditJointOperation {
+                        op,
+                        members: cj.members.clone(),
+                        base: cj.base,
+                        kind: cj.kind.clone(),
+                        frame_a,
+                        frame_b,
+                        position: cj.position.clone(),
+                        position2: cj.position2.clone(),
+                        position3: cj.position3.clone(),
+                    },
+                    None => Action::CreateJointOperation {
+                        members: cj.members.clone(),
+                        base: cj.base,
+                        kind: cj.kind.clone(),
+                        frame_a,
+                        frame_b,
+                        position: cj.position.clone(),
+                        position2: cj.position2.clone(),
+                        position3: cj.position3.clone(),
+                    },
+                };
+                let result = self.apply(payload(cj.editing));
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_joint = Some(cj);
+                } else {
+                    self.creating_joint = Some(CreatingJoint::default());
+                }
+                result
+            }
+            Action::CreateJointOperation {
+                members,
+                base,
+                kind,
+                frame_a,
+                frame_b,
+                position,
+                position2,
+                position3,
+            } => {
+                if let Err(e) = validate_joint_inputs(&self.doc, &members, &kind, None) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // The rest pose (#898) is captured from creation: wherever the parts were
+                // (and whatever position that implied) is what Revert returns to.
+                let joint = crate::model::Joint {
+                    members,
+                    base: if base < 2 { base } else { 0 },
+                    kind,
+                    frame_a,
+                    frame_b,
+                    position: position.clone(),
+                    position2: position2.clone(),
+                    position3: position3.clone(),
+                    rest: position,
+                    rest2: position2,
+                    rest3: position3,
+                    limits: Default::default(),
+                    name: None,
+                    deleted: false,
+                };
+                // A joint that can't resolve — closing a loop, or claiming a part another
+                // joint drives — is refused with the reason, not committed broken (#893).
+                self.doc.joints.push(joint);
+                let ji = self.doc.joints.len() - 1;
+                let errors = crate::joints::resolve_joint_poses(&self.doc).errors;
+                if let Some((_, reason)) = errors.iter().find(|(i, _)| *i == ji) {
+                    let reason = reason.clone();
+                    self.doc.joints.pop();
+                    self.status = reason.clone();
+                    return ActionResult::Err(reason);
+                }
+                self.doc.shape_order.push(ShapeKind::Joint);
+                self.refresh_document_health();
+                self.status = joint_status(&self.doc, ji);
+                ActionResult::Ok
+            }
+            Action::EditJointOperation {
+                op,
+                members,
+                base,
+                kind,
+                frame_a,
+                frame_b,
+                position,
+                position2,
+                position3,
+            } => {
+                if self.doc.joints.get(op).filter(|j| !j.deleted).is_none() {
+                    return ActionResult::Err(format!("Joint {op} not found"));
+                }
+                if let Err(e) = validate_joint_inputs(&self.doc, &members, &kind, Some(op)) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let previous = self.doc.joints[op].clone();
+                let joint = &mut self.doc.joints[op];
+                joint.members = members;
+                joint.base = if base < 2 { base } else { 0 };
+                joint.kind = kind;
+                joint.frame_a = frame_a;
+                joint.frame_b = frame_b;
+                joint.position = position;
+                joint.position2 = position2;
+                joint.position3 = position3;
+                // Refuse an edit that stops the assembly resolving, wholesale (#893).
+                let errors = crate::joints::resolve_joint_poses(&self.doc).errors;
+                if let Some((_, reason)) = errors.iter().find(|(i, _)| *i == op) {
+                    let reason = reason.clone();
+                    self.doc.joints[op] = previous;
+                    self.status = reason.clone();
+                    return ActionResult::Err(reason);
+                }
+                self.refresh_document_health();
+                self.status = "Edited joint".to_string();
+                ActionResult::Ok
+            }
             Action::CommitMirror => {
                 let Some(cm) = self.creating_mirror.take() else {
                     return ActionResult::Err("No mirror in progress".to_string());
@@ -14099,7 +14421,7 @@ fn move_status(bodies: usize, planes: usize, images: usize) -> String {
 /// Slice, Move, Repeat, and cut pickers can take it) instead of reading as its instance.
 pub fn body_gathering_tool_active(state: &AppState) -> bool {
     match state.tool {
-        Tool::Move | Tool::Repeat | Tool::Slice | Tool::Combine => true,
+        Tool::Move | Tool::Repeat | Tool::Slice | Tool::Combine | Tool::Joint => true,
         Tool::Revolve => state
             .creating_revolve
             .as_ref()
@@ -14140,6 +14462,29 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
                 return true;
             }
             toggle(&mut state.creating_move.get_or_insert_with(CreatingMove::default).targets, bi);
+            true
+        }
+        Tool::Joint => {
+            // A unit's materialized body joins as its *instance* — the joint poses the
+            // placement, like a Move's instance target (#894).
+            let member = match state.doc.bodies.get(bi).map(|b| b.source.clone()) {
+                Some(crate::model::BodySource::UnitInstance(instance)) => {
+                    crate::model::JointRef::UnitInstance(instance)
+                }
+                _ => crate::model::JointRef::Body(bi),
+            };
+            let cj = state.creating_joint.get_or_insert_with(CreatingJoint::default);
+            if let Some(pos) = cj.members.iter().position(|m| *m == member) {
+                cj.members.remove(pos);
+                if cj.base >= cj.members.len() {
+                    cj.base = 0;
+                }
+            } else if cj.members.len() < 2 || matches!(cj.kind, crate::model::JointKind::Rigid)
+            {
+                cj.members.push(member);
+            } else {
+                state.status = "A joint takes two parts — drop one first".to_string();
+            }
             true
         }
         Tool::Repeat => {

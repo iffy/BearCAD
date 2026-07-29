@@ -369,6 +369,42 @@ pub enum Instruction {
         start_point_c: Option<crate::model::MovePointRef>,
         end_point_c: Option<crate::model::MovePointRef>,
     },
+    /// Join parts with a kinematic relationship (Joint tool, #891/#894).
+    CreateJointOp {
+        members: Vec<crate::model::JointRef>,
+        base: usize,
+        kind: crate::model::JointKind,
+        frame_a: crate::model::JointFrame,
+        frame_b: crate::model::JointFrame,
+        position: String,
+        position2: String,
+        position3: String,
+    },
+    /// Re-point an existing joint.
+    EditJointOp {
+        op: usize,
+        members: Vec<crate::model::JointRef>,
+        base: usize,
+        kind: crate::model::JointKind,
+        frame_a: crate::model::JointFrame,
+        frame_b: crate::model::JointFrame,
+        position: String,
+        position2: String,
+        position3: String,
+    },
+    /// Arm the Joint tool with a set of picks **without committing** them, so the tool's
+    /// live preview can be driven from a script — `bearcad.joint` is the committing
+    /// counterpart, exactly as `begin_move` is to `move_bodies`.
+    BeginJointOp {
+        members: Vec<crate::model::JointRef>,
+        base: usize,
+        kind: crate::model::JointKind,
+        frame_a: crate::model::JointFrame,
+        frame_b: crate::model::JointFrame,
+        position: String,
+        position2: String,
+        position3: String,
+    },
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
         plane: FaceId,
@@ -1103,6 +1139,15 @@ impl Instruction {
             }
             Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            }
+            Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+                joint_op_lua("bearcad.joint", None, members, *base, kind, frame_a, frame_b, position, position2, position3)
+            }
+            Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+                joint_op_lua("bearcad.begin_joint", None, members, *base, kind, frame_a, frame_b, position, position2, position3)
+            }
+            Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+                joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, frame_a, frame_b, position, position2, position3)
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {
                 mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
@@ -1957,6 +2002,31 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 length_target: length_target.clone(),
             })
         }
+        Action::CreateJointOperation { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+            Some(Instruction::CreateJointOp {
+                members: members.clone(),
+                base: *base,
+                kind: kind.clone(),
+                frame_a: *frame_a,
+                frame_b: *frame_b,
+                position: position.clone(),
+                position2: position2.clone(),
+                position3: position3.clone(),
+            })
+        }
+        Action::EditJointOperation { op, members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+            Some(Instruction::EditJointOp {
+                op: *op,
+                members: members.clone(),
+                base: *base,
+                kind: kind.clone(),
+                frame_a: *frame_a,
+                frame_b: *frame_b,
+                position: position.clone(),
+                position2: position2.clone(),
+                position3: position3.clone(),
+            })
+        }
         Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
             Some(Instruction::CreateSliceOp {
                 targets: targets.clone(),
@@ -2542,6 +2612,90 @@ fn mirror_op_lua(
     format!("{call}{{ {} }}", parts.join(", "))
 }
 
+/// One joint member as script text (#894): a bare body index, or a `{ kind = …, index = … }`
+/// table for components and unit instances.
+fn joint_member_lua(member: &crate::model::JointRef) -> String {
+    match member {
+        crate::model::JointRef::Body(i) => i.to_string(),
+        crate::model::JointRef::Component(i) => {
+            format!("{{ kind = \"component\", index = {i} }}")
+        }
+        crate::model::JointRef::UnitInstance(i) => {
+            format!("{{ kind = \"unit_instance\", index = {i} }}")
+        }
+    }
+}
+
+/// Render a joint call (`bearcad.joint{}` / `bearcad.edit_joint{}` / `bearcad.begin_joint{}`).
+/// The stored frames unpack back into the `from`/`to` pairs the call takes: `to` points sit
+/// on the base side, `from` points on the driven.
+#[allow(clippy::too_many_arguments)]
+fn joint_op_lua(
+    call: &str,
+    op: Option<usize>,
+    members: &[crate::model::JointRef],
+    base: usize,
+    kind: &crate::model::JointKind,
+    frame_a: &crate::model::JointFrame,
+    frame_b: &crate::model::JointFrame,
+    position: &str,
+    position2: &str,
+    position3: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    if members.len() > 2 {
+        parts.push(format!(
+            "parts = {{{}}}",
+            members.iter().map(joint_member_lua).collect::<Vec<_>>().join(", ")
+        ));
+    } else {
+        if let Some(a) = members.first() {
+            parts.push(format!("a = {}", joint_member_lua(a)));
+        }
+        if let Some(b) = members.get(1) {
+            parts.push(format!("b = {}", joint_member_lua(b)));
+        }
+    }
+    parts.push(format!("kind = \"{}\"", kind.name()));
+    if let crate::model::JointKind::Screw { lead } = kind {
+        if !lead.trim().is_empty() {
+            parts.push(format!("lead = \"{lead}\""));
+        }
+    }
+    if base == 1 {
+        parts.push("base = \"b\"".to_string());
+    }
+    let base_is_first = base == 0 || base >= members.len();
+    let (base_frame, driven_frame) = if base_is_first {
+        (frame_a, frame_b)
+    } else {
+        (frame_b, frame_a)
+    };
+    for (from_name, to_name, from, to) in [
+        ("from", "to", &driven_frame.origin, &base_frame.origin),
+        ("from_b", "to_b", &driven_frame.axis, &base_frame.axis),
+        ("from_c", "to_c", &driven_frame.orient, &base_frame.orient),
+    ] {
+        if let (Some(start), Some(end)) = (from, to) {
+            parts.push(format!("{from_name} = {}", move_point_lua(start)));
+            parts.push(format!("{to_name} = {}", move_point_lua(end)));
+        }
+    }
+    for (name, value) in [
+        ("position", position),
+        ("position2", position2),
+        ("position3", position3),
+    ] {
+        if !value.trim().is_empty() {
+            parts.push(format!("{name} = \"{value}\""));
+        }
+    }
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// The `output = …` script name for a non-default [`crate::model::MirrorMode`] (#639).
 /// `None` for the default, which scripts leave out.
 pub fn mirror_mode_script_name(mode: crate::model::MirrorMode) -> Option<&'static str> {
@@ -2852,6 +3006,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Mirror => "mirror",
         Tool::Repeat => "repeat",
         Tool::Slice => "slice",
+        Tool::Joint => "joint",
         Tool::Text => "text",
         Tool::DrawingAdd => "drawing_add",
         Tool::DrawingAlign => "drawing_align",
@@ -4626,6 +4781,58 @@ impl ScriptRunner {
                     tz,
                     editing: None,
                 });
+                StepResult::Continue
+            }
+            Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+                let result = state.apply(Action::CreateJointOperation {
+                    members,
+                    base,
+                    kind,
+                    frame_a,
+                    frame_b,
+                    position,
+                    position2,
+                    position3,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+                let result = state.apply(Action::EditJointOperation {
+                    op,
+                    members,
+                    base,
+                    kind,
+                    frame_a,
+                    frame_b,
+                    position,
+                    position2,
+                    position3,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 } => {
+                state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Joint));
+                let probe = crate::model::Joint {
+                    members,
+                    base,
+                    kind,
+                    frame_a,
+                    frame_b,
+                    position,
+                    position2,
+                    position3,
+                    rest: String::new(),
+                    rest2: String::new(),
+                    rest3: String::new(),
+                    limits: Default::default(),
+                    name: None,
+                    deleted: false,
+                };
+                let mut cj = crate::actions::CreatingJoint::from_joint(&probe, 0);
+                cj.editing = None;
+                state.creating_joint = Some(cj);
                 StepResult::Continue
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {

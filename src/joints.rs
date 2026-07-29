@@ -287,6 +287,66 @@ pub fn body_joint_pose(doc: &Document, body_index: usize) -> Option<Mat4> {
     None
 }
 
+/// The live bodies a joint member stands for (#894): the body itself, a unit instance's
+/// materialized bodies, or every body living inside a component (nearest-chain match,
+/// like [`body_joint_pose`]).
+pub fn member_bodies(doc: &Document, member: JointRef) -> Vec<usize> {
+    match member {
+        JointRef::Body(bi) => doc
+            .bodies
+            .get(bi)
+            .filter(|b| !b.deleted)
+            .map(|_| vec![bi])
+            .unwrap_or_default(),
+        JointRef::UnitInstance(ui) => doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
+                !b.deleted
+                    && matches!(
+                        b.source,
+                        crate::model::BodySource::UnitInstance(i)
+                        | crate::model::BodySource::UnitCut { instance: i, .. }
+                        if i == ui
+                    )
+            })
+            .map(|(i, _)| i)
+            .collect(),
+        JointRef::Component(ci) => doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(bi, b)| {
+                !b.deleted
+                    && crate::hierarchy::owning_component(
+                        doc,
+                        &crate::hierarchy::SceneElement::Body(*bi),
+                    )
+                    .is_some_and(|owner| doc.component_chain(owner).contains(&ci))
+            })
+            .map(|(i, _)| i)
+            .collect(),
+    }
+}
+
+/// The pose an in-progress joint would impose on its driven side (#894): the committed
+/// assembly's base pose composed with the probe's mate — what the tool's ghost shows.
+/// `None` when it works out to identity (nothing to ghost).
+pub fn preview_pose(doc: &Document, joint: &Joint) -> Option<Mat4> {
+    let base = joint.base_member()?;
+    let base_pose = joint_resolution(doc)
+        .member_pose(base)
+        .unwrap_or(Mat4::IDENTITY);
+    let base_is_first = joint.base == 0 || joint.base >= joint.members.len();
+    let pose = joint_transform(doc, joint, base_pose, base_is_first);
+    if pose.abs_diff_eq(Mat4::IDENTITY, 1e-5) {
+        None
+    } else {
+        Some(pose)
+    }
+}
+
 /// Apply a body's joint pose to its solid mesh, if it carries one.
 pub fn posed_mesh(
     doc: &Document,

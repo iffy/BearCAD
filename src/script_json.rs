@@ -390,6 +390,22 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
                  start_point_c, end_point_c) = move_op_args(o)?;
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
+        "joint" => {
+            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+                joint_op_args(o)?;
+            Ok(Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 })
+        }
+        "begin_joint" => {
+            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+                joint_op_args(o)?;
+            Ok(Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3 })
+        }
+        "edit_joint" => {
+            let op = req_usize(o, "index", "edit_joint")?;
+            let (members, base, kind, frame_a, frame_b, position, position2, position3) =
+                joint_op_args(o)?;
+            Ok(Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3 })
+        }
         "begin_move" => {
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
                  start_point_c, end_point_c) = move_op_args(o)?;
@@ -1133,6 +1149,108 @@ fn move_op_args(
         // The optional C pair pins the spin B leaves free.
         move_point_from_json(o.get("from_c"), "from_c")?,
         move_point_from_json(o.get("to_c"), "to_c")?,
+    ))
+}
+
+/// `joint`/`edit_joint`/`begin_joint` shared arguments (#894): the members (`a`/`b` or
+/// `parts`), kind (+ screw `lead`), base side, the `from`/`to` mating pairs, and the
+/// position expressions — the JSON twin of `lua_script::parse_joint_op_args`.
+#[allow(clippy::type_complexity)]
+fn joint_op_args(
+    o: &Map<String, Value>,
+) -> Result<
+    (
+        Vec<crate::model::JointRef>,
+        usize,
+        crate::model::JointKind,
+        crate::model::JointFrame,
+        crate::model::JointFrame,
+        String,
+        String,
+        String,
+    ),
+    String,
+> {
+    let member = |v: &Value, what: &str| -> Result<crate::model::JointRef, String> {
+        if let Some(i) = v.as_u64() {
+            return Ok(crate::model::JointRef::Body(i as usize));
+        }
+        let t = v
+            .as_object()
+            .ok_or_else(|| format!("joint `{what}` must be a body index or {{kind, index}}"))?;
+        let kind = t
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("joint `{what}` needs a `kind`"))?;
+        let index = req_usize(t, "index", what)?;
+        match kind {
+            "body" => Ok(crate::model::JointRef::Body(index)),
+            "component" => Ok(crate::model::JointRef::Component(index)),
+            "unit_instance" | "unit" => Ok(crate::model::JointRef::UnitInstance(index)),
+            other => Err(format!(
+                "joint `{what}` kind '{other}' (body|component|unit_instance)"
+            )),
+        }
+    };
+    let mut members = Vec::new();
+    if let Some(parts) = o.get("parts").and_then(Value::as_array) {
+        for v in parts {
+            members.push(member(v, "parts")?);
+        }
+    } else {
+        if let Some(a) = o.get("a").filter(|v| !v.is_null()) {
+            members.push(member(a, "a")?);
+        }
+        if let Some(b) = o.get("b").filter(|v| !v.is_null()) {
+            members.push(member(b, "b")?);
+        }
+    }
+    let mut kind = match o.get("kind").and_then(Value::as_str) {
+        None => crate::model::JointKind::Rigid,
+        Some(name) => crate::model::JointKind::from_name(name).ok_or_else(|| {
+            format!(
+                "unknown joint kind '{name}' (rigid|slider|revolute|cylindrical|planar|ball|pin_slot|screw)"
+            )
+        })?,
+    };
+    if let Some(lead) = o.get("lead").filter(|v| !v.is_null()) {
+        let lead = match lead {
+            Value::String(s) => s.clone(),
+            other => other
+                .as_f64()
+                .map(|n| n.to_string())
+                .ok_or("lead takes a number or an expression string")?,
+        };
+        match &mut kind {
+            crate::model::JointKind::Screw { lead: l } => *l = lead,
+            _ => return Err("lead only applies to a screw joint".to_string()),
+        }
+    }
+    let base = match o.get("base").and_then(Value::as_str) {
+        None | Some("a") => 0,
+        Some("b") => 1,
+        Some(other) => return Err(format!("unknown base '{other}' (expected 'a' or 'b')")),
+    };
+    let starts = crate::model::JointFrame {
+        origin: move_point_from_json(o.get("from"), "from")?,
+        axis: move_point_from_json(o.get("from_b"), "from_b")?,
+        orient: move_point_from_json(o.get("from_c"), "from_c")?,
+    };
+    let ends = crate::model::JointFrame {
+        origin: move_point_from_json(o.get("to"), "to")?,
+        axis: move_point_from_json(o.get("to_b"), "to_b")?,
+        orient: move_point_from_json(o.get("to_c"), "to_c")?,
+    };
+    let (frame_a, frame_b) = if base == 0 { (ends, starts) } else { (starts, ends) };
+    Ok((
+        members,
+        base,
+        kind,
+        frame_a,
+        frame_b,
+        expr_arg(o, "position")?,
+        expr_arg(o, "position2")?,
+        expr_arg(o, "position3")?,
     ))
 }
 
@@ -2109,6 +2227,70 @@ mod tests {
         );
         // A missing plane is an error.
         assert!(instruction_from_json("mirror_bodies", &json!({ "bodies": [0] })).is_err());
+    }
+
+    /// #894: the web `joint` command builds the same instruction the mlua closure does —
+    /// members from `a`/`b`, `to` points on the base side's frame, positions stringified.
+    #[test]
+    fn joint_maps_pairs_onto_frames_like_the_lua_closure() {
+        assert_eq!(
+            instruction_from_json(
+                "joint",
+                &json!({
+                    "a": 0,
+                    "b": { "kind": "unit_instance", "index": 2 },
+                    "kind": "revolute",
+                    "from": { "body": 1, "vertex": [40, 0, 0] },
+                    "to": { "body": 0, "vertex": [0, 0, 0] },
+                    "position": 90,
+                })
+            ),
+            Ok(Instruction::CreateJointOp {
+                members: vec![
+                    crate::model::JointRef::Body(0),
+                    crate::model::JointRef::UnitInstance(2),
+                ],
+                base: 0,
+                kind: crate::model::JointKind::Revolute,
+                frame_a: crate::model::JointFrame {
+                    origin: Some(crate::model::MovePointRef::Vertex { body: 0, p: [0, 0, 0] }),
+                    axis: None,
+                    orient: None,
+                },
+                frame_b: crate::model::JointFrame {
+                    origin: Some(crate::model::MovePointRef::Vertex {
+                        body: 1,
+                        p: [4000, 0, 0],
+                    }),
+                    axis: None,
+                    orient: None,
+                },
+                position: "90".into(),
+                position2: String::new(),
+                position3: String::new(),
+            })
+        );
+        // `base = "b"` swaps which side the frames land on.
+        assert_eq!(
+            instruction_from_json(
+                "edit_joint",
+                &json!({ "index": 0, "a": 0, "b": 1, "kind": "screw", "lead": "2", "base": "b" })
+            ),
+            Ok(Instruction::EditJointOp {
+                op: 0,
+                members: vec![
+                    crate::model::JointRef::Body(0),
+                    crate::model::JointRef::Body(1),
+                ],
+                base: 1,
+                kind: crate::model::JointKind::Screw { lead: "2".into() },
+                frame_a: Default::default(),
+                frame_b: Default::default(),
+                position: String::new(),
+                position2: String::new(),
+                position3: String::new(),
+            })
+        );
     }
 
     #[test]

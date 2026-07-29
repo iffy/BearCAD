@@ -272,6 +272,7 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SweepOp(i) => Some(SceneElement::SweepOp(i)),
         HierarchyNode::SketchMirrorOp(i) => Some(SceneElement::SketchMirrorOp(i)),
         HierarchyNode::SketchOffsetOp(i) => Some(SceneElement::SketchOffsetOp(i)),
+        HierarchyNode::Joint(i) => Some(SceneElement::Joint(i)),
         _ => None,
     }
 }
@@ -2991,8 +2992,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         }
         HierarchyNode::Revolution(_) => IconId::Revolve,
         HierarchyNode::SweepOp(_) => IconId::Sweep,
-        // Per-kind joint icons land with the 3D icons (#899); the gear reads "operation".
-        HierarchyNode::Joint(_) => IconId::Gear,
+        // Per-kind joint icons land with the 3D icons (#899).
+        HierarchyNode::Joint(_) => IconId::Joint,
         HierarchyNode::Loft(_) => IconId::Loft,
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match edge_treatment_at(doc, extrusion, index).map(|t| t.kind) {

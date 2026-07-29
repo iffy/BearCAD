@@ -48,6 +48,8 @@ pub enum IconId {
     Repeat,
     Offset,
     Slice,
+    /// The Joint tool (#894): two links sharing a pin.
+    Joint,
     Text,
     Body,
     Component,
@@ -118,7 +120,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 79] = [
+    pub const ALL: [Self; 80] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -153,6 +155,7 @@ impl IconId {
         Self::Repeat,
         Self::Offset,
         Self::Slice,
+        Self::Joint,
         Self::Text,
         Self::ShadowBody,
         Self::Body,
@@ -236,6 +239,7 @@ impl IconId {
             Self::Repeat => include_str!("assets/icons/repeat.svg"),
             Self::Offset => include_str!("assets/icons/offset.svg"),
             Self::Slice => include_str!("assets/icons/slice.svg"),
+            Self::Joint => include_str!("assets/icons/joint.svg"),
             Self::Text => include_str!("assets/icons/text.svg"),
             Self::ShadowBody => include_str!("assets/icons/shadow_body.svg"),
             Self::Body => include_str!("assets/icons/body.svg"),
@@ -322,6 +326,7 @@ impl IconId {
             Self::Repeat => "Repeat",
             Self::Offset => "Offset",
             Self::Slice => "Slice",
+            Self::Joint => "Joint",
             Self::Text => "Text",
             Self::ShadowBody => "Shadow body",
             Self::Body => "Body",

@@ -87,6 +87,10 @@ pub struct ContextInput<'a> {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Joint tool state (#894): `Some` while the Joint tool is active.
+    pub joint: Option<JointControl>,
+    /// "Edit joint" entry point: `Some(op)` when exactly one joint is selected (#894).
+    pub joint_edit_start: Option<usize>,
     /// Mirror tool state (#523): `Some` while the Mirror tool is active.
     pub mirror_op: Option<MirrorControl>,
     /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
@@ -300,6 +304,66 @@ pub enum MoveEdit {
     EndBFocus,
     ClearEndB,
     /// Arm / clear the optional C-pair pickers.
+    StartCFocus,
+    ClearStartC,
+    EndCFocus,
+    ClearEndC,
+    Commit,
+}
+
+/// What the Joint tool's context section shows (#894): the picked parts, the joint-type
+/// dropdown, the mating-point pickers, and the position expressions the kind offers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointControl {
+    /// Labels of the picked parts, in pick order.
+    pub members_rows: Vec<String>,
+    pub members_focused: bool,
+    pub kind: crate::model::JointKind,
+    /// The held side's label, shown on the Base row; clicking swaps sides.
+    pub base_label: String,
+    /// The A pair sets the mating origins, B aims the axis, C pins the spin — start
+    /// points on the driven part, end points on the base.
+    pub start_a_rows: Vec<String>,
+    pub start_a_focused: bool,
+    pub end_a_rows: Vec<String>,
+    pub end_a_focused: bool,
+    pub start_b_rows: Vec<String>,
+    pub start_b_focused: bool,
+    pub end_b_rows: Vec<String>,
+    pub end_b_focused: bool,
+    pub start_c_rows: Vec<String>,
+    pub start_c_focused: bool,
+    pub end_c_rows: Vec<String>,
+    pub end_c_focused: bool,
+    pub position: String,
+    pub position2: String,
+    pub position3: String,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Joint context section (#894).
+#[derive(Clone, Debug, PartialEq)]
+pub enum JointEdit {
+    Kind(crate::model::JointKind),
+    /// The screw's lead expression (mm per turn).
+    Lead(String),
+    /// Swap which side is held.
+    SwapBase,
+    Position(String),
+    Position2(String),
+    Position3(String),
+    MembersFocus,
+    RemoveMember(usize),
+    ClearMembers,
+    StartAFocus,
+    ClearStartA,
+    EndAFocus,
+    ClearEndA,
+    StartBFocus,
+    ClearStartB,
+    EndBFocus,
+    ClearEndB,
     StartCFocus,
     ClearStartC,
     EndCFocus,
@@ -874,6 +938,10 @@ pub struct ContextPaneContent {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Joint tool state (#894): `Some` while the Joint tool is active.
+    pub joint: Option<JointControl>,
+    /// "Edit joint" entry point: `Some(op)` when exactly one joint is selected (#894).
+    pub joint_edit_start: Option<usize>,
     /// Mirror tool state (#523): `Some` while the Mirror tool is active.
     pub mirror_op: Option<MirrorControl>,
     /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
@@ -1383,6 +1451,13 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
                 "Move"
             }
         }
+        Tool::Joint => {
+            if input.joint.as_ref().is_some_and(|c| c.editing) {
+                "Edit joint"
+            } else {
+                "Joint"
+            }
+        }
         Tool::Mirror => {
             if editing {
                 "Edit mirror"
@@ -1756,6 +1831,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let boolean_edit_start = input.boolean_edit_start;
     let move_op = input.move_op.clone();
     let move_edit_start = input.move_edit_start;
+    let joint = input.joint.clone();
+    let joint_edit_start = input.joint_edit_start;
     let mirror_op = input.mirror_op.clone();
     let mirror_edit_start = input.mirror_edit_start;
     let repeat_op = input.repeat_op.clone();
@@ -1820,6 +1897,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            joint: joint.clone(),
+            joint_edit_start,
             mirror_op: mirror_op.clone(),
             mirror_edit_start,
             repeat_op: repeat_op.clone(),
@@ -1880,6 +1959,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            joint: joint.clone(),
+            joint_edit_start,
             mirror_op: mirror_op.clone(),
             mirror_edit_start,
             repeat_op: repeat_op.clone(),
@@ -1942,6 +2023,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            joint: joint.clone(),
+            joint_edit_start,
             mirror_op: mirror_op.clone(),
             mirror_edit_start,
             repeat_op: repeat_op.clone(),
@@ -2010,6 +2093,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         boolean_op,
         boolean_edit_start,
         move_op,
+        joint,
+        joint_edit_start,
         move_edit_start,
         mirror_op,
         mirror_edit_start,
@@ -2588,6 +2673,50 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         (Some(Tool::Move), "Y") => Some("How far along Y."),
         (Some(Tool::Move), "Z") => Some("How far along Z."),
 
+        (Some(Tool::Joint), "Parts") => Some(
+            "The two parts to join — bodies, components, or imported units. Click one to \
+             add it, click it again to drop it.",
+        ),
+        (Some(Tool::Joint), "Type") => Some(
+            "How the parts may move relative to each other: rigid, slider, revolute, \
+             cylindrical, planar, ball, pin-slot, or screw.",
+        ),
+        (Some(Tool::Joint), "Lead") => Some(
+            "How far the screw travels per full turn, as an expression.",
+        ),
+        (Some(Tool::Joint), "Base") => Some(
+            "The side that stays put; the other side moves through the joint. Click to swap.",
+        ),
+        (Some(Tool::Joint), "Start point A") => Some(
+            "The mating origin on the driven part. Leave the pairs empty to join the parts \
+             right where they are.",
+        ),
+        (Some(Tool::Joint), "End point A") => Some(
+            "Where start point A mates on the base part — the joint's origin.",
+        ),
+        (Some(Tool::Joint), "Start point B") => Some(
+            "Optional. Aims the driven side's axis: it runs from start point A toward here.",
+        ),
+        (Some(Tool::Joint), "End point B") => Some(
+            "Optional. Aims the base side's axis — the slide direction or the turn axis.",
+        ),
+        (Some(Tool::Joint), "Start point C") => Some(
+            "Optional. Pins the driven side's spin about its axis.",
+        ),
+        (Some(Tool::Joint), "End point C") => Some(
+            "Optional. Pins the base side's spin about its axis.",
+        ),
+        (Some(Tool::Joint), "Slide") => Some(
+            "How far along the axis, as an expression, so the pose stays parametric.",
+        ),
+        (Some(Tool::Joint), "Angle") => Some("How far around the axis, in degrees."),
+        (Some(Tool::Joint), "U") => Some("How far across the plane's first direction."),
+        (Some(Tool::Joint), "V") => Some("How far across the plane's second direction."),
+        (Some(Tool::Joint), "Spin") => Some("The turn about the plane's normal."),
+        (Some(Tool::Joint), "Yaw") => Some("The turn about the frame's first axis."),
+        (Some(Tool::Joint), "Pitch") => Some("The turn about the frame's second axis."),
+        (Some(Tool::Joint), "Roll") => Some("The turn about the frame's third axis."),
+
         (Some(Tool::Extrude), "Faces") => Some(
             "The sketch or solid faces being pulled. Click a face to add it, click it again to \
              drop it.",
@@ -3143,6 +3272,8 @@ pub fn show_pane(
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
     on_move_edit_start: &mut impl FnMut(usize),
+    on_joint_edit: &mut impl FnMut(JointEdit),
+    on_joint_edit_start: &mut impl FnMut(usize),
     on_mirror_edit: &mut impl FnMut(MirrorEdit),
     on_mirror_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
@@ -4219,6 +4350,230 @@ pub fn show_pane(
         ui.separator();
         if ui.button("Edit move").clicked() {
             on_move_edit_start(op);
+        }
+    }
+
+    if let Some(control) = &content.joint {
+        any_control = true;
+        ui.separator();
+        let mut pending: Option<JointEdit> = None;
+        // The two parts, in pick order (#894).
+        labeled_row_top(ui, "Parts", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "joint_members",
+                control.members_focused,
+                false,
+                crate::icons::IconId::Body,
+                &control.members_rows,
+            ) {
+                pending = Some(match event {
+                    crate::element_picker::PickerEvent::Focus => JointEdit::MembersFocus,
+                    crate::element_picker::PickerEvent::Remove(i) => JointEdit::RemoveMember(i),
+                    crate::element_picker::PickerEvent::Clear => JointEdit::ClearMembers,
+                });
+            }
+        });
+        // The joint-type dropdown (#894).
+        {
+            use crate::model::JointKind as K;
+            let mut kind = control.kind.clone();
+            labeled_row(ui, "Type", |ui| {
+                egui::ComboBox::from_id_salt("joint_kind")
+                    .selected_text(crate::names::joint_kind_label(&kind))
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        for value in [
+                            K::Rigid,
+                            K::Slider,
+                            K::Revolute,
+                            K::Cylindrical,
+                            K::Planar,
+                            K::Ball,
+                            K::PinSlot,
+                            K::Screw { lead: String::new() },
+                        ] {
+                            let label = crate::names::joint_kind_label(&value);
+                            let selected =
+                                std::mem::discriminant(&kind) == std::mem::discriminant(&value);
+                            if ui.selectable_label(selected, label).clicked() && !selected {
+                                kind = value.clone();
+                            }
+                        }
+                    });
+            });
+            if std::mem::discriminant(&kind) != std::mem::discriminant(&control.kind) {
+                pending = Some(JointEdit::Kind(kind));
+            }
+        }
+        // The screw's lead (#894): mm of travel per full turn.
+        if let crate::model::JointKind::Screw { lead } = &control.kind {
+            labeled_row(ui, "Lead", |ui| {
+                let mut text = lead.clone();
+                let resp = crate::expression_input::ValueInput::new(
+                    ("joint_field", "Lead"),
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    pending = Some(JointEdit::Lead(text));
+                }
+            });
+        }
+        // Which side is held (#894): the base. Clicking swaps it.
+        if control.members_rows.len() >= 2 {
+            labeled_row(ui, "Base", |ui| {
+                if ui
+                    .button(&control.base_label)
+                    .on_hover_text("Swap which side is held")
+                    .clicked()
+                {
+                    pending = Some(JointEdit::SwapBase);
+                }
+            });
+        }
+        let mut picker_row = |ui: &mut egui::Ui,
+                              label: &str,
+                              id: &'static str,
+                              rows: &[String],
+                              focused: bool,
+                              on_focus: JointEdit,
+                              on_clear: JointEdit| {
+            labeled_row_top(ui, label, |ui| {
+                if let Some(event) = crate::element_picker::show_labeled(
+                    ui,
+                    id,
+                    focused,
+                    true,
+                    crate::icons::IconId::Coincident,
+                    rows,
+                ) {
+                    pending = Some(match event {
+                        crate::element_picker::PickerEvent::Focus => on_focus,
+                        crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear => on_clear,
+                    });
+                }
+            });
+        };
+        picker_row(
+            ui,
+            "Start point A",
+            "joint_start_point_a",
+            &control.start_a_rows,
+            control.start_a_focused,
+            JointEdit::StartAFocus,
+            JointEdit::ClearStartA,
+        );
+        picker_row(
+            ui,
+            "End point A",
+            "joint_end_point_a",
+            &control.end_a_rows,
+            control.end_a_focused,
+            JointEdit::EndAFocus,
+            JointEdit::ClearEndA,
+        );
+        picker_row(
+            ui,
+            "Start point B",
+            "joint_start_point_b",
+            &control.start_b_rows,
+            control.start_b_focused,
+            JointEdit::StartBFocus,
+            JointEdit::ClearStartB,
+        );
+        picker_row(
+            ui,
+            "End point B",
+            "joint_end_point_b",
+            &control.end_b_rows,
+            control.end_b_focused,
+            JointEdit::EndBFocus,
+            JointEdit::ClearEndB,
+        );
+        picker_row(
+            ui,
+            "Start point C",
+            "joint_start_point_c",
+            &control.start_c_rows,
+            control.start_c_focused,
+            JointEdit::StartCFocus,
+            JointEdit::ClearStartC,
+        );
+        picker_row(
+            ui,
+            "End point C",
+            "joint_end_point_c",
+            &control.end_c_rows,
+            control.end_c_focused,
+            JointEdit::EndCFocus,
+            JointEdit::ClearEndC,
+        );
+        drop(picker_row);
+        // Position fields per kind (#894): what each freedom is called and measures.
+        {
+            use crate::expression_input::ValueKind;
+            use crate::model::JointKind as K;
+            let mut field = |ui: &mut egui::Ui,
+                             label: &str,
+                             value: &str,
+                             kind: ValueKind,
+                             make: &dyn Fn(String) -> JointEdit| {
+                labeled_row(ui, label, |ui| {
+                    let mut text = value.to_string();
+                    let resp =
+                        crate::expression_input::ValueInput::new(("joint_field", label), kind)
+                            .width(90.0)
+                            .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        pending = Some(make(text));
+                    }
+                });
+            };
+            match &control.kind {
+                K::Rigid => {}
+                K::Slider => {
+                    field(ui, "Slide", &control.position, ValueKind::Length, &JointEdit::Position)
+                }
+                K::Revolute | K::Screw { .. } => {
+                    field(ui, "Angle", &control.position, ValueKind::Angle, &JointEdit::Position)
+                }
+                K::Cylindrical | K::PinSlot => {
+                    field(ui, "Slide", &control.position, ValueKind::Length, &JointEdit::Position);
+                    field(ui, "Angle", &control.position2, ValueKind::Angle, &JointEdit::Position2);
+                }
+                K::Planar => {
+                    field(ui, "U", &control.position, ValueKind::Length, &JointEdit::Position);
+                    field(ui, "V", &control.position2, ValueKind::Length, &JointEdit::Position2);
+                    field(ui, "Spin", &control.position3, ValueKind::Angle, &JointEdit::Position3);
+                }
+                K::Ball => {
+                    field(ui, "Yaw", &control.position, ValueKind::Angle, &JointEdit::Position);
+                    field(ui, "Pitch", &control.position2, ValueKind::Angle, &JointEdit::Position2);
+                    field(ui, "Roll", &control.position3, ValueKind::Angle, &JointEdit::Position3);
+                }
+            }
+        }
+        if let Some(edit) = pending {
+            on_joint_edit(edit);
+        }
+        ui.add_space(2.0);
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Joint" },
+        ) {
+            on_joint_edit(JointEdit::Commit);
+        }
+    }
+
+    if let Some(op) = content.joint_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit joint").clicked() {
+            on_joint_edit_start(op);
         }
     }
 
@@ -6097,6 +6452,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -6382,6 +6739,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -6470,6 +6829,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -6895,6 +7256,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -6967,6 +7330,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7029,6 +7394,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7101,6 +7468,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7181,6 +7550,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7301,6 +7672,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7373,6 +7746,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7437,6 +7812,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,
@@ -7500,6 +7877,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            joint: None,
+            joint_edit_start: None,
             mirror_op: None,
             mirror_edit_start: None,
             repeat_op: None,

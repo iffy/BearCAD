@@ -514,6 +514,27 @@ enum MoveFocus {
     EndPointC,
 }
 
+/// Which of the Joint tool's pickers the next viewport click feeds (#894) — the same
+/// one-focused-picker rule the Move tool follows (#656). The pairs mean "these features
+/// mate": start points sit on the driven part, end points on the base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JointFocus {
+    /// The two parts being joined.
+    Members,
+    /// **Start point A**: the mating origin on the **driven** part.
+    StartPointA,
+    /// **End point A**: the mating origin on the **base** part.
+    EndPointA,
+    /// **Start point B**: aims the driven side's axis from start A.
+    StartPointB,
+    /// **End point B**: aims the base side's axis from end A.
+    EndPointB,
+    /// **Start point C**: pins the driven side's spin about its axis.
+    StartPointC,
+    /// **End point C**: pins the base side's spin about its axis.
+    EndPointC,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ExtrudeGizmoDrag {
     start_screen: egui::Pos2,
@@ -2424,6 +2445,9 @@ struct App {
     /// A Move picker the user focused **by hand** (#656/#658), overriding the automatic
     /// step-through. Cleared once that picker is satisfied, handing the chain back.
     move_focus_override: Option<MoveFocus>,
+    /// A hand-picked Joint-tool focus (#894), released once satisfied — the Joint twin of
+    /// [`Self::move_focus_override`].
+    joint_focus_override: Option<JointFocus>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -3546,6 +3570,7 @@ impl App {
             repeat_target_pick: false,
             sketch_repeat_direction_pick: false,
             move_focus_override: None,
+            joint_focus_override: None,
             move_b_hover: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
@@ -7235,6 +7260,108 @@ impl App {
         self.state.status = format!("Move: {} body(ies) picked", cm.targets.len());
     }
 
+    /// Joint tool (#894): pick two parts, then feed the focused mating-point picker —
+    /// start points on the driven part, end points on the base — with the same
+    /// corner/edge-midpoint/face-middle picks Move uses. Enter commits.
+    fn handle_joint_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_joint
+                .as_ref()
+                .is_some_and(|c| c.members.len() >= 2)
+            && !ui.ctx().egui_wants_keyboard_input()
+        {
+            self.state.apply(Action::CommitJoint);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let focus = self.joint_focus();
+        if let Some((on_driven, what)) = match focus {
+            JointFocus::StartPointA => Some((true, "start A")),
+            JointFocus::EndPointA => Some((false, "end A")),
+            JointFocus::StartPointB => Some((true, "start B")),
+            JointFocus::EndPointB => Some((false, "end B")),
+            JointFocus::StartPointC => Some((true, "start C")),
+            JointFocus::EndPointC => Some((false, "end C")),
+            JointFocus::Members => None,
+        } {
+            // Start points sit on the driven member's bodies, end points on the base's.
+            let side_bodies: Vec<usize> = self
+                .state
+                .creating_joint
+                .as_ref()
+                .map(|cj| {
+                    let base = if cj.base < cj.members.len() { cj.base } else { 0 };
+                    cj.members
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| (*i != base) == on_driven)
+                        .flat_map(|(_, m)| joints::member_bodies(&self.state.doc, *m))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let allowed = |body: usize| side_bodies.contains(&body);
+            match self.pick_body_point(pp, project, pick_occlusion, &allowed) {
+                Some(point) => {
+                    let label = self.move_point_label(&point);
+                    if let Some(cj) = self.state.creating_joint.as_mut() {
+                        match focus {
+                            JointFocus::StartPointA => cj.start_point_a = Some(point),
+                            JointFocus::EndPointA => cj.end_point_a = Some(point),
+                            JointFocus::StartPointB => cj.start_point_b = Some(point),
+                            JointFocus::EndPointB => cj.end_point_b = Some(point),
+                            JointFocus::StartPointC => cj.start_point_c = Some(point),
+                            JointFocus::EndPointC => cj.end_point_c = Some(point),
+                            JointFocus::Members => {}
+                        }
+                    }
+                    self.release_satisfied_joint_focus();
+                    self.state.status = format!("Joint: {what} point — {label}");
+                }
+                // Missing the allowed geometry leaves the picker armed, like Move (#656).
+                None => {
+                    self.state.status = if on_driven {
+                        "Pick a corner, edge, or face middle on the driven part".to_string()
+                    } else {
+                        "Pick a corner, edge, or face middle on the base part".to_string()
+                    };
+                }
+            }
+            return;
+        }
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
+            return;
+        };
+        if actions::toggle_body_in_active_tool(&mut self.state, bi) {
+            if let Some(cj) = self.state.creating_joint.as_ref() {
+                self.state.status = format!("Joint: {} part(s) picked", cj.members.len());
+            }
+        }
+    }
+
     /// Mirror tool (#523): first click a construction plane or a flat body face to set the
     /// mirror plane, then click bodies to add/remove them from the reflected set; Enter
     /// commits. Draws the mirror-plane highlight and a translucent ghost of each reflection.
@@ -7268,6 +7395,13 @@ impl App {
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
+                }
+            }
+            SE::Joint(op) => {
+                if let Some(existing) = self.state.doc.joints.get(op).cloned() {
+                    self.state.creating_joint =
+                        Some(actions::CreatingJoint::from_joint(&existing, op));
+                    self.state.apply(Action::SetTool(Tool::Joint));
                 }
             }
             SE::MirrorOp(op) => {
@@ -7986,6 +8120,24 @@ impl App {
         move_focus_for(self.state.creating_move.as_ref(), self.move_focus_override)
     }
 
+    fn joint_focus(&self) -> JointFocus {
+        joint_focus_for(self.state.creating_joint.as_ref(), self.joint_focus_override)
+    }
+
+    /// Drop a hand-picked Joint focus once that picker has what it needs (#894).
+    fn release_satisfied_joint_focus(&mut self) {
+        let Some(focus) = self.joint_focus_override else {
+            return;
+        };
+        let Some(cj) = self.state.creating_joint.as_ref() else {
+            self.joint_focus_override = None;
+            return;
+        };
+        if joint_focus_satisfied(cj, focus) {
+            self.joint_focus_override = None;
+        }
+    }
+
     /// Drop a hand-picked Move focus once that picker has what it needs (#656), so the
     /// automatic step-through takes over again.
     fn release_satisfied_move_focus(&mut self) {
@@ -8049,6 +8201,16 @@ impl App {
         }
     }
 
+    /// How a joint member reads in the pane (#894): the part's own label.
+    fn joint_member_label(&self, member: model::JointRef) -> String {
+        let element = match member {
+            model::JointRef::Body(bi) => hierarchy::SceneElement::Body(bi),
+            model::JointRef::Component(ci) => hierarchy::SceneElement::Component(ci),
+            model::JointRef::UnitInstance(ui) => hierarchy::SceneElement::UnitInstance(ui),
+        };
+        names::scene_element_label(&self.state.doc, &element)
+    }
+
     /// Resolve a viewport click into a Move source/target point (#649/#650): a body **corner**
     /// under the cursor wins, else the midpoint of the body **edge** under it, else the middle
     /// of the planar **face** under it (#738). `moving` picks which side of the fence the body
@@ -8068,6 +8230,19 @@ impl App {
             .map(|cm| cm.targets.clone())
             .unwrap_or_default();
         let allowed = |body: usize| moving.is_none_or(|m| targets.contains(&body) == m);
+        self.pick_body_point(pp, project, pick_occlusion, &allowed)
+    }
+
+    /// The corner/edge-midpoint/face-middle pick [`Self::pick_move_point`] runs, with the
+    /// allowed-bodies fence supplied by the caller — the Joint tool (#894) fences by which
+    /// member each picker belongs to instead of Move's moving/stationary split.
+    fn pick_body_point(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        allowed: &dyn Fn(usize) -> bool,
+    ) -> Option<model::MovePointRef> {
         if let Some(construction::PickTargetKind::BodyVertex { body, position }) =
             pickable_body_vertex(pp, project, &self.state.doc, pick_occlusion)
         {
@@ -9420,6 +9595,7 @@ impl eframe::App for App {
                 self.tool_button(ui, icons::IconId::Mirror, Tool::Mirror, "Mirror");
                 self.tool_button(ui, icons::IconId::Repeat, Tool::Repeat, "Repeat");
                 self.tool_button(ui, icons::IconId::Slice, Tool::Slice, "Slice");
+                self.tool_button(ui, icons::IconId::Joint, Tool::Joint, "Joint");
                 self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
                 self.tool_button(ui, icons::IconId::Constraint, Tool::Constraint, "Constraint");
                 ui.separator();
@@ -10320,6 +10496,63 @@ impl eframe::App for App {
                     }
                 }),
                 move_edit_start: None,
+                joint: (self.state.tool == Tool::Joint
+                    && self.state.sketch_session.is_none())
+                .then(|| {
+                    let cj = self.state.creating_joint.as_ref();
+                    let joint_focus = self.joint_focus();
+                    let members: Vec<model::JointRef> =
+                        cj.map(|c| c.members.clone()).unwrap_or_default();
+                    let base = cj.map(|c| c.base).filter(|&b| b < members.len()).unwrap_or(0);
+                    context::JointControl {
+                        members_rows: members
+                            .iter()
+                            .map(|m| self.joint_member_label(*m))
+                            .collect(),
+                        members_focused: joint_focus == JointFocus::Members,
+                        kind: cj.map(|c| c.kind.clone()).unwrap_or_default(),
+                        base_label: members
+                            .get(base)
+                            .map(|m| self.joint_member_label(*m))
+                            .unwrap_or_default(),
+                        start_a_rows: cj
+                            .and_then(|c| c.start_point_a)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        start_a_focused: joint_focus == JointFocus::StartPointA,
+                        end_a_rows: cj
+                            .and_then(|c| c.end_point_a)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        end_a_focused: joint_focus == JointFocus::EndPointA,
+                        start_b_rows: cj
+                            .and_then(|c| c.start_point_b)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        start_b_focused: joint_focus == JointFocus::StartPointB,
+                        end_b_rows: cj
+                            .and_then(|c| c.end_point_b)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        end_b_focused: joint_focus == JointFocus::EndPointB,
+                        start_c_rows: cj
+                            .and_then(|c| c.start_point_c)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        start_c_focused: joint_focus == JointFocus::StartPointC,
+                        end_c_rows: cj
+                            .and_then(|c| c.end_point_c)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        end_c_focused: joint_focus == JointFocus::EndPointC,
+                        position: cj.map(|c| c.position.clone()).unwrap_or_default(),
+                        position2: cj.map(|c| c.position2.clone()).unwrap_or_default(),
+                        position3: cj.map(|c| c.position3.clone()).unwrap_or_default(),
+                        editing: cj.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: members.len() >= 2,
+                    }
+                }),
+                joint_edit_start: None,
                 mirror_op: (self.state.tool == Tool::Mirror
                     && self.state.sketch_session.is_none())
                 .then(|| {
@@ -10953,6 +11186,8 @@ impl eframe::App for App {
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
             let mut move_edit_begin: Option<usize> = None;
+            let mut joint_edit: Option<context::JointEdit> = None;
+            let mut joint_edit_begin: Option<usize> = None;
             let mut mirror_edit: Option<context::MirrorEdit> = None;
             let mut mirror_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
@@ -11019,6 +11254,8 @@ impl eframe::App for App {
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
                         &mut |op| move_edit_begin = Some(op),
+                        &mut |edit| joint_edit = Some(edit),
+                        &mut |op| joint_edit_begin = Some(op),
                         &mut |edit| mirror_edit = Some(edit),
                         &mut |op| mirror_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
@@ -11299,6 +11536,101 @@ impl eframe::App for App {
             }
             if let Some(op) = move_edit_begin {
                 self.begin_operation_edit(hierarchy::SceneElement::MoveOp(op));
+            }
+            if let Some(edit) = joint_edit {
+                // Clicking a picker overrides the automatic step-through, like Move (#656).
+                match &edit {
+                    context::JointEdit::MembersFocus => {
+                        self.joint_focus_override = Some(JointFocus::Members)
+                    }
+                    context::JointEdit::StartAFocus => {
+                        self.joint_focus_override = Some(JointFocus::StartPointA)
+                    }
+                    context::JointEdit::EndAFocus => {
+                        self.joint_focus_override = Some(JointFocus::EndPointA)
+                    }
+                    context::JointEdit::StartBFocus => {
+                        self.joint_focus_override = Some(JointFocus::StartPointB)
+                    }
+                    context::JointEdit::EndBFocus => {
+                        self.joint_focus_override = Some(JointFocus::EndPointB)
+                    }
+                    context::JointEdit::StartCFocus => {
+                        self.joint_focus_override = Some(JointFocus::StartPointC)
+                    }
+                    context::JointEdit::EndCFocus => {
+                        self.joint_focus_override = Some(JointFocus::EndPointC)
+                    }
+                    context::JointEdit::ClearStartA
+                    | context::JointEdit::ClearEndA
+                    | context::JointEdit::ClearStartB
+                    | context::JointEdit::ClearEndB
+                    | context::JointEdit::ClearStartC
+                    | context::JointEdit::ClearEndC
+                    | context::JointEdit::Commit => self.joint_focus_override = None,
+                    _ => {}
+                }
+                match edit {
+                    context::JointEdit::Commit => {
+                        self.state.apply(Action::CommitJoint);
+                    }
+                    edit => {
+                        let cj = self
+                            .state
+                            .creating_joint
+                            .get_or_insert_with(actions::CreatingJoint::default);
+                        match edit {
+                            context::JointEdit::Kind(k) => {
+                                // Changing kind keeps the frames; positions reset — their
+                                // meaning (mm vs degrees, which freedom) changed.
+                                cj.kind = k;
+                                cj.position.clear();
+                                cj.position2.clear();
+                                cj.position3.clear();
+                            }
+                            context::JointEdit::Lead(lead) => {
+                                if let model::JointKind::Screw { lead: l } = &mut cj.kind {
+                                    *l = lead;
+                                }
+                            }
+                            context::JointEdit::SwapBase => {
+                                cj.base = if cj.base == 0 && cj.members.len() > 1 { 1 } else { 0 };
+                            }
+                            context::JointEdit::Position(v) => cj.position = v,
+                            context::JointEdit::Position2(v) => cj.position2 = v,
+                            context::JointEdit::Position3(v) => cj.position3 = v,
+                            context::JointEdit::RemoveMember(i) => {
+                                if i < cj.members.len() {
+                                    cj.members.remove(i);
+                                    if cj.base >= cj.members.len() {
+                                        cj.base = 0;
+                                    }
+                                }
+                            }
+                            context::JointEdit::ClearMembers => {
+                                cj.members.clear();
+                                cj.base = 0;
+                            }
+                            context::JointEdit::ClearStartA => cj.start_point_a = None,
+                            context::JointEdit::ClearEndA => cj.end_point_a = None,
+                            context::JointEdit::ClearStartB => cj.start_point_b = None,
+                            context::JointEdit::ClearEndB => cj.end_point_b = None,
+                            context::JointEdit::ClearStartC => cj.start_point_c = None,
+                            context::JointEdit::ClearEndC => cj.end_point_c = None,
+                            context::JointEdit::MembersFocus
+                            | context::JointEdit::StartAFocus
+                            | context::JointEdit::EndAFocus
+                            | context::JointEdit::StartBFocus
+                            | context::JointEdit::EndBFocus
+                            | context::JointEdit::StartCFocus
+                            | context::JointEdit::EndCFocus => {}
+                            context::JointEdit::Commit => unreachable!(),
+                        }
+                    }
+                }
+            }
+            if let Some(op) = joint_edit_begin {
+                self.begin_operation_edit(hierarchy::SceneElement::Joint(op));
             }
             if let Some(edit) = mirror_edit {
                 match edit {
@@ -13125,6 +13457,57 @@ fn move_focus_for(
     MoveFocus::Bodies
 }
 
+/// The Joint tool's focus chain (#894), mirroring [`move_focus_for`]: members first, then
+/// the A/B/C pairs in order. Every pair is optional — parts already in place join with no
+/// points at all — so the chain only advances into a pair once its start is picked.
+fn joint_focus_for(
+    creating: Option<&actions::CreatingJoint>,
+    focus_override: Option<JointFocus>,
+) -> JointFocus {
+    if let Some(explicit) = focus_override {
+        return explicit;
+    }
+    let Some(cj) = creating else {
+        return JointFocus::Members;
+    };
+    if cj.members.len() < 2 {
+        return JointFocus::Members;
+    }
+    if cj.start_point_a.is_none() {
+        return JointFocus::StartPointA;
+    }
+    if cj.end_point_a.is_none() {
+        return JointFocus::EndPointA;
+    }
+    if cj.start_point_b.is_none() {
+        return JointFocus::StartPointB;
+    }
+    if cj.end_point_b.is_none() {
+        return JointFocus::EndPointB;
+    }
+    if cj.start_point_c.is_none() {
+        return JointFocus::StartPointC;
+    }
+    if cj.end_point_c.is_none() {
+        return JointFocus::EndPointC;
+    }
+    JointFocus::Members
+}
+
+/// Whether a hand-picked Joint focus now has what it needs, so the automatic step-through
+/// can take over again — the Joint twin of [`move_focus_satisfied`].
+fn joint_focus_satisfied(cj: &actions::CreatingJoint, focus: JointFocus) -> bool {
+    match focus {
+        JointFocus::Members => false,
+        JointFocus::StartPointA => cj.start_point_a.is_some(),
+        JointFocus::EndPointA => cj.end_point_a.is_some(),
+        JointFocus::StartPointB => cj.start_point_b.is_some(),
+        JointFocus::EndPointB => cj.end_point_b.is_some(),
+        JointFocus::StartPointC => cj.start_point_c.is_some(),
+        JointFocus::EndPointC => cj.end_point_c.is_some(),
+    }
+}
+
 /// Whether a hand-picked Move focus now has what it needs (#656), so the automatic
 /// step-through can take over again. See [`App::release_satisfied_move_focus`].
 fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
@@ -13541,6 +13924,7 @@ fn build_viewport_scene_input<'a>(
     creating_repeat: Option<&actions::CreatingRepeat>,
     creating_mirror: Option<&actions::CreatingMirror>,
     creating_move: Option<&actions::CreatingMove>,
+    creating_joint: Option<&actions::CreatingJoint>,
     // The eased ghost pose while it glides between destinations; `None` draws the live one.
     move_ghost_override: Option<glam::Mat4>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
@@ -13915,6 +14299,53 @@ fn build_viewport_scene_input<'a>(
                             })
                             .collect(),
                     });
+                }
+            }
+        }
+    }
+
+    // Joint-tool preview (#894): ghost the driven part at the pose the in-progress joint
+    // implies, through the same translucent preview-solid path Move's ghost uses.
+    if let Some(cj) = creating_joint.filter(|c| c.members.len() >= 2) {
+        let (frame_a, frame_b) = cj.frames();
+        let probe = model::Joint {
+            members: cj.members.clone(),
+            base: cj.base,
+            kind: cj.kind.clone(),
+            frame_a,
+            frame_b,
+            position: cj.position.clone(),
+            position2: cj.position2.clone(),
+            position3: cj.position3.clone(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: Default::default(),
+            name: None,
+            deleted: false,
+        };
+        if let Some(m) = joints::preview_pose(doc, &probe) {
+            let base = if cj.base < cj.members.len() { cj.base } else { 0 };
+            for (i, member) in cj.members.iter().enumerate() {
+                if i == base {
+                    continue;
+                }
+                for bi in joints::member_bodies(doc, *member) {
+                    if let Some(mesh) = extrude::body_solid_mesh(doc, bi) {
+                        repeat_ghosts.push(extrude::SolidMesh {
+                            triangles: mesh
+                                .triangles
+                                .iter()
+                                .map(|[a, b, c]| {
+                                    [
+                                        m.transform_point3(*a),
+                                        m.transform_point3(*b),
+                                        m.transform_point3(*c),
+                                    ]
+                                })
+                                .collect(),
+                        });
+                    }
                 }
             }
         }
@@ -20185,6 +20616,10 @@ impl App {
             self.show_move_translation_inputs(ui, &project);
         }
 
+        if self.state.tool == Tool::Joint {
+            self.handle_joint_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if self.state.tool == Tool::Mirror {
             self.handle_mirror_tool(
                 ui, &painter, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion,
@@ -21298,6 +21733,37 @@ impl App {
                 .collect()
             })
             .unwrap_or_default();
+        // Joint tool (#894): the same picked-point marks — starts green, ends red — so the
+        // mating pairs read like Move's snap pairs.
+        let joint_point_marks: Vec<(construction::PickTargetKind, egui::Color32)> = self
+            .state
+            .creating_joint
+            .as_ref()
+            .filter(|_| self.state.tool == Tool::Joint && self.state.sketch_session.is_none())
+            .map(|cj| {
+                [
+                    (cj.start_point_a, theme::MOVE_START_POINT),
+                    (cj.end_point_a, theme::MOVE_END_POINT),
+                    (cj.start_point_b, theme::MOVE_START_POINT),
+                    (cj.end_point_b, theme::MOVE_END_POINT),
+                    (cj.start_point_c, theme::MOVE_START_POINT),
+                    (cj.end_point_c, theme::MOVE_END_POINT),
+                ]
+                .into_iter()
+                .filter_map(|(point, color)| {
+                    let point = point?;
+                    let position = extrude::move_point_world(&self.state.doc, &point)?;
+                    Some((
+                        construction::PickTargetKind::BodyVertex {
+                            body: point.body(),
+                            position,
+                        },
+                        color,
+                    ))
+                })
+                .collect()
+            })
+            .unwrap_or_default();
         // The B pair's path (#748): a dashed curve from start B to end B — in the same
         // candidate blue as its endpoint marks — tracing where the point travels with the
         // slide and the turn advancing together: half way through the translation it is
@@ -21471,6 +21937,17 @@ impl App {
             Tool::Move => {
                 if let Some(cm) = self.state.creating_move.as_ref() {
                     folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
+                }
+            }
+            Tool::Joint => {
+                if let Some(cj) = self.state.creating_joint.as_ref() {
+                    for member in &cj.members {
+                        folded.extend(
+                            joints::member_bodies(&self.state.doc, *member)
+                                .into_iter()
+                                .map(SceneElement::Body),
+                        );
+                    }
                 }
             }
             Tool::Mirror => {
@@ -21756,6 +22233,7 @@ impl App {
             self.state.creating_repeat.as_ref(),
             self.state.creating_mirror.as_ref(),
             move_hover_preview.as_ref().or(self.state.creating_move.as_ref()),
+            self.state.creating_joint.as_ref(),
             move_ghost_override,
             self.pending_extrude_target.clone(),
             plane_gizmo,
@@ -21767,7 +22245,7 @@ impl App {
             vertex_treatment_preview,
             hover_highlight,
             exploder_group_highlight,
-            [move_point_marks, move_b_marks].concat(),
+            [move_point_marks, joint_point_marks, move_b_marks].concat(),
             move_connector,
             {
                 // Hovering a Parameters-pane row (or focusing its name/value cell)
@@ -23106,6 +23584,14 @@ impl App {
                     "Move — click bodies to add/remove • set offset/rotation in the context pane • Enter: commit"
                 } else {
                     "Move — click one or more bodies to move"
+                }
+            }
+            Tool::Joint => {
+                let cj = self.state.creating_joint.as_ref();
+                if cj.is_some_and(|c| c.members.len() >= 2) {
+                    "Joint — snap the mating points, choose a kind in the context pane • Enter: commit"
+                } else {
+                    "Joint — click two parts to join"
                 }
             }
             Tool::Mirror => {
@@ -24472,6 +24958,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -24564,6 +25051,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Vec::new(),
             None,
             None,
@@ -24636,6 +25124,7 @@ mod tests {
                 None,
                 None,
                 cm,
+                None,
                 None,
                 None,
                 None,
@@ -24838,6 +25327,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Vec::new(),
                 None,
                 None,
@@ -24930,6 +25420,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             None,
