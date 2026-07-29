@@ -793,8 +793,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the sphere** is offered as a **blue** candidate mark (`snap_rotation_candidates` — the roots
     of the edge/sphere quadratic), and **edges whose line passes through end point A extend
     straight out to the sphere** (#745, `snap_rotation_axis_candidates`): mid-air landing
-    spots along those directions, each with a **dashed blue guide** drawn from the pivot
-    (gold when its spot is hovered). The candidate under the cursor reads **gold**; hovering
+    spots along those directions, each with a **dashed guide** drawn from the pivot
+    (gold when its spot is hovered). Every unhovered candidate — dot and guide alike — is
+    **colour-coded by the axis its turn goes about** (#949, `snap_rotation_axis_toward` →
+    `rotation_axis_color`: the world axis the rotation axis lies nearest, in that axis's own
+    colour), so a sphereful of spots reads as groups instead of one indistinguishable blue;
+    end point C's candidates all spin about the same A→B axis, so they stay candidate blue.
+    The candidate under the cursor reads **gold**; hovering
     it previews the move it would produce, and clicking takes it. Candidates sit mid-edge or
     in the air rather than on a corner, so they're kept as `MovePointRef::OnEdge` (their own
     quantized world position) instead of being re-found by matching. The generic

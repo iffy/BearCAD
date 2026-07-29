@@ -17138,6 +17138,21 @@ fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
     face.face_id()
 }
 
+/// The colour that stands for a rotation axis (#949): the world axis it lies nearest, in that
+/// axis's own viewport colour. Used to colour-code the Move tool's end-point-B candidate dots
+/// so a sphereful of them reads as groups turning about roughly the same axis. Ties go to X
+/// then Y, which only matters for an axis exactly between two — either answer is as true.
+fn rotation_axis_color(axis: Vec3) -> egui::Color32 {
+    let a = axis.abs();
+    if a.x >= a.y && a.x >= a.z {
+        col::X_AXIS
+    } else if a.y >= a.z {
+        col::Y_AXIS
+    } else {
+        col::Z_AXIS
+    }
+}
+
 /// A probe copy of the in-progress move with a hovered point filled into whichever end picker
 /// is armed (#670/#914) — what the ghost preview is built from, so hovering a candidate shows
 /// the move that click would make. The **C pair rides along** (#948): a preview of a new end B
@@ -23022,18 +23037,36 @@ impl App {
                 Some(actions::CreatingMove { end_point_a: Some(point), ..cm.clone() })
             });
         // Candidates render through the same coloured-mark channel as the A points (#660):
-        // blue for reachable, gold for the one a click would take.
+        // gold for the one a click would take, otherwise colour-coded by the axis the turn to
+        // that spot goes about (#949) — a sphereful of identical blue dots was impossible to
+        // tell apart. End point C's candidates all spin about the same A→B axis, so there's
+        // nothing to code and they stay candidate blue.
+        let axis_coded = self.move_focus() == MoveFocus::EndPointB;
         let move_b_marks: Vec<(construction::PickTargetKind, egui::Color32)> = move_b_candidates
             .iter()
             .map(|(bi, p)| {
                 let hovered = move_b_hover.is_some_and(|(_, h)| (h - *p).length() < 1e-4);
+                let color = if hovered {
+                    theme::MOVE_CANDIDATE_HOVER
+                } else {
+                    axis_coded
+                        .then(|| self.state.creating_move.as_ref())
+                        .flatten()
+                        .and_then(|cm| {
+                            extrude::snap_rotation_axis_toward(
+                                &self.state.doc,
+                                cm.start_point_a.as_ref(),
+                                cm.start_point_b.as_ref(),
+                                cm.end_point_a.as_ref(),
+                                *p,
+                            )
+                        })
+                        .map(rotation_axis_color)
+                        .unwrap_or(theme::MOVE_CANDIDATE)
+                };
                 (
                     construction::PickTargetKind::BodyVertex { body: *bi, position: *p },
-                    if hovered {
-                        theme::MOVE_CANDIDATE_HOVER
-                    } else {
-                        theme::MOVE_CANDIDATE
-                    },
+                    color,
                 )
             })
             .collect();
@@ -23123,20 +23156,24 @@ impl App {
                 }
             }
         }
-        // Dashed guides from the pivot to each mid-air end-B spot (#745), in candidate
-        // blue — gold when its landing spot is the one under the cursor.
+        // Dashed guides from the pivot to each mid-air end-B spot (#745) — gold when its
+        // landing spot is the one under the cursor, otherwise the same axis colour as the dot
+        // it leads to (#949) so each spoke reads as one thing.
         for (a, b) in &move_b_guides {
             let hovered = move_b_hover.is_some_and(|(_, h)| (h - *b).length() < 1e-4);
-            move_connector.push((
-                *a,
-                *b,
-                if hovered {
-                    theme::MOVE_CANDIDATE_HOVER
-                } else {
-                    theme::MOVE_CANDIDATE
-                },
-                true,
-            ));
+            let color = if hovered {
+                theme::MOVE_CANDIDATE_HOVER
+            } else {
+                move_b_marks
+                    .iter()
+                    .find(|(kind, _)| {
+                        matches!(kind, construction::PickTargetKind::BodyVertex { position, .. }
+                            if (*position - *b).length() < 1e-4)
+                    })
+                    .map(|(_, c)| *c)
+                    .unwrap_or(theme::MOVE_CANDIDATE)
+            };
+            move_connector.push((*a, *b, color, true));
         }
         // Move tool (#660): mark the picked points — source green ("go"), target red
         // ("stop") — and the B pair in candidate blue (#748), with a line between the two
@@ -27916,6 +27953,21 @@ mod tests {
             move_focus_for(Some(&partial), None),
             MoveFocus::StartPointB,
             "the chain resumes at start B once the held picker is satisfied (#741)"
+        );
+    }
+
+    /// #949: the end-point-B candidate dots are colour-coded by the axis the turn to each one
+    /// goes about, so a sphereful of them reads as groups instead of one indistinguishable blue.
+    #[test]
+    fn rotation_axis_colours_pick_the_nearest_world_axis() {
+        assert_eq!(rotation_axis_color(Vec3::X), col::X_AXIS);
+        assert_eq!(rotation_axis_color(-Vec3::X), col::X_AXIS, "sign doesn't matter");
+        assert_eq!(rotation_axis_color(Vec3::Y), col::Y_AXIS);
+        assert_eq!(rotation_axis_color(Vec3::Z), col::Z_AXIS);
+        // Mostly-Z with a lean is still Z.
+        assert_eq!(
+            rotation_axis_color(Vec3::new(0.3, -0.2, 0.9).normalize()),
+            col::Z_AXIS
         );
     }
 

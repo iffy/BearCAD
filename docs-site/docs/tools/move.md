@@ -29,9 +29,11 @@ Move slides whole bodies to a new place, producing moved copies.
      and **End point B** on something that isn't. The bodies then rotate about end point A
      until start B lands on end B. End point B has to be somewhere start B can actually reach
      — the same distance from end point A as start B is from start point A — so once you're
-     picking it, every reachable spot is marked in **blue**: where surrounding edges cross
+     picking it, every reachable spot is marked: where surrounding edges cross
      that distance, and mid-air spots straight out along any edge running through end point
-     A, each with a dashed guide line from it. The one under the cursor turns **gold** and
+     A, each with a dashed guide line from it. Each spot takes the colour of the axis its turn
+     goes about — **red** for X, **green** for Y, **blue** for Z — so spots that turn the same
+     way group together. The one under the cursor turns **gold** and
      the preview shows the move you'd get. With both B points picked, a **dashed blue curve** from
      start B to end B traces the point's path with the slide and the turn advancing
      together — half way along, it's half way through both.
@@ -73,7 +75,7 @@ The tool moves you along as you go: pick a body and it's ready for the start poi
 end point, then straight on to **Start point B** in case you want the turn too, and then to
 **Start point C** for the spin. Click any picker to jump back to it. The pane labels the
 B and C rows **Rotation** — those four points turn the part, the A pair moves it — and
-**Angle snap** at the top of that section sets how far apart the blue candidate dots sit:
+**Angle snap** at the top of that section sets how far apart the candidate dots sit:
 90° offers the six axis directions, 45° offers the diagonals too. Drag the slider or type
 the angle. Hovering a dot draws the turn that reaches it, in degrees — two arcs for end
 point B, one for end point C. At 5° or finer there are no dots: the sphere (or, for end

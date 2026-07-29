@@ -1211,6 +1211,30 @@ pub fn move_snap_rotation_axis_angle(
     Some((axis, dot.acos()))
 }
 
+/// The axis the bodies would turn about if `target` were taken as end point B (#949) — the
+/// same rotation [`move_snap_rotation_axis_angle`] derives, but for a candidate spot rather
+/// than a picked end B, so each candidate dot can be coloured by the axis it turns about.
+/// `None` when the pair can't be resolved or the turn is degenerate (no rotation at all).
+pub fn snap_rotation_axis_toward(
+    doc: &Document,
+    start_a: Option<&crate::model::MovePointRef>,
+    start_b: Option<&crate::model::MovePointRef>,
+    end_a: Option<&crate::model::MovePointRef>,
+    target: Vec3,
+) -> Option<Vec3> {
+    let sa = move_point_world(doc, start_a?)?;
+    let ea = move_point_world(doc, end_a?)?;
+    // Start B rides along with the A pair's translation before it turns.
+    let moved_start_b = move_point_world(doc, start_b?)? + (ea - sa);
+    let from = (moved_start_b - ea).normalize_or_zero();
+    let to = (target - ea).normalize_or_zero();
+    if from.length_squared() < 0.5 || to.length_squared() < 0.5 {
+        return None;
+    }
+    let axis = from.cross(to).normalize_or_zero();
+    (axis.length_squared() > 0.5).then_some(axis)
+}
+
 /// The spin the optional C pair asks for: B lines the bodies up along `endA → endB` but
 /// leaves them free to turn about that line, and C is what pins it. The angle is the one
 /// about that axis that brings the already-translated, already-rotated start point C as near
@@ -6278,6 +6302,43 @@ mod tests {
         };
         assert!(full.has_snap_translation());
         assert_eq!(move_op_translation(&doc, &full), Some(Vec3::ZERO));
+    }
+
+    /// #949: the axis a candidate end point B would turn the bodies about — a quarter turn in
+    /// the XY plane goes about Z, one in XZ about Y — so the dots can be coloured by it.
+    #[test]
+    fn the_axis_a_candidate_end_b_turns_about() {
+        use crate::model::MovePointRef;
+        let q = crate::hierarchy::quantize_body_point;
+        let mut doc = Document::default();
+        // One triangle body with corners at the origin, +10X and +10Y.
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[Vec3::ZERO, Vec3::X * 10.0, Vec3::Y * 10.0]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // A pair pins the origin in place; start B points along +X from it.
+        let start_a = MovePointRef::Vertex { body: 0, p: q(Vec3::ZERO) };
+        let start_b = MovePointRef::Vertex { body: 0, p: q(Vec3::X * 10.0) };
+        let axis = |target: Vec3| {
+            snap_rotation_axis_toward(&doc, Some(&start_a), Some(&start_b), Some(&start_a), target)
+        };
+        // +X → +Y is a quarter turn about +Z; +X → +Z is one about −Y.
+        assert!((axis(Vec3::Y * 10.0).unwrap() - Vec3::Z).length() < 1e-4);
+        assert!((axis(Vec3::Z * 10.0).unwrap() + Vec3::Y).length() < 1e-4);
+        // Straight ahead is no turn at all, so there's no axis to colour by.
+        assert_eq!(axis(Vec3::X * 10.0), None);
+        // A missing point leaves it unresolved rather than guessing.
+        assert_eq!(
+            snap_rotation_axis_toward(&doc, Some(&start_a), None, Some(&start_a), Vec3::Y),
+            None
+        );
     }
 
     /// #946: the world origin is a Move point of its own — it resolves to (0, 0, 0) with no
