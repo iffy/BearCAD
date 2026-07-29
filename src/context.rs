@@ -2216,8 +2216,22 @@ fn material_control_from_selection(
     if bodies.is_empty() {
         return None;
     }
-    let first = doc.bodies[bodies[0]].material;
-    let agreed = bodies.iter().all(|bi| doc.bodies[*bi].material == first);
+    // A body with no material of its own is made of the document's first one (#924), so
+    // the picker shows that material selected — swatch, name and colour included — rather
+    // than a "Default" entry standing in for it.
+    let material_of = |bi: &usize| {
+        doc.bodies[*bi]
+            .material
+            .filter(|mi| doc.materials.get(*mi).is_some_and(|m| !m.deleted))
+            .or_else(|| {
+                doc.materials
+                    .get(crate::model::DEFAULT_MATERIAL)
+                    .filter(|m| !m.deleted)
+                    .map(|_| crate::model::DEFAULT_MATERIAL)
+            })
+    };
+    let first = material_of(&bodies[0]);
+    let agreed = bodies.iter().all(|bi| material_of(bi) == first);
     Some(MaterialControl {
         materials: doc
             .materials
@@ -6330,25 +6344,19 @@ pub fn show_pane(
         let mut pending: Option<MaterialEdit> = None;
         let selected_text = match control.current {
             None => "Mixed".to_string(),
-            Some(None) => "Default".to_string(),
+            Some(None) => "None".to_string(),
             Some(Some(mi)) => control
                 .materials
                 .iter()
                 .find(|(i, _, _)| *i == mi)
                 .map(|(_, name, _)| name.clone())
-                .unwrap_or_else(|| "Default".to_string()),
+                .unwrap_or_else(|| "None".to_string()),
         };
         labeled_row(ui, "Material", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 egui::ComboBox::from_id_salt("context_material")
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(control.current == Some(None), "Default")
-                            .clicked()
-                        {
-                            pending = Some(MaterialEdit::Assign(None));
-                        }
                         for (index, name, color) in &control.materials {
                             let selected = control.current == Some(Some(*index));
                             if ui
@@ -7299,12 +7307,14 @@ mod tests {
     fn material_picker_follows_the_body_selection() {
         use crate::hierarchy::SceneElement;
         let mut doc = Document::default();
+        // The document already carries the default palette (#928); Brass lands after it.
+        let brass = doc.materials.len();
         doc.materials.push(crate::model::Material {
             name: "Brass".to_string(),
             color: [1, 2, 3],
             deleted: false,
         });
-        for material in [Some(0), None] {
+        for material in [Some(brass), None] {
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(0),
                 material,
@@ -7320,13 +7330,29 @@ mod tests {
         selection.insert(SceneElement::Body(0));
         let control = context_pane_content(&input(&doc, &selection)).material.unwrap();
         assert_eq!(control.bodies, vec![0]);
-        assert_eq!(control.current, Some(Some(0)));
-        assert_eq!(control.materials, vec![(0, "Brass".to_string(), [1, 2, 3])]);
+        assert_eq!(control.current, Some(Some(brass)));
+        assert_eq!(
+            control.materials.last(),
+            Some(&(brass, "Brass".to_string(), [1, 2, 3]))
+        );
+        assert_eq!(
+            control.materials.first().map(|(i, n, _)| (*i, n.clone())),
+            Some((0, "Unobtainium".to_string())),
+            "the whole palette is offered (#928)"
+        );
 
-        // Two bodies that disagree read as mixed.
+        // Two bodies that disagree read as mixed — the second has no material of its own,
+        // which reads as Unobtainium (#924).
         selection.insert(SceneElement::Body(1));
         let control = context_pane_content(&input(&doc, &selection)).material.unwrap();
         assert_eq!(control.current, None);
+
+        // A body with no material of its own reads as Unobtainium, the first material
+        // (#924) — the picker shows it selected, not a "Default" stand-in.
+        let mut lone = SceneSelection::default();
+        lone.insert(SceneElement::Body(1));
+        let control = context_pane_content(&input(&doc, &lone)).material.unwrap();
+        assert_eq!(control.current, Some(Some(crate::model::DEFAULT_MATERIAL)));
 
         // A non-body in the selection takes the picker away.
         selection.insert(SceneElement::Line(0));

@@ -3419,11 +3419,13 @@ impl AppState {
                 return;
             }
         }
+        // A new body made off another body's face is made of the same stuff (#926).
+        let inherited = self.extrusion_source_material(ei);
         match mode {
             ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {
                 self.doc.bodies.push(crate::model::Body {
                     source: crate::model::BodySource::single(ei),
-                    material: None,
+                    material: inherited,
                     name: None,
                     deleted: false,
                     shadow: false,
@@ -3668,7 +3670,8 @@ impl AppState {
         }
         self.doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::single(ei),
-            material: None,
+            // A body made off another body's face is made of the same stuff (#926).
+            material: self.extrusion_source_material(ei),
             name: None,
             deleted: false,
             shadow: false,
@@ -4230,6 +4233,16 @@ impl AppState {
                 crate::model::RevolveMode::Cut(bodies.to_vec())
             }
         })
+    }
+
+    /// The material a new body from extrusion `ei` should start as (#926): whatever the
+    /// body its sketch sits on is made of. `None` when the sketch is on a plane or a
+    /// profile — there's no source body to inherit from.
+    fn extrusion_source_material(&self, ei: usize) -> Option<usize> {
+        let extrusion = self.doc.extrusions.get(ei)?;
+        let face = self.doc.sketch_face(extrusion.sketch)?;
+        let bi = crate::model::body_index_for_face(&self.doc, &face)?;
+        self.doc.bodies.get(bi).filter(|b| !b.deleted)?.material
     }
 
     /// Create a primitive shape (#909): the shape, its body, and one
@@ -18117,32 +18130,42 @@ mod tests {
     #[test]
     fn materials_are_assigned_named_and_recoloured() {
         let mut state = two_box_state(false);
-        assert_eq!(state.doc.bodies[0].material, None, "bodies start with no material");
+        // #925/#928: a document starts with the whole default palette, Unobtainium first.
+        let seeded = state.doc.materials.len();
+        assert_eq!(state.doc.materials[0].name, "Unobtainium");
+        // A body carries no material of its own until one is picked; that reads as the
+        // document's first material — Unobtainium (#924).
+        assert_eq!(state.doc.bodies[0].material, None);
 
         state.apply(Action::AddMaterial {
             name: Some("Brass".to_string()),
             color: Some([0x10, 0x20, 0x30]),
             bodies: vec![0],
         });
-        assert_eq!(state.doc.materials.len(), 1);
-        assert_eq!(state.doc.materials[0].name, "Brass");
-        assert_eq!(state.doc.bodies[0].material, Some(0));
+        let brass = seeded;
+        assert_eq!(state.doc.materials.len(), seeded + 1);
+        assert_eq!(state.doc.materials[brass].name, "Brass");
+        assert_eq!(state.doc.bodies[0].material, Some(brass));
         assert_eq!(state.doc.bodies[1].material, None, "only the listed bodies get it");
 
         // A second material gets the next palette colour and its own name by default.
         state.apply(Action::AddMaterial { name: None, color: None, bodies: vec![1] });
-        assert_eq!(state.doc.materials[1].name, "Material 2");
-        assert_ne!(state.doc.materials[1].color, state.doc.materials[0].color);
+        assert_ne!(
+            state.doc.materials[brass + 1].color,
+            state.doc.materials[brass].color
+        );
 
+        state.apply(Action::SetBodyMaterial { body: 1, material: Some(brass) });
+        assert_eq!(state.doc.bodies[1].material, Some(brass));
         state.apply(Action::SetBodyMaterial { body: 1, material: Some(0) });
-        assert_eq!(state.doc.bodies[1].material, Some(0));
+        assert_eq!(state.doc.bodies[1].material, Some(0), "back to Unobtainium");
         state.apply(Action::SetBodyMaterial { body: 1, material: None });
-        assert_eq!(state.doc.bodies[1].material, None, "back to the default material");
+        assert_eq!(state.doc.bodies[1].material, None, "and clearing it reads the same");
 
-        state.apply(Action::SetMaterialName { material: 0, name: "  Bronze ".to_string() });
-        assert_eq!(state.doc.materials[0].name, "Bronze", "the name is trimmed");
-        state.apply(Action::SetMaterialColor { material: 0, color: [1, 2, 3] });
-        assert_eq!(state.doc.materials[0].color, [1, 2, 3]);
+        state.apply(Action::SetMaterialName { material: brass, name: "  Bronze ".to_string() });
+        assert_eq!(state.doc.materials[brass].name, "Bronze", "the name is trimmed");
+        state.apply(Action::SetMaterialColor { material: brass, color: [1, 2, 3] });
+        assert_eq!(state.doc.materials[brass].color, [1, 2, 3]);
     }
 
     /// Names are unique and non-empty, and only live materials can be assigned (#834).
@@ -18166,17 +18189,19 @@ mod tests {
             state.apply(Action::SetMaterialName { material: 0, name: "  ".to_string() }),
             ActionResult::Err(_)
         ));
+        let unknown = state.doc.materials.len() + 5;
         assert!(matches!(
-            state.apply(Action::SetBodyMaterial { body: 0, material: Some(7) }),
+            state.apply(Action::SetBodyMaterial { body: 0, material: Some(unknown) }),
             ActionResult::Err(_)
         ));
         assert!(matches!(
             state.apply(Action::SetBodyMaterial { body: 99, material: None }),
             ActionResult::Err(_)
         ));
-        // Undo takes the material back out.
+        // Undo takes the added material back out, leaving the seeded palette.
+        let seeded = crate::model::Material::DEFAULTS.len();
         state.apply(Action::UndoLast);
-        assert!(state.doc.materials.is_empty(), "one undo removes the material");
+        assert_eq!(state.doc.materials.len(), seeded, "one undo removes the material");
     }
 
     /// #833: resizing a plane is one undoable edit.

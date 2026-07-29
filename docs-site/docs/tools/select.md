@@ -40,8 +40,12 @@ opposite corners; drag either one to resize its rectangle.
 ## Materials
 
 With bodies selected, the context pane's **Material** dropdown says what they're made of.
-Pick **New material…** to make one; its **Name** and **Colour** are editable right below,
-and every body using it re-renders.
+Every document starts with a palette to choose from — **Unobtainium** first, then Blue,
+Green, Red and the rest, each contrasting with the one before — and a new body is
+Unobtainium until you pick something else. **New material…** adds one; its **Name** and
+**Colour** are editable right below, and every body using it re-renders.
+
+A body extruded off another body's face is made of the same material as that body.
 
 ## Selection feeds the other tools
 

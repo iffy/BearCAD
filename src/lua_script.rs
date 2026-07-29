@@ -5747,13 +5747,32 @@ mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
             bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
             bearcad.material{ name = "Steel" }
-            bearcad.set_material{ body = 0, material = 1 }
         "##,
         );
-        assert_eq!(state.doc.materials.len(), 2);
-        assert_eq!(state.doc.materials[0].name, "Brass");
-        assert_eq!(state.doc.materials[0].color, [0xc8, 0x8a, 0x4a]);
-        assert_eq!(state.doc.bodies[0].material, Some(1), "reassigned to Steel");
+        // The document starts with the default palette (#928), so the scripted pair lands
+        // after it.
+        let seeded = crate::model::Material::DEFAULTS.len();
+        assert_eq!(state.doc.materials.len(), seeded + 2);
+        assert_eq!(state.doc.materials[seeded].name, "Brass");
+        assert_eq!(state.doc.materials[seeded].color, [0xc8, 0x8a, 0x4a]);
+        assert_eq!(state.doc.bodies[0].material, Some(seeded), "Brass was handed to it");
+
+        let state = run_lua(&format!(
+            r##"
+            bearcad.new()
+            bearcad.rect{{ x = 0, y = 0, width = 10, height = 10 }}
+            bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+            bearcad.material{{ name = "Brass", color = "#c88a4a", bodies = {{0}} }}
+            bearcad.material{{ name = "Steel" }}
+            bearcad.set_material{{ body = 0, material = {} }}
+        "##,
+            seeded + 1
+        ));
+        assert_eq!(
+            state.doc.bodies[0].material,
+            Some(seeded + 1),
+            "reassigned to Steel"
+        );
     }
 
     #[test]
@@ -7520,6 +7539,33 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
+    }
+
+    /// #926: a new body extruded off another body's face is made of the same material.
+    #[test]
+    fn lua_extrude_off_a_body_face_inherits_its_material() {
+        let state = run_lua(
+            r##"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
+            bearcad.exit_sketch()
+            -- A sketch on the block's top cap, extruded into a body of its own.
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon",
+                                  profile_lines = {0, 1, 2, 3}, top = true }
+            bearcad.circle{ x = 10, y = 10, r = 4 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ circle = 0, distance = 6 }
+        "##,
+        );
+        let brass = crate::model::Material::DEFAULTS.len();
+        assert_eq!(state.doc.bodies[0].material, Some(brass));
+        assert_eq!(
+            state.doc.bodies.get(1).and_then(|b| b.material),
+            Some(brass),
+            "the boss inherits the block's material"
+        );
     }
 
     /// #917: the Move tool's rotation candidates sit this far apart, in degrees — 90 to

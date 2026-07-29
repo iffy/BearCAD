@@ -1075,24 +1075,34 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 #### 3.4.4 Materials (#834)
 - A **material** (`model::Material`) is a name plus a rendered colour, living in
-  `Document::materials`. Every body carries `Body::material: Option<usize>`; `None` is the
-  **default material** — the neutral body colour every body has always had. A body renders in
-  its material's colour (`gpu_viewport::scene::body_material_fill`); selection and hover
-  colours still win over it, as they do over the default.
+  `Document::materials`. Every body carries `Body::material: Option<usize>`; `None` means the
+  **first material** (`model::DEFAULT_MATERIAL`), which every document seeds as
+  **Unobtainium** (#924/#925) — coloured exactly like the neutral body grey bodies rendered in
+  before materials existed, so nothing looks different until another is picked. A body renders
+  in its material's colour (`gpu_viewport::scene::body_material_fill`); selection and hover
+  colours still win over it.
+- **Seeded palette (#927/#928):** a new document already holds `Material::DEFAULTS` — the whole
+  set is in the dropdown from the first frame, so choosing what something is made of never
+  means making a material first. Unobtainium leads; the rest walk hues that **contrast with
+  their neighbours** — Blue, Green, Red, Yellow, Purple, Orange, Cyan, Pink, Grey — so two
+  materials picked (or created) one after the other never look alike. Every entry stays light
+  enough (Rec. 709 Y > 0.35) that a shaded solid still reads as its own colour where the
+  lighting falls away. `Material::NEW_COLORS` — what **New material…** walks — is that palette
+  minus Unobtainium. (Colour-blind separation is deliberately *not* what this palette
+  optimizes for; that belongs to a mode of its own.)
 - **Context pane:** selecting one or more bodies (any tool) shows a **Material** dropdown —
-  *Default*, each material with its colour swatch, and **New material…**, which creates one
-  (named `Material N`, next color from `Material::NEW_COLORS`) and assigns it to the
-  selection. That palette is **Paul Tol's qualitative "light" scheme** verbatim (nine
-  colors, in his order): it stays distinct under all three kinds of color blindness, and
-  unlike the usual qualitative palettes — which assume thin marks on white — it is built for
-  **filling areas**, which is what a body is. Every entry is light (L\* 67–88), so a shaded
-  solid still reads as its own color where the lighting falls off, and none of them vanishes
-  against the dark viewport. The hand-picked set it replaced had violet and blue at ΔE2000 =
-  0.8 under deuteranopia — indistinguishable; the worst pair here is 7.9. Selecting bodies whose materials differ reads *Mixed*. With a material chosen,
-  its **Name** and **Colour** are editable in place, and every body using it re-renders.
+  every material with its colour swatch, plus **New material…**, which creates one (named
+  `Material N`, next colour from `Material::NEW_COLORS`) and assigns it to the selection. A
+  body with no material of its own shows **Unobtainium** selected, like any other material
+  (#924), with its **Name** and **Colour** editable in place; every body using it re-renders.
+  Selecting bodies whose materials differ reads *Mixed*.
+- **Inherited by extrusion (#926):** a new body extruded off another body's face is made of
+  that body's material (`extrusion_source_material` → `model::body_index_for_face`), so a boss
+  or a lug matches the part it grows from. A sketch on a plane or a profile has no source body,
+  so its extrusion starts on the default.
 - Actions: `AddMaterial { name?, color?, bodies }`, `SetBodyMaterial { body, material }`,
   `SetMaterialName`, `SetMaterialColor` — each one undoable like any other edit. Persisted as
-  `material` DAG nodes; files saved before materials existed load with none.
+  `material` DAG nodes.
 - Scripting: `bearcad.material{ name?, color? = "#rrggbb", bodies? = {..} }` and
   `bearcad.set_material{ body, material }` (`material = nil` for the default).
 

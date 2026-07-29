@@ -1522,6 +1522,22 @@ pub fn body_index_for_extrusion(doc: &Document, extrusion: usize) -> Option<usiz
     })
 }
 
+/// The body a face belongs to (#926), when it has one: a cap/side wall belongs to its
+/// extrusion's body, a revolve's flat side to the revolution's. Sketch profiles and
+/// construction planes belong to no body.
+pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<usize> {
+    match face {
+        FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
+            body_index_for_extrusion(doc, *extrusion)
+        }
+        FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
+            body_index_for_revolution(doc, *revolution)
+        }
+        FaceId::UnitFace { .. } | FaceId::ConstructionPlane(_) | FaceId::Circle(_)
+        | FaceId::Polygon(_) => None,
+    }
+}
+
 /// Body index whose source is `revolution` (#621) — the revolve analogue of
 /// [`body_index_for_extrusion`].
 pub fn body_index_for_revolution(doc: &Document, revolution: usize) -> Option<usize> {
@@ -1561,53 +1577,94 @@ pub struct Material {
 }
 
 impl Material {
-    /// A new material's starting color walks a palette so consecutive ones look different
-    /// without anyone picking colors (#834).
+    /// The materials every document starts with (#925/#927/#928): the whole palette is in
+    /// the picker from the first frame, so choosing what a body is made of never means
+    /// making a material first.
     ///
-    /// This is **Paul Tol's qualitative "light" scheme** verbatim, in his order. It's built
-    /// to stay distinct under all three kinds of color blindness, and — unlike the usual
-    /// qualitative palettes, which assume thin marks on white — it's designed for *filling
-    /// areas*, which is exactly what a body is. Every entry is light (L* 67–88), so a shaded
-    /// solid still reads as its own color where the lighting falls away, and none of them
-    /// disappears against the dark viewport.
-    ///
-    /// The previous hand-picked set had violet and blue at ΔE2000 = 0.8 under deuteranopia —
-    /// indistinguishable. The worst pair here is 7.9.
-    pub const NEW_COLORS: [[u8; 3]; 9] = [
-        [0x77, 0xaa, 0xdd], // light blue
-        [0x99, 0xdd, 0xff], // light cyan
-        [0x44, 0xbb, 0x99], // mint
-        [0xbb, 0xcc, 0x33], // pear
-        [0xaa, 0xaa, 0x00], // olive
-        [0xee, 0xdd, 0x88], // light yellow
-        [0xee, 0x88, 0x66], // orange
-        [0xff, 0xaa, 0xbb], // pink
-        [0xdd, 0xdd, 0xdd], // pale grey
+    /// **Unobtainium** comes first and is what a new body is made of — its colour is the
+    /// grey-blue every body rendered in before materials existed, so nothing looks
+    /// different until you pick something else. The rest walk hues that **contrast with
+    /// their neighbours** (#927): blue, green, red, yellow, purple, orange, cyan, pink,
+    /// grey — so two materials made one after the other never look alike. Every entry is
+    /// light enough (Rec. 709 Y > 0.35) that a shaded solid still reads as its own colour
+    /// where the lighting falls away.
+    pub const DEFAULTS: [(&'static str, [u8; 3]); 10] = [
+        ("Unobtainium", [150, 168, 196]),
+        ("Blue", [0x3d, 0x8e, 0xf0]),
+        ("Green", [0x57, 0xc4, 0x6a]),
+        ("Red", [0xe8, 0x61, 0x5c]),
+        ("Yellow", [0xe8, 0xc9, 0x4a]),
+        ("Purple", [0xa9, 0x7f, 0xe0]),
+        ("Orange", [0xef, 0x94, 0x40]),
+        ("Cyan", [0x4f, 0xd0, 0xd6]),
+        ("Pink", [0xf0, 0x7a, 0xc0]),
+        ("Grey", [0xc9, 0xce, 0xd8]),
     ];
+
+    /// The colours a **new** material walks through, so consecutive ones look different
+    /// without anyone picking colours (#834/#927): the defaults' palette, minus
+    /// Unobtainium (which is the starting material, not a choice in the rotation).
+    pub const NEW_COLORS: [[u8; 3]; 9] = [
+        Self::DEFAULTS[1].1,
+        Self::DEFAULTS[2].1,
+        Self::DEFAULTS[3].1,
+        Self::DEFAULTS[4].1,
+        Self::DEFAULTS[5].1,
+        Self::DEFAULTS[6].1,
+        Self::DEFAULTS[7].1,
+        Self::DEFAULTS[8].1,
+        Self::DEFAULTS[9].1,
+    ];
+
+    /// The materials a fresh document is seeded with (#928).
+    pub fn defaults() -> Vec<Material> {
+        Self::DEFAULTS
+            .iter()
+            .map(|(name, color)| Material {
+                name: (*name).to_string(),
+                color: *color,
+                deleted: false,
+            })
+            .collect()
+    }
 }
+
+/// What a body with no material of its own is made of (#924): the first material, which a
+/// fresh document seeds as **Unobtainium**. Older files (and any body whose material was
+/// cleared) fall back to it rather than to a colour with no entry behind it.
+pub const DEFAULT_MATERIAL: usize = 0;
 
 #[cfg(test)]
 mod material_tests {
     use super::Material;
 
-    /// The new-material palette is Paul Tol's "light" scheme, which is what makes it safe
-    /// for color-blind eyes — so it has to stay verbatim rather than drift under editing.
+    /// #925/#927/#928: the seeded palette leads with Unobtainium — the colour every body
+    /// rendered in before materials existed — and then walks contrasting hues, so two
+    /// materials made one after the other never look alike.
     #[test]
-    fn new_material_colors_are_tols_light_scheme() {
+    fn default_materials_lead_with_unobtainium_and_contrast() {
+        let defaults = Material::defaults();
+        assert_eq!(defaults.len(), Material::DEFAULTS.len());
+        assert_eq!(defaults[0].name, "Unobtainium");
+        assert_eq!(defaults[0].color, [150, 168, 196], "the old default body colour");
         assert_eq!(
-            Material::NEW_COLORS,
-            [
-                [0x77, 0xaa, 0xdd],
-                [0x99, 0xdd, 0xff],
-                [0x44, 0xbb, 0x99],
-                [0xbb, 0xcc, 0x33],
-                [0xaa, 0xaa, 0x00],
-                [0xee, 0xdd, 0x88],
-                [0xee, 0x88, 0x66],
-                [0xff, 0xaa, 0xbb],
-                [0xdd, 0xdd, 0xdd],
-            ]
+            defaults.iter().skip(1).map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["Blue", "Green", "Red", "Yellow", "Purple", "Orange", "Cyan", "Pink", "Grey"]
         );
+        // Neighbours differ strongly: at least 120 of summed channel distance apart.
+        for pair in defaults.windows(2) {
+            let d: i32 = (0..3)
+                .map(|c| (i32::from(pair[0].color[c]) - i32::from(pair[1].color[c])).abs())
+                .sum();
+            assert!(
+                d >= 120,
+                "{} and {} are too close ({d})",
+                pair[0].name,
+                pair[1].name
+            );
+        }
+        // The rotation a new material walks is the palette minus Unobtainium.
+        assert_eq!(Material::NEW_COLORS[0], defaults[1].color);
     }
 
     /// Every entry is light enough to read as its own color on the dark viewport once a
@@ -3974,7 +4031,7 @@ impl Default for Document {
             construction_planes: crate::face::default_datum_planes(),
             extrusions: Vec::new(),
             bodies: Vec::new(),
-            materials: Vec::new(),
+            materials: Material::defaults(),
             imported_meshes: Vec::new(),
             tracing_images: Vec::new(),
             lofts: Vec::new(),

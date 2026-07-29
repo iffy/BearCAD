@@ -110,10 +110,12 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
 
-/// The fill a body renders in: its material's colour (#834), or [`SOLID_FILL`] when it has
-/// no material — what every body looked like before materials existed.
+/// The fill a body renders in: its material's colour (#834). A body with no material of
+/// its own is made of the document's first material (#924, **Unobtainium** in a fresh
+/// document), and falls back to [`SOLID_FILL`] only when there isn't one.
 pub fn body_material_fill(doc: &crate::model::Document, body: &crate::model::Body) -> Color32 {
     body.material
+        .or(Some(crate::model::DEFAULT_MATERIAL))
         .and_then(|mi| doc.materials.get(mi))
         .filter(|m| !m.deleted)
         .map(|m| Color32::from_rgb(m.color[0], m.color[1], m.color[2]))
