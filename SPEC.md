@@ -1183,9 +1183,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   forth through its range (`joints::sweep_positions`) — between its limits, ±20 mm/±30°
   where open, the full turn for a free revolute — on an eased, looping glide; rigid shows
   the static mated pose. Committing leaves the joint at its position.
-  **Drag (#897):** with the Select tool, grabbing an already-selected driven part (its
-  face/edge/vertex counts) moves it through its joint — the cursor projects onto the
-  joint's freedom (`joints::body_drag_joint` walks rigid ties up to the nearest freedom),
+  **Drag (#897/#903):** with the Select tool, press-and-drag a driven part anywhere on it —
+  face, edge, or corner — and it moves through its joint, with **nothing selected first**.
+  The press arms a grab (`JointSelectGrab`) and still selects normally; only once the cursor
+  leaves `JOINT_DRAG_THRESHOLD_PX` (4 px) of the press point does the part start moving, so a
+  plain click neither nudges the joint nor announces anything. The cursor then projects onto
+  the joint's freedom (`joints::body_drag_joint` walks rigid ties up to the nearest freedom),
   stops at the limits, writes the number back to the position expressions, and lands as
   one undoable edit on release. A part held by its joints refuses with the reason.
   **Rest pose (#898):** `Joint::rest*` — captured at creation, recapturable, and reverted

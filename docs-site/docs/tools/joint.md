@@ -71,8 +71,9 @@ way and not at all the other is `Turn min 0`, `Turn max 110`.
 
 ## Dragging
 
-With the **Select** tool, click a jointed part and drag it: it moves through its joint
-and stops at the limits. The number lands in the joint's position.
+With the **Select** tool, drag a jointed part by any of it — a face, an edge, a corner —
+and it moves through its joint, stopping at the limits. Nothing needs selecting first.
+The number lands in the joint's position.
 
 ## Rest position
 

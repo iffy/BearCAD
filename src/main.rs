@@ -618,6 +618,19 @@ struct JointSelectDrag {
     start_cursor_angle: Option<f32>,
 }
 
+/// A press on a jointed part that hasn't become a drag yet (#903). The press itself still
+/// selects; only once the cursor leaves [`JOINT_DRAG_THRESHOLD_PX`] does the grab turn into a
+/// [`JointSelectDrag`], so a plain click can't nudge the joint (and a click on a *held* part
+/// doesn't announce that it can't be dragged).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct JointSelectGrab {
+    body: usize,
+    start_screen: egui::Pos2,
+}
+
+/// How far the cursor must leave the press point before a jointed part starts moving (#903).
+const JOINT_DRAG_THRESHOLD_PX: f32 = 4.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ExtrudeGizmoDrag {
     start_screen: egui::Pos2,
@@ -2549,6 +2562,8 @@ struct App {
     joint_focus_override: Option<JointFocus>,
     /// A Select-tool drag moving a part through its joint (#897).
     joint_select_drag: Option<JointSelectDrag>,
+    /// A press on a jointed part, waiting to become one (#903).
+    joint_select_grab: Option<JointSelectGrab>,
     /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
     /// click on a plane/face/vertex sets the repeat's length target.
     repeat_target_pick: bool,
@@ -3673,6 +3688,7 @@ impl App {
             move_focus_override: None,
             joint_focus_override: None,
             joint_select_drag: None,
+            joint_select_grab: None,
             move_b_hover: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
@@ -8411,6 +8427,7 @@ impl App {
     ) -> bool {
         if self.state.tool != Tool::Select || self.state.sketch_session.is_some() {
             self.joint_select_drag = None;
+            self.joint_select_grab = None;
             return false;
         }
         if let Some(drag) = self.joint_select_drag.clone() {
@@ -8424,6 +8441,19 @@ impl App {
             self.joint_select_drag = None;
             return true;
         }
+        // A grab in hand (#903): once the cursor leaves the press point the part starts moving.
+        if let Some(grab) = self.joint_select_grab {
+            if !ui.input(|i| i.pointer.primary_down()) {
+                self.joint_select_grab = None;
+                return false;
+            }
+            let Some(pp) = pointer_screen else { return false };
+            if (pp - grab.start_screen).length() < JOINT_DRAG_THRESHOLD_PX {
+                return false;
+            }
+            self.joint_select_grab = None;
+            return self.begin_joint_select_drag(grab, project);
+        }
         if !ui.input(|i| i.pointer.primary_pressed()) {
             return false;
         }
@@ -8435,20 +8465,29 @@ impl App {
         let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
             return false;
         };
-        // Select-then-drag (#239): only an already-selected part drags through its joint;
-        // the first click just selects it. A body reads as selected through any of its
-        // sub-elements too — a viewport click lands on a face, not the whole body.
-        let body_selected = self.state.scene_selection.iter().any(|e| match e {
-            SceneElement::Body(b) => b == bi,
-            SceneElement::BodyFace { body, .. }
-            | SceneElement::BodyEdge { body, .. }
-            | SceneElement::BodyVertex { body, .. } => body == bi,
-            _ => false,
-        });
-        if !body_selected {
+        // Press-and-drag, nothing selected first (#903): grabbing a part anywhere on it — a
+        // face, an edge, a corner — arms the drag, while the press itself still selects.
+        if matches!(
+            joints::body_drag_joint(&self.state.doc, bi),
+            joints::BodyDragTarget::Free
+        ) {
             return false;
         }
-        match joints::body_drag_joint(&self.state.doc, bi) {
+        self.joint_select_grab = Some(JointSelectGrab {
+            body: bi,
+            start_screen: pp,
+        });
+        false
+    }
+
+    /// Turn a grab that has moved into a live joint drag (#897/#903): resolve the joint the
+    /// part is driven by and snapshot the values the cursor motion works from.
+    fn begin_joint_select_drag(
+        &mut self,
+        grab: JointSelectGrab,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> bool {
+        match joints::body_drag_joint(&self.state.doc, grab.body) {
             joints::BodyDragTarget::Free => false,
             // A grounded part refuses the drag and says why (#897).
             joints::BodyDragTarget::Grounded => {
@@ -8471,11 +8510,11 @@ impl App {
                     joint.position2.clone(),
                     joint.position3.clone(),
                 );
-                let start_cursor_angle =
-                    project(origin).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
+                let start_cursor_angle = project(origin)
+                    .map(|c| (grab.start_screen.y - c.y).atan2(grab.start_screen.x - c.x));
                 self.joint_select_drag = Some(JointSelectDrag {
                     joint: ji,
-                    start_screen: pp,
+                    start_screen: grab.start_screen,
                     start,
                     original,
                     origin,
