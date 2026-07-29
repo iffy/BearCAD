@@ -45,6 +45,9 @@ end
 -- Same framing for all three, so only the slab's pose changes between them: a clean stage
 -- (no datum planes, no grid, no sketch profiles drawn over the solids) and a pinned camera.
 local function shoot(name)
+  -- The landed slab in its own colour, so its silhouette reads against the plate rather
+  -- than merging into it. It's the move's output body: plate 0, the consumed original 1.
+  bearcad.material{ name = "Landed", color = "#d8963c", bodies = { 2 } }
   for i = 0, bearcad.count("construction_plane") - 1 do
     bearcad.set_visible({ kind = "construction_plane", index = i }, "hide")
   end
