@@ -7491,7 +7491,8 @@ impl App {
                             "Pick a corner or edge on a body being moved".to_string()
                         }
                         (_, Some(false)) => {
-                            "Pick a corner or edge on a body that isn't moving".to_string()
+                            "Pick the origin, or a corner or edge on a body that isn't moving"
+                                .to_string()
                         }
                         (_, None) => "Pick a corner or edge on any body".to_string(),
                     };
@@ -7653,7 +7654,7 @@ impl App {
                 })
                 .unwrap_or_default();
             let allowed = |body: usize| side_bodies.contains(&body);
-            match self.pick_body_point(pp, project, pick_occlusion, &allowed) {
+            match self.pick_body_point(pp, project, pick_occlusion, &allowed, false) {
                 Some(point) => {
                     let label = self.move_point_label(&point);
                     if let Some(cj) = self.state.creating_joint.as_mut() {
@@ -8543,7 +8544,13 @@ impl App {
         // off end point A's body and each gets a guide from the pivot. Below
         // `ANGLE_SNAP_SURFACE_DEG` they'd be a cloud, so the sphere itself is shown
         // instead (#920) and the grid stands down.
-        let body = cm.end_point_a.as_ref()?.body();
+        // The mid-air spots hang off a body so they render with the rest; end point A's own
+        // is the natural host, and when A is the world origin (#946) any moving body will do.
+        let body = cm
+            .end_point_a
+            .as_ref()?
+            .body()
+            .or_else(|| cm.targets.first().copied())?;
         let grid_step = self.state.move_angle_snap_deg;
         let grid_step = (grid_step > extrude::ANGLE_SNAP_SURFACE_DEG)
             .then_some(grid_step)
@@ -8587,7 +8594,11 @@ impl App {
         }
         // The spots are in mid-air, so they hang off end point A's body — the same trick
         // the mid-air end-B spots use (#745).
-        let body = cm.end_point_a.as_ref()?.body();
+        let body = cm
+            .end_point_a
+            .as_ref()?
+            .body()
+            .or_else(|| cm.targets.first().copied())?;
         let guides = spots.iter().map(|p| (circle.center, *p)).collect();
         Some((spots.into_iter().map(|p| (body, p)).collect(), guides))
     }
@@ -8595,14 +8606,18 @@ impl App {
     /// How a picked Move point reads in its element picker (#649/#650): the body's name plus
     /// which feature of it was taken.
     fn move_point_label(&self, point: &model::MovePointRef) -> String {
-        let body = names::element_name(&self.state.doc, SceneElement::Body(point.body()))
+        let Some(bi) = point.body() else {
+            return "Origin".to_string();
+        };
+        let body = names::element_name(&self.state.doc, SceneElement::Body(bi))
             .map(|n| n.to_string())
-            .unwrap_or_else(|| format!("Body {}", point.body()));
+            .unwrap_or_else(|| format!("Body {bi}"));
         match point {
             model::MovePointRef::Vertex { .. } => format!("Corner of {body}"),
             model::MovePointRef::EdgeMidpoint { .. } => format!("Edge midpoint of {body}"),
             model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
             model::MovePointRef::FaceCenter { .. } => format!("Middle of a face of {body}"),
+            model::MovePointRef::Origin => "Origin".to_string(),
         }
     }
 
@@ -8831,11 +8846,13 @@ impl App {
         names::scene_element_label(&self.state.doc, &element)
     }
 
-    /// Resolve a viewport click into a Move source/target point (#649/#650): a body **corner**
-    /// under the cursor wins, else the midpoint of the body **edge** under it, else the middle
-    /// of the planar **face** under it (#738). `moving` picks which side of the fence the body
-    /// must be on — the source point has to sit on a body being moved, the target point on one
-    /// that isn't, and `None` (the rotation point, #651) takes either.
+    /// Resolve a viewport click into a Move source/target point (#649/#650): the **world
+    /// origin** under the cursor wins (#946), else a body **corner**, else the midpoint of the
+    /// body **edge** under it, else the middle of the planar **face** under it (#738). `moving`
+    /// picks which side of the fence the body must be on — the source point has to sit on a body
+    /// being moved, the target point on one that isn't, and `None` (the rotation point, #651)
+    /// takes either. The origin belongs to no body, so it counts as stationary: it's offered to
+    /// the end pickers, never to a start one.
     fn pick_move_point(
         &self,
         pp: egui::Pos2,
@@ -8850,19 +8867,30 @@ impl App {
             .map(|cm| cm.targets.clone())
             .unwrap_or_default();
         let allowed = |body: usize| moving.is_none_or(|m| targets.contains(&body) == m);
-        self.pick_body_point(pp, project, pick_occlusion, &allowed)
+        self.pick_body_point(pp, project, pick_occlusion, &allowed, moving != Some(true))
     }
 
-    /// The corner/edge-midpoint/face-middle pick [`Self::pick_move_point`] runs, with the
+    /// The origin/corner/edge-midpoint/face-middle pick [`Self::pick_move_point`] runs, with the
     /// allowed-bodies fence supplied by the caller — the Joint tool (#894) fences by which
-    /// member each picker belongs to instead of Move's moving/stationary split.
+    /// member each picker belongs to instead of Move's moving/stationary split, and takes only
+    /// body points (`origin_allowed = false`).
     fn pick_body_point(
         &self,
         pp: egui::Pos2,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pick_occlusion: Option<&construction::PickOcclusion>,
         allowed: &dyn Fn(usize) -> bool,
+        origin_allowed: bool,
     ) -> Option<model::MovePointRef> {
+        // The world origin (#946): a fixed point of the document, so it wins over the geometry
+        // under it exactly like a sketch's origin beats a nearby edge.
+        if origin_allowed
+            && project(Vec3::ZERO).is_some_and(|op| {
+                (op - pp).length() <= touch::hit(construction::POINT_PICK_RADIUS_PX)
+            })
+        {
+            return Some(model::MovePointRef::Origin);
+        }
         if let Some(construction::PickTargetKind::BodyVertex { body, position }) =
             pickable_body_vertex(pp, project, &self.state.doc, pick_occlusion)
         {
@@ -9790,7 +9818,13 @@ impl App {
         }
         let cm = self.state.creating_move.as_ref()?;
         let step = self.state.move_angle_snap_deg;
-        let body = cm.end_point_a.as_ref()?.body();
+        // The surface point is mid-air, so it hangs off a body to render; end point A's own
+        // is the natural host, and when A is the world origin (#946) any moving body will do.
+        let body = cm
+            .end_point_a
+            .as_ref()?
+            .body()
+            .or_else(|| cm.targets.first().copied())?;
         let (origin, dir) = cam.screen_ray(pp, viewport, vp)?;
         match self.move_focus() {
             MoveFocus::EndPointB => {
@@ -23115,7 +23149,8 @@ impl App {
                     let position = extrude::move_point_world(&self.state.doc, &point)?;
                     Some((
                         construction::PickTargetKind::BodyVertex {
-                            body: point.body(),
+                            // Only `position` is drawn; the world origin (#946) has no body.
+                            body: point.body().unwrap_or(usize::MAX),
                             position,
                         },
                         color,
@@ -23146,7 +23181,8 @@ impl App {
                     let position = extrude::move_point_world(&self.state.doc, &point)?;
                     Some((
                         construction::PickTargetKind::BodyVertex {
-                            body: point.body(),
+                            // Only `position` is drawn; the world origin (#946) has no body.
+                            body: point.body().unwrap_or(usize::MAX),
                             position,
                         },
                         color,

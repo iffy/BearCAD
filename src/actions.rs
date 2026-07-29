@@ -6519,6 +6519,9 @@ impl AppState {
                             }
                         }
                     }
+                    // The selection set has no order of its own; sort so the picker reads the
+                    // same way every time.
+                    cb.a.sort_unstable();
                     self.creating_boolean = Some(cb);
                 }
                 if self.creating_move.is_some() && tool != Tool::Move {

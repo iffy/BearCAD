@@ -21,7 +21,8 @@ Move slides whole bodies to a new place, producing moved copies.
    - **Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
      second. Either point can be a corner, the midpoint of an edge, or the middle of a flat
-     face; hovering marks the exact point a click would take — and while an end picker is
+     face; an end point can also be the **origin**. Hovering marks the exact point a click
+     would take — and while an end picker is
      armed, the preview glides over to show the move that point would make, before you
      click. A **yellow line** connects the two once both are picked.
      To **turn** the bodies as well, pick a second pair: **Start point B** on a moving body
@@ -98,6 +99,11 @@ bearcad.move_bodies{ bodies = {0},
 bearcad.move_bodies{ bodies = {0},
   from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
   to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } } }
+
+-- An end point can be the world origin.
+bearcad.move_bodies{ bodies = {0},
+  from = { body = 0, vertex = {40, 40, 0} },
+  to   = { origin = true } }
 
 -- A second pair turns it too: start B swings onto end B about end A.
 bearcad.move_bodies{ bodies = {0},

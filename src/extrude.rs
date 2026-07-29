@@ -705,7 +705,8 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
 /// document parameters, so moves rebuild parametrically. `None` when the axis line died
 /// or an expression doesn't evaluate.
 /// The world position of a [`crate::model::MovePointRef`] (#649/#650), resolved against the
-/// body's live mesh. `None` once the mesh no longer has that corner/edge.
+/// body's live mesh. `None` once the mesh no longer has that corner/edge; the world origin
+/// (#946) always resolves.
 pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> Option<Vec3> {
     match point {
         crate::model::MovePointRef::Vertex { body, p } => {
@@ -728,6 +729,8 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
             face_group_matching(&solid, *centroid, *normal)
                 .map(|tris| face_group_center(&tris))
         }
+        // The world origin (#946) is fixed and always resolves — no body to outlive.
+        crate::model::MovePointRef::Origin => Some(Vec3::ZERO),
     }
 }
 
@@ -6275,6 +6278,63 @@ mod tests {
         };
         assert!(full.has_snap_translation());
         assert_eq!(move_op_translation(&doc, &full), Some(Vec3::ZERO));
+    }
+
+    /// #946: the world origin is a Move point of its own — it resolves to (0, 0, 0) with no
+    /// body behind it, so a body's corner can be snapped onto the origin.
+    #[test]
+    fn the_world_origin_is_a_move_point() {
+        use crate::model::{MoveOperation, MovePointRef, MoveTranslateMode};
+        let q = crate::hierarchy::quantize_body_point;
+        let empty = Document::default();
+        let origin = MovePointRef::Origin;
+        assert_eq!(origin.body(), None, "the origin belongs to no body");
+        assert_eq!(move_point_world(&empty, &origin), Some(Vec3::ZERO));
+        // An empty document has no bodies at all, and the origin still resolves — a corner
+        // of a body that isn't there doesn't.
+        assert_eq!(
+            move_point_world(&empty, &MovePointRef::Vertex { body: 0, p: [0; 3] }),
+            None
+        );
+
+        // A move onto it snaps the source corner to (0, 0, 0).
+        let mut doc = Document::default();
+        let corner = Vec3::new(40.0, 40.0, 0.0);
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[corner, corner + Vec3::X * 10.0, corner + Vec3::Y * 10.0]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let op = MoveOperation {
+            targets: vec![0],
+            translate_mode: MoveTranslateMode::Snap,
+            start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(corner) }),
+            end_point_a: Some(MovePointRef::Origin),
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        assert!(op.has_snap_translation());
+        assert_eq!(
+            move_op_translation(&doc, &op),
+            Some(Vec3::new(-40.0, -40.0, 0.0))
+        );
     }
 
     /// #644: the distance gizmo hangs off the targets' **start** plane along the axis, centred

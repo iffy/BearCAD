@@ -1990,11 +1990,11 @@ impl MoveTranslateMode {
     }
 }
 
-/// A point on a body's mesh that a Move snaps from or onto (#649/#650): either a corner or
-/// the midpoint of a feature edge. Keyed exactly like [`crate::hierarchy::SceneElement::
-/// BodyVertex`]/`BodyEdge` — the body plus quantized world points — and resolved against the
-/// body's live mesh, so it follows the geometry and simply stops resolving if a rebuild takes
-/// it away.
+/// A point a Move snaps from or onto (#649/#650): a corner, the midpoint of a feature edge,
+/// the middle of a planar face, or the **world origin** (#946). The body-derived variants are
+/// keyed exactly like [`crate::hierarchy::SceneElement::BodyVertex`]/`BodyEdge` — the body plus
+/// quantized world points — and resolved against the body's live mesh, so they follow the
+/// geometry and simply stop resolving if a rebuild takes them away.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MovePointRef {
@@ -2023,6 +2023,9 @@ pub enum MovePointRef {
         centroid: [i32; 3],
         normal: [i32; 3],
     },
+    /// The **world origin** (#946): a fixed stationary point every document has, so a body can
+    /// be snapped onto (0, 0, 0) or turned about it without a body having a corner there.
+    Origin,
 }
 
 impl MoveOperation {
@@ -2056,12 +2059,14 @@ impl MoveOperation {
 
 impl MovePointRef {
     /// The body this point lives on — what tells a *moving* point from a stationary one.
-    pub fn body(&self) -> usize {
+    /// `None` for the document-level [`Self::Origin`] (#946), which no body owns.
+    pub fn body(&self) -> Option<usize> {
         match self {
             MovePointRef::Vertex { body, .. }
             | MovePointRef::EdgeMidpoint { body, .. }
             | MovePointRef::OnEdge { body, .. }
-            | MovePointRef::FaceCenter { body, .. } => *body,
+            | MovePointRef::FaceCenter { body, .. } => Some(*body),
+            MovePointRef::Origin => None,
         }
     }
 }

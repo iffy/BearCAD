@@ -3260,7 +3260,8 @@ pub fn move_translate_mode(
 }
 
 /// A [`crate::model::MovePointRef`] as the Lua table scripts use (#649/#650): a body plus
-/// either a `vertex` in millimetres or the two ends of an `edge` (its midpoint is the point).
+/// either a `vertex` in millimetres or the two ends of an `edge` (its midpoint is the point),
+/// or `{ origin = true }` for the world origin (#946).
 pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
     match point {
         crate::model::MovePointRef::Vertex { body, p } => {
@@ -3282,6 +3283,8 @@ pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
             mm_point_lua(*centroid),
             mm_point_lua(*normal)
         ),
+        // The world origin (#946): no body, so it spells itself.
+        crate::model::MovePointRef::Origin => "{ origin = true }".to_string(),
     }
 }
 

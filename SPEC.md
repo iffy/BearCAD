@@ -717,7 +717,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the solid.
   - An **End point A** picker (#650/#668) takes the same kinds of point on a body that
     **isn't** moving; the translation is then `end - start`, and the X/Y/Z fields and drag
-    arrows are hidden. With both picked a **yellow connector** (#740, `MOVE_CONNECTOR`) is
+    arrows are hidden. Every **end** picker (A, B, C) also takes the **world origin**
+    (`MovePointRef::Origin`, #946) — a fixed point of the document that belongs to no body, so
+    it counts as stationary and always resolves. It wins over the geometry under it, the way a
+    sketch's origin beats a nearby edge, and reads as "Origin" in the picker. Scripted as
+    `{ origin = true }`. With both picked a **yellow connector** (#740, `MOVE_CONNECTOR`) is
     drawn between them (`move_snap_connector` → `ViewportSceneInput::colored_segments`), so
     the translation reads as a vector apart from its green/red endpoint marks.
 

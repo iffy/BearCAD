@@ -801,11 +801,15 @@ fn parse_move_point(
         return match value {
             Value::Nil => Ok(None),
             _ => Err(mlua::Error::external(format!(
-                "move `{what}` must be {{body = i, vertex = {{x,y,z}}}} or \
-                 {{body = i, edge = {{{{x,y,z}}, {{x,y,z}}}}}}"
+                "move `{what}` must be {{body = i, vertex = {{x,y,z}}}}, \
+                 {{body = i, edge = {{{{x,y,z}}, {{x,y,z}}}}}}, or {{origin = true}}"
             ))),
         };
     };
+    // The world origin (#946): no body, so it's spelled on its own.
+    if t.get::<Option<bool>>("origin")?.unwrap_or(false) {
+        return Ok(Some(crate::model::MovePointRef::Origin));
+    }
     let body: usize = t.get("body")?;
     let mm = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
         if v.len() != 3 {
