@@ -17,12 +17,15 @@
 local out = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 
 -- The slab is 22 long, 9 wide, 5 thick, parked just off the plate so both it and where
--- it's going fit the same frame. Its near-bottom corner
+-- it's going fit the same frame — and above it, on a construction plane, so the line from
+-- start A to end A runs through open air instead of being buried in the plate it's heading
+-- for. Its near-bottom corner
 -- is start A, the far one along its length start B, and the one straight above start A is
 -- start C.
-local START_A = { 46, 2, 0 }
-local START_B = { 68, 2, 0 }
-local START_C = { 46, 2, 5 }
+local PARK = 10
+local START_A = { 46, 2, PARK }
+local START_B = { 68, 2, PARK }
+local START_C = { 46, 2, PARK + 5 }
 
 -- Where they land, all on the plate's top face.
 local TOP = 4
@@ -43,6 +46,8 @@ local function scene()
   bearcad.exit_sketch()
   bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = TOP, name = "Plate" }
 
+  bearcad.plane{ offset = PARK, name = "Park" }
+  bearcad.begin_sketch{ kind = "plane", index = 3 }
   bearcad.rect{ x = 46, y = 2, width = 22, height = 9, name = "Slab" }
   bearcad.exit_sketch()
   bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 5, name = "Slab" }
@@ -63,7 +68,7 @@ local function shoot(name)
   bearcad.ui.auto_zoom(false)
   bearcad.ui.view("corner", "front_left_top")
   bearcad.ui.wait(2)
-  bearcad.ui.camera{ target = { 27, 9, 3 }, distance = 108 }
+  bearcad.ui.camera{ target = { 27, 10, 6 }, distance = 115 }
   bearcad.ui.wait(3)
   bearcad.ui.screenshot(out .. "/" .. name .. ".png")
 end
