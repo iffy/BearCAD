@@ -2159,20 +2159,25 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   draws with — amber frame, the typed expression in monospace, its computed value in
   smaller muted monospace *underneath* — is the one every **floating** tool field uses:
   extrude depth, sketch-vertex and body-edge chamfer/fillet amounts, the Move gizmo's
-  X/Y/Z arrows, sketch offset distance, and the revolve angle (#881/#884–#888). The pane
-  fields are being moved over next (#889/#890).
+  X/Y/Z arrows, sketch offset distance, and the revolve angle (#881/#884–#888) — and, as of
+  #889/#890, the **pane** fields too: `expression_input::ValueInput` draws through the same
+  `expression_input::boxed::show`, so the Context pane's rows and the Parameters pane's value
+  cells are the same control. One implementation, one look; the pane rows keep their own
+  hint text, `no_definitions()`, and parameter-cycle context, and the floating fields keep
+  the focus targeting, select-on-focus, and inline `name=value` commit layered on top by
+  `show_sketch_dimension_field`.
 - **One standard value input (#456):** numeric fields share `expression_input::ValueInput`
   — the styled expression field (autocomplete, error tooltips, inline `name=value`
-  definitions) plus a **computed-value label beside the field whenever it differs from
-  what was typed**, units included: a bare `10` in a length field previews `= 10.0 mm`
+  definitions) plus the **computed value on its own line inside the box whenever it differs
+  from what was typed**, units included: a bare `10` in a length field previews `= 10.0 mm`
   (the default unit made explicit), `1in` previews `= 25.4 mm`, while `12.5 mm` (or any
   formatting-equivalent like `12.5mm`) previews nothing
   (`value_input_computed_display`/`canonical_value_text`). **Errors wait for a commit**
   (#824): half-typed text is always invalid — `thick` isn't defined until `= 5mm` lands —
   so the red text and error tooltip stay away while the field has the keyboard, and appear
-  once Enter says "I meant that" (and go away again on the next keystroke). The computed label floats under
-  the field, and the **autocomplete dropdown starts below it** when one is showing, so the
-  two never overlap (#793). Kinds: `Length` (document
+  once Enter says "I meant that" (and go away again on the next keystroke). The computed value
+  sits inside the box under the expression, and the **autocomplete dropdown opens below the
+  box**, so the two never overlap (#793). Kinds: `Length` (document
   length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
   value cells use it with **definitions disallowed** (the row is the definition) and
   cycle checking; the repeat panes (3D + in-sketch), the pane's Move X/Y/Z/Angle,

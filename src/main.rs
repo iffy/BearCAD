@@ -155,11 +155,7 @@ use model::ConstructionPlane;
 use script::{ScriptRunner, SyntheticInput};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
-use expression_input::{
-    expression_autocomplete_handle_keys, expression_autocomplete_show_dropdown,
-    length_expression_field_errors, show_expression_error_tooltips_above, INVALID_BG,
-    INVALID_BORDER, INVALID_TEXT,
-};
+use expression_input::length_expression_field_errors;
 use value::{computed_length_in_doc, shows_computed_length_in_doc};
 
 /// macOS maximize must run after eframe shows the window (post-first-paint).
@@ -13624,14 +13620,8 @@ pub(crate) mod col {
     pub const ORBIT_PIVOT: Color32 = Color32::from_rgb(255, 105, 180);
     /// Drop line from the orbit pivot to the ground plane.
     pub const ORBIT_PIVOT_DROP: Color32 = Color32::from_rgba_premultiplied(255, 105, 180, 70);
-    pub const DIM_INPUT_BG: Color32 = Color32::from_rgb(22, 24, 30);
-    pub const DIM_INPUT_BG_FOCUS: Color32 = Color32::from_rgb(34, 36, 44);
-    pub const DIM_INPUT_BORDER: Color32 = Color32::from_rgb(110, 118, 136);
-    pub const DIM_INPUT_BORDER_FOCUS: Color32 = Color32::from_rgb(255, 186, 84);
-    pub const DIM_INPUT_TEXT: Color32 = Color32::from_rgb(232, 235, 242);
-    pub const DIM_INPUT_TEXT_FOCUS: Color32 = Color32::from_rgb(255, 255, 255);
-    /// Faint highlight so selected digits stay readable on the dark input background.
-    pub const DIM_INPUT_SELECTION: Color32 = Color32::from_rgba_premultiplied(36, 26, 12, 36);
+    /// The value field's palette lives with the shared widget now (#889).
+    pub const DIM_INPUT_BORDER_FOCUS: Color32 = crate::expression_input::boxed::BORDER_FOCUS;
     /// Highlight for the dimension edge/segment tied to the focused input.
     pub const DIM_EDGE_HIGHLIGHT: Color32 = DIM_INPUT_BORDER_FOCUS;
     /// Committed sketch dimension lines and labels in edit mode.
@@ -15630,18 +15620,11 @@ fn should_commit_sketch_on_enter(
     field_enter_commit || (enter_pressed && !dim_field_focused)
 }
 
-fn angle_expression_field_errors(text: &str, doc: &model::Document) -> Vec<String> {
-    let t = text.trim();
-    if t.is_empty() {
-        return vec!["Expression cannot be empty".to_string()];
-    }
-    if crate::value::eval_angle_rad_in_doc(t, doc).is_none() {
-        return vec![format!("Invalid angle expression '{t}'")];
-    }
-    Vec::new()
-}
-
-/// Show a sketch dimension field; selects all text when it gains focus so typing replaces the value.
+/// Show a sketch dimension field; selects all text when it gains focus so typing replaces
+/// the value. Draws through the one shared boxed field (#889), which every value input in
+/// the app — pane rows included — now uses; this adds the focus targeting, select-on-focus,
+/// Enter handling, and inline `name=value` commit the floating tool fields need.
+#[allow(clippy::too_many_arguments)]
 fn show_sketch_dimension_field(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -15654,49 +15637,18 @@ fn show_sketch_dimension_field(
     user_edited: bool,
     angle: bool,
 ) -> SketchDimFieldResult {
-    let has_focus = ctx.memory(|m| m.focused()) == Some(id);
-    if has_focus {
-        touch::set_value_field_focused(true);
-        expression_autocomplete_handle_keys(ui, ctx, id, text, doc, &[]);
-    }
     let field_errors = if angle {
-        angle_expression_field_errors(text, doc)
+        expression_input::angle_expression_field_errors(text, doc)
     } else {
         length_expression_field_errors(text, doc, None)
     };
-    let has_errors = !field_errors.is_empty();
     let show_computed_row = if angle {
         crate::value::shows_computed_angle_in_doc(text, doc)
     } else {
         shows_computed_length_in_doc(text, doc)
     };
-    let widget = if has_focus {
-        &ui.style().visuals.widgets.active
-    } else {
-        &ui.style().visuals.widgets.inactive
-    };
-    let frame = egui::Frame::default()
-        .fill(if has_errors {
-            INVALID_BG
-        } else if has_focus {
-            col::DIM_INPUT_BG_FOCUS
-        } else {
-            col::DIM_INPUT_BG
-        })
-        .stroke(egui::Stroke::new(
-            widget.bg_stroke.width,
-            if has_errors {
-                INVALID_BORDER
-            } else if has_focus {
-                col::DIM_INPUT_BORDER_FOCUS
-            } else {
-                col::DIM_INPUT_BORDER
-            },
-        ))
-        .inner_margin(egui::Margin::symmetric(5, 3))
-        .corner_radius(3);
-
-    let computed = if has_errors {
+    // The computed line follows the *sketch's* unit, which is the one being drawn in.
+    let computed = if !field_errors.is_empty() || !show_computed_row {
         None
     } else if angle {
         let unit = match sketch {
@@ -15704,75 +15656,27 @@ fn show_sketch_dimension_field(
             None => doc.default_angle_unit,
         };
         crate::value::computed_angle_in_doc(text, doc)
-            .filter(|_| show_computed_row)
             .map(|v| crate::value::format_angle_display_in(v, unit))
     } else {
         let unit = match sketch {
             Some(s) => crate::model::effective_length_unit(doc, s),
             None => doc.default_length_unit,
         };
-        computed_length_in_doc(text, doc)
-            .filter(|_| show_computed_row)
-            .map(|v| crate::value::format_length_display_in(v, unit))
+        computed_length_in_doc(text, doc).map(|v| crate::value::format_length_display_in(v, unit))
     };
-    let text_width = dim_input_text_width(text);
-
-    // #501: computed value sits *below* the typed expression (not above).
-    let frame_output = frame.show(ui, |ui| {
-        ui.set_width(text_width);
-        ui.vertical_centered(|ui| {
-            ui.style_mut().spacing.text_edit_width = text_width;
-            ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
-            let edit = egui::TextEdit::singleline(text)
-                .id(id)
-                .frame(egui::Frame::NONE)
-                .desired_width(text_width)
-                .font(egui::FontId::monospace(13.0))
-                .text_color(if has_errors {
-                    INVALID_TEXT
-                } else if has_focus {
-                    col::DIM_INPUT_TEXT_FOCUS
-                } else {
-                    col::DIM_INPUT_TEXT
-                })
-                .margin(egui::vec2(0.0, 0.0))
-                .show(ui);
-            if let Some(v) = computed {
-                ui.label(
-                    egui::RichText::new(v)
-                        .font(egui::FontId::monospace(11.0))
-                        .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
-                );
-            } else if show_computed_row {
-                ui.add_space(14.0);
-            }
-            edit
-        })
-        .inner
-    });
-    let output = frame_output.inner;
-    if output.response.response.has_focus() {
-        let cursor = output
-            .state
-            .cursor
-            .char_range()
-            .map(|range| range.primary.index.0)
-            .unwrap_or_else(|| text.chars().count());
-        if expression_autocomplete_show_dropdown(
-            ui,
-            ctx,
-            &output.response.response,
-            id,
-            text,
-            doc,
-            &[],
-            cursor,
-        ) {
-            output.state.clone().store(ctx, id);
-        }
-    }
-    show_expression_error_tooltips_above(ui, &frame_output.response, &field_errors);
-    let resp = &output.response.response;
+    let out = expression_input::boxed::show(
+        ui,
+        id,
+        text,
+        doc,
+        "",
+        &field_errors,
+        &[],
+        computed,
+        show_computed_row,
+        None,
+    );
+    let resp = &out.response;
     if is_focus_target && *pending_focus {
         resp.request_focus();
     }
@@ -15785,7 +15689,7 @@ fn show_sketch_dimension_field(
         resp.changed(),
     ) {
         let len = text.chars().count();
-        let mut state = output.state;
+        let mut state = out.state;
         state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
             egui::text::CCursor::default(),
             egui::text::CCursor::new(len),
@@ -15804,6 +15708,7 @@ fn show_sketch_dimension_field(
         consume_sketch_dimension_enter(ui);
     }
     let lost_focus = resp.lost_focus();
+    let changed = resp.changed();
     let mut inline_parameter_added = None;
     let mut inline_parameter_error = None;
     if enter_commit || lost_focus {
@@ -15814,10 +15719,10 @@ fn show_sketch_dimension_field(
         }
     }
     SketchDimFieldResult {
-        changed: resp.changed(),
+        changed,
         enter_commit,
         lost_focus,
-        rect: Some(frame_output.response.rect),
+        rect: Some(out.rect),
         inline_parameter_added,
         inline_parameter_error,
     }
@@ -27672,7 +27577,7 @@ mod tests {
 
     #[test]
     fn dim_input_selection_highlight_is_faint() {
-        use super::col::DIM_INPUT_SELECTION;
+        use crate::expression_input::boxed::SELECTION as DIM_INPUT_SELECTION;
         assert!(
             DIM_INPUT_SELECTION.a() <= 48,
             "selection fill should be faint (alpha <= 48), got {}",

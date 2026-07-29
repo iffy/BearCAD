@@ -38,6 +38,18 @@ struct AutocompleteUiState {
     last_query: String,
 }
 
+/// Live validation errors for an angle expression field.
+pub fn angle_expression_field_errors(text: &str, doc: &Document) -> Vec<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return vec!["Expression cannot be empty".to_string()];
+    }
+    if crate::value::eval_angle_rad_in_doc(t, doc).is_none() {
+        return vec![format!("Invalid angle expression '{t}'")];
+    }
+    Vec::new()
+}
+
 /// Live validation errors for a length expression field.
 pub fn length_expression_field_errors(
     text: &str,
@@ -111,34 +123,6 @@ pub fn show_expression_error_tooltips_above(ui: &egui::Ui, anchor: &Response, er
                 }
             });
         });
-}
-
-/// Frame matching default [`TextEdit`] metrics so error styling only changes colors.
-fn length_expression_text_edit_frame(ui: &egui::Ui, id: Id, invalid: bool) -> Frame {
-    let visuals = &ui.style().visuals;
-    let focused = ui.ctx().memory(|m| m.focused()) == Some(id);
-    let widget = if focused {
-        &visuals.widgets.active
-    } else {
-        &visuals.widgets.inactive
-    };
-    let stroke = if invalid {
-        Stroke::new(widget.bg_stroke.width, INVALID_BORDER)
-    } else {
-        widget.bg_stroke
-    };
-
-    Frame::default()
-        .fill(if invalid {
-            INVALID_BG
-        } else {
-            visuals.extreme_bg_color
-        })
-        .stroke(stroke)
-        // Match the element picker's vertical padding (4px) so value inputs and
-        // element pickers are the same height when stacked in a tool pane (#599).
-        .inner_margin(Margin::symmetric(4, 4))
-        .corner_radius(widget.corner_radius)
 }
 
 fn is_identifier_part(c: char) -> bool {
@@ -699,72 +683,161 @@ fn autocomplete_show_dropdown_with(
 }
 
 /// Parameters-pane style length expression input with shared validation UI.
-pub fn show_length_expression_text_edit(
-    ui: &mut egui::Ui,
-    text: &mut String,
-    id: Id,
-    hint_text: &str,
-    errors: &[String],
-    doc: &Document,
-    exclude_names: &[&str],
-) -> Response {
-    let ctx = ui.ctx().clone();
-    let had_focus = ctx.memory(|m| m.focused()) == Some(id);
-    if had_focus {
-        expression_autocomplete_handle_keys(ui, &ctx, id, text, doc, exclude_names);
+/// The one value-field look (#881/#889): the boxed expression input the line-drawing
+/// distance uses — amber frame when it holds the keyboard, monospace text, and the computed
+/// value on its own line underneath. Every value field in the app draws through here, so the
+/// floating tool fields, the Context pane rows, and the Parameters pane all match.
+pub mod boxed {
+    use super::*;
+
+    pub const BG: egui::Color32 = egui::Color32::from_rgb(22, 24, 30);
+    pub const BG_FOCUS: egui::Color32 = egui::Color32::from_rgb(34, 36, 44);
+    pub const BORDER: egui::Color32 = egui::Color32::from_rgb(110, 118, 136);
+    pub const BORDER_FOCUS: egui::Color32 = egui::Color32::from_rgb(255, 186, 84);
+    pub const TEXT: egui::Color32 = egui::Color32::from_rgb(232, 235, 242);
+    pub const TEXT_FOCUS: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+    /// Faint highlight so selected digits stay readable on the dark input background.
+    pub const SELECTION: egui::Color32 = egui::Color32::from_rgba_premultiplied(36, 26, 12, 36);
+
+    /// Expression fields grow with content up to this many characters.
+    const MAX_CHARS: usize = 20;
+    const CHAR_WIDTH: f32 = 7.8;
+    const MIN_TEXT_WIDTH: f32 = 48.0;
+
+    /// How wide the text area of a boxed field is for `text` — it grows with the content
+    /// up to [`MAX_CHARS`], never below [`MIN_TEXT_WIDTH`].
+    pub fn text_width(text: &str) -> f32 {
+        let chars = text.chars().count().clamp(1, MAX_CHARS);
+        (chars as f32 * CHAR_WIDTH).max(MIN_TEXT_WIDTH)
     }
 
-    // Half-typed text is *always* invalid — "thick" isn't defined until the "= 5mm" lands —
-    // so complaints wait until a commit is attempted (#824): while the field has the
-    // keyboard the error tooltip and the red text stay away, and Enter brings them back if
-    // the value really is wrong.
-    let errors: &[String] = if had_focus && !commit_attempted(&ctx, id) {
-        &[]
-    } else {
-        errors
-    };
-    if had_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        set_commit_attempted(&ctx, id, true);
+    /// What a boxed field returns: its response, the text edit's state (for cursor work),
+    /// and the whole frame's rect.
+    pub struct Output {
+        pub response: Response,
+        pub state: TextEditState,
+        pub rect: egui::Rect,
     }
-    let invalid = !errors.is_empty();
-    let output = length_expression_text_edit_frame(ui, id, invalid)
-        .show(ui, |ui| {
-            // lock_focus so Tab is available for parameter autocomplete (#507) instead of
-            // moving keyboard focus to the next widget (egui's singleline default).
-            let mut edit = TextEdit::singleline(text)
-                .id(id)
-                .hint_text(hint_text)
-                .desired_width(f32::INFINITY)
-                .frame(egui::Frame::NONE)
-                .margin(Margin::ZERO)
-                .lock_focus(true);
-            if invalid {
-                edit = edit.text_color(INVALID_TEXT);
+
+    /// Draw the field. `computed` is the value line shown under the expression (`None`
+    /// leaves the row out; `reserve_computed` keeps its space so the box doesn't jump as
+    /// the value appears and disappears while typing).
+    #[allow(clippy::too_many_arguments)]
+    pub fn show(
+        ui: &mut egui::Ui,
+        id: Id,
+        text: &mut String,
+        doc: &Document,
+        hint: &str,
+        errors: &[String],
+        exclude_names: &[&str],
+        computed: Option<String>,
+        reserve_computed: bool,
+        min_width: Option<f32>,
+    ) -> Output {
+        let ctx = ui.ctx().clone();
+        let has_focus = ctx.memory(|m| m.focused()) == Some(id);
+        if has_focus {
+            crate::touch::set_value_field_focused(true);
+            expression_autocomplete_handle_keys(ui, &ctx, id, text, doc, exclude_names);
+        }
+        let has_errors = !errors.is_empty();
+        let widget = if has_focus {
+            &ui.style().visuals.widgets.active
+        } else {
+            &ui.style().visuals.widgets.inactive
+        };
+        let frame = Frame::default()
+            .fill(if has_errors {
+                INVALID_BG
+            } else if has_focus {
+                BG_FOCUS
+            } else {
+                BG
+            })
+            .stroke(Stroke::new(
+                widget.bg_stroke.width,
+                if has_errors {
+                    INVALID_BORDER
+                } else if has_focus {
+                    BORDER_FOCUS
+                } else {
+                    BORDER
+                },
+            ))
+            .inner_margin(Margin::symmetric(5, 3))
+            .corner_radius(3);
+        let width = match min_width {
+            Some(w) => text_width(text).max(w),
+            None => text_width(text),
+        };
+        // #501: the computed value sits *below* the typed expression, inside the box.
+        let frame_output = frame.show(ui, |ui| {
+            ui.set_width(width);
+            ui.vertical_centered(|ui| {
+                ui.style_mut().spacing.text_edit_width = width;
+                ui.visuals_mut().selection.bg_fill = SELECTION;
+                let edit = TextEdit::singleline(text)
+                    .id(id)
+                    .hint_text(hint)
+                    .frame(Frame::NONE)
+                    .desired_width(width)
+                    .font(egui::FontId::monospace(13.0))
+                    .text_color(if has_errors {
+                        INVALID_TEXT
+                    } else if has_focus {
+                        TEXT_FOCUS
+                    } else {
+                        TEXT
+                    })
+                    .margin(egui::vec2(0.0, 0.0))
+                    // lock_focus so Tab reaches the autocomplete (#507) instead of moving
+                    // keyboard focus to the next widget.
+                    .lock_focus(true)
+                    .show(ui);
+                match computed {
+                    Some(v) => {
+                        ui.label(
+                            egui::RichText::new(v)
+                                .font(egui::FontId::monospace(11.0))
+                                .color(TEXT.gamma_multiply(0.65)),
+                        );
+                    }
+                    None if reserve_computed => ui.add_space(14.0),
+                    None => {}
+                }
+                edit
+            })
+            .inner
+        });
+        let output = frame_output.inner;
+        if output.response.response.has_focus() {
+            let cursor = output
+                .state
+                .cursor
+                .char_range()
+                .map(|range| range.primary.index.0)
+                .unwrap_or_else(|| text.chars().count());
+            if expression_autocomplete_show_dropdown(
+                ui,
+                &ctx,
+                &output.response.response,
+                id,
+                text,
+                doc,
+                exclude_names,
+                cursor,
+            ) {
+                output.state.clone().store(&ctx, id);
             }
-            edit.show(ui)
-        })
-        .inner;
-
-    if output.response.response.has_focus() {
-        // Touch devices: a focused value field gets the app keypad, not the OS keyboard.
-        crate::touch::set_value_field_focused(true);
-        let cursor = cursor_char_index(Some(&output.state), text);
-        if expression_autocomplete_show_dropdown(
-            ui,
-            &ctx,
-            &output.response.response,
-            id,
-            text,
-            doc,
-            exclude_names,
-            cursor,
-        ) {
-            output.state.clone().store(&ctx, id);
+        }
+        show_expression_error_tooltips_above(ui, &frame_output.response, errors);
+        Output {
+            response: output.response.response,
+            state: output.state,
+            rect: frame_output.response.rect,
         }
     }
-
-    show_expression_error_tooltips_above(ui, &output.response.response, errors);
-    output.response.response
 }
 
 /// Whether a commit has been attempted on this field since its text last changed (#824).
@@ -852,77 +925,49 @@ impl<'a> ValueInput<'a> {
         self
     }
 
-    /// Render the field (and the computed-value label beside it, when it differs).
+    /// Render the field. Every value input in the app draws through [`boxed::show`], so
+    /// the pane rows and the floating tool fields are the same control (#889).
     /// Returns the field's response; `.changed()` reports edits as usual.
     pub fn show(self, ui: &mut egui::Ui, text: &mut String, doc: &Document) -> Response {
-        let mut errors = length_expression_field_errors(text, doc, self.parameter_context);
+        let mut errors = match self.kind {
+            ValueKind::Angle => angle_expression_field_errors(text, doc),
+            _ => length_expression_field_errors(text, doc, self.parameter_context),
+        };
         if !self.allow_definitions && text.contains('=') {
             errors.insert(0, "name=value definitions aren't allowed here".to_string());
         }
-        // Decide the computed chip *before* the field draws, so its autocomplete dropdown
-        // can start below the chip rather than under it (#793).
-        let computed = value_input_computed_display(text, self.kind, doc);
-        let has_computed = errors.is_empty() && computed.is_some();
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(self.id.with("value_input_has_computed"), has_computed));
-        let resp = match self.width {
-            Some(w) => {
-                ui.scope(|ui| {
-                    ui.set_max_width(w);
-                    show_length_expression_text_edit(
-                        ui,
-                        text,
-                        self.id,
-                        self.hint,
-                        &errors,
-                        doc,
-                        self.exclude_names,
-                    )
-                })
-                .inner
-            }
-            None => show_length_expression_text_edit(
-                ui,
-                text,
-                self.id,
-                self.hint,
-                &errors,
-                doc,
-                self.exclude_names,
-            ),
+        // Half-typed text is always invalid — "thick" isn't defined until the "= 5mm"
+        // lands — so complaints wait until a commit is attempted (#824).
+        let ctx = ui.ctx().clone();
+        let had_focus = ctx.memory(|m| m.focused()) == Some(self.id);
+        if had_focus && ui.input(|i| i.key_pressed(Key::Enter)) {
+            set_commit_attempted(&ctx, self.id, true);
+        }
+        let shown_errors: &[String] = if had_focus && !commit_attempted(&ctx, self.id) {
+            &[]
+        } else {
+            &errors
         };
-        // Typing again means "I'm still working on it": complaints wait for the next commit
-        // attempt (#824).
-        if resp.changed() {
-            set_commit_attempted(ui.ctx(), self.id, false);
+        let computed = value_input_computed_display(text, self.kind, doc)
+            .filter(|_| shown_errors.is_empty());
+        let out = boxed::show(
+            ui,
+            self.id,
+            text,
+            doc,
+            self.hint,
+            shown_errors,
+            self.exclude_names,
+            computed,
+            false,
+            self.width,
+        );
+        // Typing again means "I'm still working on it": complaints wait for the next
+        // commit attempt (#824).
+        if out.response.changed() {
+            set_commit_attempted(&ctx, self.id, false);
         }
-        // The computed value floats *below* the field (#501) instead of sitting beside
-        // it in the layout — so it appearing or disappearing while typing never shifts
-        // anything around. Shown only while the field is focused (idle rows stay
-        // unobscured); error tooltips use the same spot and win when present.
-        if errors.is_empty() && resp.has_focus() {
-            if let Some(computed) = computed {
-                egui::Area::new(self.id.with("value_input_computed"))
-                    .order(egui::Order::Tooltip)
-                    .pivot(egui::Align2::LEFT_TOP)
-                    .fixed_pos(resp.rect.left_bottom() + egui::vec2(0.0, 2.0))
-                    .interactable(false)
-                    .show(ui.ctx(), |ui| {
-                        egui::Frame::default()
-                            .fill(ui.style().visuals.extreme_bg_color.gamma_multiply(0.9))
-                            .corner_radius(4.0)
-                            .inner_margin(egui::Margin::symmetric(4, 1))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("= {computed}"))
-                                        .color(egui::Color32::from_gray(170))
-                                        .size(11.0),
-                                );
-                            });
-                    });
-            }
-        }
-        resp
+        out.response
     }
 }
 
