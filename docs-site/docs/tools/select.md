@@ -17,9 +17,10 @@ pans, the wheel zooms, clicking picks.
 
 - **Sketch points** — endpoints, corners, circle centers. Points win over the edges they
   sit on.
-- **Lines and edges** — in sketches and on bodies. A smooth curved edge — like the
-  circular rim of a revolved body — picks as **one whole curve**: click anywhere along it
-  and the entire curve highlights and selects as a single edge.
+- **Lines and edges** — in sketches and on bodies. An edge picks together with every edge
+  running smoothly out of it: a straight line that breaks into a tangent curve and leaves
+  again as a tangent line is one click, and so is the circular rim of a revolved body. The
+  run stops at corners and where three edges meet. Hold **Control** for just the one edge.
 - **Whole bodies** — click any flat face of a body to select the body. Edges and corners
   win over the body they belong to.
 - **Faces** — of construction planes, and of bodies through the Selection Exploder.

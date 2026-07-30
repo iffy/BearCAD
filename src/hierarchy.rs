@@ -3194,7 +3194,7 @@ fn paint_pick_affordance(
         return;
     }
     let takes = armed
-        .is_some_and(|p| !crate::element_picker::expand_pick(doc, p, element).is_empty());
+        .is_some_and(|p| !crate::element_picker::expand_pick(doc, p, element, false).is_empty());
     if !takes {
         return;
     }

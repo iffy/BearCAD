@@ -3700,21 +3700,24 @@ pub fn solid_mesh_unique_edges(solid: &crate::extrude::SolidMesh) -> Vec<(Vec3, 
 /// real corners and break the chain.
 const CURVE_CHAIN_COS_THRESHOLD: f32 = 0.866_025; // cos(30°)
 
-/// Partition a solid's feature edges into maximal tangent-continuous chains (#626): at every
-/// vertex where **exactly two** feature segments meet at a shallow angle — the tessellation
-/// of a smooth curve, like a revolve's circular rim — the segments join one chain; corners,
-/// junctions of 3+ edges, and chain ends stay boundaries. A straight or curved edge thus
-/// becomes **one** chain of segments, so picking any facet can select the whole curve.
-pub fn solid_mesh_edge_chains(solid: &crate::extrude::SolidMesh) -> Vec<Vec<(Vec3, Vec3)>> {
-    let edges = solid_mesh_unique_edges(solid);
-    let n = edges.len();
-    let mut adj: std::collections::HashMap<(i64, i64, i64), Vec<(usize, bool)>> =
+/// Group items into maximal tangent-continuous chains by their ends (#626/#984): at a vertex
+/// where **exactly two** item-ends meet and their away-from-the-vertex directions are nearly
+/// opposite (within [`CURVE_CHAIN_COS_THRESHOLD`]), the two items join one chain; corners,
+/// junctions of 3+ ends, and free ends stay boundaries. Each item is its two
+/// `(quantized vertex key, direction pointing away from that vertex into the item)` ends.
+///
+/// This is the one chaining rule, shared by the solid-mesh feature-edge chains and the
+/// sketch-line chains — the two differ only in how a vertex is keyed and a tangent read.
+pub fn chain_by_tangency(ends: &[[((i64, i64, i64), Vec3); 2]]) -> Vec<Vec<usize>> {
+    let n = ends.len();
+    let mut adj: std::collections::HashMap<(i64, i64, i64), Vec<(usize, usize)>> =
         std::collections::HashMap::new();
-    for (i, (a, b)) in edges.iter().enumerate() {
-        adj.entry(quantize_vertex(*a)).or_default().push((i, true));
-        adj.entry(quantize_vertex(*b)).or_default().push((i, false));
+    for (i, item) in ends.iter().enumerate() {
+        for (which, (key, _)) in item.iter().enumerate() {
+            adj.entry(*key).or_default().push((i, which));
+        }
     }
-    // Union-find with path halving; union at every smooth 2-edge vertex.
+    // Union-find with path halving; union at every smooth 2-end vertex.
     let mut parent: Vec<usize> = (0..n).collect();
     let find = |parent: &mut Vec<usize>, mut i: usize| -> usize {
         while parent[i] != i {
@@ -3724,29 +3727,44 @@ pub fn solid_mesh_edge_chains(solid: &crate::extrude::SolidMesh) -> Vec<Vec<(Vec
         i
     };
     for incident in adj.values() {
-        let [(i, i_starts_here), (j, j_starts_here)] = incident[..] else {
+        let [(i, i_end), (j, j_end)] = incident[..] else {
             continue;
         };
-        // Direction of each edge pointing *away* from the shared vertex; a smooth
-        // continuation means the two away-directions are nearly opposite.
-        let away = |e: usize, starts_here: bool| {
-            let (a, b) = edges[e];
-            (if starts_here { b - a } else { a - b }).normalize_or_zero()
-        };
-        if away(i, i_starts_here).dot(away(j, j_starts_here)) <= -CURVE_CHAIN_COS_THRESHOLD {
+        // A smooth continuation means the two away-directions are nearly opposite.
+        if ends[i][i_end].1.dot(ends[j][j_end].1) <= -CURVE_CHAIN_COS_THRESHOLD {
             let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
             if ri != rj {
                 parent[ri] = rj;
             }
         }
     }
-    let mut by_root: std::collections::HashMap<usize, Vec<(Vec3, Vec3)>> =
+    let mut by_root: std::collections::HashMap<usize, Vec<usize>> =
         std::collections::HashMap::new();
     for i in 0..n {
         let r = find(&mut parent, i);
-        by_root.entry(r).or_default().push(edges[i]);
+        by_root.entry(r).or_default().push(i);
     }
     by_root.into_values().collect()
+}
+
+/// Partition a solid's feature edges into maximal tangent-continuous chains (#626): at every
+/// vertex where **exactly two** feature segments meet at a shallow angle — the tessellation
+/// of a smooth curve, like a revolve's circular rim — the segments join one chain; corners,
+/// junctions of 3+ edges, and chain ends stay boundaries. A straight or curved edge thus
+/// becomes **one** chain of segments, so picking any facet can select the whole curve.
+pub fn solid_mesh_edge_chains(solid: &crate::extrude::SolidMesh) -> Vec<Vec<(Vec3, Vec3)>> {
+    let edges = solid_mesh_unique_edges(solid);
+    let ends: Vec<[((i64, i64, i64), Vec3); 2]> = edges
+        .iter()
+        .map(|(a, b)| {
+            let d = (*b - *a).normalize_or_zero();
+            [(quantize_vertex(*a), d), (quantize_vertex(*b), -d)]
+        })
+        .collect();
+    chain_by_tangency(&ends)
+        .into_iter()
+        .map(|chain| chain.into_iter().map(|i| edges[i]).collect())
+        .collect()
 }
 
 /// The canonical identity segment of a chain (#626): the lexicographically smallest

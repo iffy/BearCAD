@@ -443,6 +443,60 @@ pub fn element_in_sketch(
     }
 }
 
+/// The maximal tangent-continuous run of sketch lines through `li` (#984), sorted ascending
+/// and always containing `li` itself. Two lines chain where **exactly two** line-ends meet at
+/// a shared endpoint and their away-directions are nearly opposite — the same 30° rule (and
+/// the same [`crate::gpu_viewport::chain_by_tangency`] union-find) the solid-mesh feature-edge
+/// chains use (#626) — so a straight line that breaks into a tangent curve and exits again as
+/// a tangent line reads as one line-curve-line run. Corners and junctions of 3+ ends break the
+/// chain. Only the line's own sketch participates; deleted and shadow lines don't.
+pub fn sketch_line_tangent_chain(doc: &Document, li: usize) -> Vec<usize> {
+    use glam::Vec3;
+    let Some(line) = doc.lines.get(li).filter(|l| !l.deleted && !l.shadow) else {
+        return vec![li];
+    };
+    let lines: Vec<usize> = doc
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.deleted && !l.shadow && l.sketch == line.sketch)
+        .map(|(i, _)| i)
+        .collect();
+    // 0.001 sketch-unit precision, like the solid-mesh vertex key.
+    let quantize = |x: f32, y: f32| ((x * 1000.0).round() as i64, (y * 1000.0).round() as i64, 0);
+    // Direction leaving an endpoint into the line: along the bezier handle for a curved line
+    // (that is its tangent there), along the chord for a straight one — falling back to the
+    // chord when a degenerate handle sits on its own endpoint.
+    let away = |l: &crate::model::Line, from_start: bool| -> Vec3 {
+        let (px, py, handle) = match (from_start, l.bezier) {
+            (true, h) => (l.x0, l.y0, h.map(|b| b[0])),
+            (false, h) => (l.x1, l.y1, h.map(|b| b[1])),
+        };
+        let (tx, ty) = handle
+            .filter(|(hx, hy)| (hx - px).abs() > 1e-6 || (hy - py).abs() > 1e-6)
+            .unwrap_or(if from_start { (l.x1, l.y1) } else { (l.x0, l.y0) });
+        Vec3::new(tx - px, ty - py, 0.0).normalize_or_zero()
+    };
+    let ends: Vec<[((i64, i64, i64), Vec3); 2]> = lines
+        .iter()
+        .map(|&i| {
+            let l = &doc.lines[i];
+            [
+                (quantize(l.x0, l.y0), away(l, true)),
+                (quantize(l.x1, l.y1), away(l, false)),
+            ]
+        })
+        .collect();
+    for chain in crate::gpu_viewport::chain_by_tangency(&ends) {
+        let mut members: Vec<usize> = chain.into_iter().map(|i| lines[i]).collect();
+        if members.contains(&li) {
+            members.sort_unstable();
+            return members;
+        }
+    }
+    vec![li]
+}
+
 /// What a pick of `element` should actually put into `picker` (#960).
 ///
 /// Normally just the element. But when the picker takes **edges** and not **faces**, clicking a
@@ -450,13 +504,29 @@ pub fn element_in_sketch(
 /// picker refuses it and nothing says why. The same rule covers a sketch profile when the
 /// picker wants lines: its boundary lines are what you meant.
 ///
+/// And a sketch line means its whole tangent-continuous run (#984) when `chain` is set —
+/// clicking any segment of a line-curve-line run picks the run as one unit. `chain` is false
+/// when the user holds **Control**, which picks only the edge under the cursor. A single-slot
+/// picker never chains, for the same reason it never takes a face's edges (#955): the run has
+/// nowhere to go.
+///
 /// Empty when the pick has nothing to offer this picker.
 pub fn expand_pick(
     doc: &Document,
     picker: &ElementPicker,
     element: &SceneElement,
+    chain: bool,
 ) -> Vec<SceneElement> {
     if picker.accepts(doc, element) {
+        if chain && !picker.limit().is_single() {
+            if let SceneElement::Line(li) = element {
+                return sketch_line_tangent_chain(doc, *li)
+                    .into_iter()
+                    .map(SceneElement::Line)
+                    .filter(|e| picker.accepts(doc, e))
+                    .collect();
+            }
+        }
         return vec![element.clone()];
     }
     // A picker that takes whole **bodies** takes a click anywhere on one (#218): its faces,
@@ -1605,13 +1675,13 @@ mod tests {
         // A sketch profile's boundary is its lines; an edges picker takes none of them, so it
         // gets nothing rather than something wrong.
         let profile = SceneElement::from_face_id(crate::model::FaceId::Polygon(vec![0, 1, 2, 3]));
-        assert!(expand_pick(&doc, &edges_only, &profile).is_empty());
+        assert!(expand_pick(&doc, &edges_only, &profile, false).is_empty());
 
         // A lines picker, though, gets exactly the profile's lines.
         let lines_only =
             ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite);
         assert_eq!(
-            expand_pick(&doc, &lines_only, &profile),
+            expand_pick(&doc, &lines_only, &profile, false),
             vec![
                 SceneElement::Line(0),
                 SceneElement::Line(1),
@@ -1626,8 +1696,114 @@ mod tests {
         );
         let circle_face = SceneElement::from_face_id(crate::model::FaceId::Circle(2));
         assert_eq!(
-            expand_pick(&doc, &circles, &circle_face),
+            expand_pick(&doc, &circles, &circle_face, false),
             vec![SceneElement::Circle(2)]
+        );
+    }
+
+    /// A sketch holding the reported shape (#984): a straight line that breaks into a tangent
+    /// curve and exits again as a tangent line, plus a fourth line meeting the run at a right
+    /// angle. Lines 0-1-2 are the run; line 3 is the corner that must break it.
+    ///
+    /// ```text
+    ///   (0,0) --0-- (10,0) ~~1~~ (20,10) --2-- (30,10)
+    ///                                             |
+    ///                                             3
+    ///                                          (30,20)
+    /// ```
+    fn doc_with_a_tangent_run() -> Document {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let mut line = |x0: f32, y0: f32, x1: f32, y1: f32, bezier| {
+            doc.lines.push(crate::model::Line {
+                sketch,
+                x0,
+                y0,
+                x1,
+                y1,
+                bezier,
+                ..crate::model::Line::from_local_endpoints(sketch, x0, y0, x1, y1)
+            });
+        };
+        line(0.0, 0.0, 10.0, 0.0, None);
+        // Handles continue each neighbour's direction: horizontal out of (10,0), and along
+        // the +x of line 2 back into (20,10).
+        line(10.0, 0.0, 20.0, 10.0, Some([(16.0, 0.0), (14.0, 10.0)]));
+        line(20.0, 10.0, 30.0, 10.0, None);
+        // The corner: straight up from the run's far end, a 90° turn.
+        line(30.0, 10.0, 30.0, 20.0, None);
+        doc
+    }
+
+    #[test]
+    fn a_tangent_run_of_lines_chains_and_stops_at_the_corner() {
+        // #984: hovering/clicking any segment of a line-curve-line run takes the whole run.
+        let doc = doc_with_a_tangent_run();
+        for start in [0usize, 1, 2] {
+            assert_eq!(
+                sketch_line_tangent_chain(&doc, start),
+                vec![0, 1, 2],
+                "line {start} should reach the whole run in both directions"
+            );
+        }
+        // The 90° corner is a boundary: line 3 is its own run.
+        assert_eq!(sketch_line_tangent_chain(&doc, 3), vec![3]);
+    }
+
+    #[test]
+    fn a_junction_of_three_lines_breaks_the_chain() {
+        // Three ends at one vertex is a junction, not a smooth continuation — even when two of
+        // them are perfectly tangent, since there's no telling which one continues the curve.
+        let mut doc = doc_with_a_tangent_run();
+        let sketch = doc.lines[0].sketch;
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, -10.0));
+        assert_eq!(sketch_line_tangent_chain(&doc, 0), vec![0]);
+        assert_eq!(sketch_line_tangent_chain(&doc, 1), vec![1, 2]);
+    }
+
+    #[test]
+    fn a_deleted_line_is_not_part_of_a_run() {
+        let mut doc = doc_with_a_tangent_run();
+        doc.lines[1].deleted = true;
+        assert_eq!(sketch_line_tangent_chain(&doc, 0), vec![0]);
+        assert_eq!(sketch_line_tangent_chain(&doc, 2), vec![2]);
+    }
+
+    #[test]
+    fn a_lines_picker_takes_the_whole_run_unless_chaining_is_off() {
+        // #984: the default is the run; Control (chain = false) is the single line.
+        let doc = doc_with_a_tangent_run();
+        let lines =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite);
+        assert_eq!(
+            expand_pick(&doc, &lines, &line(1), true),
+            vec![line(0), line(1), line(2)]
+        );
+        assert_eq!(expand_pick(&doc, &lines, &line(1), false), vec![line(1)]);
+    }
+
+    #[test]
+    fn a_single_slot_picker_never_takes_a_run() {
+        // A one-slot input has nowhere to put a run — the same reason it never takes a face's
+        // edges (#955). It gets the line under the cursor.
+        let doc = doc_with_a_tangent_run();
+        let one = ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Finite(1));
+        assert_eq!(expand_pick(&doc, &one, &line(1), true), vec![line(1)]);
+    }
+
+    #[test]
+    fn a_picker_that_refuses_part_of_a_run_takes_only_what_it_accepts() {
+        // A rule-restricted picker still runs the chain, then keeps the members it can hold:
+        // a `Straight` picker takes the run's two straight lines and drops its curve.
+        let doc = doc_with_a_tangent_run();
+        let straight = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Line).rule(PickRule::Straight),
+            PickLimit::Infinite,
+        );
+        assert_eq!(
+            expand_pick(&doc, &straight, &line(0), true),
+            vec![line(0), line(2)]
         );
     }
 
@@ -1638,11 +1814,11 @@ mod tests {
         let faces =
             ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
         let face = body_face(0);
-        assert_eq!(expand_pick(&doc, &faces, &face), vec![face.clone()]);
+        assert_eq!(expand_pick(&doc, &faces, &face, false), vec![face.clone()]);
         // And nothing at all when the pick is simply wrong for the picker.
         let bodies =
             ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
-        assert!(expand_pick(&doc, &bodies, &line(0)).is_empty());
+        assert!(expand_pick(&doc, &bodies, &line(0), false).is_empty());
     }
 
     #[test]

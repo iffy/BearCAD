@@ -44,6 +44,14 @@ Where a picker wants **edges** and you click a **face**, you get all of that fac
 chamfering the whole top of a box is one click, not four. The face lights up edge by edge on
 hover, so you can see it coming.
 
+## Edges come as whole runs
+
+An edge picks together with every edge that runs smoothly out of it. A straight line that breaks
+into a tangent curve and leaves again as a tangent line is one thing to click, not three. The run
+stops at corners and wherever three edges meet. Hover shows the whole run before you commit to it.
+
+Hold **Control** to take just the edge under the cursor.
+
 When several things overlap under the cursor, press **Space** for the
 [Selection Exploder](/docs/selection-exploder). It fans out the things the armed picker can
 take, so a tool after bodies offers one handle per body and a tool after faces offers faces.

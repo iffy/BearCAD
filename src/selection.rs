@@ -107,6 +107,30 @@ pub fn click_scene_selection(
     selection.picker.push(element);
 }
 
+/// [`click_scene_selection`] for a click that takes several elements as **one unit** (#984) —
+/// a tangent-continuous run of edges. All already selected deselects the whole unit; anything
+/// short of that selects all of it (replacing unless additive), so a mixed state converges on
+/// selected rather than toggling piecewise.
+pub fn click_scene_selection_many(
+    selection: &mut SceneSelection,
+    elements: Vec<SceneElement>,
+    additive: bool,
+) {
+    if elements.is_empty() {
+        return;
+    }
+    if elements.iter().all(|e| selection.is_selected(e.clone())) {
+        selection.picker.retain(|e| !elements.contains(e));
+        return;
+    }
+    if !additive {
+        selection.picker.clear();
+    }
+    for element in elements {
+        selection.insert(element);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +174,39 @@ mod tests {
         click_scene_selection(&mut sel, SceneElement::Circle(0), false);
         click_scene_selection(&mut sel, SceneElement::Circle(0), false);
         assert!(sel.is_empty());
+    }
+
+    /// #984: a tangent run selects and deselects as one unit, and a partially-selected run
+    /// converges on fully selected rather than toggling its members piecewise.
+    #[test]
+    fn a_run_selects_and_deselects_as_one_unit() {
+        let run = || vec![SceneElement::Line(0), SceneElement::Line(1), SceneElement::Line(2)];
+        let mut sel = SceneSelection::default();
+        click_scene_selection_many(&mut sel, run(), false);
+        assert_eq!(selection_count(&sel), 3);
+        // All selected: the whole run comes back out.
+        click_scene_selection_many(&mut sel, run(), false);
+        assert!(sel.is_empty());
+        // Partly selected: the click completes the run rather than removing what's there.
+        click_scene_selection(&mut sel, SceneElement::Line(1), false);
+        click_scene_selection_many(&mut sel, run(), true);
+        assert_eq!(selection_count(&sel), 3);
+    }
+
+    /// A plain run click replaces the selection; an additive one adds to it.
+    #[test]
+    fn a_plain_run_click_replaces_and_an_additive_one_adds() {
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Circle(9), false);
+        click_scene_selection_many(
+            &mut sel,
+            vec![SceneElement::Line(0), SceneElement::Line(1)],
+            false,
+        );
+        assert_eq!(selection_count(&sel), 2);
+        assert!(!sel.is_selected(SceneElement::Circle(9)));
+        click_scene_selection_many(&mut sel, vec![SceneElement::Circle(9)], true);
+        assert_eq!(selection_count(&sel), 3);
     }
 
     #[test]

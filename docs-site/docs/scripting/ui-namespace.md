@@ -17,6 +17,7 @@ bearcad.ui.click_ground(0, 0)           -- click on the active sketch plane, in 
 bearcad.ui.move_ground(80, 50)
 bearcad.ui.click(x, y)                  -- viewport pixel coordinates instead
 bearcad.ui.click_ground(20, -10, { shift = true })   -- Shift+click
+bearcad.ui.click_ground(20, -10, { ctrl = true })    -- Ctrl+click: one edge, not its run
 bearcad.ui.move(x, y)
 bearcad.ui.key("enter")
 bearcad.ui.type("12.5")

@@ -3093,6 +3093,10 @@ pub struct AppState {
     /// — the pane rebuilds them every frame — but parked here so a script can read what each
     /// picker accepts and holds, which is otherwise invisible from outside the UI.
     pub tool_pickers: Vec<crate::context::ToolPickerView>,
+    /// Whether **Control** is held as of the last frame (#984): an edge pick then takes only
+    /// the single edge under the cursor rather than its whole tangent-continuous run. Mirrored
+    /// from the input each frame by the viewport, like `tool_pickers`.
+    pub pick_single_edge: bool,
     pub editing_committed_dim: Option<EditingCommittedDim>,
     /// Active placement phase for a new dimension (#40/#763); see [`PlacingDimension`].
     pub placing_dimension: Option<PlacingDimension>,
@@ -3231,6 +3235,7 @@ impl Default for AppState {
             move_focus_override: None,
             joint_focus_override: None,
             exploder_leaves: Vec::new(),
+            pick_single_edge: false,
             hover_element: None,
             tool_pickers: Vec::new(),
             editing_committed_dim: None,
@@ -12128,7 +12133,13 @@ label_hidden: false,
                 // pane rebuilds every frame whether or not it is visible. A click can only
                 // arrive after a frame, so the only cold case is a headless `AppState` with no
                 // pane at all — a test, which should seed the pickers it is testing against.
-                if pick_into_focused_picker(self, &element) {
+                //
+                // An edge pick takes its whole tangent-continuous run by default (#984);
+                // Control (`pick_single_edge`) picks just the edge under the cursor. The
+                // Dimension tool always picks single — a dimension measures one segment (or a
+                // pair), and a run flooding its selection would dimension nothing.
+                let chain = !self.pick_single_edge && self.tool != Tool::Dimension;
+                if pick_into_focused_picker(self, &element, chain) {
                     return ActionResult::Ok;
                 }
                 let consumed_by_tool = match &element {
@@ -12209,7 +12220,23 @@ label_hidden: false,
                         self.begin_dimension_from_selection();
                         return ActionResult::Ok;
                     }
-                    click_scene_selection(&mut self.scene_selection, element.clone(), additive);
+                    // The selection takes the tangent run as one unit too (#984): all-selected
+                    // toggles the whole run out, otherwise a plain click replaces the selection
+                    // with the run and an additive click adds it.
+                    let elements: Vec<SceneElement> = match &element {
+                        SceneElement::Line(li) if chain => {
+                            crate::element_picker::sketch_line_tangent_chain(&self.doc, *li)
+                                .into_iter()
+                                .map(SceneElement::Line)
+                                .collect()
+                        }
+                        _ => vec![element.clone()],
+                    };
+                    crate::selection::click_scene_selection_many(
+                        &mut self.scene_selection,
+                        elements,
+                        additive,
+                    );
                     if let Some((health_status, reason)) =
                         selection_frozen_summary(&self.document_health, &self.scene_selection)
                     {
@@ -14984,7 +15011,11 @@ pub fn tool_picker_target(state: &AppState, name: &str) -> Option<crate::context
 ///
 /// The picker decides: its kinds, its rules, and its limit say whether this is a valid pick, so
 /// a refused element falls through to the ordinary selection path rather than being forced in.
-fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::SceneElement) -> bool {
+fn pick_into_focused_picker(
+    state: &mut AppState,
+    element: &crate::hierarchy::SceneElement,
+    chain: bool,
+) -> bool {
     // The armed picker gets first refusal; the tool's **primary** gets what it turns down, and
     // only then does the click fall through to the ordinary selection (#963/#970). Without the
     // fallback, arming a secondary picker would make the tool's main set unreachable — with
@@ -14998,13 +15029,17 @@ fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::Sc
     let Some(view) = candidates
         .into_iter()
         .map(|i| &state.tool_pickers[i])
-        .find(|view| !crate::element_picker::expand_pick(&state.doc, &view.picker, element).is_empty())
+        .find(|view| {
+            !crate::element_picker::expand_pick(&state.doc, &view.picker, element, chain)
+                .is_empty()
+        })
     else {
         return false;
     };
-    // A face clicked into an edges picker means all of that face's edges (#960), so ask what
-    // this pick is actually worth to this picker before deciding it's refused.
-    let expanded = crate::element_picker::expand_pick(&state.doc, &view.picker, element);
+    // A face clicked into an edges picker means all of that face's edges (#960), and a sketch
+    // line its tangent-continuous run (#984), so ask what this pick is actually worth to this
+    // picker before deciding it's refused.
+    let expanded = crate::element_picker::expand_pick(&state.doc, &view.picker, element, chain);
     let Some(first) = expanded.first().cloned() else {
         return false;
     };

@@ -1344,7 +1344,11 @@ fn exploder_keep_for_picker(
         if takes_both && ElementKind::of(&element) == ElementKind::Profile {
             continue;
         }
-        let taken = expand_pick(doc, picker, &element);
+        // Never chained (#984): the fan's job is to tell the crowd's members apart, and a run
+        // would give every line of one run the same dedupe key — collapsing siblings the
+        // cursor is sitting on into a single leaf. The chaining happens when the leaf is
+        // clicked, through the ordinary click path.
+        let taken = expand_pick(doc, picker, &element, false);
         if taken.is_empty() || !seen.insert(format!("{taken:?}")) {
             continue;
         }
@@ -7245,14 +7249,26 @@ impl App {
                             "Sweep: pick a line that leaves the profile plane".to_string();
                         return;
                     }
+                    // The whole tangent-continuous run, as one unit (#984): a path that
+                    // breaks into a tangent curve and out again is one path, and Control
+                    // takes just the segment under the cursor.
+                    let run = if self.state.pick_single_edge {
+                        vec![li]
+                    } else {
+                        crate::element_picker::sketch_line_tangent_chain(&self.state.doc, li)
+                    };
                     let cf = self
                         .state
                         .creating_sweep
                         .get_or_insert_with(actions::CreatingSweep::default);
-                    if let Some(pos) = cf.path.iter().position(|&l| l == li) {
-                        cf.path.remove(pos);
+                    if run.iter().all(|l| cf.path.contains(l)) {
+                        cf.path.retain(|l| !run.contains(l));
                     } else {
-                        cf.path.push(li);
+                        for l in run {
+                            if !cf.path.contains(&l) {
+                                cf.path.push(l);
+                            }
+                        }
                     }
                     self.state.status = format!(
                         "Sweep: {} path line(s) — Enter commits",
@@ -12482,6 +12498,9 @@ impl eframe::App for App {
         };
         // Park the pickers where a script can read them (#968); they're rebuilt every frame.
         self.state.tool_pickers = content.tool_pickers.clone();
+        // Control means "just the edge under the cursor", not its tangent run (#984) —
+        // mirrored every frame so the click handlers and the hover agree on it.
+        self.state.pick_single_edge = ctx.input(|i| i.modifiers.ctrl);
         context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
         context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
         if self.state.panes.is_visible(Pane::Context) {
@@ -15149,6 +15168,11 @@ fn pick_for_focused_picker(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     eye: Vec3,
     occlusion: Option<&construction::PickOcclusion>,
+    // Whether an edge pick takes its whole tangent-continuous run (#984). The click path
+    // passes what Control says; the hover path passes `false` and lights the run through
+    // `exploder_group_highlight` instead, which draws each line's real curve rather than the
+    // chord-per-element `Curve` this function's callers reduce a multi-take to.
+    chain: bool,
 ) -> Option<(context::PickerTarget, Vec<SceneElement>)> {
     let armed = tool_pickers.iter().find(|view| view.picker.is_focused());
     // The armed picker gets first refusal; the tool's **primary** gets what it turns down
@@ -15156,11 +15180,11 @@ fn pick_for_focused_picker(
     // fallback the next body would be refused because a body is not a path — so a set of
     // bodies could only be gathered one at a time, with a trip to the pane between each.
     armed
-        .and_then(|view| pick_into(doc, view, pp, project, eye, occlusion))
+        .and_then(|view| pick_into(doc, view, pp, project, eye, occlusion, chain))
         .or_else(|| {
             let primary = tool_pickers.first()?;
             (Some(primary.target) != armed.map(|v| v.target))
-                .then(|| pick_into(doc, primary, pp, project, eye, occlusion))
+                .then(|| pick_into(doc, primary, pp, project, eye, occlusion, chain))
                 .flatten()
         })
 }
@@ -15173,6 +15197,7 @@ fn pick_into(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     eye: Vec3,
     occlusion: Option<&construction::PickOcclusion>,
+    chain: bool,
 ) -> Option<(context::PickerTarget, Vec<SceneElement>)> {
     let focused = view;
     let mut candidates: Vec<(usize, Vec<SceneElement>)> =
@@ -15180,7 +15205,8 @@ fn pick_into(
             .into_iter()
             .filter_map(|c| {
                 let element = scene_element_from_pick(&c.kind)?;
-                let taken = crate::element_picker::expand_pick(doc, &focused.picker, &element);
+                let taken =
+                    crate::element_picker::expand_pick(doc, &focused.picker, &element, chain);
                 if taken.is_empty() {
                     return None;
                 }
@@ -15218,6 +15244,7 @@ impl App {
             project,
             eye,
             occlusion,
+            !self.state.pick_single_edge,
         ) else {
             // Nothing the armed picker can take is here. A body another operation has already
             // consumed is the common case, and the one worth saying out loud (#953).
@@ -15555,8 +15582,15 @@ fn resolve_viewport_hover_highlight(
         // what a click here would take, and light that. This is the rule the whole match is
         // converging on; the arms above are the cases still written by hand.
         _ => {
-            let (_, taken) =
-                pick_for_focused_picker(doc, tool_pickers, pp, project, cam.eye(), occlusion)?;
+            let (_, taken) = pick_for_focused_picker(
+                doc,
+                tool_pickers,
+                pp,
+                project,
+                cam.eye(),
+                occlusion,
+                false,
+            )?;
             match taken.len() {
                 0 => None,
                 1 => Some(gpu_viewport::ViewportHoverHighlight::Element(
@@ -23505,11 +23539,65 @@ impl App {
         {
             hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::PickTarget(target));
         }
-        let exploder_group_highlight = self
+        let mut exploder_group_highlight = self
             .exploder
             .as_ref()
             .map(|e| e.hovered_group_members())
             .unwrap_or_default();
+        // A hovered sketch line lights up its whole tangent-continuous run (#984) — what a
+        // click would take — through the same channel a hovered group loupe lights its
+        // members. Not while Control is held (a single-edge pick), and not for the Dimension
+        // tool, whose click always dimensions the one segment.
+        if !self.state.pick_single_edge && self.state.tool != Tool::Dimension {
+            let hovered_line = match &hover_highlight {
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    construction::PickTargetKind::Line(li),
+                )) => Some(*li),
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Line(li))) => {
+                    Some(*li)
+                }
+                _ => None,
+            };
+            if let Some(li) = hovered_line {
+                // The run the click actually takes: the armed-then-primary pickers'
+                // expansion (mirroring `pick_into_focused_picker`), or — when no picker
+                // takes the line — the raw chain for the paths that chain it themselves:
+                // the plain selection fall-through, and Sweep's hand-rolled path toggle.
+                let armed = tool_pickers.iter().position(|v| v.picker.is_focused());
+                let picker_run: Option<Vec<usize>> = armed
+                    .into_iter()
+                    .chain((armed != Some(0)).then_some(0))
+                    .filter_map(|i| tool_pickers.get(i))
+                    .find_map(|view| {
+                        let run = crate::element_picker::expand_pick(
+                            doc,
+                            &view.picker,
+                            &SceneElement::Line(li),
+                            true,
+                        );
+                        (!run.is_empty()).then(|| {
+                            run.into_iter()
+                                .filter_map(|e| match e {
+                                    SceneElement::Line(l) => Some(l),
+                                    _ => None,
+                                })
+                                .collect()
+                        })
+                    });
+                let run: Vec<usize> = match picker_run {
+                    Some(run) => run,
+                    None if armed.is_none() || self.state.tool == Tool::Sweep => {
+                        crate::element_picker::sketch_line_tangent_chain(doc, li)
+                    }
+                    None => Vec::new(),
+                };
+                exploder_group_highlight.extend(
+                    run.into_iter()
+                        .filter(|l| *l != li)
+                        .map(construction::PickTargetKind::Line),
+                );
+            }
+        }
         // End-point-B candidates (#670): while that picker is armed, every spot on the
         // constraint sphere a body edge crosses is offered in blue, and the one under the
         // cursor reads yellow — the pick a click would take.

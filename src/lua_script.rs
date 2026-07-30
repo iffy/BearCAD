@@ -273,10 +273,14 @@ fn parse_hex_color(text: &str) -> mlua::Result<[u8; 3]> {
 }
 
 /// The optional `{ shift = true }` table a scripted click can carry (#835).
-fn click_shift(opts: Option<Table>) -> mlua::Result<bool> {
+/// A scripted click's `{ shift = …, ctrl = … }` options table (#835/#984).
+fn click_mods(opts: Option<Table>) -> mlua::Result<crate::script::ClickMods> {
     match opts {
-        Some(t) => Ok(t.get::<Option<bool>>("shift")?.unwrap_or(false)),
-        None => Ok(false),
+        Some(t) => Ok(crate::script::ClickMods {
+            shift: t.get::<Option<bool>>("shift")?.unwrap_or(false),
+            ctrl: t.get::<Option<bool>>("ctrl")?.unwrap_or(false),
+        }),
+        None => Ok(crate::script::ClickMods::default()),
     }
 }
 
@@ -3319,9 +3323,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "click",
         lua.create_function(|lua, (x, y, opts): (f32, f32, Option<Table>)| {
-            let shift = click_shift(opts)?;
+            let mods = click_mods(opts)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::Click { x, y, shift }) }
+            unsafe { tick.exec(Instruction::Click { x, y, mods }) }
         })?,
     )?;
 
@@ -3359,9 +3363,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "click_ground",
         lua.create_function(|lua, (x, y, opts): (f32, f32, Option<Table>)| {
-            let shift = click_shift(opts)?;
+            let mods = click_mods(opts)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::ClickGround { x, y, shift }) }
+            unsafe { tick.exec(Instruction::ClickGround { x, y, mods }) }
         })?,
     )?;
 

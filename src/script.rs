@@ -74,6 +74,44 @@ impl ScreenshotRegion {
     }
 }
 
+/// Modifier keys a scripted click holds down (#835/#984). **Shift** is the modifier several
+/// tools read for their second role (multi-select, the in-sketch repeat direction);
+/// **Control** narrows an edge pick to the one edge under the cursor rather than its whole
+/// tangent-continuous run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClickMods {
+    pub shift: bool,
+    pub ctrl: bool,
+}
+
+impl ClickMods {
+    /// The Lua options table this reads back as, e.g. `, { ctrl = true }` — empty when no
+    /// modifier is held, so a plain click round-trips as a plain call.
+    fn lua_opts(self) -> String {
+        let mut parts = Vec::new();
+        if self.shift {
+            parts.push("shift = true");
+        }
+        if self.ctrl {
+            parts.push("ctrl = true");
+        }
+        match parts.is_empty() {
+            true => String::new(),
+            false => format!(", {{ {} }}", parts.join(", ")),
+        }
+    }
+
+    fn egui(self) -> Modifiers {
+        Modifiers {
+            shift: self.shift,
+            ctrl: self.ctrl,
+            // On macOS egui's `command` follows Mac's Cmd, not Ctrl — so a scripted Ctrl
+            // stays Ctrl and never reads as the additive-click modifier (#984).
+            ..Modifiers::NONE
+        }
+    }
+}
+
 /// A single script instruction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instruction {
@@ -695,12 +733,11 @@ pub enum Instruction {
     RunPaletteCommand { query: String },
     // Synthetic input (viewport-local pixel coordinates)
     Move { x: f32, y: f32 },
-    Click { x: f32, y: f32, shift: bool },
+    Click { x: f32, y: f32, mods: ClickMods },
     /// Move/click at ground-plane world coordinates (millimetres, z = 0).
     MoveGround { x: f32, y: f32 },
-    /// A click at ground coordinates, optionally with **Shift** held — the modifier several
-    /// tools read for their second role (multi-select, the in-sketch repeat direction, #835).
-    ClickGround { x: f32, y: f32, shift: bool },
+    /// A click at ground coordinates, optionally with modifiers held (#835/#984).
+    ClickGround { x: f32, y: f32, mods: ClickMods },
     /// Primary-drag between two ground-plane points (world mm), like [`Self::Drag`].
     DragGround { x0: f32, y0: f32, x1: f32, y1: f32 },
     Drag {
@@ -1642,15 +1679,13 @@ impl Instruction {
                 format!("bearcad.ui.palette(\"run\", {query:?})")
             }
             Instruction::Move { x, y } => format!("bearcad.ui.move({x}, {y})"),
-            Instruction::Click { x, y, shift } => match shift {
-                true => format!("bearcad.ui.click({x}, {y}, {{ shift = true }})"),
-                false => format!("bearcad.ui.click({x}, {y})"),
-            },
+            Instruction::Click { x, y, mods } => {
+                format!("bearcad.ui.click({x}, {y}{})", mods.lua_opts())
+            }
             Instruction::MoveGround { x, y } => format!("bearcad.ui.move_ground({x}, {y})"),
-            Instruction::ClickGround { x, y, shift } => match shift {
-                true => format!("bearcad.ui.click_ground({x}, {y}, {{ shift = true }})"),
-                false => format!("bearcad.ui.click_ground({x}, {y})"),
-            },
+            Instruction::ClickGround { x, y, mods } => {
+                format!("bearcad.ui.click_ground({x}, {y}{})", mods.lua_opts())
+            }
             Instruction::DragGround { x0, y0, x1, y1 } => {
                 format!("bearcad.ui.drag_ground({x0}, {y0}, {x1}, {y1})")
             }
@@ -3493,12 +3528,12 @@ impl SyntheticInput {
         self.push_event(egui::Event::PointerMoved(pos));
     }
 
-    /// A click with **Shift** optionally held (#835) — the modifier tools read for their
-    /// second role, like multi-select or the in-sketch repeat's direction edge.
-    pub fn click_with(&mut self, viewport: egui::Rect, x: f32, y: f32, shift: bool) {
+    /// A click with modifiers optionally held (#835/#984) — Shift for a tool's second role
+    /// (multi-select, the in-sketch repeat's direction edge), Control for a single-edge pick.
+    pub fn click_with(&mut self, viewport: egui::Rect, x: f32, y: f32, mods: ClickMods) {
         let pos = Self::viewport_pos(viewport, x, y);
         self.pointer_pos = Some(pos);
-        let modifiers = if shift { Modifiers::SHIFT } else { Modifiers::NONE };
+        let modifiers = mods.egui();
         // Hover one frame, press the next, release the one after — the exact shape
         // tool handlers (press-frame logic, select-then-drag) are written against.
         self.push_event(egui::Event::PointerMoved(pos));
@@ -4343,8 +4378,8 @@ impl ScriptRunner {
         viewport: Option<egui::Rect>,
         x: f32,
         y: f32,
-        // `Some(shift)` clicks (with Shift held when true); `None` only moves the pointer.
-        click: Option<bool>,
+        // `Some(mods)` clicks (holding those modifiers); `None` only moves the pointer.
+        click: Option<ClickMods>,
     ) {
         let Some(vp) = viewport else { return };
         let world = Vec3::new(x, y, 0.0);
@@ -4355,7 +4390,7 @@ impl ScriptRunner {
         let local_x = screen.x - vp.min.x;
         let local_y = screen.y - vp.min.y;
         match click {
-            Some(shift) => synthetic.click_with(vp, local_x, local_y, shift),
+            Some(mods) => synthetic.click_with(vp, local_x, local_y, mods),
             None => synthetic.move_to(vp, local_x, local_y),
         }
     }
@@ -5675,11 +5710,11 @@ impl ScriptRunner {
                 synthetic.move_to(vp, x, y);
                 StepResult::Continue
             }
-            Instruction::Click { x, y, shift } => {
+            Instruction::Click { x, y, mods } => {
                 let Some(vp) = viewport else {
                     return StepResult::Wait;
                 };
-                synthetic.click_with(vp, x, y, shift);
+                synthetic.click_with(vp, x, y, mods);
                 StepResult::Continue
             }
             Instruction::MoveGround { x, y } => {
@@ -5689,11 +5724,11 @@ impl ScriptRunner {
                 Self::ground_pointer(synthetic, state, viewport, x, y, None);
                 StepResult::Continue
             }
-            Instruction::ClickGround { x, y, shift } => {
+            Instruction::ClickGround { x, y, mods } => {
                 if viewport.is_none() || state.cam.is_transitioning() {
                     return StepResult::Wait;
                 }
-                Self::ground_pointer(synthetic, state, viewport, x, y, Some(shift));
+                Self::ground_pointer(synthetic, state, viewport, x, y, Some(mods));
                 StepResult::Continue
             }
             Instruction::DragGround { x0, y0, x1, y1 } => {
@@ -6651,7 +6686,7 @@ mod tests {
 
     #[test]
     fn instruction_as_lua_formats_click() {
-        let ins = Instruction::Click { x: 100.0, y: 200.0, shift: false };
+        let ins = Instruction::Click { x: 100.0, y: 200.0, mods: ClickMods::default() };
         assert_eq!(ins.as_lua(), "bearcad.ui.click(100, 200)");
     }
 

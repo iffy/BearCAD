@@ -2492,6 +2492,35 @@ modeled on SolveSpace (https://solvespace.com).
   loupe previews all draw the full chain (`body_edge_curve_chain`, endpoint-matched by proximity
   since selection geometry round-trips the coarser `quantize_body_point`). The exploder crowd
   dedupes a curve's facets into a single candidate the same way.
+- **Edge pickers take the whole tangent run (#984):** the same rule reaches **sketch lines**.
+  Hovering or clicking any line takes it plus every line tangent-continuous with it in both
+  directions — a straight line that breaks into a tangent curve and exits again as a tangent
+  line is one thing to pick, not three. The chaining is one shared union-find,
+  `gpu_viewport::chain_by_tangency`, over each item's two `(vertex key, away-direction)` ends;
+  `solid_mesh_edge_chains` and `element_picker::sketch_line_tangent_chain` differ only in how a
+  vertex is keyed and a tangent read (a curved line's tangent at an endpoint is its **bezier
+  handle**, a straight one's is its chord). The 30° threshold, the exactly-two-ends rule, and
+  the corner/junction breaks are shared, so the two kinds of edge behave alike. Only the line's
+  own sketch participates; deleted and shadow lines don't.
+  The run is applied in `element_picker::expand_pick`, so every path that picks gets it at once
+  — the viewport click, the Elements-pane click, and the scripted pick — and a picker that
+  refuses part of a run (a `Straight` axis picker meeting a run's curve) simply keeps the
+  members it accepts. Three deliberate exceptions: a **single-slot** picker never chains (the
+  run has nowhere to go, the same reason it never takes a face's edges, #955); the **Dimension**
+  tool never chains (a dimension measures one segment, or a pair); and the **Exploder's fan**
+  never chains, since its job is to tell a crowd's members apart and a run would give every
+  line of one run the same dedupe key — the chaining happens when its leaf is clicked, through
+  the ordinary click path. Selecting a run is one act (`selection::click_scene_selection_many`):
+  all-selected takes the whole run out, anything short of that completes it, so a partial
+  selection converges on selected rather than toggling piecewise.
+  Holding **Control** (`AppState::pick_single_edge`, mirrored from the frame's modifiers next to
+  `tool_pickers`) picks only the edge under the cursor. On platforms where egui's `command` *is*
+  Ctrl — everywhere but macOS — that click is additive as well, so it adds the single edge
+  rather than replacing with it; on macOS ⌘ is the additive modifier and Ctrl is free.
+  The hover says what the click does: the run's other members ride the same
+  `extra_pick_highlights` channel a hovered exploder group loupe uses, which draws each line's
+  real curve — rather than the multi-take `Curve` the picker-driven hover fallback reduces a
+  set to, which would show a bezier as its chord.
 - **Whole-body selection with the Select tool (#902):** outside sketch mode, clicking a body's
   flat **face** selects the **whole body** — bodies outrank faces — while an **edge** or a
   **corner** still outranks the body it belongs to. Hover follows the click: a face under the
