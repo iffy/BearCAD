@@ -11532,6 +11532,7 @@ impl eframe::App for App {
                 draw_line_curve_mode: self.state.line_curve_mode(),
                 draw_line_tangent_constraint: self.state.line_tangent_constraint(),
                 in_sketch: self.state.sketch_session.is_some(),
+                open_sketch: self.state.sketch_session.map(|s| s.sketch),
                 // The local axes as they project on screen right now (#751): the
                 // axis-parallel constraint buttons draw their glyphs at these angles, in
                 // the axes' own colors, so "which way is X" matches what the user sees.
@@ -14961,42 +14962,15 @@ fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
     }
 }
 
-/// Whether a selection-family pick belongs to the open sketch (#742): while a sketch is
-/// being edited, Select and Constraint touch only that sketch's own geometry — its lines,
-/// circles, points, and text, the origin and its axes, and the sketched-on face's own
-/// edges and corners. Outside bodies and other sketches stay untouchable until the
-/// Project tool references them in.
+/// Whether a selection-family pick belongs to the open sketch (#742). One definition, shared
+/// with `PickRule::InSketch` (#953) so the hover path, the click path, and a sketch-scoped
+/// picker can never disagree about what the open sketch owns.
 fn element_in_sketch(
     doc: &model::Document,
     sketch: model::SketchId,
     element: &SceneElement,
 ) -> bool {
-    let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
-    let circle_in = |ci: usize| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
-    let text_in = |ti: usize| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
-    let host_face = doc.sketch_face(sketch);
-    let constraint_line_in = |cl: &model::ConstraintLine| match cl {
-        model::ConstraintLine::Line(li) => line_in(*li),
-        model::ConstraintLine::FaceEdge { face, .. } => Some(face) == host_face.as_ref(),
-        model::ConstraintLine::OriginAxis(_) => true,
-    };
-    match element {
-        SceneElement::Line(li) => line_in(*li),
-        SceneElement::Circle(ci) => circle_in(*ci),
-        SceneElement::SketchText(ti) => text_in(*ti),
-        SceneElement::Point(point) => match point {
-            model::ConstraintPoint::LineEndpoint { line, .. } => line_in(*line),
-            model::ConstraintPoint::CircleCenter(ci) => circle_in(*ci),
-            model::ConstraintPoint::FaceVertex { face, .. } => Some(face) == host_face.as_ref(),
-            model::ConstraintPoint::TextAnchor { text, .. } => text_in(*text),
-            // Gated to the host plane at creation; nothing sketch-foreign resolves here.
-            model::ConstraintPoint::ImageCalibrationPoint { .. } => true,
-        },
-        SceneElement::FaceEdge(cl) => constraint_line_in(cl),
-        SceneElement::Origin => true,
-        SceneElement::Constraint(ci) => doc.constraints.get(*ci).is_some_and(|c| c.sketch == sketch),
-        _ => false,
-    }
+    crate::element_picker::element_in_sketch(doc, sketch, element)
 }
 
 /// What the Move tool's focused picker wants the viewport to hover-highlight (#659).

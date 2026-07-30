@@ -207,6 +207,138 @@ impl OperationKind {
     }
 }
 
+/// An instance-level restriction on what a picker will take (#953), beyond its element kinds —
+/// the design's "restrict selection to particular elements/components/bodies". A picker's rules
+/// **all** have to pass.
+///
+/// Data-carrying rather than a boxed closure because [`ElementPicker`] lives inside
+/// `ContextPaneContent`, which is `Clone + Debug + PartialEq` and diffed every frame. A closure
+/// breaks all three; a plain `fn` pointer keeps them but can't capture the state these rules
+/// need (which bodies are moving, what a sibling picker already holds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PickRule {
+    /// Only geometry belonging to this sketch (#742): while a sketch is open, Select and
+    /// Constraint touch only its own geometry.
+    InSketch(crate::model::SketchId),
+    /// Only bodies that exist, aren't deleted, and aren't shadow (already consumed by another
+    /// operation). Non-body elements pass — combine with a body-only kind filter.
+    LiveBody,
+    /// Only geometry sitting on one of these bodies — the Move tool's start points, which must
+    /// land on a **moving** body (#649).
+    OnBodies(Vec<usize>),
+    /// Only geometry **not** sitting on one of these bodies — the Move tool's end points, which
+    /// land on stationary geometry (#650). Geometry belonging to no body at all (the origin, a
+    /// world axis) counts as stationary.
+    OffBodies(Vec<usize>),
+    /// Only straight references: a sketch line with no bezier, a body edge, or a world axis.
+    /// The Revolve axis and Repeat path pickers.
+    Straight,
+    /// Only construction geometry (`true`) or only real geometry (`false`).
+    Construction(bool),
+    /// Excludes what a sibling picker already holds — Combine's B side against its A side.
+    NotIn(Vec<SceneElement>),
+}
+
+impl PickRule {
+    /// Whether this rule lets the element through.
+    pub fn allows(&self, doc: &Document, element: &SceneElement) -> bool {
+        match self {
+            PickRule::InSketch(sketch) => element_in_sketch(doc, *sketch, element),
+            PickRule::LiveBody => match element {
+                SceneElement::Body(index) => {
+                    doc.bodies.get(*index).is_some_and(|b| !b.deleted && !b.shadow)
+                }
+                _ => true,
+            },
+            PickRule::OnBodies(bodies) => {
+                element_body(doc, element).is_some_and(|b| bodies.contains(&b))
+            }
+            PickRule::OffBodies(bodies) => {
+                element_body(doc, element).is_none_or(|b| !bodies.contains(&b))
+            }
+            PickRule::Straight => match element {
+                SceneElement::Line(index) => {
+                    doc.lines.get(*index).is_some_and(|l| l.bezier.is_none())
+                }
+                SceneElement::Circle(_) => false,
+                _ => true,
+            },
+            PickRule::Construction(want) => match element {
+                SceneElement::Line(index) => {
+                    doc.lines.get(*index).is_some_and(|l| l.construction == *want)
+                }
+                SceneElement::Circle(index) => doc
+                    .circles
+                    .get(*index)
+                    .is_some_and(|c| c.construction == *want),
+                _ => true,
+            },
+            PickRule::NotIn(excluded) => !excluded.contains(element),
+        }
+    }
+}
+
+/// The body an element sits on, for [`PickRule::OnBodies`]/[`OffBodies`](PickRule::OffBodies).
+/// `None` for anything that belongs to no body — the origin, a world axis, sketch geometry.
+fn element_body(doc: &Document, element: &SceneElement) -> Option<usize> {
+    match element {
+        SceneElement::Body(index) => Some(*index),
+        SceneElement::BodyEdge { body, .. }
+        | SceneElement::BodyVertex { body, .. }
+        | SceneElement::BodyFace { body, .. } => Some(*body),
+        SceneElement::MovePoint(point) => point.body(),
+        SceneElement::SketchFace(face) => face
+            .extrusion_index()
+            .and_then(|e| crate::model::body_index_for_extrusion(doc, e))
+            .or_else(|| {
+                face.revolution_index()
+                    .and_then(|r| crate::model::body_index_for_revolution(doc, r))
+            }),
+        SceneElement::ExtrusionEdge { extrusion, .. } => {
+            crate::model::body_index_for_extrusion(doc, *extrusion)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a selection-family pick belongs to the open sketch (#742): while a sketch is
+/// being edited, Select and Constraint touch only that sketch's own geometry — its lines,
+/// circles, points, and text, the origin and its axes, and the sketched-on face's own
+/// edges and corners. Outside bodies and other sketches stay untouchable until the
+/// Project tool references them in.
+pub fn element_in_sketch(
+    doc: &Document,
+    sketch: crate::model::SketchId,
+    element: &SceneElement,
+) -> bool {
+    let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
+    let circle_in = |ci: usize| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
+    let text_in = |ti: usize| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
+    let host_face = doc.sketch_face(sketch);
+    let constraint_line_in = |cl: &crate::model::ConstraintLine| match cl {
+        crate::model::ConstraintLine::Line(li) => line_in(*li),
+        crate::model::ConstraintLine::FaceEdge { face, .. } => Some(face) == host_face.as_ref(),
+        crate::model::ConstraintLine::OriginAxis(_) => true,
+    };
+    match element {
+        SceneElement::Line(li) => line_in(*li),
+        SceneElement::Circle(ci) => circle_in(*ci),
+        SceneElement::SketchText(ti) => text_in(*ti),
+        SceneElement::Point(point) => match point {
+            crate::model::ConstraintPoint::LineEndpoint { line, .. } => line_in(*line),
+            crate::model::ConstraintPoint::CircleCenter(ci) => circle_in(*ci),
+            crate::model::ConstraintPoint::FaceVertex { face, .. } => Some(face) == host_face.as_ref(),
+            crate::model::ConstraintPoint::TextAnchor { text, .. } => text_in(*text),
+            // Gated to the host plane at creation; nothing sketch-foreign resolves here.
+            crate::model::ConstraintPoint::ImageCalibrationPoint { .. } => true,
+        },
+        SceneElement::FaceEdge(cl) => constraint_line_in(cl),
+        SceneElement::Origin => true,
+        SceneElement::Constraint(ci) => doc.constraints.get(*ci).is_some_and(|c| c.sketch == sketch),
+        _ => false,
+    }
+}
+
 /// Which elements a picker will accept.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElementFilter {
@@ -217,6 +349,10 @@ pub struct ElementFilter {
     /// When `Some`, an [`ElementKind::Operation`] element is accepted only if its
     /// [`OperationKind`] is listed. `None` accepts every operation (subject to `kinds`).
     operations: Option<Vec<OperationKind>>,
+    /// Instance-level restrictions (#953), all of which must pass. Applied **after** the kind
+    /// check, and applied even by an `everything` filter — the Select tool has none, but a
+    /// picker that takes any kind within one sketch is a perfectly good configuration.
+    rules: Vec<PickRule>,
 }
 
 impl ElementFilter {
@@ -226,6 +362,7 @@ impl ElementFilter {
             everything: true,
             kinds: Vec::new(),
             operations: None,
+            rules: Vec::new(),
         }
     }
 
@@ -243,12 +380,24 @@ impl ElementFilter {
             everything: false,
             kinds: ordered,
             operations: None,
+            rules: Vec::new(),
         }
     }
 
     /// A single-kind filter (the common case, e.g. "bodies only").
     pub fn kind(kind: ElementKind) -> ElementFilter {
         ElementFilter::kinds(&[kind])
+    }
+
+    /// Add an instance-level restriction (#953). Chainable; every rule added must pass.
+    pub fn rule(mut self, rule: PickRule) -> ElementFilter {
+        self.rules.push(rule);
+        self
+    }
+
+    /// This filter's instance-level restrictions.
+    pub fn rules(&self) -> &[PickRule] {
+        &self.rules
     }
 
     /// Restrict accepted operations to the given sub-kinds. Implies [`ElementKind::Operation`].
@@ -287,8 +436,12 @@ impl ElementFilter {
         self.kinds.contains(&kind) || (kind == ElementKind::Image && self.kinds.contains(&ElementKind::Plane))
     }
 
-    /// Whether a specific element is acceptable, honoring the operation restriction.
-    pub fn accepts(&self, element: &SceneElement) -> bool {
+    /// Whether a specific element is acceptable: its kind, then the operation restriction, then
+    /// every instance-level [`PickRule`] (#953).
+    pub fn accepts(&self, doc: &Document, element: &SceneElement) -> bool {
+        if !self.rules.iter().all(|rule| rule.allows(doc, element)) {
+            return false;
+        }
         if self.everything {
             return true;
         }
@@ -406,8 +559,8 @@ impl ElementPicker {
     }
 
     /// Whether this element is one this picker would accept (delegates to the filter).
-    pub fn accepts(&self, element: &SceneElement) -> bool {
-        self.filter.accepts(element)
+    pub fn accepts(&self, doc: &Document, element: &SceneElement) -> bool {
+        self.filter.accepts(doc, element)
     }
 
     // ---- focus ----------------------------------------------------------------------------
@@ -458,12 +611,12 @@ impl ElementPicker {
 
     /// Offer an element to the picker. Toggles off if already present; otherwise adds it when the
     /// filter accepts it and there is room, replacing the sole element for a single-select picker.
-    pub fn pick(&mut self, element: SceneElement) -> PickOutcome {
+    pub fn pick(&mut self, doc: &Document, element: SceneElement) -> PickOutcome {
         if let Some(pos) = self.picked.iter().position(|e| e == &element) {
             self.picked.remove(pos);
             return PickOutcome::Removed;
         }
-        if !self.filter.accepts(&element) {
+        if !self.filter.accepts(doc, &element) {
             return PickOutcome::NotAccepted;
         }
         if self.is_full() {
@@ -499,13 +652,17 @@ impl ElementPicker {
 
     /// Replace the whole picked set (e.g. re-syncing an edit session from a committed operation).
     /// Elements the filter rejects are dropped, and the limit is honored.
-    pub fn set_picked(&mut self, elements: impl IntoIterator<Item = SceneElement>) {
+    pub fn set_picked(
+        &mut self,
+        doc: &Document,
+        elements: impl IntoIterator<Item = SceneElement>,
+    ) {
         self.picked.clear();
         for element in elements {
             if self.is_full() {
                 break;
             }
-            if self.filter.accepts(&element) && !self.picked.contains(&element) {
+            if self.filter.accepts(doc, &element) && !self.picked.contains(&element) {
                 self.picked.push(element);
             }
         }
@@ -812,33 +969,33 @@ mod tests {
         // The Mirror tool's plane picker (#566): construction planes and flat faces, never a
         // whole body.
         let f = ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]);
-        assert!(f.accepts(&SceneElement::ConstructionPlane(0)));
-        assert!(f.accepts(&body_face(0)));
-        assert!(!f.accepts(&SceneElement::Body(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&Document::default(), &body_face(0)));
+        assert!(!f.accepts(&Document::default(), &SceneElement::Body(0)));
     }
 
     #[test]
     fn everything_filter_accepts_all() {
         let f = ElementFilter::everything();
-        assert!(f.accepts(&body(0)));
-        assert!(f.accepts(&SceneElement::Origin));
-        assert!(f.accepts(&SceneElement::MoveOp(3)));
+        assert!(f.accepts(&Document::default(), &body(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::Origin));
+        assert!(f.accepts(&Document::default(), &SceneElement::MoveOp(3)));
         assert!(f.accepts_kind(ElementKind::Constraint));
     }
 
     #[test]
     fn kind_filter_rejects_other_kinds() {
         let f = ElementFilter::kind(ElementKind::Body);
-        assert!(f.accepts(&body(0)));
-        assert!(!f.accepts(&line(0)));
+        assert!(f.accepts(&Document::default(), &body(0)));
+        assert!(!f.accepts(&Document::default(), &line(0)));
         assert!(!f.accepts_kind(ElementKind::Line));
     }
 
     #[test]
     fn plane_filter_also_accepts_images() {
         let f = ElementFilter::kind(ElementKind::Plane);
-        assert!(f.accepts(&SceneElement::ConstructionPlane(0)));
-        assert!(f.accepts(&SceneElement::Image(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::Image(0)));
     }
 
     #[test]
@@ -846,15 +1003,15 @@ mod tests {
         // Image was missing from `ORDER`, so `kinds()` dropped it and an images-only picker
         // accepted nothing at all.
         let f = ElementFilter::kind(ElementKind::Image);
-        assert!(f.accepts(&SceneElement::Image(0)));
-        assert!(!f.accepts(&SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::Image(0)));
+        assert!(!f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
     }
 
     #[test]
     fn a_picked_image_shows_in_the_summary() {
         // Same root cause: `summary()` walks `ORDER`, so a picked image counted as nothing.
         let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
-        p.pick(SceneElement::Image(0));
+        p.pick(&Document::default(), SceneElement::Image(0));
         assert_eq!(p.summary().len(), 1, "one chip for the picked image");
         assert_eq!(p.summary()[0].1, 1);
     }
@@ -869,13 +1026,13 @@ mod tests {
             ElementKind::Axis
         );
         let f = ElementFilter::kinds(&[ElementKind::Axis, ElementKind::Line]);
-        assert!(f.accepts(&SceneElement::GlobalAxis(GlobalAxis::X)));
-        assert!(f.accepts(&line(0)));
-        assert!(!f.accepts(&body(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::GlobalAxis(GlobalAxis::X)));
+        assert!(f.accepts(&Document::default(), &line(0)));
+        assert!(!f.accepts(&Document::default(), &body(0)));
         // An axis-only picker refuses sketch lines.
         let axes = ElementFilter::kind(ElementKind::Axis);
-        assert!(axes.accepts(&SceneElement::GlobalAxis(GlobalAxis::Y)));
-        assert!(!axes.accepts(&line(0)));
+        assert!(axes.accepts(&Document::default(), &SceneElement::GlobalAxis(GlobalAxis::Y)));
+        assert!(!axes.accepts(&Document::default(), &line(0)));
     }
 
     #[test]
@@ -888,9 +1045,9 @@ mod tests {
             ElementKind::Component
         );
         let ops = ElementFilter::kind(ElementKind::Operation);
-        assert!(ops.accepts(&SceneElement::BooleanOp(0)));
-        assert!(!ops.accepts(&SceneElement::Joint(0)));
-        assert!(!ops.accepts(&SceneElement::Component(0)));
+        assert!(ops.accepts(&Document::default(), &SceneElement::BooleanOp(0)));
+        assert!(!ops.accepts(&Document::default(), &SceneElement::Joint(0)));
+        assert!(!ops.accepts(&Document::default(), &SceneElement::Component(0)));
     }
 
     #[test]
@@ -905,8 +1062,8 @@ mod tests {
         );
         assert_eq!(ElementKind::of(&profile), ElementKind::Face);
         let faces = ElementFilter::kind(ElementKind::Face);
-        assert!(faces.accepts(&profile));
-        assert!(!faces.accepts(&body(0)));
+        assert!(faces.accepts(&Document::default(), &profile));
+        assert!(!faces.accepts(&Document::default(), &body(0)));
     }
 
     #[test]
@@ -936,8 +1093,8 @@ mod tests {
             b: [100, 0, 0],
         });
         assert_eq!(ElementKind::of(&midpoint), ElementKind::Vertex);
-        assert!(ElementFilter::kind(ElementKind::Vertex).accepts(&midpoint));
-        assert!(!ElementFilter::kind(ElementKind::Edge).accepts(&midpoint));
+        assert!(ElementFilter::kind(ElementKind::Vertex).accepts(&Document::default(), &midpoint));
+        assert!(!ElementFilter::kind(ElementKind::Edge).accepts(&Document::default(), &midpoint));
     }
 
     #[test]
@@ -979,8 +1136,8 @@ mod tests {
             edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 1 },
         };
         assert_eq!(ElementKind::of(&edge), ElementKind::Edge);
-        assert!(ElementFilter::kind(ElementKind::Edge).accepts(&edge));
-        assert!(!ElementFilter::kind(ElementKind::Body).accepts(&edge));
+        assert!(ElementFilter::kind(ElementKind::Edge).accepts(&Document::default(), &edge));
+        assert!(!ElementFilter::kind(ElementKind::Body).accepts(&Document::default(), &edge));
     }
 
     #[test]
@@ -994,6 +1151,120 @@ mod tests {
             element
         );
         assert_eq!(ElementKind::of(&element), ElementKind::Face);
+    }
+
+    /// A document with two solid bodies, a straight line and a curved one, so the rules have
+    /// something real to judge.
+    fn doc_with_two_bodies() -> Document {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        // A curved line, so `Straight` has something to reject.
+        let curved = doc.lines.len();
+        doc.lines.push(crate::model::Line {
+            bezier: Some([(1.0, 1.0), (2.0, 2.0)]),
+            ..doc.lines[0].clone()
+        });
+        assert!(doc.lines[curved].bezier.is_some());
+        for _ in 0..2 {
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Imported(0),
+                material: None,
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        doc
+    }
+
+    #[test]
+    fn a_live_body_rule_rejects_deleted_and_consumed_bodies() {
+        // The `!deleted && !shadow` gate that `toggle_body_in_active_tool` and every `SetTool`
+        // seeding block re-checks by hand.
+        let mut doc = doc_with_two_bodies();
+        doc.bodies[1].shadow = true;
+        let f = ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody);
+        assert!(f.accepts(&doc, &body(0)));
+        assert!(!f.accepts(&doc, &body(1)), "a consumed body is not pickable");
+        assert!(!f.accepts(&doc, &body(9)), "a body that isn't there is not pickable");
+    }
+
+    #[test]
+    fn on_and_off_bodies_split_the_moving_from_the_stationary() {
+        // The Move tool's rule: start points land on a *moving* body, end points on a
+        // stationary one (#649/#650).
+        let doc = doc_with_two_bodies();
+        let moving = vec![0usize];
+        let on_moving = ElementFilter::kind(ElementKind::Vertex)
+            .rule(PickRule::OnBodies(moving.clone()));
+        let off_moving =
+            ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OffBodies(moving));
+        let corner_of_0 = SceneElement::BodyVertex { body: 0, p: [0; 3] };
+        let corner_of_1 = SceneElement::BodyVertex { body: 1, p: [0; 3] };
+        assert!(on_moving.accepts(&doc, &corner_of_0));
+        assert!(!on_moving.accepts(&doc, &corner_of_1));
+        assert!(!off_moving.accepts(&doc, &corner_of_0));
+        assert!(off_moving.accepts(&doc, &corner_of_1));
+        // The origin belongs to no body, so it is stationary but never "on" a moving one.
+        assert!(off_moving.accepts(&doc, &SceneElement::Origin));
+        assert!(!on_moving.accepts(&doc, &SceneElement::Origin));
+    }
+
+    #[test]
+    fn a_straight_rule_rejects_a_curved_line() {
+        // The Revolve axis / Repeat path rule: a straight reference only.
+        let doc = doc_with_two_bodies();
+        let f = ElementFilter::kinds(&[ElementKind::Line, ElementKind::Axis, ElementKind::Edge])
+            .rule(PickRule::Straight);
+        assert!(f.accepts(&doc, &line(0)), "a plain sketch line is straight");
+        let curved = doc.lines.len() - 1;
+        assert!(!f.accepts(&doc, &line(curved)), "a bezier line is not");
+        assert!(f.accepts(
+            &doc,
+            &SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z)
+        ));
+        assert!(f.accepts(
+            &doc,
+            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+        ));
+    }
+
+    #[test]
+    fn a_not_in_rule_keeps_a_sibling_pickers_items_out() {
+        // Combine's B side must not take what side A already holds.
+        let doc = doc_with_two_bodies();
+        let f = ElementFilter::kind(ElementKind::Body).rule(PickRule::NotIn(vec![body(0)]));
+        assert!(!f.accepts(&doc, &body(0)));
+        assert!(f.accepts(&doc, &body(1)));
+    }
+
+    #[test]
+    fn rules_all_have_to_pass() {
+        let mut doc = doc_with_two_bodies();
+        doc.bodies[1].shadow = true;
+        let f = ElementFilter::kind(ElementKind::Body)
+            .rule(PickRule::LiveBody)
+            .rule(PickRule::NotIn(vec![body(0)]));
+        // 0 is live but excluded; 1 is not excluded but consumed. Neither passes both.
+        assert!(!f.accepts(&doc, &body(0)));
+        assert!(!f.accepts(&doc, &body(1)));
+    }
+
+    #[test]
+    fn a_rule_gates_picking_not_just_the_filter() {
+        // The point of the rules: `pick` and `set_picked` honour them, so every path — viewport
+        // click, pane click, tool handoff — gets the same answer.
+        let mut doc = doc_with_two_bodies();
+        doc.bodies[1].shadow = true;
+        let mut p = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody),
+            PickLimit::Infinite,
+        );
+        assert_eq!(p.pick(&doc, body(1)), PickOutcome::NotAccepted);
+        assert_eq!(p.pick(&doc, body(0)), PickOutcome::Added);
+        p.set_picked(&doc, [body(0), body(1)]);
+        assert_eq!(p.picked(), &[body(0)], "set_picked drops what a rule rejects");
     }
 
     #[test]
@@ -1022,7 +1293,7 @@ mod tests {
                 "{kind:?} (from {element:?}) is missing from ElementKind::ORDER"
             );
             assert!(
-                ElementFilter::kind(kind).accepts(&element),
+                ElementFilter::kind(kind).accepts(&Document::default(), &element),
                 "a {kind:?}-only picker should accept {element:?}"
             );
         }
@@ -1032,21 +1303,21 @@ mod tests {
     fn operation_restriction_filters_by_sub_kind() {
         let f = ElementFilter::kinds(&[ElementKind::Body])
             .operations(&[OperationKind::Boolean, OperationKind::Slice]);
-        assert!(f.accepts(&SceneElement::BooleanOp(0)));
-        assert!(f.accepts(&SceneElement::SliceOp(0)));
-        assert!(!f.accepts(&SceneElement::MoveOp(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::BooleanOp(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::SliceOp(0)));
+        assert!(!f.accepts(&Document::default(), &SceneElement::MoveOp(0)));
         // Body still accepted alongside the operations.
-        assert!(f.accepts(&body(0)));
+        assert!(f.accepts(&Document::default(), &body(0)));
     }
 
     #[test]
     fn pick_toggles_and_respects_kind() {
         let mut p = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
-        assert_eq!(p.pick(body(0)), PickOutcome::Added);
-        assert_eq!(p.pick(line(0)), PickOutcome::NotAccepted);
-        assert_eq!(p.pick(body(1)), PickOutcome::Added);
+        assert_eq!(p.pick(&Document::default(), body(0)), PickOutcome::Added);
+        assert_eq!(p.pick(&Document::default(), line(0)), PickOutcome::NotAccepted);
+        assert_eq!(p.pick(&Document::default(), body(1)), PickOutcome::Added);
         assert_eq!(p.len(), 2);
-        assert_eq!(p.pick(body(0)), PickOutcome::Removed);
+        assert_eq!(p.pick(&Document::default(), body(0)), PickOutcome::Removed);
         assert_eq!(p.len(), 1);
         assert!(p.contains(&body(1)));
     }
@@ -1054,18 +1325,18 @@ mod tests {
     #[test]
     fn finite_limit_blocks_when_full() {
         let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Finite(2));
-        assert_eq!(p.pick(body(0)), PickOutcome::Added);
-        assert_eq!(p.pick(body(1)), PickOutcome::Added);
+        assert_eq!(p.pick(&Document::default(), body(0)), PickOutcome::Added);
+        assert_eq!(p.pick(&Document::default(), body(1)), PickOutcome::Added);
         assert!(p.is_full());
-        assert_eq!(p.pick(body(2)), PickOutcome::Full);
+        assert_eq!(p.pick(&Document::default(), body(2)), PickOutcome::Full);
         assert_eq!(p.len(), 2);
     }
 
     #[test]
     fn single_select_replaces() {
         let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Finite(1));
-        assert_eq!(p.pick(body(0)), PickOutcome::Added);
-        assert_eq!(p.pick(body(1)), PickOutcome::Replaced);
+        assert_eq!(p.pick(&Document::default(), body(0)), PickOutcome::Added);
+        assert_eq!(p.pick(&Document::default(), body(1)), PickOutcome::Replaced);
         assert_eq!(p.picked(), &[body(1)]);
     }
 
@@ -1075,15 +1346,15 @@ mod tests {
         assert!(p.is_focused());
         p.set_focused(false);
         assert!(p.is_focused(), "select-tool picker must not lose focus");
-        assert!(p.accepts(&SceneElement::Sketch(0)));
+        assert!(p.accepts(&Document::default(), &SceneElement::Sketch(0)));
     }
 
     #[test]
     fn summary_groups_by_kind_in_canonical_order() {
         let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
-        p.pick(body(0));
-        p.pick(line(0));
-        p.pick(line(1));
+        p.pick(&Document::default(), body(0));
+        p.pick(&Document::default(), line(0));
+        p.pick(&Document::default(), line(1));
         // Canonical order puts lines before bodies.
         let summary = p.summary();
         assert_eq!(summary.len(), 2);
@@ -1105,8 +1376,8 @@ mod tests {
     #[test]
     fn apply_event_removes_and_clears() {
         let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
-        p.pick(body(0));
-        p.pick(line(0));
+        p.pick(&Document::default(), body(0));
+        p.pick(&Document::default(), line(0));
         assert!(apply_event(&mut p, PickerEvent::Remove(0)));
         assert_eq!(p.picked(), &[line(0)]);
         assert!(!apply_event(&mut p, PickerEvent::Focus));
@@ -1117,7 +1388,7 @@ mod tests {
     #[test]
     fn set_picked_drops_rejected_and_honors_limit() {
         let mut p = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Finite(2));
-        p.set_picked([body(0), line(0), body(1), body(2)]);
+        p.set_picked(&Document::default(), [body(0), line(0), body(1), body(2)]);
         assert_eq!(p.picked(), &[body(0), body(1)]);
     }
 }

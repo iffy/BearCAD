@@ -2586,9 +2586,21 @@ modeled on SolveSpace (https://solvespace.com).
   lines, circles, **axes**, vertices, edges, faces, constraints, bodies, **components**,
   **joints**, and operations (and, for operations, which sub-kinds); every kind must be listed
   in `ORDER`, since that is what `ElementFilter::kinds` builds from and what the collapsed
-  summary counts — a pick limit (a whole number or unlimited), and an
+  summary counts — a pick limit (a whole number or unlimited), an
   optional override of the selected-element highlight color (defaulting to the theme selection
-  color). The Select and Constraint tools mirror the live selection; the construction tools
+  color), and any number of **pick rules** (#953).
+- **Pick rules (#953):** a picker's kinds say *what sort* of thing it takes; its rules say
+  *which ones*, the design's "restrict selection to particular elements/components/bodies". All
+  of a picker's rules must pass, and they gate every path equally — `accepts`, `pick`, and
+  `set_picked` — so a viewport click, a pane click, and a tool handoff can never disagree.
+  `PickRule` is data, not a closure, because a picker lives inside the diffed
+  `ContextPaneContent` and must stay `Clone + Debug + PartialEq`. The rules:
+  `InSketch(sketch)` (what the open sketch owns, #742 — the same `element_in_sketch` the hover
+  and click paths use, so there is one definition and not three), `LiveBody` (not deleted, not
+  consumed by another operation), `OnBodies` / `OffBodies` (the Move tool's start points land on
+  a **moving** body, its end points on stationary geometry, #649/#650), `Straight` (a
+  Revolve axis or Repeat path takes no curve), `Construction(bool)`, and `NotIn(…)` (Combine's B
+  side can't take what side A holds). The Select and Constraint tools mirror the live selection; the construction tools
   (Combine, Move, Repeat, Slice, Revolve-cut, Loft, Chamfer/Fillet) each present their own
   in-progress picked set through the same control — with the currently-active picker focused
   (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is

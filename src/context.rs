@@ -2,7 +2,7 @@
 
 use crate::actions::{ExtrudeBodyMode, Tool};
 use crate::document_health::{health_status_label, selection_frozen_summary, DocumentHealth, HealthStatus};
-use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
+use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit, PickRule};
 use crate::geometric_constraints::{constraint_pane_rows, ConstraintPaneRow};
 use crate::hierarchy::SceneElement;
 use crate::model::{Document, SketchId};
@@ -38,6 +38,10 @@ pub struct ContextInput<'a> {
     pub draw_line_tangent_constraint: Option<bool>,
     /// Whether a sketch is open (snapping only applies inside a sketch).
     pub in_sketch: bool,
+    /// The open sketch, when there is one (#953) — what the sketch-scoped pickers restrict
+    /// themselves to. `in_sketch` is `open_sketch.is_some()`; both are carried because most
+    /// callers only need the flag.
+    pub open_sketch: Option<crate::model::SketchId>,
     /// The open sketch's local X and Y axis directions as they currently project on
     /// screen (#751), so the axis-parallel constraint buttons can draw their glyphs at
     /// the angle the user actually sees. `None` outside a sketch (or edge-on views).
@@ -1357,10 +1361,19 @@ pub struct DimensionDeriveView {
 /// selection-driven tool uses. Both variants mirror the live `selection`; they differ only in
 /// which kinds they accept and their placeholder, demonstrating the per-instance configuration.
 fn selection_picker_for(
+    doc: &Document,
     tool: Tool,
-    in_sketch: bool,
+    open_sketch: Option<crate::model::SketchId>,
     selection: &SceneSelection,
 ) -> Option<ElementPicker> {
+    let in_sketch = open_sketch.is_some();
+    // While a sketch is open the sketch-scoped pickers take only what that sketch owns (#742) —
+    // its own geometry, the origin and its axes, and the sketched-on face's edges and corners.
+    // One rule (#953), shared with the hover and click paths, instead of three copies.
+    let scoped = |filter: ElementFilter| match open_sketch {
+        Some(sketch) => filter.rule(PickRule::InSketch(sketch)),
+        None => filter,
+    };
     let mut picker = match tool {
         // Select: accepts everything, always shown, never loses focus.
         Tool::Select => ElementPicker::select_everything(),
@@ -1369,12 +1382,12 @@ fn selection_picker_for(
         // pair shows up and the tool can proceed as if those were just picked (#486).
         Tool::Constraint | Tool::Dimension if in_sketch => {
             let mut p = ElementPicker::new(
-                ElementFilter::kinds(&[
+                scoped(ElementFilter::kinds(&[
                     ElementKind::Vertex,
                     ElementKind::Line,
                     ElementKind::Circle,
                     ElementKind::Edge,
-                ]),
+                ])),
                 PickLimit::Infinite,
             );
             p.set_focused(true);
@@ -1396,7 +1409,7 @@ fn selection_picker_for(
         // Chamfer/Fillet in-sketch: vertices only (#492).
         Tool::Chamfer | Tool::Fillet if in_sketch => {
             let mut p = ElementPicker::new(
-                ElementFilter::kind(ElementKind::Vertex),
+                scoped(ElementFilter::kind(ElementKind::Vertex)),
                 PickLimit::Infinite,
             );
             p.set_focused(true);
@@ -1429,7 +1442,7 @@ fn selection_picker_for(
     };
     // Mirror the live selection, keeping only what this picker accepts (its filter drops the
     // rest); `set_picked` preserves order so the popup rows line up with `picked()`.
-    picker.set_picked(selection.ordered());
+    picker.set_picked(doc, selection.ordered());
     Some(picker)
 }
 
@@ -1437,19 +1450,24 @@ fn selection_picker_for(
 /// overrides the highlight (e.g. red for bodies that get cut). Focused, since it's the set the
 /// active tool's viewport clicks feed.
 fn body_tool_picker(
+    doc: &Document,
     heading: &'static str,
     target: PickerTarget,
     bodies: &[usize],
     selected_color: Option<eframe::egui::Color32>,
     focused: bool,
 ) -> ToolPickerView {
-    let mut picker =
-        ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
+    // Every body-set picker refuses a body that's deleted or already consumed by another
+    // operation (#953) — the `!deleted && !shadow` gate the click paths each re-checked by hand.
+    let mut picker = ElementPicker::new(
+        ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody),
+        PickLimit::Infinite,
+    );
     if let Some(color) = selected_color {
         picker = picker.with_selected_color(color);
     }
     picker.set_focused(focused);
-    picker.set_picked(bodies.iter().map(|&bi| SceneElement::Body(bi)));
+    picker.set_picked(doc, bodies.iter().map(|&bi| SceneElement::Body(bi)));
     ToolPickerView {
         heading,
         picker,
@@ -1742,7 +1760,9 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         || input.draw_line_construction.is_some()
         || input.draw_circle_construction.is_some();
     let selection_picker = (!drawing && !input.in_drawing_workbench)
-        .then(|| selection_picker_for(input.tool, input.in_sketch, input.selection))
+        .then(|| {
+            selection_picker_for(input.doc, input.tool, input.open_sketch, input.selection)
+        })
         .flatten();
     // Dimension tool in 3D (#618): measure the current selection for the derive block —
     // one line → its length; two parallel lines → the distance between them; two
@@ -1780,6 +1800,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     if let Some(r) = input.revolve.as_ref() {
         if r.body_choice == crate::actions::RevolveBodyChoice::Cut {
             tool_pickers.push(body_tool_picker(
+                input.doc,
                 "Cut bodies",
                 PickerTarget::RevolveCut,
                 &r.cut_bodies,
@@ -1791,6 +1812,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     if let Some(f) = input.sweep.as_ref() {
         if f.body_choice == crate::actions::RevolveBodyChoice::Cut {
             tool_pickers.push(body_tool_picker(
+                input.doc,
                 "Cut bodies",
                 PickerTarget::SweepCut,
                 &f.cut_bodies,
@@ -1802,6 +1824,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     if let Some(l) = input.loft_body.as_ref() {
         if l.body_choice == crate::actions::RevolveBodyChoice::Cut {
             tool_pickers.push(body_tool_picker(
+                input.doc,
                 "Cut bodies",
                 PickerTarget::LoftCut,
                 &l.cut_bodies,
@@ -1814,6 +1837,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         // Exactly one Move picker reads as focused (#658): the Bodies picker only while the
         // step-through hasn't moved on to a point/axis/alignment picker.
         tool_pickers.push(body_tool_picker(
+            input.doc,
             "Bodies",
             PickerTarget::MoveTargets,
             &m.targets,
@@ -1830,7 +1854,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         );
         plane_picker.set_focused(m.plane.is_none());
         if let Some(element) = m.plane.clone() {
-            plane_picker.set_picked([element]);
+            plane_picker.set_picked(input.doc, [element]);
         }
         tool_pickers.push(ToolPickerView {
             heading: "Mirror plane",
@@ -1842,6 +1866,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         // chosen — the plane is the first pick (#523). No divider between the plane picker,
         // the bodies picker, and the Do button — they read as one Mirror block (#602).
         let mut bodies = body_tool_picker(
+            input.doc,
             "Bodies",
             PickerTarget::MirrorTargets,
             &m.targets,
@@ -1862,6 +1887,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             || !r.extrusion_targets.is_empty();
         let axis_is_next = r.axis_label.is_none() && has_targets;
         tool_pickers.push(body_tool_picker(
+            input.doc,
             "Bodies",
             PickerTarget::RepeatTargets,
             &r.targets,
@@ -1875,6 +1901,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         // picker (its Focus event). Side B (the tool that gets consumed in Cut) is styled red.
         let two_sided = b.kind != crate::model::BooleanOpKind::Combine;
         tool_pickers.push(body_tool_picker(
+            input.doc,
             if two_sided { "Side A" } else { "Bodies" },
             PickerTarget::CombineA,
             &b.a,
@@ -1885,6 +1912,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             // No divider between the two sides and the mode/Do controls below — the Combine
             // pickers and the section read as one contiguous block (#606).
             let mut side_b = body_tool_picker(
+                input.doc,
                 "Side B",
                 PickerTarget::CombineB,
                 &b.b,
@@ -5293,7 +5321,7 @@ pub fn show_pane(
             PickLimit::Infinite,
         );
         picker.set_focused(!control.direction_focused && !control.value_field_focused);
-        picker.set_picked(control.picked.iter().cloned());
+        picker.set_picked(doc, control.picked.iter().cloned());
         labeled_row_top(ui, "Entities", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
@@ -5319,7 +5347,7 @@ pub fn show_pane(
         let mut dir_picker =
             ElementPicker::new(ElementFilter::kinds(&[ElementKind::Line]), PickLimit::Finite(1));
         dir_picker.set_focused(control.direction_focused);
-        dir_picker.set_picked(control.direction.clone());
+        dir_picker.set_picked(doc, control.direction.clone());
         labeled_row_top(ui, "Direction", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
@@ -5474,7 +5502,7 @@ pub fn show_pane(
             PickLimit::Infinite,
         );
         picker.set_focused(true);
-        picker.set_picked(control.picked.iter().cloned());
+        picker.set_picked(doc, control.picked.iter().cloned());
         labeled_row_top(ui, "Entities", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
@@ -5545,7 +5573,7 @@ pub fn show_pane(
         let mut line_picker =
             ElementPicker::new(ElementFilter::kinds(&[ElementKind::Line]), PickLimit::Finite(1));
         line_picker.set_focused(control.line.is_none());
-        line_picker.set_picked(control.line.map(SceneElement::Line));
+        line_picker.set_picked(doc, control.line.map(SceneElement::Line));
         labeled_row_top(ui, "Mirror line", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
@@ -5567,7 +5595,7 @@ pub fn show_pane(
             PickLimit::Infinite,
         );
         picker.set_focused(control.line.is_some());
-        picker.set_picked(control.picked.iter().cloned());
+        picker.set_picked(doc, control.picked.iter().cloned());
         labeled_row_top(ui, "Shapes", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
@@ -6768,6 +6796,32 @@ mod tests {
     use crate::model::{Document, FaceId, Line};
     use crate::selection::click_scene_selection;
 
+    /// A document with one sketch (id 0) holding a rectangle's four lines. The sketch-scoped
+    /// pickers refuse geometry that isn't in the open sketch (#953, `PickRule::InSketch`), so a
+    /// test that picks line 0 needs line 0 to be in sketch 0.
+    fn doc_with_a_sketch() -> Document {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc
+    }
+
+    /// A document holding `n` plain solid bodies. The body pickers refuse a body that isn't
+    /// there (#953, `PickRule::LiveBody`), so a test that picks body 4 needs body 4 to exist.
+    fn doc_with_bodies(n: usize) -> Document {
+        let mut doc = Document::default();
+        for _ in 0..n {
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Imported(0),
+                material: None,
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        doc
+    }
+
     fn input<'a>(doc: &'a Document, selection: &'a SceneSelection) -> ContextInput<'a> {
         ContextInput {
             doc,
@@ -6782,6 +6836,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -6962,6 +7017,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             tool: Tool::Dimension,
             in_sketch: true,
+            open_sketch: Some(0),
             sketch_axis_screen_dirs: None,
             ..input(&doc, &selection)
         });
@@ -7070,6 +7126,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -7161,6 +7218,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -7219,7 +7277,7 @@ mod tests {
             &[SceneElement::Circle(1), SceneElement::Line(0)]
         );
         assert!(picker.has_sticky_focus(), "Select picker never loses focus");
-        assert!(picker.accepts(&SceneElement::Body(0)), "Select accepts everything");
+        assert!(picker.accepts(&doc, &SceneElement::Body(0)), "Select accepts everything");
 
         // Empty selection: the picker is still shown (an always-present input), just empty.
         let empty_selection = SceneSelection::default();
@@ -7234,7 +7292,7 @@ mod tests {
     #[test]
     fn constraint_tool_picker_filters_to_constrainable_geometry() {
         use crate::hierarchy::SceneElement;
-        let doc = Document::default();
+        let doc = doc_with_a_sketch();
         let mut selection = SceneSelection::default();
         // A constrainable line plus a body (which the constraint picker should reject).
         crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
@@ -7242,6 +7300,7 @@ mod tests {
         let input = ContextInput {
             tool: Tool::Constraint,
             in_sketch: true,
+            open_sketch: Some(0),
             sketch_axis_screen_dirs: None,
             in_drawing_workbench: false,
             ..input(&doc, &selection)
@@ -7252,13 +7311,13 @@ mod tests {
         assert_eq!(picker.picked(), &[SceneElement::Line(0)], "body filtered out");
         assert!(!picker.has_sticky_focus());
         assert!(picker.is_focused(), "active tool's picker is focused");
-        assert!(!picker.accepts(&SceneElement::Body(0)));
+        assert!(!picker.accepts(&doc, &SceneElement::Body(0)));
     }
 
     #[test]
     fn revolve_cut_mode_yields_a_red_body_picker() {
         use crate::hierarchy::SceneElement;
-        let doc = Document::default();
+        let doc = doc_with_bodies(8);
         let selection = SceneSelection::default();
         let cut_input = ContextInput {
             tool: Tool::Revolve,
@@ -7283,8 +7342,8 @@ mod tests {
             &[SceneElement::Body(2), SceneElement::Body(5)]
         );
         // Body-only filter, and the red "cut" highlight override in place of the default.
-        assert!(view.picker.accepts(&SceneElement::Body(0)));
-        assert!(!view.picker.accepts(&SceneElement::Line(0)));
+        assert!(view.picker.accepts(&doc, &SceneElement::Body(0)));
+        assert!(!view.picker.accepts(&doc, &SceneElement::Line(0)));
         assert_eq!(
             view.picker.selected_color(crate::theme::FOCUS_ACCENT),
             crate::theme::CUT_ACCENT
@@ -7376,7 +7435,7 @@ mod tests {
     #[test]
     fn move_and_repeat_yield_body_pickers_without_cut_override() {
         use crate::hierarchy::SceneElement;
-        let doc = Document::default();
+        let doc = doc_with_bodies(8);
         let selection = SceneSelection::default();
 
         let move_input = ContextInput {
@@ -7414,7 +7473,7 @@ mod tests {
             pickers[0].picker.picked(),
             &[SceneElement::Body(1), SceneElement::Body(4)]
         );
-        assert!(!pickers[0].picker.accepts(&SceneElement::Line(0)));
+        assert!(!pickers[0].picker.accepts(&doc, &SceneElement::Line(0)));
         // Move doesn't consume its bodies, so it keeps the default (non-red) highlight.
         assert_eq!(
             pickers[0].picker.selected_color(crate::theme::FOCUS_ACCENT),
@@ -7504,7 +7563,7 @@ mod tests {
     #[test]
     fn combine_shows_one_or_two_body_pickers_by_kind() {
         use crate::hierarchy::SceneElement;
-        let doc = Document::default();
+        let doc = doc_with_bodies(8);
         let selection = SceneSelection::default();
         let make = |kind, a: Vec<usize>, b: Vec<usize>, picking_b| ContextInput {
             tool: Tool::Combine,
@@ -7690,6 +7749,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -7830,6 +7890,7 @@ mod tests {
             draw_line_curve_mode: Some(true),
             draw_line_tangent_constraint: Some(false),
             in_sketch: true,
+            open_sketch: Some(0),
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -7919,7 +7980,7 @@ mod tests {
                 edge_picker: None,
                 selection_picker: Some({
                     let mut p = ElementPicker::select_everything();
-                    p.set_picked([SceneElement::Line(0)]);
+                    p.set_picked(&doc, [SceneElement::Line(0)]);
                     p
                 }),
                 tool_pickers: Vec::new(),
@@ -8036,6 +8097,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -8111,6 +8173,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
@@ -8244,6 +8307,7 @@ mod tests {
             draw_line_curve_mode: None,
             draw_line_tangent_constraint: None,
             in_sketch: false,
+            open_sketch: None,
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,
