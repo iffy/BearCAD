@@ -177,6 +177,20 @@ impl ElementKind {
     }
 }
 
+/// Toggle a value in a picked set: in if absent, out if present — what a click on an element
+/// does to whichever picker takes it.
+///
+/// One definition (#970). Three copies of this existed: a free function in `main.rs`, a nested
+/// one inside `toggle_body_in_active_tool`, and a third in the pane's click routing.
+pub fn toggle_picked<T: PartialEq>(set: &mut Vec<T>, value: T) {
+    match set.iter().position(|v| *v == value) {
+        Some(i) => {
+            set.remove(i);
+        }
+        None => set.push(value),
+    }
+}
+
 /// The global pick-priority bands (#959): when several things crowd the cursor, the one in the
 /// lower band wins, and a tie inside a band goes to whichever is nearest in pixels.
 ///

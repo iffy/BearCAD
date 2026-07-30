@@ -9497,18 +9497,18 @@ impl App {
         if picking_cutter {
             // Cutters are lines only.
             if let Some(construction::PickTargetKind::Line(li)) = target.map(|t| t.kind) {
-                toggle(&mut cs.cutter_lines, li);
+                crate::element_picker::toggle_picked(&mut cs.cutter_lines, li);
                 self.state.status = format!("Slice: {} cutter line(s)", cs.cutter_lines.len());
             }
             return;
         }
         match target.map(|t| t.kind) {
             Some(construction::PickTargetKind::Line(li)) => {
-                toggle(&mut cs.line_targets, li);
+                crate::element_picker::toggle_picked(&mut cs.line_targets, li);
                 self.state.status = format!("Slice: {} line target(s)", cs.line_targets.len());
             }
             Some(construction::PickTargetKind::Circle(ci)) => {
-                toggle(&mut cs.circle_targets, ci);
+                crate::element_picker::toggle_picked(&mut cs.circle_targets, ci);
                 self.state.status = format!("Slice: {} circle target(s)", cs.circle_targets.len());
             }
             _ => {
@@ -16447,14 +16447,6 @@ fn default_text_font() -> Option<String> {
 
 /// Toggle `value` in/out of `set` (add if absent, remove if present). Small helper for the
 /// two-role in-sketch pickers (#238).
-fn toggle(set: &mut Vec<usize>, value: usize) {
-    if let Some(pos) = set.iter().position(|v| *v == value) {
-        set.remove(pos);
-    } else {
-        set.push(value);
-    }
-}
-
 /// The closed sketch face (its boundary-loop line indices) whose interior contains `world`, or
 /// `None` if the point isn't inside any face (#238). Prefers the **smallest-area** containing loop
 /// so clicking a region inside a hole picks the inner face, not the enclosing one.

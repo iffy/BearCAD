@@ -15031,7 +15031,7 @@ fn apply_pick(
         }
         (P::SketchSliceCutters, SceneElement::Line(li)) => {
             let Some(cs) = state.creating_sketch_slice.as_mut() else { return false };
-            toggle(&mut cs.cutter_lines, *li);
+            crate::element_picker::toggle_picked(&mut cs.cutter_lines, *li);
             true
         }
         (P::TreatmentEdges, SceneElement::BodyEdge { .. }) => {
@@ -15073,16 +15073,6 @@ fn apply_pick(
     }
 }
 
-/// Toggle a value in a picked set: in if absent, out if present.
-fn toggle(set: &mut Vec<usize>, value: usize) {
-    match set.iter().position(|v| *v == value) {
-        Some(i) => {
-            set.remove(i);
-        }
-        None => set.push(value),
-    }
-}
-
 /// Whether the focused picker is gathering whole bodies (#963).
 ///
 /// This used to hardcode five tools plus two `body_choice` checks, which then had to be kept in
@@ -15109,13 +15099,6 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
     if state.doc.bodies.get(bi).is_none_or(|b| b.deleted || b.shadow) {
         return false;
     }
-    fn toggle(set: &mut Vec<usize>, bi: usize) {
-        if let Some(pos) = set.iter().position(|b| *b == bi) {
-            set.remove(pos);
-        } else {
-            set.push(bi);
-        }
-    }
     match state.tool {
         Tool::Move => {
             // A unit's materialized body (#735): what moves is the *instance* — its
@@ -15123,7 +15106,7 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
             if let Some(crate::model::BodySource::UnitInstance(instance)) =
                 state.doc.bodies.get(bi).map(|b| b.source.clone())
             {
-                toggle(
+                crate::element_picker::toggle_picked(
                     &mut state
                         .creating_move
                         .get_or_insert_with(CreatingMove::default)
@@ -15132,7 +15115,7 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
                 );
                 return true;
             }
-            toggle(&mut state.creating_move.get_or_insert_with(CreatingMove::default).targets, bi);
+            crate::element_picker::toggle_picked(&mut state.creating_move.get_or_insert_with(CreatingMove::default).targets, bi);
             true
         }
         Tool::Joint => {
@@ -15159,26 +15142,26 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
             true
         }
         Tool::Repeat => {
-            toggle(&mut state.creating_repeat.get_or_insert_with(CreatingRepeat::default).targets, bi);
+            crate::element_picker::toggle_picked(&mut state.creating_repeat.get_or_insert_with(CreatingRepeat::default).targets, bi);
             true
         }
         Tool::Slice => {
-            toggle(&mut state.creating_slice.get_or_insert_with(CreatingSlice::default).targets, bi);
+            crate::element_picker::toggle_picked(&mut state.creating_slice.get_or_insert_with(CreatingSlice::default).targets, bi);
             true
         }
         Tool::Combine => {
             let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
             if cb.picking_b {
-                toggle(&mut cb.b, bi);
+                crate::element_picker::toggle_picked(&mut cb.b, bi);
             } else {
-                toggle(&mut cb.a, bi);
+                crate::element_picker::toggle_picked(&mut cb.a, bi);
             }
             true
         }
         Tool::Revolve => {
             let cr = state.creating_revolve.get_or_insert_with(CreatingRevolve::default);
             if cr.body_choice == RevolveBodyChoice::Cut {
-                toggle(&mut cr.cut_bodies, bi);
+                crate::element_picker::toggle_picked(&mut cr.cut_bodies, bi);
                 true
             } else {
                 false
@@ -15189,7 +15172,7 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
                 .creating_sweep
                 .get_or_insert_with(CreatingSweep::default);
             if cf.body_choice == RevolveBodyChoice::Cut {
-                toggle(&mut cf.cut_bodies, bi);
+                crate::element_picker::toggle_picked(&mut cf.cut_bodies, bi);
                 true
             } else {
                 false
