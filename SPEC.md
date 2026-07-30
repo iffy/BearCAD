@@ -2602,7 +2602,10 @@ modeled on SolveSpace (https://solvespace.com).
   anchor would catch. **Every** kind the crowd can offer lights up that way (#974); the renderer's
   `PickTargetKind` hover is total, and the only two kinds that draw nothing *there* draw elsewhere
   in the same frame — a constraint's badge glows in the 2D annotation overlay (#568) and a whole
-  body recolours in the main pass (#902). A kind that reaches the cursor as more than one pick
+  body recolours in the main pass (#902), through **both** hover channels: the hovered leaf's
+  `PickTarget(Body)` and a hovered group's members reach the body-fill recolour just like an
+  Elements-pane row hover does (#985) — the pick-target hover pusher has no marker of its own
+  for a whole solid, so the main pass is the only place a body hover can read. A kind that reaches the cursor as more than one pick
   target — a datum plane arrives both as itself and as the analytic face over the same surface,
   and `collect_pick_candidates` keeps whichever is nearer — must draw the same for each, so both
   go through the one face-hover helper rather than through a case per call site. **Clicking a handle selects that handle's exact target** (`scene_element_from_pick` for

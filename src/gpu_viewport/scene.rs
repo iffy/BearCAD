@@ -861,13 +861,22 @@ impl ViewportScene {
                 crate::model::BodySource::UnitInstance(i) => Some(i),
                 _ => None,
             };
+            // A whole body's hover reaches here two ways: as an Elements-pane row
+            // (`Element`), or as the pick target a Selection Exploder loupe stands for
+            // (#985) — a hovered body loupe (or a group loupe holding the body) recolors
+            // the body itself, since `push_hover_highlight` has no marker to draw for a
+            // whole solid.
             let hovered = match &input.hover_highlight {
                 Some(ViewportHoverHighlight::Element(SceneElement::Body(h))) => *h == bi,
+                Some(ViewportHoverHighlight::PickTarget(PickTargetKind::Body(h))) => *h == bi,
                 Some(ViewportHoverHighlight::Element(SceneElement::UnitInstance(h))) => {
                     unit_instance == Some(*h)
                 }
                 _ => false,
-            };
+            } || input
+                .extra_pick_highlights
+                .iter()
+                .any(|k| matches!(k, PickTargetKind::Body(h) if *h == bi));
             let selected = input.selection.is_selected(SceneElement::Body(bi))
                 || unit_instance
                     .is_some_and(|i| input.selection.is_selected(SceneElement::UnitInstance(i)));
@@ -7098,6 +7107,95 @@ mod tests {
         assert!(
             hover_tinted(&hovered) > hover_tinted(&base),
             "hovering a body must recolor its fill"
+        );
+    }
+
+    /// #985: hovering a Selection Exploder loupe that stands for a whole body recolors the
+    /// body in the scene — the leaf hover arrives as `PickTarget(Body)`, and a hovered group
+    /// loupe holding the body arrives through `extra_pick_highlights`; both must read as a
+    /// body hover, since `push_hover_highlight` has no marker of its own for a whole solid.
+    #[test]
+    fn exploder_body_loupe_hover_recolors_the_body() {
+        let state = state_with_one_body();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |hover: Option<ViewportHoverHighlight>,
+                     extra: Vec<crate::construction::PickTargetKind>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: hover,
+                extra_pick_highlights: extra,
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        // Hover-fill vertices read warm (r > g > b), which the plain render never produces.
+        let hover_tinted = |scene: &ViewportScene| {
+            scene
+                .vertices
+                .iter()
+                .filter(|v| {
+                    let [r, g, b, a] = v.color;
+                    a > 0.0 && r > g && g > b && r > 0.3
+                })
+                .count()
+        };
+        let base = build(None, Vec::new());
+        let leaf = build(
+            Some(ViewportHoverHighlight::PickTarget(
+                crate::construction::PickTargetKind::Body(0),
+            )),
+            Vec::new(),
+        );
+        assert!(
+            hover_tinted(&leaf) > hover_tinted(&base),
+            "hovering a body's leaf loupe must recolor the body"
+        );
+        let group = build(
+            None,
+            vec![crate::construction::PickTargetKind::Body(0)],
+        );
+        assert!(
+            hover_tinted(&group) > hover_tinted(&base),
+            "hovering a group loupe holding the body must recolor the body"
         );
     }
 
