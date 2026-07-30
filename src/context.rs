@@ -1231,6 +1231,20 @@ pub enum PickerTarget {
     MoveEndB,
     MoveStartC,
     MoveEndC,
+    /// The Joint tool's six mating-point pickers and its two travel stops (#894/#896/#958),
+    /// likewise inline but registered.
+    JointStartA,
+    JointEndA,
+    JointStartB,
+    JointEndB,
+    JointStartC,
+    JointEndC,
+    JointMinStop,
+    JointMaxStop,
+    /// Extrude's "Up to" target and Repeat's "Distance to" (#584/#645/#958): inline under
+    /// their tools' Distance fields, registered like every other picker.
+    ExtrudeUpTo,
+    RepeatDistanceTo,
     /// The Sweep tool's profile faces (`CreatingSweep::faces`, #955).
     SweepProfile,
     /// The Sweep tool's path lines (`CreatingSweep::path`, #955), chained tip-to-tail at commit.
@@ -1874,6 +1888,53 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         });
     }
     if let Some(j) = input.joint.as_ref() {
+        // The Joint tool's six mating-point pickers and its two slide stops (#894/#896/#958).
+        // Inline, like the Move tool's — registered so focus, hover and scripts see them.
+        for (heading, target, point, on_driven, focused) in [
+            ("Start point A", PickerTarget::JointStartA, j.start_a, true, j.start_a_focused),
+            ("End point A", PickerTarget::JointEndA, j.end_a, false, j.end_a_focused),
+            ("Start point B", PickerTarget::JointStartB, j.start_b, true, j.start_b_focused),
+            ("End point B", PickerTarget::JointEndB, j.end_b, false, j.end_b_focused),
+            ("Start point C", PickerTarget::JointStartC, j.start_c, true, j.start_c_focused),
+            ("End point C", PickerTarget::JointEndC, j.end_c, false, j.end_c_focused),
+        ] {
+            let side = if on_driven {
+                j.driven_bodies.clone()
+            } else {
+                j.base_bodies.clone()
+            };
+            let mut picker = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OnBodies(side)),
+                PickLimit::Finite(1),
+            );
+            picker.set_focused(focused);
+            picker.set_picked(input.doc, point.map(SceneElement::from_move_point));
+            tool_pickers.push(ToolPickerView {
+                heading,
+                picker,
+                target,
+                separator_above: false,
+                render: PickerRender::Inline,
+            });
+        }
+        for (heading, target, stop, focused) in [
+            ("Min stop", PickerTarget::JointMinStop, j.slide_min_stop.clone(), j.slide_min_stop_focused),
+            ("Max stop", PickerTarget::JointMaxStop, j.slide_max_stop.clone(), j.slide_max_stop_focused),
+        ] {
+            let mut picker = ElementPicker::new(
+                ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+                PickLimit::Finite(1),
+            );
+            picker.set_focused(focused);
+            picker.set_picked(input.doc, stop);
+            tool_pickers.push(ToolPickerView {
+                heading,
+                picker,
+                target,
+                separator_above: false,
+                render: PickerRender::Inline,
+            });
+        }
         // The Joint tool's two parts (#894/#955). It renders in the Joint block (between the
         // Base row and the kind dropdown), but it belongs here so focus, hover, the handoff
         // and `bearcad.pickers()` can see it (#958).
@@ -1896,6 +1957,23 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: members,
             target: PickerTarget::JointMembers,
             separator_above: true,
+            render: PickerRender::Inline,
+        });
+    }
+    if let Some(e) = input.extrude.as_ref() {
+        // Extrude's "Up to" (#584/#958): a single plane, face or vertex the depth runs to.
+        // Inline — it sits under the Distance field — but registered like every other picker.
+        let mut target = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face, ElementKind::Vertex]),
+            PickLimit::Finite(1),
+        );
+        target.set_focused(e.target_focused);
+        target.set_picked(input.doc, e.target.clone());
+        tool_pickers.push(ToolPickerView {
+            heading: "Up to",
+            picker: target,
+            target: PickerTarget::ExtrudeUpTo,
+            separator_above: false,
             render: PickerRender::Inline,
         });
     }
@@ -2129,6 +2207,13 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             || !r.sketch_targets.is_empty()
             || !r.extrusion_targets.is_empty();
         let axis_is_next = r.path.is_none() && has_targets;
+        // Repeat's "Distance to" (#645/#958): inline under the Distance field, registered here.
+        let mut length_target = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face, ElementKind::Vertex]),
+            PickLimit::Finite(1),
+        );
+        length_target.set_focused(r.length_target_focused && !r.around_axis);
+        length_target.set_picked(input.doc, r.length_target.clone());
         tool_pickers.push(body_tool_picker(
             input.doc,
             "Bodies",
@@ -2137,6 +2222,13 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             None,
             !axis_is_next && !r.value_field_focused && !r.length_target_focused,
         ));
+        tool_pickers.push(ToolPickerView {
+            heading: "Distance to",
+            picker: length_target,
+            target: PickerTarget::RepeatDistanceTo,
+            separator_above: false,
+            render: PickerRender::Inline,
+        });
     }
     if let Some(b) = input.boolean_op.as_ref() {
         // Combine mode uses one picker (side A only); Cut/Intersect/Difference use two sides.
@@ -4840,27 +4932,21 @@ pub fn show_pane(
                 }
             });
         }
-        // Start points mate on the driven part, end points on the base (#953) — the picker
-        // refuses a point on the other side rather than letting a wrong pick land.
-        let driven = control.driven_bodies.clone();
-        let base_bodies = control.base_bodies.clone();
+        // Built with the other tool pickers (#958), drawn here. Start points mate on the
+        // driven part, end points on the base (#953) — the picker refuses a point on the other
+        // side rather than letting a wrong pick land.
+        let tool_pickers = &content.tool_pickers;
         let mut picker_row = |ui: &mut egui::Ui,
                               label: &'static str,
                               id: &'static str,
-                              point: Option<crate::model::MovePointRef>,
-                              on_driven: bool,
-                              focused: bool,
+                              target: PickerTarget,
                               on_focus: JointEdit,
                               on_clear: JointEdit| {
-            let side = if on_driven { driven.clone() } else { base_bodies.clone() };
-            let mut picker = ElementPicker::new(
-                ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OnBodies(side)),
-                PickLimit::Finite(1),
-            );
-            picker.set_focused(focused);
-            picker.set_picked(doc, point.map(SceneElement::from_move_point));
+            let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                return;
+            };
             labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show(ui, &picker, doc, id) {
+                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
                     pending = Some(match event {
                         crate::element_picker::PickerEvent::Focus => on_focus,
                         crate::element_picker::PickerEvent::Remove(_)
@@ -4873,9 +4959,7 @@ pub fn show_pane(
             ui,
             "Start point A",
             "joint_start_point_a",
-            control.start_a,
-            true,
-            control.start_a_focused,
+            PickerTarget::JointStartA,
             JointEdit::StartAFocus,
             JointEdit::ClearStartA,
         );
@@ -4883,9 +4967,7 @@ pub fn show_pane(
             ui,
             "End point A",
             "joint_end_point_a",
-            control.end_a,
-            false,
-            control.end_a_focused,
+            PickerTarget::JointEndA,
             JointEdit::EndAFocus,
             JointEdit::ClearEndA,
         );
@@ -4893,9 +4975,7 @@ pub fn show_pane(
             ui,
             "Start point B",
             "joint_start_point_b",
-            control.start_b,
-            true,
-            control.start_b_focused,
+            PickerTarget::JointStartB,
             JointEdit::StartBFocus,
             JointEdit::ClearStartB,
         );
@@ -4903,9 +4983,7 @@ pub fn show_pane(
             ui,
             "End point B",
             "joint_end_point_b",
-            control.end_b,
-            false,
-            control.end_b_focused,
+            PickerTarget::JointEndB,
             JointEdit::EndBFocus,
             JointEdit::ClearEndB,
         );
@@ -4913,9 +4991,7 @@ pub fn show_pane(
             ui,
             "Start point C",
             "joint_start_point_c",
-            control.start_c,
-            true,
-            control.start_c_focused,
+            PickerTarget::JointStartC,
             JointEdit::StartCFocus,
             JointEdit::ClearStartC,
         );
@@ -4923,9 +4999,7 @@ pub fn show_pane(
             ui,
             "End point C",
             "joint_end_point_c",
-            control.end_c,
-            false,
-            control.end_c_focused,
+            PickerTarget::JointEndC,
             JointEdit::EndCFocus,
             JointEdit::ClearEndC,
         );
@@ -4993,22 +5067,21 @@ pub fn show_pane(
             }
             drop(field);
             if slides {
-                // A stop is a plane or a flat face the travel ends at (#896/#955).
+                // A stop is a plane or a flat face the travel ends at (#896/#955), built with
+                // the other tool pickers (#958) and drawn here.
                 let mut stop_row = |ui: &mut egui::Ui,
                                     label: &'static str,
                                     id: &'static str,
-                                    stop: Option<crate::hierarchy::SceneElement>,
-                                    focused: bool,
+                                    target: PickerTarget,
                                     on_focus: JointEdit,
                                     on_clear: JointEdit| {
-                    let mut picker = ElementPicker::new(
-                        ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
-                        PickLimit::Finite(1),
-                    );
-                    picker.set_focused(focused);
-                    picker.set_picked(doc, stop);
+                    let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                        return;
+                    };
                     labeled_row_top(ui, label, |ui| {
-                        if let Some(event) = crate::element_picker::show(ui, &picker, doc, id) {
+                        if let Some(event) =
+                            crate::element_picker::show(ui, &view.picker, doc, id)
+                        {
                             pending = Some(match event {
                                 crate::element_picker::PickerEvent::Focus => on_focus,
                                 crate::element_picker::PickerEvent::Remove(_)
@@ -5021,8 +5094,7 @@ pub fn show_pane(
                     ui,
                     "Min stop",
                     "joint_slide_min_stop",
-                    control.slide_min_stop.clone(),
-                    control.slide_min_stop_focused,
+                    PickerTarget::JointMinStop,
                     JointEdit::SlideMinStopFocus,
                     JointEdit::ClearSlideMinStop,
                 );
@@ -5030,8 +5102,7 @@ pub fn show_pane(
                     ui,
                     "Max stop",
                     "joint_slide_max_stop",
-                    control.slide_max_stop.clone(),
-                    control.slide_max_stop_focused,
+                    PickerTarget::JointMaxStop,
                     JointEdit::SlideMaxStopFocus,
                     JointEdit::ClearSlideMaxStop,
                 );
@@ -5398,20 +5469,15 @@ pub fn show_pane(
         // the Repeat tool's version of the Extrude tool's "Up to" picker. Focus it, then
         // click the target in the viewport; the ✕ hands Distance back to its expression.
         // A sweep has nothing to measure to, so the distance-target picker stands down (#839).
-        let mut length_target = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Plane,
-                ElementKind::Face,
-                ElementKind::Vertex,
-            ]),
-            PickLimit::Finite(1),
-        );
-        length_target.set_focused(control.length_target_focused && !control.around_axis);
-        length_target.set_picked(doc, control.length_target.clone());
+        let length_target = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::RepeatDistanceTo);
+        if let Some(length_target) = length_target {
         labeled_row_top(ui, "Distance to", |ui| {
             ui.add_enabled_ui(!control.around_axis, |ui| {
             if let Some(event) =
-                crate::element_picker::show(ui, &length_target, doc, "repeat_length_target")
+                crate::element_picker::show(ui, &length_target.picker, doc, "repeat_length_target")
             {
                 pending = Some(match event {
                     crate::element_picker::PickerEvent::Focus => RepeatEdit::LengthTargetFocus,
@@ -5421,6 +5487,7 @@ pub fn show_pane(
             }
             });
         });
+        }
         if let Some(edit) = pending {
             on_repeat_edit(edit);
         }
@@ -6286,19 +6353,14 @@ pub fn show_pane(
             });
             // Extrude-to target picker (#584): a plane or face to extrude up to. Focus it, then
             // click a plane/face in the viewport — or drag the gizmo onto one, which fills this in.
-            let mut target = ElementPicker::new(
-                ElementFilter::kinds(&[
-                    ElementKind::Plane,
-                    ElementKind::Face,
-                    ElementKind::Vertex,
-                ]),
-                PickLimit::Finite(1),
-            );
-            target.set_focused(control.target_focused);
-            target.set_picked(doc, control.target.clone());
+            let target = content
+                .tool_pickers
+                .iter()
+                .find(|v| v.target == PickerTarget::ExtrudeUpTo);
+            if let Some(target) = target {
             labeled_row_top(ui, "Up to", |ui| {
                 if let Some(event) =
-                    crate::element_picker::show(ui, &target, doc, "extrude_target")
+                    crate::element_picker::show(ui, &target.picker, doc, "extrude_target")
                 {
                     match event {
                         crate::element_picker::PickerEvent::Focus => {
@@ -6311,6 +6373,7 @@ pub fn show_pane(
                     }
                 }
             });
+            }
         }
     }
 
@@ -7485,7 +7548,7 @@ mod tests {
         let pickers = context_pane_content(&move_input).tool_pickers;
         // Bodies plus the six point pickers (#958): they render inline among the tool's own
         // controls but are registered like every other picker, so find this one by target.
-        assert_eq!(pickers.len(), 7);
+        assert_eq!(pickers.len(), 7, "Bodies plus the six point pickers");
         assert_eq!(
             pickers
                 .iter()
@@ -7541,7 +7604,8 @@ mod tests {
             ..input(&doc, &selection)
         };
         let pickers = context_pane_content(&repeat_input).tool_pickers;
-        assert_eq!(pickers.len(), 1);
+        // Bodies plus the inline "Distance to" (#958).
+        assert_eq!(pickers.len(), 2);
         assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
         assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(7)]);
     }
@@ -7708,10 +7772,16 @@ mod tests {
                 .count()
         };
         assert_eq!(focused(&extrude(false)), 1, "the Faces picker alone");
+        // Arming "Up to" blurs Faces — still exactly one ring, now on the armed input, which
+        // is registered like every other picker (#958) even though it draws inline.
+        assert_eq!(focused(&extrude(true)), 1);
         assert_eq!(
-            focused(&extrude(true)),
-            0,
-            "arming \"Up to\" blurs Faces; the armed picker is the Extrude control's own row"
+            context_pane_content(&extrude(true))
+                .tool_pickers
+                .iter()
+                .find(|v| v.picker.is_focused())
+                .map(|v| v.heading),
+            Some("Up to")
         );
     }
 

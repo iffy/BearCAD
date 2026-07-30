@@ -14941,7 +14941,20 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::MoveStartB
         | P::MoveEndB
         | P::MoveStartC
-        | P::MoveEndC => {}
+        | P::MoveEndC
+        // Likewise the Joint tool's points and stops: the chain, not a stored flag.
+        | P::JointStartA
+        | P::JointEndA
+        | P::JointStartB
+        | P::JointEndB
+        | P::JointStartC
+        | P::JointEndC
+        | P::JointMinStop
+        | P::JointMaxStop
+        // Extrude's "Up to" and Repeat's "Distance to" arm through their own pane rows,
+        // which set the tool's pick-mode flag directly.
+        | P::ExtrudeUpTo
+        | P::RepeatDistanceTo => {}
     }
 }
 

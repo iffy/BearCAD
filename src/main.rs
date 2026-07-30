@@ -13567,7 +13567,18 @@ impl eframe::App for App {
                     | context::PickerTarget::MoveStartB
                     | context::PickerTarget::MoveEndB
                     | context::PickerTarget::MoveStartC
-                    | context::PickerTarget::MoveEndC => {}
+                    | context::PickerTarget::MoveEndC
+                    // Likewise the Joint tool's, driven by `JointEdit` from its own rows.
+                    | context::PickerTarget::JointStartA
+                    | context::PickerTarget::JointEndA
+                    | context::PickerTarget::JointStartB
+                    | context::PickerTarget::JointEndB
+                    | context::PickerTarget::JointStartC
+                    | context::PickerTarget::JointEndC
+                    | context::PickerTarget::JointMinStop
+                    | context::PickerTarget::JointMaxStop
+                    | context::PickerTarget::ExtrudeUpTo
+                    | context::PickerTarget::RepeatDistanceTo => {}
                     // The Joint tool's parts (#894/#955): removal drops the member.
                     context::PickerTarget::JointMembers => {
                         if edit != context::ToolPickerAction::Focus {
