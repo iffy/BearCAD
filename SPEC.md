@@ -2568,7 +2568,13 @@ modeled on SolveSpace (https://solvespace.com).
   exploded **only handles** are hoverable/selectable — the raw crowd underneath is suppressed (the
   positional sketch pick/drag handlers stand down) — and hovering a handle highlights its **exact
   target** (the whole line/edge/face) out in the 3D view, not whatever a re-resolved pick at the
-  anchor would catch. **Clicking a handle selects that handle's exact target** (`scene_element_from_pick` for
+  anchor would catch. **Every** kind the crowd can offer lights up that way (#974); the renderer's
+  `PickTargetKind` hover is total, and the only two kinds that draw nothing *there* draw elsewhere
+  in the same frame — a constraint's badge glows in the 2D annotation overlay (#568) and a whole
+  body recolours in the main pass (#902). A kind that reaches the cursor as more than one pick
+  target — a datum plane arrives both as itself and as the analytic face over the same surface,
+  and `collect_pick_candidates` keeps whichever is nearer — must draw the same for each, so both
+  go through the one face-hover helper rather than through a case per call site. **Clicking a handle selects that handle's exact target** (`scene_element_from_pick` for
   the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
   be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
   the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.

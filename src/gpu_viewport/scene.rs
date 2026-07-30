@@ -2770,7 +2770,21 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
-            FaceId::ConstructionPlane(_) => {}
+            // A datum plane is a face like any other here (#974). This arm used to be empty,
+            // with the plane's fill written out at each *call site* instead — so whichever
+            // caller hadn't been given the special case drew nothing, and a plane silently
+            // failed to highlight while every other face worked.
+            FaceId::ConstructionPlane(index) => {
+                if let Some(plane) = doc.construction_planes.get(index) {
+                    self.push_construction_plane_hover_fill(
+                        plane,
+                        index,
+                        color,
+                        fill_multiplier,
+                        cam,
+                    );
+                }
+            }
         }
     }
 
@@ -2786,31 +2800,24 @@ impl<'a> SceneMesh<'a> {
     ) {
         let project = |w: Vec3| cam.project(w, viewport, view_proj);
         match hover {
-            ViewportHoverHighlight::SketchFace(face) => match face {
-                FaceId::ConstructionPlane(index) => {
-                    if let Some(plane) = doc.construction_planes.get(*index) {
-                        self.push_construction_plane_hover_fill(
-                            plane,
-                            *index,
-                            color,
-                            FACE_HOVER_FILL_MULTIPLIER,
-                            cam,
-                        );
-                    }
-                }
-                _ => {
-                    self.push_sketch_face_hover(doc, face.clone(), color, FACE_HOVER_FILL_MULTIPLIER, cam);
-                    self.push_sketch_face_hover_border(
-                        doc,
-                        face.clone(),
-                        color,
-                        2.0,
-                        cam,
-                        viewport,
-                        view_proj,
-                    );
-                }
-            },
+            ViewportHoverHighlight::SketchFace(face) => {
+                self.push_sketch_face_hover(
+                    doc,
+                    face.clone(),
+                    color,
+                    FACE_HOVER_FILL_MULTIPLIER,
+                    cam,
+                );
+                self.push_sketch_face_hover_border(
+                    doc,
+                    face.clone(),
+                    color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
             ViewportHoverHighlight::Element(element) => {
                 self.push_element_hover(doc, element.clone(), color, body_meshes, cam, viewport, view_proj);
             }
@@ -2984,7 +2991,29 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
-            FaceId::ConstructionPlane(_) => {}
+            // The plane's own rectangle, lifted with its fill so the two don't z-fight (#974).
+            FaceId::ConstructionPlane(index) => {
+                if let Some(plane) = doc.construction_planes.get(index) {
+                    let bias = plane_fill_depth_bias(index) + HOVER_PLANE_DEPTH_LIFT;
+                    let corners = offset_corners_toward_camera(
+                        plane_corners(plane),
+                        plane.normal,
+                        cam.eye(),
+                        bias,
+                    );
+                    for i in 0..corners.len() {
+                        self.push_line_segment(
+                            corners[i],
+                            corners[(i + 1) % corners.len()],
+                            color,
+                            width,
+                            cam,
+                            viewport,
+                            view_proj,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -3089,37 +3118,24 @@ impl<'a> SceneMesh<'a> {
             // It used to light only its boundary loop, which read as "these edges" rather than
             // "this surface" — the difference mattered once the face-picking tools' hover
             // started coming from their pickers rather than a hand-written arm per tool.
-            SceneElement::SketchFace(face) => match face {
-                FaceId::ConstructionPlane(index) => {
-                    if let Some(plane) = doc.construction_planes.get(index) {
-                        self.push_construction_plane_hover_fill(
-                            plane,
-                            index,
-                            color,
-                            FACE_HOVER_FILL_MULTIPLIER,
-                            cam,
-                        );
-                    }
-                }
-                _ => {
-                    self.push_sketch_face_hover(
-                        doc,
-                        face.clone(),
-                        color,
-                        FACE_HOVER_FILL_MULTIPLIER,
-                        cam,
-                    );
-                    self.push_sketch_face_hover_border(
-                        doc,
-                        face,
-                        color,
-                        2.0,
-                        cam,
-                        viewport,
-                        view_proj,
-                    );
-                }
-            },
+            SceneElement::SketchFace(face) => {
+                self.push_sketch_face_hover(
+                    doc,
+                    face.clone(),
+                    color,
+                    FACE_HOVER_FILL_MULTIPLIER,
+                    cam,
+                );
+                self.push_sketch_face_hover_border(
+                    doc,
+                    face,
+                    color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
             SceneElement::Circle(index) => {
                 self.push_pick_target_highlight(
                     doc,
@@ -3262,6 +3278,19 @@ impl<'a> SceneMesh<'a> {
                     self.push_polyline_segment(&pts, color, 3.0, cam, viewport, view_proj);
                 }
             }
+            // A sketched-on face's own boundary edge (#199/#974): the same segment the
+            // *selection* highlight draws. It used to fall in the silent group below, so
+            // hovering one lit nothing while selecting it lit up — the same shape of gap the
+            // construction plane had.
+            SceneElement::FaceEdge(crate::model::ConstraintLine::FaceEdge { face, index }) => {
+                if let Ok((a, b)) =
+                    crate::geometric_constraints::face_edge_world(doc, &face, index)
+                {
+                    self.push_line_segment(a, b, color, 4.0, cam, viewport, view_proj);
+                }
+            }
+            // The origin and the sketch axes draw their own hover, where the sketch frame that
+            // places them is in hand (see the origin marker in `build`).
             SceneElement::FaceEdge(_)
             | SceneElement::Origin
             | SceneElement::Image(_)
@@ -3365,16 +3394,21 @@ impl<'a> SceneMesh<'a> {
                 let axis_color = axis.color().gamma_multiply(1.25);
                 self.push_segment_hover(a, b, axis_color, cam, viewport, view_proj, project);
             }
+            // A plane reaches the crowd both as itself and as an analytic face over the same
+            // surface, and the dedupe keeps whichever is nearer — so the two must draw the
+            // same thing, through the same helpers (#974).
             PickTargetKind::ConstructionPlane(index) => {
-                if let Some(plane) = doc.construction_planes.get(*index) {
-                    self.push_construction_plane_hover_fill(
-                        plane,
-                        *index,
-                        color,
-                        FACE_HOVER_FILL_MULTIPLIER,
-                        cam,
-                    );
-                }
+                let face = FaceId::ConstructionPlane(*index);
+                self.push_sketch_face_hover(doc, face.clone(), color, FACE_HOVER_FILL_MULTIPLIER, cam);
+                self.push_sketch_face_hover_border(
+                    doc,
+                    face,
+                    color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
             }
             PickTargetKind::Ground(p) => {
                 push_ground_hover_marker(self, *p, color, cam, viewport, view_proj, project);
@@ -5317,109 +5351,172 @@ mod tests {
         assert!(!bezier_handles_relevant(5, &empty, &hover, &[]));
     }
 
+    /// How many overlay indices a hover highlight adds — 0 means it drew nothing.
+    fn hover_overlay_indices(state: &AppState, hover: ViewportHoverHighlight) -> usize {
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |hover: Option<ViewportHoverHighlight>| {
+            let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: hover.clone(),
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: crate::construction::PICK_HOVER_RGBA,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+            // Every buffer a hover can land in: screen-space discs go to the base mesh, face
+            // fills to the overlay, and pick targets to the depth-test-disabled wireframe
+            // layer (#153). A check for "did this light up?" has to count them all.
+            scene.indices.len()
+                + scene.overlay_indices.len()
+                + scene.wireframe_indices.len()
+                + scene.gizmo_indices.len()
+        };
+        build(Some(hover)) - build(None)
+    }
+
     #[test]
     fn hover_highlight_adds_mesh_geometry() {
         let state = AppState::default();
-        let cam = state.cam.clone();
-        let viewport = test_viewport();
-        let base = ViewportScene::build(&ViewportSceneInput {
-            doc: &state.doc,
-            cam: &cam,
-            viewport,
-            palette: ViewportPalette::default(),
-            sketch_session: None,
-            selection: &state.scene_selection,
-            cut_highlight_bodies: Vec::new(),
-            faded_bodies: Vec::new(),
-            sketch_repeat_ghost: Vec::new(),
-            sketch_ghost_lines: Vec::new(),
-            edit_preview_meshes: std::collections::HashMap::new(),
-            element_visibility: &state.element_visibility,
-            preview_rect: None,
-            preview_line: None,
-            preview_circle: None,
-            preview_extrusion: None,
-            preview_solid: None,
-            repeat_ghosts: Vec::new(),
-            preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
-            highlighted_bezier_handles: Vec::new(),
-            editing_extrusion: None,
-            plane_preview: None,
-            active_sketch_face: None,
-            dimension_labels: &[],
-            dim_label_view: None,
-            plane_gizmo: None,
-            extrude_gizmo: None,
-            vertex_treatment_gizmo: None,
-            arrow_gizmos: Vec::new(),
-            move_rotation_gizmo: None,
-            revolve_arc_gizmo: None,
-            vertex_treatment_preview: None,
-            hover_highlight: None,
-            extra_pick_highlights: Vec::new(),
-            colored_pick_highlights: Vec::new(),
-            colored_element_highlights: Vec::new(),
-            colored_segments: Vec::new(),
-            parameter_highlight_elements: Vec::new(),
-            hover_color: crate::construction::PICK_HOVER_RGBA,
-            document_health: &DocumentHealth::default(),
-            constraint_graphics: None,
-            constraint_connector_color: None,
-        });
-        let with_hover = ViewportScene::build(&ViewportSceneInput {
-            doc: &state.doc,
-            cam: &cam,
-            viewport,
-            palette: ViewportPalette::default(),
-            sketch_session: None,
-            selection: &state.scene_selection,
-            cut_highlight_bodies: Vec::new(),
-            faded_bodies: Vec::new(),
-            sketch_repeat_ghost: Vec::new(),
-            sketch_ghost_lines: Vec::new(),
-            edit_preview_meshes: std::collections::HashMap::new(),
-            element_visibility: &state.element_visibility,
-            preview_rect: None,
-            preview_line: None,
-            preview_circle: None,
-            preview_extrusion: None,
-            preview_solid: None,
-            repeat_ghosts: Vec::new(),
-            preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
-            highlighted_bezier_handles: Vec::new(),
-            editing_extrusion: None,
-            plane_preview: None,
-            active_sketch_face: None,
-            dimension_labels: &[],
-            dim_label_view: None,
-            plane_gizmo: None,
-            extrude_gizmo: None,
-            vertex_treatment_gizmo: None,
-            arrow_gizmos: Vec::new(),
-            move_rotation_gizmo: None,
-            revolve_arc_gizmo: None,
-            vertex_treatment_preview: None,
-            hover_highlight: Some(ViewportHoverHighlight::SketchFace(
+        // The biased fill quad (6 indices) plus its four border segments (#974): a datum plane
+        // hovers like every other face, fill and outline both, rather than through a special
+        // case that gave it only the fill.
+        assert_eq!(
+            hover_overlay_indices(
+                &state,
+                ViewportHoverHighlight::SketchFace(FaceId::ConstructionPlane(0))
+            ),
+            30,
+            "construction-plane hover should add a biased fill quad and its border"
+        );
+    }
+
+    /// #974, the general form: **every** kind the crowd can offer must light up when its
+    /// Exploder loupe is hovered. The plane's failure was one empty match arm among many that
+    /// looked alike, so the guard is totality rather than a case per kind — a new
+    /// `PickTargetKind` with nothing behind it fails here rather than shipping as "that one
+    /// kind doesn't highlight".
+    ///
+    /// Two kinds draw *outside* this pass and are named explicitly, so adding a third silent
+    /// one is a deliberate act: a constraint's badge glows in the 2D annotation overlay
+    /// (#568), and a whole body recolours in the main pass (#902).
+    #[test]
+    fn every_crowd_kind_lights_up_when_hovered() {
+        use crate::construction::GlobalAxis;
+        let state = state_with_one_body();
+        let solid = crate::extrude::body_solid_mesh(&state.doc, 0).expect("body mesh");
+        let tri = solid.triangles.first().copied().expect("a triangle");
+        let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+        let line = *state.doc.lines.iter().position(|l| !l.deleted).get_or_insert(0);
+
+        let drawn = |kind: PickTargetKind| {
+            hover_overlay_indices(&state, ViewportHoverHighlight::PickTarget(kind))
+        };
+        for kind in [
+            PickTargetKind::Line(line),
+            PickTargetKind::Point(crate::model::ConstraintPoint::LineEndpoint {
+                line,
+                end: crate::model::LineEnd::Start,
+            }),
+            PickTargetKind::BodyEdge {
+                body: 0,
+                a: tri[0],
+                b: tri[1],
+            },
+            PickTargetKind::BodyFace {
+                body: 0,
+                triangles: vec![tri],
+                normal,
+            },
+            PickTargetKind::BodyVertex {
+                body: 0,
+                position: tri[0],
+            },
+            PickTargetKind::GlobalAxis(GlobalAxis::X),
+            PickTargetKind::ConstructionPlane(0),
+            PickTargetKind::SketchFace(FaceId::ConstructionPlane(0)),
+            PickTargetKind::Ground(Vec3::ZERO),
+        ] {
+            assert!(
+                drawn(kind.clone()) > 0,
+                "hovering {kind:?} drew nothing — every kind the crowd offers must light up"
+            );
+        }
+        // The two that draw elsewhere in the frame, by design.
+        assert_eq!(drawn(PickTargetKind::Constraint(0)), 0);
+        assert_eq!(drawn(PickTargetKind::Body(0)), 0);
+    }
+
+    /// #974: a datum plane reaches the crowd **twice** — as itself and as the analytic face
+    /// over the same surface — and `collect_pick_candidates` keeps whichever is nearer. So an
+    /// Exploder loupe could hand the renderer either one, and only one of them drew: the
+    /// plane's fill was written out at each call site rather than in the face helper, and the
+    /// `FaceId::ConstructionPlane` arm of that helper was empty. Every representation of a
+    /// plane must light up, and identically.
+    #[test]
+    fn every_representation_of_a_plane_hovers() {
+        let state = AppState::default();
+        let as_plane = hover_overlay_indices(
+            &state,
+            ViewportHoverHighlight::PickTarget(PickTargetKind::ConstructionPlane(0)),
+        );
+        let as_face = hover_overlay_indices(
+            &state,
+            ViewportHoverHighlight::PickTarget(PickTargetKind::SketchFace(
                 FaceId::ConstructionPlane(0),
             )),
-            extra_pick_highlights: Vec::new(),
-            colored_pick_highlights: Vec::new(),
-            colored_element_highlights: Vec::new(),
-            colored_segments: Vec::new(),
-            parameter_highlight_elements: Vec::new(),
-            hover_color: crate::construction::PICK_HOVER_RGBA,
-            document_health: &DocumentHealth::default(),
-            constraint_graphics: None,
-            constraint_connector_color: None,
-        });
-        let hover_indices =
-            with_hover.overlay_indices.len() - base.overlay_indices.len();
-        assert_eq!(
-            hover_indices, 6,
-            "construction-plane hover should add only a biased fill quad"
         );
+        let as_element = hover_overlay_indices(
+            &state,
+            ViewportHoverHighlight::Element(SceneElement::ConstructionPlane(0)),
+        );
+        let as_face_element = hover_overlay_indices(
+            &state,
+            ViewportHoverHighlight::Element(SceneElement::SketchFace(
+                FaceId::ConstructionPlane(0),
+            )),
+        );
+        assert!(as_plane > 0, "a plane pick target must draw something");
+        assert_eq!(as_face, as_plane, "so must the analytic face over it, the same way");
+        assert!(as_element > 0, "and the plane as an element");
+        assert_eq!(as_face_element, as_plane, "and that element's analytic form");
     }
 
     /// #153: pick-target hovers (an edge/vertex/point about to be selected) draw in the
