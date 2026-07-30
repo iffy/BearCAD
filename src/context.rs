@@ -262,6 +262,11 @@ pub struct BooleanControl {
 pub struct MoveControl {
     /// Picked bodies to move (rendered through the unified element picker, #213).
     pub targets: Vec<usize>,
+    /// Construction planes (#217) and tracing images (#217) moving with them. They share the
+    /// **one** Bodies picker rather than getting rows of their own — a Move takes "the things
+    /// that move", and splitting them by kind would be three near-empty inputs (#963).
+    pub plane_targets: Vec<usize>,
+    pub image_targets: Vec<usize>,
     /// Snap (default) or free translation (#648) — the Translate dropdown.
     pub translate_mode: crate::model::MoveTranslateMode,
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
@@ -2062,14 +2067,37 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     if let Some(m) = input.move_op.as_ref() {
         // Exactly one Move picker reads as focused (#658): the Bodies picker only while the
         // step-through hasn't moved on to a point/axis/alignment picker.
-        tool_pickers.push(body_tool_picker(
+        //
+        // It takes planes and tracing images alongside bodies (#217/#963) — a Move moves "the
+        // things that move", and they were previously routed by a per-kind arm in the pane
+        // click cascade with no picker showing them at all.
+        let mut moving = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Body,
+                ElementKind::Plane,
+                ElementKind::Image,
+            ])
+            .rule(PickRule::LiveBody),
+            PickLimit::Infinite,
+        );
+        moving.set_focused(m.bodies_focused);
+        moving.set_picked(
             input.doc,
-            "Bodies",
-            PickerTarget::MoveTargets,
-            &m.targets,
-            None,
-            m.bodies_focused,
-        ));
+            m.targets
+                .iter()
+                .map(|&bi| SceneElement::Body(bi))
+                .chain(m.plane_targets.iter().map(|&pi| {
+                    SceneElement::ConstructionPlane(pi)
+                }))
+                .chain(m.image_targets.iter().map(|&ii| SceneElement::Image(ii))),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Bodies",
+            picker: moving,
+            target: PickerTarget::MoveTargets,
+            separator_above: true,
+            render: PickerRender::Shared,
+        });
     }
     if let Some(m) = input.move_op.as_ref() {
         // The Move tool's six point pickers (#649/#650/#955). They draw between the Rotation
@@ -2214,14 +2242,40 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         );
         length_target.set_focused(r.length_target_focused && !r.around_axis);
         length_target.set_picked(input.doc, r.length_target.clone());
-        tool_pickers.push(body_tool_picker(
+        // Like Move's, the Repeat set takes more than bodies (#220/#221/#231/#963): planes,
+        // sketches and cut extrusions are all repeated alongside them, and each used to be a
+        // per-kind arm in the pane click cascade with no picker showing it.
+        let mut repeated = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Body,
+                ElementKind::Plane,
+                ElementKind::Sketch,
+            ])
+            .operations(&[crate::element_picker::OperationKind::Extrude])
+            .rule(PickRule::LiveBody),
+            PickLimit::Infinite,
+        );
+        repeated.set_focused(!axis_is_next && !r.value_field_focused && !r.length_target_focused);
+        repeated.set_picked(
             input.doc,
-            "Bodies",
-            PickerTarget::RepeatTargets,
-            &r.targets,
-            None,
-            !axis_is_next && !r.value_field_focused && !r.length_target_focused,
-        ));
+            r.targets
+                .iter()
+                .map(|&bi| SceneElement::Body(bi))
+                .chain(r.plane_targets.iter().map(|&pi| {
+                    SceneElement::ConstructionPlane(pi)
+                }))
+                .chain(r.sketch_targets.iter().map(|&si| SceneElement::Sketch(si)))
+                .chain(r.extrusion_targets.iter().map(|&ei| {
+                    SceneElement::Extrusion(ei)
+                })),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Bodies",
+            picker: repeated,
+            target: PickerTarget::RepeatTargets,
+            separator_above: true,
+            render: PickerRender::Shared,
+        });
         tool_pickers.push(ToolPickerView {
             heading: "Distance to",
             picker: length_target,
@@ -7521,6 +7575,8 @@ mod tests {
             tool: Tool::Move,
             in_drawing_workbench: false,
             move_op: Some(MoveControl {
+                plane_targets: Vec::new(),
+                image_targets: Vec::new(),
                 angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
                 translate_mode: crate::model::MoveTranslateMode::Free,
                 bodies_focused: true,

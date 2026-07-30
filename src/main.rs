@@ -11830,6 +11830,8 @@ impl eframe::App for App {
                 context::MoveControl {
                     angle_snap_deg: self.state.move_angle_snap_deg,
                     targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                    plane_targets: cm.map(|c| c.plane_targets.clone()).unwrap_or_default(),
+                    image_targets: cm.map(|c| c.image_targets.clone()).unwrap_or_default(),
                     translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
                     bodies_focused: move_focus == MoveFocus::Bodies,
                     start_a: cm.and_then(|c| c.start_point_a),
