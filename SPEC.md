@@ -320,7 +320,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   centroid+normal. Build one with `SceneElement::from_face_id`, never directly: a
   `FaceId::ConstructionPlane` normalizes to `SceneElement::ConstructionPlane`, so a plane has
   exactly one identity however it was reached (which is also what collapses the Selection
-  Exploder's duplicate plane loupes into one). The **sketch's two axes are always drawn** while a sketch is open
+  Exploder's duplicate plane loupes into one).
+- **Snap points are selectable (#952):** `SceneElement::MovePoint(MovePointRef)` names a point
+  the Move/Joint tools snap from or onto — an edge midpoint, a point along an edge, a planar
+  face's middle — so their twelve point pickers hold elements like every other picker. Built with
+  `SceneElement::from_move_point`, which normalizes the two cases that already have an element: a
+  body corner is `BodyVertex`, the origin point is `Origin`. `as_move_point` is the inverse, for
+  handing a picker's contents back to the geometry code. The **sketch's two axes are always drawn** while a sketch is open
   (#577): the X (u) axis in the red axis colour and Y (v) axis in green, through the origin, faint
   normally and brighter when hovered — the "floating origin" that makes the sketch frame's
   orientation unambiguous now that the camera takes the shortest roll instead of forcing u-right.

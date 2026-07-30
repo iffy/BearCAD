@@ -75,6 +75,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::BodyFace { .. } => "body_face",
         SceneElement::SketchFace(_) => "face",
+        SceneElement::MovePoint(_) => "move_point",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -106,7 +107,8 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyFace { .. }
-        | SceneElement::SketchFace(_) => None,
+        | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_) => None,
         // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
         SceneElement::GlobalAxis(axis) => Some(match axis {
             crate::construction::GlobalAxis::X => 0,

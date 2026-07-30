@@ -1995,7 +1995,7 @@ impl MoveTranslateMode {
 /// keyed exactly like [`crate::hierarchy::SceneElement::BodyVertex`]/`BodyEdge` — the body plus
 /// quantized world points — and resolved against the body's live mesh, so they follow the
 /// geometry and simply stop resolving if a rebuild takes them away.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MovePointRef {
     Vertex {

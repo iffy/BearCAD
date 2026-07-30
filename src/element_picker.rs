@@ -101,6 +101,8 @@ impl ElementKind {
             // An analytic face (#952). `from_face_id` has already peeled off the
             // construction-plane case, so anything left here really is a face.
             SceneElement::SketchFace(_) => ElementKind::Face,
+            // A Move/Joint snap point (#952) is a point, whatever geometry it sits on.
+            SceneElement::MovePoint(_) => ElementKind::Vertex,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
@@ -919,6 +921,50 @@ mod tests {
             )),
             ElementKind::Plane
         );
+    }
+
+    #[test]
+    fn a_move_point_is_a_vertex_a_picker_can_hold() {
+        // #952: the Move and Joint tools each have six point pickers, all label-only because a
+        // `MovePointRef` — an edge midpoint, a face middle — had no scene element.
+        use crate::model::MovePointRef;
+        let midpoint = SceneElement::from_move_point(MovePointRef::EdgeMidpoint {
+            body: 1,
+            a: [0; 3],
+            b: [100, 0, 0],
+        });
+        assert_eq!(ElementKind::of(&midpoint), ElementKind::Vertex);
+        assert!(ElementFilter::kind(ElementKind::Vertex).accepts(&midpoint));
+        assert!(!ElementFilter::kind(ElementKind::Edge).accepts(&midpoint));
+    }
+
+    #[test]
+    fn move_points_that_name_something_else_normalize_to_it() {
+        // One identity per thing, as for faces: a move point on a body corner is that corner,
+        // and the origin move point is the origin.
+        use crate::model::MovePointRef;
+        assert_eq!(
+            SceneElement::from_move_point(MovePointRef::Vertex { body: 2, p: [1, 2, 3] }),
+            SceneElement::BodyVertex { body: 2, p: [1, 2, 3] }
+        );
+        assert_eq!(
+            SceneElement::from_move_point(MovePointRef::Origin),
+            SceneElement::Origin
+        );
+        // Round-trips: what a picker holds converts back to what the geometry code wants.
+        for point in [
+            MovePointRef::Vertex { body: 2, p: [1, 2, 3] },
+            MovePointRef::Origin,
+            MovePointRef::EdgeMidpoint { body: 0, a: [0; 3], b: [5; 3] },
+            MovePointRef::OnEdge { body: 0, p: [7; 3] },
+            MovePointRef::FaceCenter { body: 4, centroid: [1; 3], normal: [0, 0, 100] },
+        ] {
+            assert_eq!(
+                SceneElement::from_move_point(point).as_move_point(),
+                Some(point),
+                "{point:?} should survive the round trip"
+            );
+        }
     }
 
     #[test]

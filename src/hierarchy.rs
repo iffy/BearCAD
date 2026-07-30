@@ -203,6 +203,18 @@ pub enum SceneElement {
     /// [`FaceId::ConstructionPlane`] normalizes to [`SceneElement::ConstructionPlane`] so a plane
     /// has one identity rather than two.
     SketchFace(FaceId),
+    /// A point the Move and Joint tools snap from or onto (#952): an edge midpoint, a point
+    /// along an edge, or a planar face's middle. Their six point pickers each hold one of
+    /// these, and had no element to put in a picker before.
+    ///
+    /// Build one with [`SceneElement::from_move_point`], never directly — the corner and origin
+    /// cases normalize to [`SceneElement::BodyVertex`] / [`SceneElement::Origin`], which already
+    /// name those points.
+    ///
+    /// Constructed once the Move/Joint point pickers become real `ElementPicker`s (#955); the
+    /// identity, its round trip, and its highlight are in place ahead of that.
+    #[allow(dead_code)]
+    MovePoint(crate::model::MovePointRef),
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
     Component(usize),
@@ -235,6 +247,35 @@ impl SceneElement {
         match self {
             SceneElement::SketchFace(face) => Some(face.clone()),
             SceneElement::ConstructionPlane(index) => Some(FaceId::ConstructionPlane(*index)),
+            _ => None,
+        }
+    }
+
+    /// The element for a Move/Joint snap point (#952), normalizing the two cases that name
+    /// something with an element already: a body corner is that corner, and the origin point is
+    /// the origin.
+    #[allow(dead_code)]
+    pub fn from_move_point(point: crate::model::MovePointRef) -> SceneElement {
+        use crate::model::MovePointRef;
+        match point {
+            MovePointRef::Vertex { body, p } => SceneElement::BodyVertex { body, p },
+            MovePointRef::Origin => SceneElement::Origin,
+            other => SceneElement::MovePoint(other),
+        }
+    }
+
+    /// The snap point this element names, if any — the inverse of [`from_move_point`].
+    ///
+    /// [`from_move_point`]: SceneElement::from_move_point
+    #[allow(dead_code)]
+    pub fn as_move_point(&self) -> Option<crate::model::MovePointRef> {
+        use crate::model::MovePointRef;
+        match self {
+            SceneElement::MovePoint(point) => Some(*point),
+            SceneElement::BodyVertex { body, p } => {
+                Some(MovePointRef::Vertex { body: *body, p: *p })
+            }
+            SceneElement::Origin => Some(MovePointRef::Origin),
             _ => None,
         }
     }
@@ -489,6 +530,11 @@ impl ElementVisibility {
             // An analytic face (#952) has no row of its own; its owner's visibility governs
             // whether it can be seen at all, and that is enforced where the owner draws.
             SceneElement::SketchFace(_) => true,
+            // A snap point (#952) shows exactly when the body it sits on does.
+            SceneElement::MovePoint(point) => match point.body() {
+                Some(body) => self.effective_visible(doc, SceneElement::Body(body)),
+                None => true,
+            },
             SceneElement::Image(index) => self.is_visible(SceneElement::Image(index)),
             // Boolean/move operations are pane-only elements with no viewport visibility
             // of their own (their outputs are ordinary bodies).
@@ -1484,7 +1530,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
-        | SceneElement::SketchFace(_) => return None,
+        | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_) => return None,
     })
 }
 
@@ -2485,7 +2532,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
-        | SceneElement::SketchFace(_) => None,
+        | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_) => None,
         // A tracing image nests under its host construction plane (#169).
         SceneElement::Image(index) => doc
             .tracing_images
@@ -2633,6 +2681,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_)
         | SceneElement::SketchText(_)
         // A joint has no outputs — nothing descends from it (#891).
         | SceneElement::Joint(_)

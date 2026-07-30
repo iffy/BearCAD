@@ -3011,6 +3011,23 @@ impl<'a> SceneMesh<'a> {
                     &project,
                 );
             }
+            // A Move/Joint snap point (#952) lights up as the point it resolves to.
+            SceneElement::MovePoint(point) => {
+                if let Some(world) = crate::extrude::move_point_world(doc, &point) {
+                    self.push_pick_target_highlight(
+                        doc,
+                        &PickTargetKind::BodyVertex {
+                            body: point.body().unwrap_or(0),
+                            position: world,
+                        },
+                        color,
+                        cam,
+                        viewport,
+                        view_proj,
+                        &project,
+                    );
+                }
+            }
             // An analytic face (#952) lights up its boundary loop, likewise reusing the
             // highlight its pick target already draws.
             SceneElement::SketchFace(face) => {

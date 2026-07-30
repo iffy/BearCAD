@@ -58,6 +58,15 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         // An analytic face (#952) is alive while its plane still resolves — the same check the
         // geometry code makes before using one.
         SceneElement::SketchFace(face) => crate::face::sketch_frame(doc, face).is_some(),
+        // A Move/Joint snap point (#952) lives as long as the body it sits on, like the other
+        // geometry-keyed sub-elements; the world origin always does.
+        SceneElement::MovePoint(point) => match point {
+            crate::model::MovePointRef::Origin => true,
+            crate::model::MovePointRef::Vertex { body, .. }
+            | crate::model::MovePointRef::EdgeMidpoint { body, .. }
+            | crate::model::MovePointRef::OnEdge { body, .. }
+            | crate::model::MovePointRef::FaceCenter { body, .. } => body_alive(doc, body),
+        },
         SceneElement::UnitInstance(index) => doc
             .unit_instances
             .get(index)
@@ -291,7 +300,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
-        | SceneElement::SketchFace(_) => {}
+        | SceneElement::SketchFace(_)
+        | SceneElement::MovePoint(_) => {}
         SceneElement::Joint(index) => {
             if doc.joints.get(index).is_some_and(|j| !j.deleted) {
                 doc.joints[index].deleted = true;

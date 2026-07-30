@@ -5580,6 +5580,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
         SceneElement::SketchFace(_) => "Face".to_string(),
+        SceneElement::MovePoint(_) => "Point".to_string(),
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
