@@ -1253,7 +1253,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     loops are already minimal and simple. Scriptable via `faces = { {l0,l1,…}, … }`.
     **Interactive in-sketch Slice tool** (#238): with a sketch open, the Slice tool picks target
     lines/circles/faces and cutter lines with **two roles**, like the Combine tool's side-A/side-B
-    element pickers (`CreatingSketchSlice`, `picking_cutter` chooses which the next viewport click
+    real element pickers (#955; `CreatingSketchSlice`, `picking_cutter` chooses which the next viewport click
     feeds). Clicking a line/circle toggles it as a target; clicking empty space inside a face
     toggles that face (`face_loop_at_world` picks the smallest containing loop); while the Cutters
     picker is active, a click toggles a cutter line. The context pane shows both pickers and a

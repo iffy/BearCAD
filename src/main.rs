@@ -12085,29 +12085,33 @@ impl eframe::App for App {
                     && self.state.sketch_session.is_some())
                 .then(|| {
                     let c = self.state.creating_sketch_slice.as_ref();
-                    let mut target_rows: Vec<String> = Vec::new();
-                    let mut cutter_rows: Vec<String> = Vec::new();
+                    // Lines, then circles, then faces (#955) — the order the removal handler
+                    // unpacks a row index back into the three sets.
+                    let mut targets: Vec<hierarchy::SceneElement> = Vec::new();
+                    let mut cutters: Vec<usize> = Vec::new();
                     let (mut picking_cutter, mut editing, mut has_t, mut has_c) =
                         (false, false, false, false);
                     if let Some(c) = c {
-                        for &li in &c.line_targets {
-                            target_rows.push(format!("Line {li}"));
-                        }
-                        for &ci in &c.circle_targets {
-                            target_rows.push(format!("Circle {ci}"));
-                        }
-                        for n in 0..c.face_targets.len() {
-                            target_rows.push(format!("Face {}", n + 1));
-                        }
-                        cutter_rows = c.cutter_lines.iter().map(|li| format!("Line {li}")).collect();
+                        targets.extend(c.line_targets.iter().map(|&li| {
+                            hierarchy::SceneElement::Line(li)
+                        }));
+                        targets.extend(c.circle_targets.iter().map(|&ci| {
+                            hierarchy::SceneElement::Circle(ci)
+                        }));
+                        targets.extend(c.face_targets.iter().map(|lines| {
+                            hierarchy::SceneElement::from_face_id(model::FaceId::Polygon(
+                                lines.clone(),
+                            ))
+                        }));
+                        cutters = c.cutter_lines.clone();
                         picking_cutter = c.picking_cutter;
                         editing = c.editing.is_some();
                         has_t = c.has_targets();
                         has_c = c.has_cutters();
                     }
                     context::SketchSliceControl {
-                        target_rows,
-                        cutter_rows,
+                        targets,
+                        cutters,
                         picking_cutter,
                         editing,
                         can_commit: has_t && has_c,
@@ -13140,9 +13144,7 @@ impl eframe::App for App {
                     }
                 }
             }
-            if let Some(edit) = sketch_slice_edit {
-                match edit {
-                    context::SketchSliceEdit::Commit => {
+            if let Some(context::SketchSliceEdit::Commit) = sketch_slice_edit {
                         if let Some(cs) = self
                             .state
                             .creating_sketch_slice
@@ -13169,30 +13171,6 @@ impl eframe::App for App {
                             self.state.creating_sketch_slice = None;
                             self.state.apply(action);
                         }
-                    }
-                    other => {
-                        // Role toggles may fire before the first pick, so seed the draft from the
-                        // active sketch session.
-                        if let Some(session) = self.state.sketch_session {
-                            let cs = self
-                                .state
-                                .creating_sketch_slice
-                                .get_or_insert_with(|| {
-                                    actions::CreatingSketchSlice::new(session.sketch)
-                                });
-                            match other {
-                                context::SketchSliceEdit::PickingCutter(v) => cs.picking_cutter = v,
-                                context::SketchSliceEdit::ClearTargets => {
-                                    cs.line_targets.clear();
-                                    cs.circle_targets.clear();
-                                    cs.face_targets.clear();
-                                }
-                                context::SketchSliceEdit::ClearCutters => cs.cutter_lines.clear(),
-                                context::SketchSliceEdit::Commit => {}
-                            }
-                        }
-                    }
-                }
             }
             if let Some(edit) = sketch_text_edit {
                 // Re-resolve the single selected text rather than trusting a stale control index.
@@ -13573,6 +13551,41 @@ impl eframe::App for App {
                         if let Some(cr) = self.state.creating_revolve.as_mut() {
                             if edit != context::ToolPickerAction::Focus {
                                 cr.axis = None;
+                            }
+                        }
+                    }
+                    // The in-sketch Slice tool's two sides (#238/#955). A target row index
+                    // unpacks back into the three sets in the order the pane listed them:
+                    // lines, then circles, then faces.
+                    context::PickerTarget::SketchSliceTargets => {
+                        if let Some(cs) = self.state.creating_sketch_slice.as_mut() {
+                            match edit {
+                                context::ToolPickerAction::Focus => cs.picking_cutter = false,
+                                context::ToolPickerAction::Clear => {
+                                    cs.line_targets.clear();
+                                    cs.circle_targets.clear();
+                                    cs.face_targets.clear();
+                                }
+                                context::ToolPickerAction::Remove(i) => {
+                                    let lines = cs.line_targets.len();
+                                    let circles = cs.circle_targets.len();
+                                    if i < lines {
+                                        cs.line_targets.remove(i);
+                                    } else if i < lines + circles {
+                                        cs.circle_targets.remove(i - lines);
+                                    } else if i - lines - circles < cs.face_targets.len() {
+                                        cs.face_targets.remove(i - lines - circles);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    context::PickerTarget::SketchSliceCutters => {
+                        if let Some(cs) = self.state.creating_sketch_slice.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                cs.picking_cutter = true;
+                            } else {
+                                remove_or_clear(&mut cs.cutter_lines, edit);
                             }
                         }
                     }

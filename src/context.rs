@@ -664,8 +664,10 @@ pub enum SliceEdit {
 /// cutter lines. Mirrors [`SliceControl`] but without the 3D extend-to-infinity toggle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchSliceControl {
-    pub target_rows: Vec<String>,
-    pub cutter_rows: Vec<String>,
+    /// The sketch entities being sliced and the lines doing the slicing (#955). Targets are
+    /// listed lines-then-circles-then-faces, which is the order the removal handler unpacks.
+    pub targets: Vec<crate::hierarchy::SceneElement>,
+    pub cutters: Vec<usize>,
     /// `true` while the cutter picker is active (the next viewport click adds a cutter line).
     pub picking_cutter: bool,
     pub editing: bool,
@@ -675,12 +677,6 @@ pub struct SketchSliceControl {
 /// One edit from the in-sketch Slice context section (#238).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SketchSliceEdit {
-    /// Choose which picker the next viewport click lands on (`true` = cutter).
-    PickingCutter(bool),
-    /// Clear the target set.
-    ClearTargets,
-    /// Clear the cutter set.
-    ClearCutters,
     Commit,
 }
 
@@ -1216,6 +1212,10 @@ pub enum PickerTarget {
     /// The Revolve tool's sweep axis (`CreatingRevolve::axis`, #955): a straight reference —
     /// a sketch line, a body edge, or a world axis. Single-pick.
     RevolveAxis,
+    /// The in-sketch Slice tool's target entities (#955): lines, circles, and faces.
+    SketchSliceTargets,
+    /// The in-sketch Slice tool's cutter lines (#955).
+    SketchSliceCutters,
     /// The Slice tool's target bodies (`CreatingSlice::targets`, #955).
     SliceTargets,
     /// The Slice tool's cutter faces/planes (`CreatingSlice::cutters`, #955). Consumed
@@ -1914,6 +1914,33 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             None,
             m.bodies_focused,
         ));
+    }
+    if let Some(sl) = input.sketch_slice.as_ref() {
+        // The in-sketch Slice tool's two sides (#238/#955): the entities being cut, and the
+        // lines cutting them. Cutters are consumed by the operation, so they read red.
+        let mut targets = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle, ElementKind::Face]),
+            PickLimit::Infinite,
+        );
+        targets.set_focused(!sl.picking_cutter);
+        targets.set_picked(input.doc, sl.targets.iter().cloned());
+        tool_pickers.push(ToolPickerView {
+            heading: "Targets",
+            picker: targets,
+            target: PickerTarget::SketchSliceTargets,
+            separator_above: true,
+        });
+        let mut cutters =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite)
+                .with_selected_color(crate::theme::CUT_ACCENT);
+        cutters.set_focused(sl.picking_cutter);
+        cutters.set_picked(input.doc, sl.cutters.iter().map(|&li| SceneElement::Line(li)));
+        tool_pickers.push(ToolPickerView {
+            heading: "Cutters",
+            picker: cutters,
+            target: PickerTarget::SketchSliceCutters,
+            separator_above: false,
+        });
     }
     if let Some(sl) = input.slice_op.as_ref() {
         // Slice's two pickers (#955): the bodies it splits, and the planes/flat faces doing the
@@ -5670,47 +5697,10 @@ pub fn show_pane(
         }
     }
 
-    // In-sketch Slice (#238): two-role pickers for sketch targets (lines/circles/faces) and cutter
-    // lines, like the Combine tool's A/B pickers. Clicking a picker makes it the active side.
+    // In-sketch Slice (#238/#955): Targets and Cutters are real `ToolPickerView`s now,
+    // rendered with every other tool picker above; only the commit button lives here.
     if let Some(control) = &content.sketch_slice {
         any_control = true;
-        ui.separator();
-        let mut pending: Option<SketchSliceEdit> = None;
-        labeled_row_top(ui, "Targets", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "sketch_slice_targets",
-            !control.picking_cutter,
-            false,
-            crate::icons::IconId::Line,
-            &control.target_rows,
-        ) {
-            pending = Some(match event {
-                crate::element_picker::PickerEvent::Focus => SketchSliceEdit::PickingCutter(false),
-                crate::element_picker::PickerEvent::Remove(_)
-                | crate::element_picker::PickerEvent::Clear => SketchSliceEdit::ClearTargets,
-            });
-        }
-        });
-        labeled_row_top(ui, "Cutters", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "sketch_slice_cutters",
-            control.picking_cutter,
-            false,
-            crate::icons::IconId::Line,
-            &control.cutter_rows,
-        ) {
-            pending = Some(match event {
-                crate::element_picker::PickerEvent::Focus => SketchSliceEdit::PickingCutter(true),
-                crate::element_picker::PickerEvent::Remove(_)
-                | crate::element_picker::PickerEvent::Clear => SketchSliceEdit::ClearCutters,
-            });
-        }
-        });
-        if let Some(edit) = pending {
-            on_sketch_slice_edit(edit);
-        }
         ui.add_space(2.0);
         if ui
             .add_enabled(
