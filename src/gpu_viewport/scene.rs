@@ -2998,6 +2998,19 @@ impl<'a> SceneMesh<'a> {
                     &project,
                 );
             }
+            // A selected/hovered world axis lights up its origin triad leg (#952), the same
+            // stroke its pick-target hover already draws.
+            SceneElement::GlobalAxis(axis) => {
+                self.push_pick_target_highlight(
+                    doc,
+                    &PickTargetKind::GlobalAxis(axis),
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
             SceneElement::Circle(index) => {
                 self.push_pick_target_highlight(
                     doc,

@@ -37,6 +37,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
+        | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. } => None,
@@ -178,6 +179,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
+        | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. } => None,
@@ -409,6 +411,9 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         }
         SceneElement::Origin => {
             return Err("the origin cannot be renamed".to_string());
+        }
+        SceneElement::GlobalAxis(_) => {
+            return Err("the world axes cannot be renamed".to_string());
         }
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
@@ -667,6 +672,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),
         SceneElement::Origin => "Origin".to_string(),
+        SceneElement::GlobalAxis(axis) => axis.label().to_string(),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Constraint(i) => format!("Constraint {i}"),
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),

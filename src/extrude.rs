@@ -3379,6 +3379,7 @@ pub fn selection_world_bounds(
             | SceneElement::Constraint(_)
             | SceneElement::FaceEdge(_)
             | SceneElement::Origin
+            | SceneElement::GlobalAxis(_)
             // The in-sketch repeat's own bounds come from its duplicated lines/circles, which are
             // selected/framed as their own elements; the op node itself contributes nothing here.
             | SceneElement::SketchRepeatOp(_)

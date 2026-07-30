@@ -5597,6 +5597,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SweepOp(i) => format!("Sweep operation {i}"),
         SceneElement::Joint(i) => format!("Joint {i}"),
         SceneElement::Origin => "Origin".to_string(),
+        SceneElement::GlobalAxis(axis) => axis.label().to_string(),
     }
 }
 

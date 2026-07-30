@@ -189,6 +189,10 @@ pub enum SceneElement {
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
+    /// One of the world axes (#952). Fixed geometry with no owning entity, like `Origin`: the
+    /// axes are pickable (a Repeat path, a Revolve axis) so they need an identity an element
+    /// picker can hold. Not a row in the Elements pane — there is no `HierarchyNode` for it.
+    GlobalAxis(crate::construction::GlobalAxis),
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
     Component(usize),
@@ -471,8 +475,8 @@ impl ElementVisibility {
             // A joint is a relationship, not geometry — its icon shows whenever its
             // parts do (#891).
             SceneElement::Joint(_) => true,
-            // The origin is always visible while sketching (#189).
-            SceneElement::Origin => true,
+            // The origin and the world axes are always visible (#189/#952).
+            SceneElement::Origin | SceneElement::GlobalAxis(_) => true,
         }
     }
 }
@@ -1438,6 +1442,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
+        | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. } => return None,
@@ -2436,7 +2441,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         }),
         // A face's own edge isn't a hierarchy-pane node in its own right (it's a constraint
         // reference, not an independently listed element) — no parent to nest under.
-        SceneElement::FaceEdge(_) | SceneElement::Origin => None,
+        SceneElement::FaceEdge(_) | SceneElement::Origin | SceneElement::GlobalAxis(_) => None,
         // Body sub-elements (#156/#555) likewise aren't pane nodes of their own.
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
@@ -2583,6 +2588,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::Body(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
+        | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }

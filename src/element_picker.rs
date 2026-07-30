@@ -35,6 +35,10 @@ pub enum ElementKind {
     Sketch,
     /// A straight sketch segment.
     Line,
+    /// One of the world axes (#952) — pickable wherever a straight reference is wanted (a
+    /// Repeat path, a Revolve axis), and distinct from a sketch [`Line`](ElementKind::Line) so a
+    /// picker can take one without the other.
+    Axis,
     Circle,
     /// A point: a sketch/constraint point, a body corner, or the origin.
     Vertex,
@@ -47,6 +51,11 @@ pub enum ElementKind {
     /// A solid body.
     Body,
     Image,
+    /// A joint between parts (#952) — its own kind, not a history operation, so a picker can
+    /// take joints without swallowing every extrude and boolean too.
+    Joint,
+    /// A component (#952) — likewise its own kind rather than an operation.
+    Component,
     /// A history operation (extrude, boolean, move, repeat, slice, revolve). Restrict which ones
     /// with [`ElementFilter::operations`].
     Operation,
@@ -55,16 +64,25 @@ pub enum ElementKind {
 impl ElementKind {
     /// Kinds in the canonical order used for filter membership and the collapsed summary, so a
     /// picker accepting several kinds always renders them in the same, stable order.
-    pub const ORDER: [ElementKind; 10] = [
+    ///
+    /// **Every** kind must appear here: [`ElementFilter::kinds`] builds its accepted set by
+    /// walking this list, so a kind left out is one no picker can accept and no summary can
+    /// count (which is exactly what happened to `Image`). `every_kind_is_in_the_canonical_order`
+    /// guards that.
+    pub const ORDER: [ElementKind; 14] = [
         ElementKind::Plane,
+        ElementKind::Image,
         ElementKind::Sketch,
         ElementKind::Line,
         ElementKind::Circle,
+        ElementKind::Axis,
         ElementKind::Vertex,
         ElementKind::Edge,
         ElementKind::Face,
         ElementKind::Constraint,
         ElementKind::Body,
+        ElementKind::Component,
+        ElementKind::Joint,
         ElementKind::Operation,
     ];
 
@@ -79,13 +97,15 @@ impl ElementKind {
             SceneElement::Point(_) | SceneElement::BodyVertex { .. } | SceneElement::Origin => {
                 ElementKind::Vertex
             }
+            SceneElement::GlobalAxis(_) => ElementKind::Axis,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
             // accept it without also accepting whole bodies.
             SceneElement::BodyFace { .. } => ElementKind::Face,
             SceneElement::Body(_) => ElementKind::Body,
-            SceneElement::Component(_) => ElementKind::Operation,
+            SceneElement::Component(_) => ElementKind::Component,
+            SceneElement::Joint(_) => ElementKind::Joint,
             SceneElement::UnitInstance(_) => ElementKind::Body,
             SceneElement::Extrusion(_)
             | SceneElement::BooleanOp(_)
@@ -102,8 +122,7 @@ impl ElementKind {
             | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
             | SceneElement::Shape(_)
-            | SceneElement::SweepOp(_)
-            | SceneElement::Joint(_) => ElementKind::Operation,
+            | SceneElement::SweepOp(_) => ElementKind::Operation,
         }
     }
 
@@ -111,16 +130,19 @@ impl ElementKind {
     pub fn icon(self) -> IconId {
         match self {
             ElementKind::Plane => IconId::Plane,
-            ElementKind::Image => IconId::Plane,
+            ElementKind::Image => IconId::Image,
             ElementKind::Sketch => IconId::Sketch,
             ElementKind::Line => IconId::Line,
             ElementKind::Circle => IconId::Circle,
+            ElementKind::Axis => IconId::Line,
             // No dedicated point glyph; the coincident icon reads as "a point".
             ElementKind::Vertex => IconId::Coincident,
             ElementKind::Edge => IconId::Line,
             ElementKind::Face => IconId::Face,
             ElementKind::Constraint => IconId::Constraint,
             ElementKind::Body => IconId::Body,
+            ElementKind::Component => IconId::Component,
+            ElementKind::Joint => IconId::Joint,
             ElementKind::Operation => IconId::Gear,
         }
     }
@@ -133,11 +155,14 @@ impl ElementKind {
             ElementKind::Sketch => "sketch",
             ElementKind::Line => "line",
             ElementKind::Circle => "circle",
+            ElementKind::Axis => "axis",
             ElementKind::Vertex => "vertex",
             ElementKind::Edge => "edge",
             ElementKind::Face => "face",
             ElementKind::Constraint => "constraint",
             ElementKind::Body => "body",
+            ElementKind::Component => "component",
+            ElementKind::Joint => "joint",
             ElementKind::Operation => "operation",
         }
     }
@@ -807,6 +832,90 @@ mod tests {
         let f = ElementFilter::kind(ElementKind::Plane);
         assert!(f.accepts(&SceneElement::ConstructionPlane(0)));
         assert!(f.accepts(&SceneElement::Image(0)));
+    }
+
+    #[test]
+    fn an_images_only_filter_takes_images() {
+        // Image was missing from `ORDER`, so `kinds()` dropped it and an images-only picker
+        // accepted nothing at all.
+        let f = ElementFilter::kind(ElementKind::Image);
+        assert!(f.accepts(&SceneElement::Image(0)));
+        assert!(!f.accepts(&SceneElement::ConstructionPlane(0)));
+    }
+
+    #[test]
+    fn a_picked_image_shows_in_the_summary() {
+        // Same root cause: `summary()` walks `ORDER`, so a picked image counted as nothing.
+        let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+        p.pick(SceneElement::Image(0));
+        assert_eq!(p.summary().len(), 1, "one chip for the picked image");
+        assert_eq!(p.summary()[0].1, 1);
+    }
+
+    #[test]
+    fn global_axes_are_their_own_kind() {
+        // The world axes are pickable (a Repeat path, a Revolve axis) but had no scene element,
+        // so they could never live in a picker.
+        use crate::construction::GlobalAxis;
+        assert_eq!(
+            ElementKind::of(&SceneElement::GlobalAxis(GlobalAxis::Z)),
+            ElementKind::Axis
+        );
+        let f = ElementFilter::kinds(&[ElementKind::Axis, ElementKind::Line]);
+        assert!(f.accepts(&SceneElement::GlobalAxis(GlobalAxis::X)));
+        assert!(f.accepts(&line(0)));
+        assert!(!f.accepts(&body(0)));
+        // An axis-only picker refuses sketch lines.
+        let axes = ElementFilter::kind(ElementKind::Axis);
+        assert!(axes.accepts(&SceneElement::GlobalAxis(GlobalAxis::Y)));
+        assert!(!axes.accepts(&line(0)));
+    }
+
+    #[test]
+    fn joints_and_components_are_not_lumped_in_with_operations() {
+        // The design lists joints and components as target types of their own; both used to
+        // report as `Operation`, so an operations picker swallowed them.
+        assert_eq!(ElementKind::of(&SceneElement::Joint(0)), ElementKind::Joint);
+        assert_eq!(
+            ElementKind::of(&SceneElement::Component(0)),
+            ElementKind::Component
+        );
+        let ops = ElementFilter::kind(ElementKind::Operation);
+        assert!(ops.accepts(&SceneElement::BooleanOp(0)));
+        assert!(!ops.accepts(&SceneElement::Joint(0)));
+        assert!(!ops.accepts(&SceneElement::Component(0)));
+    }
+
+    #[test]
+    fn every_kind_is_in_the_canonical_order() {
+        // `ORDER` drives both `kinds()` membership and `summary()`, so a kind missing from it
+        // is a kind no picker can accept and no summary can count.
+        for element in [
+            SceneElement::ConstructionPlane(0),
+            SceneElement::Image(0),
+            SceneElement::Sketch(0),
+            SceneElement::Line(0),
+            SceneElement::Circle(0),
+            SceneElement::Origin,
+            SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] },
+            body_face(0),
+            SceneElement::Constraint(0),
+            SceneElement::Body(0),
+            SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
+            SceneElement::Joint(0),
+            SceneElement::Component(0),
+            SceneElement::BooleanOp(0),
+        ] {
+            let kind = ElementKind::of(&element);
+            assert!(
+                ElementKind::ORDER.contains(&kind),
+                "{kind:?} (from {element:?}) is missing from ElementKind::ORDER"
+            );
+            assert!(
+                ElementFilter::kind(kind).accepts(&element),
+                "a {kind:?}-only picker should accept {element:?}"
+            );
+        }
     }
 
     #[test]

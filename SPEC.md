@@ -308,7 +308,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   are also directly viewport-selectable in the constraint tool — not just reachable by snapping —
   so a point can be constrained coincident with the origin, or onto an axis, by clicking them. A
   selected origin brightens to the selection colour and a selected axis highlights along its full
-  length so the pick is visible. The **sketch's two axes are always drawn** while a sketch is open
+  length so the pick is visible. The **world** axes carry their own scene element
+  (`SceneElement::GlobalAxis`, #952) — fixed geometry with no owning entity, like the origin, and
+  no Elements-pane row — so an axis pick has an identity an element picker can hold, which is what
+  the axis inputs (a Repeat path, a Revolve axis) select into. Scriptable as
+  `kind = "axis"` with index 0/1/2 for X/Y/Z. The **sketch's two axes are always drawn** while a sketch is open
   (#577): the X (u) axis in the red axis colour and Y (v) axis in green, through the origin, faint
   normally and brighter when hovered — the "floating origin" that makes the sketch frame's
   orientation unambiguous now that the camera takes the shortest roll instead of forcing u-right.
@@ -2557,8 +2561,11 @@ modeled on SolveSpace (https://solvespace.com).
   The Select tool's instance is configured to accept **every** element kind and is
   **always shown and always focused** (it never blurs). Suppressed only while a draw
   construction owns the pane. Each picker instance is configured with: the subset of element
-  kinds it accepts (planes, lines, circles, vertices, edges, bodies, constraints, operations —
-  and, for operations, which sub-kinds), a pick limit (a whole number or unlimited), and an
+  kinds it accepts — the full set (`ElementKind::ORDER`, #952) is planes, images, sketches,
+  lines, circles, **axes**, vertices, edges, faces, constraints, bodies, **components**,
+  **joints**, and operations (and, for operations, which sub-kinds); every kind must be listed
+  in `ORDER`, since that is what `ElementFilter::kinds` builds from and what the collapsed
+  summary counts — a pick limit (a whole number or unlimited), and an
   optional override of the selected-element highlight color (defaulting to the theme selection
   color). The Select and Constraint tools mirror the live selection; the construction tools
   (Combine, Move, Repeat, Slice, Revolve-cut, Loft, Chamfer/Fillet) each present their own

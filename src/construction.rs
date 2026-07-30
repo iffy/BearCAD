@@ -1082,7 +1082,7 @@ pub struct AxisGizmoDrag {
 }
 
 /// World coordinate axis (origin triad).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GlobalAxis {
     X,
     Y,
@@ -1836,6 +1836,9 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         PickTargetKind::Constraint(index) => Some(SceneElement::Constraint(*index)),
         // The whole body (#902).
         PickTargetKind::Body(index) => Some(SceneElement::Body(*index)),
+        // A world axis (#952): fixed geometry with no owning entity, like the origin, but
+        // pickable — so it needs an identity an element picker can hold.
+        PickTargetKind::GlobalAxis(axis) => Some(SceneElement::GlobalAxis(*axis)),
         _ => None,
     }
 }
@@ -3311,6 +3314,19 @@ mod tests {
         let center = corners.iter().fold(Vec3::ZERO, |acc, c| acc + *c) / 4.0;
         assert!((center.x - 10.0).abs() < 1e-3);
         assert!((center.y - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_picked_world_axis_maps_to_a_scene_element() {
+        // #952: the axes are pickable, so they need an identity an element picker can hold —
+        // without one, an axis pick had nowhere to go and the Repeat/Revolve axis inputs had to
+        // keep their own bespoke state.
+        for axis in [GlobalAxis::X, GlobalAxis::Y, GlobalAxis::Z] {
+            assert_eq!(
+                scene_element_from_pick(&PickTargetKind::GlobalAxis(axis)),
+                Some(SceneElement::GlobalAxis(axis))
+            );
+        }
     }
 
     #[test]

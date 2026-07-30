@@ -1938,6 +1938,16 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: None,
         },
+        // The world axes script by name, not index (#952): `axis`/0,1,2 for X/Y/Z.
+        SceneElement::GlobalAxis(axis) => ElementScriptTokens {
+            kind: "axis",
+            index: match axis {
+                crate::construction::GlobalAxis::X => 0,
+                crate::construction::GlobalAxis::Y => 1,
+                crate::construction::GlobalAxis::Z => 2,
+            },
+            point: None,
+        },
     }
 }
 

@@ -94,6 +94,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Body(_) => "body",
         SceneElement::FaceEdge(_) => "face_edge",
         SceneElement::Origin => "origin",
+        SceneElement::GlobalAxis(_) => "axis",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::BodyFace { .. } => "face",
@@ -147,6 +148,12 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
         | SceneElement::Joint(i) => i,
+        // X/Y/Z index as 0/1/2 so a script can name one (#952).
+        SceneElement::GlobalAxis(axis) => match axis {
+            crate::construction::GlobalAxis::X => 0,
+            crate::construction::GlobalAxis::Y => 1,
+            crate::construction::GlobalAxis::Z => 2,
+        },
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -179,6 +186,13 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "image" | "tracing_image" => Some(SceneElement::Image(index)),
         "joint" => Some(SceneElement::Joint(index)),
         "shape" | "primitive" => Some(SceneElement::Shape(index)),
+        // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.
+        "axis" | "global_axis" => Some(SceneElement::GlobalAxis(match index {
+            0 => crate::construction::GlobalAxis::X,
+            1 => crate::construction::GlobalAxis::Y,
+            2 => crate::construction::GlobalAxis::Z,
+            _ => return None,
+        })),
         _ => None,
     }
 }
