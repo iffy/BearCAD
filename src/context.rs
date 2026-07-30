@@ -7851,6 +7851,18 @@ mod tests {
                         cut_bodies: vec![2],
                         can_commit: true,
                     }),
+                    plane_tool: (tool == Tool::ConstructionPlane).then_some(PlaneToolControl {
+                        anchor_labels: vec!["Origin".to_string()],
+                        anchor_elements: vec![crate::hierarchy::SceneElement::Origin],
+                        normal_labels: Vec::new(),
+                        normal_choice: 0,
+                        has_anchor: true,
+                        show_angle: false,
+                        offset_text: String::new(),
+                        angle_text: String::new(),
+                        offset_focused: true,
+                        angle_focused: false,
+                    }),
                     ..input(&doc, &selection)
                 };
                 let focused: Vec<&'static str> = context_pane_content(&input)
