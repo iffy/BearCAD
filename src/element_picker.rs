@@ -98,6 +98,9 @@ impl ElementKind {
                 ElementKind::Vertex
             }
             SceneElement::GlobalAxis(_) => ElementKind::Axis,
+            // An analytic face (#952). `from_face_id` has already peeled off the
+            // construction-plane case, so anything left here really is a face.
+            SceneElement::SketchFace(_) => ElementKind::Face,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
@@ -884,6 +887,38 @@ mod tests {
         assert!(ops.accepts(&SceneElement::BooleanOp(0)));
         assert!(!ops.accepts(&SceneElement::Joint(0)));
         assert!(!ops.accepts(&SceneElement::Component(0)));
+    }
+
+    #[test]
+    fn an_analytic_face_is_a_face_a_picker_can_hold() {
+        // #952: Extrude profiles, Revolve/Sweep profiles and Slice cutters all carry a `FaceId`
+        // — the *analytic* face, a different identity from the quantized mesh `BodyFace` — and
+        // had no scene element, so those inputs kept bespoke `Vec<FaceId>` state.
+        let profile = SceneElement::from_face_id(crate::model::FaceId::Circle(3));
+        assert_eq!(
+            profile,
+            SceneElement::SketchFace(crate::model::FaceId::Circle(3))
+        );
+        assert_eq!(ElementKind::of(&profile), ElementKind::Face);
+        let faces = ElementFilter::kind(ElementKind::Face);
+        assert!(faces.accepts(&profile));
+        assert!(!faces.accepts(&body(0)));
+    }
+
+    #[test]
+    fn a_face_id_naming_a_construction_plane_is_that_plane() {
+        // One identity per thing: a `FaceId::ConstructionPlane` and the plane's own element are
+        // the same plane, so a picker holding both would double-count it.
+        assert_eq!(
+            SceneElement::from_face_id(crate::model::FaceId::ConstructionPlane(2)),
+            SceneElement::ConstructionPlane(2)
+        );
+        assert_eq!(
+            ElementKind::of(&SceneElement::from_face_id(
+                crate::model::FaceId::ConstructionPlane(2)
+            )),
+            ElementKind::Plane
+        );
     }
 
     #[test]

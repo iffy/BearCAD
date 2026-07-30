@@ -312,7 +312,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`SceneElement::GlobalAxis`, #952) — fixed geometry with no owning entity, like the origin, and
   no Elements-pane row — so an axis pick has an identity an element picker can hold, which is what
   the axis inputs (a Repeat path, a Revolve axis) select into. Scriptable as
-  `kind = "axis"` with index 0/1/2 for X/Y/Z. The **sketch's two axes are always drawn** while a sketch is open
+  `kind = "axis"` with index 0/1/2 for X/Y/Z.
+- **Analytic faces are selectable (#952):** `SceneElement::SketchFace(FaceId)` names a sketch
+  profile, a body cap/side wall, or a revolve's flat face — the *parametric* face an Extrude
+  profile, a Revolve/Sweep profile, a Slice cutter, or a Mirror plane is defined against.
+  Distinct from `SceneElement::BodyFace`, which is a **mesh** face keyed by quantized
+  centroid+normal. Build one with `SceneElement::from_face_id`, never directly: a
+  `FaceId::ConstructionPlane` normalizes to `SceneElement::ConstructionPlane`, so a plane has
+  exactly one identity however it was reached (which is also what collapses the Selection
+  Exploder's duplicate plane loupes into one). The **sketch's two axes are always drawn** while a sketch is open
   (#577): the X (u) axis in the red axis colour and Y (v) axis in green, through the origin, faint
   normally and brighter when hovered — the "floating origin" that makes the sketch frame's
   orientation unambiguous now that the camera takes the shortest roll instead of forcing u-right.

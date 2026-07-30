@@ -55,6 +55,9 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::BodyEdge { body, .. }
         | SceneElement::BodyVertex { body, .. }
         | SceneElement::BodyFace { body, .. } => body_alive(doc, body),
+        // An analytic face (#952) is alive while its plane still resolves — the same check the
+        // geometry code makes before using one.
+        SceneElement::SketchFace(face) => crate::face::sketch_frame(doc, face).is_some(),
         SceneElement::UnitInstance(index) => doc
             .unit_instances
             .get(index)
@@ -287,7 +290,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => {}
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => {}
         SceneElement::Joint(index) => {
             if doc.joints.get(index).is_some_and(|j| !j.deleted) {
                 doc.joints[index].deleted = true;

@@ -193,6 +193,16 @@ pub enum SceneElement {
     /// axes are pickable (a Repeat path, a Revolve axis) so they need an identity an element
     /// picker can hold. Not a row in the Elements pane — there is no `HierarchyNode` for it.
     GlobalAxis(crate::construction::GlobalAxis),
+    /// An **analytic** face (#952): a sketch profile, a body cap/side wall, or a revolve's flat
+    /// face — exactly what `face::pick_sketch_face` picks and what `PickTargetKind::SketchFace`
+    /// carries. Distinct from [`SceneElement::BodyFace`], which is a *mesh* face keyed by its
+    /// quantized centroid+normal: the analytic face is the parametric thing an Extrude profile,
+    /// a Revolve/Sweep profile, or a Slice cutter is defined against.
+    ///
+    /// Build one with [`SceneElement::from_face_id`], never directly — a
+    /// [`FaceId::ConstructionPlane`] normalizes to [`SceneElement::ConstructionPlane`] so a plane
+    /// has one identity rather than two.
+    SketchFace(FaceId),
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
     Component(usize),
@@ -203,6 +213,31 @@ pub enum SceneElement {
     /// A joint between parts (#891): a kinematic relationship, selectable and deletable
     /// like any operation.
     Joint(usize),
+}
+
+impl SceneElement {
+    /// The element for an analytic face (#952), normalizing the one case where a `FaceId` names
+    /// something that already has an element of its own: a construction plane. Without that a
+    /// plane would have two identities, and a picker holding both would count it twice.
+    pub fn from_face_id(face: FaceId) -> SceneElement {
+        match face {
+            FaceId::ConstructionPlane(index) => SceneElement::ConstructionPlane(index),
+            other => SceneElement::SketchFace(other),
+        }
+    }
+
+    /// The analytic face this element names, if any — the inverse of [`from_face_id`], so a
+    /// picker's contents can be handed back to the geometry code as `FaceId`s.
+    ///
+    /// [`from_face_id`]: SceneElement::from_face_id
+    #[allow(dead_code)]
+    pub fn as_face_id(&self) -> Option<FaceId> {
+        match self {
+            SceneElement::SketchFace(face) => Some(face.clone()),
+            SceneElement::ConstructionPlane(index) => Some(FaceId::ConstructionPlane(*index)),
+            _ => None,
+        }
+    }
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -451,6 +486,9 @@ impl ElementVisibility {
             | SceneElement::BodyFace { body, .. } => {
                 self.effective_visible(doc, SceneElement::Body(body))
             }
+            // An analytic face (#952) has no row of its own; its owner's visibility governs
+            // whether it can be seen at all, and that is enforced where the owner draws.
+            SceneElement::SketchFace(_) => true,
             SceneElement::Image(index) => self.is_visible(SceneElement::Image(index)),
             // Boolean/move operations are pane-only elements with no viewport visibility
             // of their own (their outputs are ordinary bodies).
@@ -1445,7 +1483,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => return None,
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => return None,
     })
 }
 
@@ -2445,7 +2484,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         // Body sub-elements (#156/#555) likewise aren't pane nodes of their own.
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => None,
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => None,
         // A tracing image nests under its host construction plane (#169).
         SceneElement::Image(index) => doc
             .tracing_images
@@ -2592,6 +2632,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_)
         | SceneElement::SketchText(_)
         // A joint has no outputs — nothing descends from it (#891).
         | SceneElement::Joint(_)

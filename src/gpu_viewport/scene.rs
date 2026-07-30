@@ -3011,6 +3011,19 @@ impl<'a> SceneMesh<'a> {
                     &project,
                 );
             }
+            // An analytic face (#952) lights up its boundary loop, likewise reusing the
+            // highlight its pick target already draws.
+            SceneElement::SketchFace(face) => {
+                self.push_pick_target_highlight(
+                    doc,
+                    &PickTargetKind::SketchFace(face),
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
             SceneElement::Circle(index) => {
                 self.push_pick_target_highlight(
                     doc,

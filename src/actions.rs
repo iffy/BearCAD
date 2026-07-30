@@ -5579,6 +5579,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyEdge { .. } => "Body edge".to_string(),
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
+        SceneElement::SketchFace(_) => "Face".to_string(),
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),

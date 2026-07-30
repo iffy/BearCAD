@@ -40,7 +40,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => None,
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => None,
     }
 }
 
@@ -182,7 +183,8 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         | SceneElement::GlobalAxis(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => None,
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => None,
     }?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -417,7 +419,8 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         }
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => {
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => {
             return Err("body edges, vertices, and faces cannot be renamed".to_string());
         }
     }
@@ -681,6 +684,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::BodyEdge { .. } => "Body edge".to_string(),
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
+        SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean {i}"),
         SceneElement::MoveOp(i) => format!("Move {i}"),

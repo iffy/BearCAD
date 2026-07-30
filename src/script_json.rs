@@ -74,6 +74,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::BodyFace { .. } => "body_face",
+        SceneElement::SketchFace(_) => "face",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -102,7 +103,10 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
 pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
     match element {
         // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
-        SceneElement::Point(_) | SceneElement::FaceEdge(_) | SceneElement::BodyFace { .. } => None,
+        SceneElement::Point(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => None,
         // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
         SceneElement::GlobalAxis(axis) => Some(match axis {
             crate::construction::GlobalAxis::X => 0,

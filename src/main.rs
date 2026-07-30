@@ -11887,9 +11887,9 @@ impl eframe::App for App {
                 .then(|| {
                     let cm = self.state.creating_mirror.as_ref();
                     context::MirrorControl {
-                        plane: cm.and_then(|c| c.plane.clone()).map(|face| {
-                            mirror_plane_scene_element(&self.state.doc, &face)
-                        }),
+                        plane: cm
+                            .and_then(|c| c.plane.clone())
+                            .map(|face| mirror_plane_scene_element(&face)),
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         mode: cm.map(|c| c.mode).unwrap_or_default(),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
@@ -14464,29 +14464,14 @@ fn select_tool_element_from_pick(
 /// face it belongs to. The centroid/normal are placeholders — this row is display-only (the
 /// plane's real viewport highlight is drawn separately), so only the body index needs to be
 /// right for the "Face of Body N" label.
-fn mirror_plane_scene_element(
-    doc: &model::Document,
-    face: &model::FaceId,
-) -> hierarchy::SceneElement {
-    match face {
-        model::FaceId::ConstructionPlane(i) => hierarchy::SceneElement::ConstructionPlane(*i),
-        other => {
-            let body = other
-                .extrusion_index()
-                .and_then(|e| model::body_index_for_extrusion(doc, e))
-                .or_else(|| {
-                    other
-                        .revolution_index()
-                        .and_then(|r| model::body_index_for_revolution(doc, r))
-                })
-                .unwrap_or(0);
-            hierarchy::SceneElement::BodyFace {
-                body,
-                centroid: [0, 0, 0],
-                normal: [0, 0, 0],
-            }
-        }
-    }
+/// The Mirror tool's picked plane as a scene element (#566), for its single-pick picker row.
+///
+/// This used to fabricate a `BodyFace` with a zeroed centroid+normal — a key that could never
+/// match a real face pick — because an analytic face had no element of its own. It does now
+/// (#952), so the plane keeps its true identity: a construction plane stays a plane, anything
+/// else is the analytic face it actually is.
+fn mirror_plane_scene_element(face: &model::FaceId) -> hierarchy::SceneElement {
+    hierarchy::SceneElement::from_face_id(face.clone())
 }
 
 /// Apply a tool-owned element picker's row action (#213) to its backing body-index vector:

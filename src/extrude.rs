@@ -3380,6 +3380,9 @@ pub fn selection_world_bounds(
             | SceneElement::FaceEdge(_)
             | SceneElement::Origin
             | SceneElement::GlobalAxis(_)
+            // An analytic face's bounds come from the geometry it is defined against, which is
+            // selected and framed as its own element.
+            | SceneElement::SketchFace(_)
             // The in-sketch repeat's own bounds come from its duplicated lines/circles, which are
             // selected/framed as their own elements; the op node itself contributes nothing here.
             | SceneElement::SketchRepeatOp(_)

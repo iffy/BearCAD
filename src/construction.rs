@@ -1839,6 +1839,11 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         // A world axis (#952): fixed geometry with no owning entity, like the origin, but
         // pickable — so it needs an identity an element picker can hold.
         PickTargetKind::GlobalAxis(axis) => Some(SceneElement::GlobalAxis(*axis)),
+        // An analytic face (#952) — a sketch profile, a body cap/side wall, a revolve's flat
+        // face, or a construction plane. `from_face_id` normalizes the plane case so a plane
+        // keeps a single identity.
+        PickTargetKind::SketchFace(face) => Some(SceneElement::from_face_id(face.clone())),
+        PickTargetKind::ConstructionPlane(index) => Some(SceneElement::ConstructionPlane(*index)),
         _ => None,
     }
 }
@@ -2693,15 +2698,17 @@ pub struct CrowdCandidate {
 }
 
 /// A stable dedup key per crowd candidate (one handle per distinct thing). A body face (#555)
-/// now maps to a `SceneElement::BodyFace` keyed by its quantized centroid+normal, so two distinct
+/// maps to a `SceneElement::BodyFace` keyed by its quantized centroid+normal, so two distinct
 /// faces of the same body get two distinct keys (and two loupes) rather than collapsing to one.
+///
+/// Keying off the scene element is what makes "one handle per distinct thing" true: a
+/// construction plane reached as a bare `ConstructionPlane` and the same plane reached as a
+/// `SketchFace(FaceId::ConstructionPlane(_))` (#860) normalize to one element (#952), so the
+/// plane fans out as a single loupe instead of two for the same thing.
 fn crowd_key(kind: &PickTargetKind) -> String {
     match scene_element_from_pick(kind) {
         Some(el) => format!("{el:?}"),
-        None => match kind {
-            PickTargetKind::ConstructionPlane(i) => format!("plane:{i}"),
-            other => format!("{other:?}"),
-        },
+        None => format!("{kind:?}"),
     }
 }
 

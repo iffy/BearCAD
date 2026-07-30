@@ -1833,6 +1833,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: None,
         },
+        SceneElement::SketchFace(_) => ElementScriptTokens {
+            kind: "face",
+            index: 0,
+            point: None,
+        },
         SceneElement::BodyFace { .. } => ElementScriptTokens {
             kind: "body_face",
             index: 0,

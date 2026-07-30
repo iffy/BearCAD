@@ -97,7 +97,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::GlobalAxis(_) => "axis",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
-        SceneElement::BodyFace { .. } => "face",
+        SceneElement::BodyFace { .. } | SceneElement::SketchFace(_) => "face",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -159,7 +159,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
-        | SceneElement::BodyFace { .. } => 0,
+        | SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_) => 0,
     }
 }
 
