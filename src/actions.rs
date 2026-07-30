@@ -3076,6 +3076,9 @@ pub struct AppState {
     pub extrude_target_pick: bool,
     /// The same for the Repeat tool's "Distance to" picker (#645).
     pub repeat_target_pick: bool,
+    /// The same for the in-sketch Repeat tool's "Direction" picker (#835): while true, the
+    /// next click on a sketch line sets the repeat direction rather than joining the set.
+    pub sketch_repeat_direction_pick: bool,
     /// A Move picker the user focused **by hand** (#656/#658), overriding the automatic
     /// step-through. Cleared once that picker is satisfied, handing the chain back.
     pub move_focus_override: Option<crate::MoveFocus>,
@@ -3224,6 +3227,7 @@ impl Default for AppState {
             context_pane: crate::context::ContextPaneState::default(),
             extrude_target_pick: false,
             repeat_target_pick: false,
+            sketch_repeat_direction_pick: false,
             move_focus_override: None,
             joint_focus_override: None,
             exploder_leaves: Vec::new(),
@@ -14949,6 +14953,7 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
                 cs.picking_cutter = true;
             }
         }
+        P::SketchRepeatDirection => state.sketch_repeat_direction_pick = true,
         P::CombineA => {
             if let Some(cb) = state.creating_boolean.as_mut() {
                 cb.picking_b = false;
@@ -14973,6 +14978,14 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::RevolveAxis
         | P::SweepProfile
         | P::SweepPath
+        // Repeat's path: its turn comes once there is something to repeat, not from a flag.
+        | P::RepeatPath
+        // The in-sketch tools' sets: each is armed by the state of the pick before it (the
+        // mirror line, the direction), not by a flag of its own.
+        | P::SketchRepeatEntities
+        | P::SketchOffsetEntities
+        | P::SketchMirrorLine
+        | P::SketchMirrorShapes
         // The Joint tool's members: its focus is the chain's, not a stored flag.
         | P::JointMembers
         // The plane's anchor is the only thing that tool picks, so it is always the focused

@@ -2755,9 +2755,6 @@ struct App {
     joint_select_drag: Option<JointSelectDrag>,
     /// A press on a jointed part, waiting to become one (#903).
     joint_select_grab: Option<JointSelectGrab>,
-    /// Armed by focusing the in-sketch Repeat pane's "Direction" picker (#835): the next
-    /// viewport click on a sketch line sets the repeat direction.
-    sketch_repeat_direction_pick: bool,
     vertex_treatment_gizmo_drag: Option<VertexTreatmentGizmoDrag>,
     /// Push/pull gizmo drag state for the 3D edge chamfer/fillet tool (#77); parallel to
     /// `vertex_treatment_gizmo_drag`.
@@ -3881,7 +3878,6 @@ impl App {
             extrude_gizmo_drag: None,
             repeat_gizmo_drag: None,
             pending_extrude_target: None,
-            sketch_repeat_direction_pick: false,
             joint_select_drag: None,
             joint_select_grab: None,
             move_b_hover: None,
@@ -9248,7 +9244,7 @@ impl App {
         // The Direction picker's arm is App state (#835); it can't outlive the in-progress
         // repeat it belongs to.
         if self.state.creating_sketch_repeat.is_none() {
-            self.sketch_repeat_direction_pick = false;
+            self.state.sketch_repeat_direction_pick = false;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
             && !ui.ctx().egui_wants_keyboard_input()
@@ -9258,7 +9254,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|c| c.has_targets())
         {
-            self.sketch_repeat_direction_pick = false;
+            self.state.sketch_repeat_direction_pick = false;
             let cr = self.state.creating_sketch_repeat.take().unwrap();
             let (dir_u, dir_v) = cr.direction(&self.state.doc);
             let action = match cr.editing {
@@ -9298,7 +9294,7 @@ impl App {
         let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
             return;
         };
-        let direction_pick = self.sketch_repeat_direction_pick;
+        let direction_pick = self.state.sketch_repeat_direction_pick;
         let cr = self
             .state
             .creating_sketch_repeat
@@ -9307,7 +9303,7 @@ impl App {
             // Shift+click, or a click while the pane's Direction picker is armed (#835).
             construction::PickTargetKind::Line(li) if shift || direction_pick => {
                 cr.dir_line = Some(li);
-                self.sketch_repeat_direction_pick = false;
+                self.state.sketch_repeat_direction_pick = false;
                 self.state.status = "Repeat: direction set from edge".to_string();
             }
             construction::PickTargetKind::Line(li) => {
@@ -12069,7 +12065,7 @@ impl eframe::App for App {
                     // Only the armed picker reads as focused (#835): entities and the
                     // direction are both sketch lines, so a plain click always toggles an
                     // entity unless the Direction picker was armed (or Shift is held).
-                    direction_focused: self.sketch_repeat_direction_pick,
+                    direction_focused: self.state.sketch_repeat_direction_pick,
                     value_field_focused: context::repeat_value_field_focused(ctx),
                     count: c.count.clone(),
                     spacing: c.spacing.clone(),
@@ -13195,7 +13191,7 @@ impl eframe::App for App {
                             },
                         };
                         self.state.creating_sketch_repeat = None;
-                        self.sketch_repeat_direction_pick = false;
+                        self.state.sketch_repeat_direction_pick = false;
                         self.state.apply(action);
                     }
                 } else if let Some(cr) = self.state.creating_sketch_repeat.as_mut() {
@@ -13224,14 +13220,14 @@ impl eframe::App for App {
                         context::SketchRepeatEdit::Remove(element) => cr.remove_target(&element),
                         context::SketchRepeatEdit::Clear => cr.clear_targets(),
                         context::SketchRepeatEdit::DirectionFocus => {
-                            self.sketch_repeat_direction_pick = true;
+                            self.state.sketch_repeat_direction_pick = true;
                         }
                         context::SketchRepeatEdit::ClearDirection => {
                             cr.dir_line = None;
-                            self.sketch_repeat_direction_pick = false;
+                            self.state.sketch_repeat_direction_pick = false;
                         }
                         context::SketchRepeatEdit::Commit => {
-                            self.sketch_repeat_direction_pick = false;
+                            self.state.sketch_repeat_direction_pick = false;
                         }
                     }
                 }
@@ -13676,6 +13672,16 @@ impl eframe::App for App {
                             }
                         }
                     }
+                    // The in-sketch tools draw their own pickers, whose removals arrive as
+                    // that tool's own edit rather than here (#958).
+                    context::PickerTarget::SketchRepeatEntities
+                    | context::PickerTarget::SketchRepeatDirection
+                    | context::PickerTarget::SketchOffsetEntities
+                    | context::PickerTarget::SketchMirrorLine
+                    | context::PickerTarget::SketchMirrorShapes => {}
+                    // Repeat's path is drawn by the Repeat block, whose ✕ clears the axis
+                    // through a `RepeatEdit` rather than arriving here (#958).
+                    context::PickerTarget::RepeatPath => {}
                     // The plane anchor's rows are drawn by the Plane tool's own block, whose
                     // removals rebuild the frame from the surviving half — they arrive as a
                     // `PlaneToolEdit`, not here (#955).

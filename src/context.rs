@@ -1280,6 +1280,17 @@ pub enum PickerTarget {
     MirrorTargets,
     /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
     RepeatTargets,
+    /// The in-sketch Repeat tool's entities and its direction line (#232/#835/#958).
+    SketchRepeatEntities,
+    SketchRepeatDirection,
+    /// The in-sketch Offset tool's entity set (#493/#958).
+    SketchOffsetEntities,
+    /// The in-sketch Mirror tool's mirror line and the shapes it reflects (#534/#958).
+    SketchMirrorLine,
+    SketchMirrorShapes,
+    /// The Repeat tool's path (`CreatingRepeat::path`, #840/#958): a straight reference to
+    /// travel along, or a circle to ride round. Inline, under the tool's own controls.
+    RepeatPath,
     /// The Combine tool's side-A bodies (`CreatingBoolean::a`).
     CombineA,
     /// The Combine tool's side-B bodies (`CreatingBoolean::b`).
@@ -2190,10 +2201,107 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             separator_above: true,
             render: PickerRender::Shared,
         });
+        // A straight reference to travel along, or a **circle** to ride round (#840). Whether
+        // the copies follow the path or turn about it is the Repeat toggle right below, so the
+        // row names the path itself rather than repeating "Along"/"Around" (#955).
+        let mut path = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Line,
+                ElementKind::Edge,
+                ElementKind::Axis,
+                ElementKind::Circle,
+            ]),
+            PickLimit::Finite(1),
+        );
+        path.set_focused(axis_is_next && !r.value_field_focused);
+        path.set_picked(input.doc, r.path.clone());
+        tool_pickers.push(ToolPickerView {
+            heading: "Path",
+            picker: path,
+            target: PickerTarget::RepeatPath,
+            separator_above: false,
+            render: PickerRender::Inline,
+        });
         tool_pickers.push(ToolPickerView {
             heading: "Distance to",
             picker: length_target,
             target: PickerTarget::RepeatDistanceTo,
+            separator_above: false,
+            render: PickerRender::Inline,
+        });
+    }
+    if let Some(r) = input.sketch_repeat.as_ref() {
+        // The in-sketch Repeat tool (#232/#835): the entities being copied, and the line whose
+        // direction they march along — empty meaning the sketch's own U axis.
+        let mut entities = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            PickLimit::Infinite,
+        );
+        entities.set_focused(!r.direction_focused && !r.value_field_focused);
+        entities.set_picked(input.doc, r.picked.iter().cloned());
+        tool_pickers.push(ToolPickerView {
+            heading: "Entities",
+            picker: entities,
+            target: PickerTarget::SketchRepeatEntities,
+            separator_above: true,
+            render: PickerRender::Inline,
+        });
+        let mut direction = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line]),
+            PickLimit::Finite(1),
+        );
+        direction.set_focused(r.direction_focused);
+        direction.set_picked(input.doc, r.direction.clone());
+        tool_pickers.push(ToolPickerView {
+            heading: "Direction",
+            picker: direction,
+            target: PickerTarget::SketchRepeatDirection,
+            separator_above: false,
+            render: PickerRender::Inline,
+        });
+    }
+    if let Some(o) = input.sketch_offset.as_ref() {
+        // The in-sketch Offset tool's entity set (#493) — the tool's only pick, so always armed.
+        let mut entities = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            PickLimit::Infinite,
+        );
+        entities.set_focused(true);
+        entities.set_picked(input.doc, o.picked.iter().cloned());
+        tool_pickers.push(ToolPickerView {
+            heading: "Entities",
+            picker: entities,
+            target: PickerTarget::SketchOffsetEntities,
+            separator_above: true,
+            render: PickerRender::Inline,
+        });
+    }
+    if let Some(m) = input.sketch_mirror.as_ref() {
+        // The in-sketch Mirror tool (#534): the mirror line comes first, then the shapes — so
+        // exactly one of the two is armed, whichever the next click should feed.
+        let mut line = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line]),
+            PickLimit::Finite(1),
+        );
+        line.set_focused(m.line.is_none());
+        line.set_picked(input.doc, m.line.map(SceneElement::Line));
+        tool_pickers.push(ToolPickerView {
+            heading: "Mirror line",
+            picker: line,
+            target: PickerTarget::SketchMirrorLine,
+            separator_above: true,
+            render: PickerRender::Inline,
+        });
+        let mut shapes = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            PickLimit::Infinite,
+        );
+        shapes.set_focused(m.line.is_some());
+        shapes.set_picked(input.doc, m.picked.iter().cloned());
+        tool_pickers.push(ToolPickerView {
+            heading: "Shapes",
+            picker: shapes,
+            target: PickerTarget::SketchMirrorShapes,
             separator_above: false,
             render: PickerRender::Inline,
         });
@@ -5368,36 +5476,27 @@ pub fn show_pane(
         // the next thing to pick. The X/Y/Z shortcut buttons are gone (#643): the origin axes
         // are pickable in the viewport like everything else, so the buttons were a second,
         // inconsistent way in.
-        let has_targets = !control.targets.is_empty()
-            || !control.plane_targets.is_empty()
-            || !control.sketch_targets.is_empty()
-            || !control.extrusion_targets.is_empty();
-        let axis_focused =
-            control.path.is_none() && has_targets && !control.value_field_focused;
-        // A straight reference to travel along, or a **circle** to ride round (#840). Whether
-        // the copies follow the path or turn about it is the Repeat toggle right below, so the
-        // row names the path itself rather than repeating "Along"/"Around" (#955).
-        let mut path = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Line,
-                ElementKind::Edge,
-                ElementKind::Axis,
-                ElementKind::Circle,
-            ]),
-            PickLimit::Finite(1),
-        );
-        path.set_focused(axis_focused);
-        path.set_picked(doc, control.path.clone());
-        labeled_row_top(ui, "Path", |ui| {
-        if let Some(event) = crate::element_picker::show(ui, &path, doc, "repeat_axis") {
-            if matches!(
-                event,
-                crate::element_picker::PickerEvent::Remove(_) | crate::element_picker::PickerEvent::Clear
-            ) {
-                pending = Some(RepeatEdit::ClearAxis);
-            }
+        // Built with the other tool pickers so the rest of the app can see it (#954/#958);
+        // drawn here, where it belongs among the Repeat block's own controls.
+        if let Some(view) = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::RepeatPath)
+        {
+            labeled_row_top(ui, "Path", |ui| {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &view.picker, doc, "repeat_axis")
+                {
+                    if matches!(
+                        event,
+                        crate::element_picker::PickerEvent::Remove(_)
+                            | crate::element_picker::PickerEvent::Clear
+                    ) {
+                        pending = Some(RepeatEdit::ClearAxis);
+                    }
+                }
+            });
         }
-        });
         // Along the path, or around it as an axis of rotation (#839) — the same segmented
         // icon pair the other tools' mode choices use.
         labeled_row(ui, "Repeat", |ui| {
@@ -5635,17 +5734,17 @@ pub fn show_pane(
         ui.separator();
         let mut pending: Option<SketchRepeatEdit> = None;
         // The entities being copied (#835): the same unified picker every other in-sketch
-        // tool uses, so rows can be dropped individually or cleared.
-        let mut picker = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
-            PickLimit::Infinite,
-        );
-        picker.set_focused(!control.direction_focused && !control.value_field_focused);
-        picker.set_picked(doc, control.picked.iter().cloned());
+        // tool uses, so rows can be dropped individually or cleared. Built with the other tool
+        // pickers so the rest of the app can see it (#958); drawn here, in the tool's block.
+        if let Some(view) = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SketchRepeatEntities)
+        {
         labeled_row_top(ui, "Entities", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
-                    crate::element_picker::show(ui, &picker, doc, "sketch_repeat_picker")
+                    crate::element_picker::show(ui, &view.picker, doc, "sketch_repeat_picker")
                 {
                     match event {
                         crate::element_picker::PickerEvent::Focus => {}
@@ -5661,17 +5760,19 @@ pub fn show_pane(
                 }
             });
         });
+        }
         // The direction line (#835), the in-sketch counterpart of the 3D section's Axis
         // picker: empty means the sketch's U axis. Focus it and the next viewport click sets
         // it; the ✕ hands the direction back to the U axis.
-        let mut dir_picker =
-            ElementPicker::new(ElementFilter::kinds(&[ElementKind::Line]), PickLimit::Finite(1));
-        dir_picker.set_focused(control.direction_focused);
-        dir_picker.set_picked(doc, control.direction.clone());
+        if let Some(view) = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SketchRepeatDirection)
+        {
         labeled_row_top(ui, "Direction", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
-                    crate::element_picker::show(ui, &dir_picker, doc, "sketch_repeat_direction")
+                    crate::element_picker::show(ui, &view.picker, doc, "sketch_repeat_direction")
                 {
                     pending = Some(match event {
                         crate::element_picker::PickerEvent::Focus => {
@@ -5685,6 +5786,7 @@ pub fn show_pane(
                 }
             });
         });
+        }
         let mut var_row = |ui: &mut egui::Ui,
                            var: RepeatVar,
                            label: &str,
@@ -5816,17 +5918,17 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_offset {
         any_control = true;
         ui.separator();
-        // Element picker of lines/circles in the offset set (#493).
-        let mut picker = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
-            PickLimit::Infinite,
-        );
-        picker.set_focused(true);
-        picker.set_picked(doc, control.picked.iter().cloned());
+        // Element picker of lines/circles in the offset set (#493). Registered with the other
+        // tool pickers (#958), drawn here.
+        if let Some(view) = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SketchOffsetEntities)
+        {
         labeled_row_top(ui, "Entities", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
-                    crate::element_picker::show(ui, &picker, doc, "sketch_offset_picker")
+                    crate::element_picker::show(ui, &view.picker, doc, "sketch_offset_picker")
                 {
                     match event {
                         crate::element_picker::PickerEvent::Focus => {}
@@ -5842,6 +5944,7 @@ pub fn show_pane(
                 }
             });
         });
+        }
         let mut pending: Option<SketchOffsetEdit> = None;
         // Two-column Distance row (#592): label left, value input right.
         labeled_row(ui, "Distance", |ui| {
@@ -5889,15 +5992,17 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         // Primary: the mirror line, as a single-line element picker (#534). Removing it lets
-        // the next viewport click pick a new mirror line.
-        let mut line_picker =
-            ElementPicker::new(ElementFilter::kinds(&[ElementKind::Line]), PickLimit::Finite(1));
-        line_picker.set_focused(control.line.is_none());
-        line_picker.set_picked(doc, control.line.map(SceneElement::Line));
+        // the next viewport click pick a new mirror line. Registered with the other tool
+        // pickers (#958), drawn here.
+        if let Some(view) = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SketchMirrorLine)
+        {
         labeled_row_top(ui, "Mirror line", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
-                    crate::element_picker::show(ui, &line_picker, doc, "sketch_mirror_line_picker")
+                    crate::element_picker::show(ui, &view.picker, doc, "sketch_mirror_line_picker")
                 {
                     match event {
                         crate::element_picker::PickerEvent::Focus => {}
@@ -5909,17 +6014,17 @@ pub fn show_pane(
                 }
             });
         });
+        }
         // Secondary: the reflected shapes (unified element picker).
-        let mut picker = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
-            PickLimit::Infinite,
-        );
-        picker.set_focused(control.line.is_some());
-        picker.set_picked(doc, control.picked.iter().cloned());
+        if let Some(view) = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::SketchMirrorShapes)
+        {
         labeled_row_top(ui, "Shapes", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 if let Some(event) =
-                    crate::element_picker::show(ui, &picker, doc, "sketch_mirror_picker")
+                    crate::element_picker::show(ui, &view.picker, doc, "sketch_mirror_picker")
                 {
                     match event {
                         crate::element_picker::PickerEvent::Focus => {}
@@ -5935,6 +6040,7 @@ pub fn show_pane(
                 }
             });
         });
+        }
         if ui
             .add_enabled(
                 control.can_commit && controls_enabled,
@@ -7731,8 +7837,8 @@ mod tests {
             ..input(&doc, &selection)
         };
         let pickers = context_pane_content(&repeat_input).tool_pickers;
-        // Bodies plus the inline "Distance to" (#958).
-        assert_eq!(pickers.len(), 2);
+        // Bodies plus the inline "Path" and "Distance to" (#958).
+        assert_eq!(pickers.len(), 3);
         assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
         assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(7)]);
     }
