@@ -12408,6 +12408,8 @@ impl eframe::App for App {
         };
             context::context_pane_content(&context_input)
         };
+        // Park the pickers where a script can read them (#968); they're rebuilt every frame.
+        self.state.tool_pickers = content.tool_pickers.clone();
         context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
         context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
         if self.state.panes.is_visible(Pane::Context) {

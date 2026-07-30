@@ -3046,6 +3046,10 @@ pub struct AppState {
     pub element_visibility: ElementVisibility,
     pub scene_selection: SceneSelection,
     pub context_pane: crate::context::ContextPaneState,
+    /// The active tool's element pickers as of the last frame (#968). Derived, not authoritative
+    /// — the pane rebuilds them every frame — but parked here so a script can read what each
+    /// picker accepts and holds, which is otherwise invisible from outside the UI.
+    pub tool_pickers: Vec<crate::context::ToolPickerView>,
     pub editing_committed_dim: Option<EditingCommittedDim>,
     /// Active placement phase for a new dimension (#40/#763); see [`PlacingDimension`].
     pub placing_dimension: Option<PlacingDimension>,
@@ -3178,6 +3182,7 @@ impl Default for AppState {
             element_visibility: ElementVisibility::default(),
             scene_selection: SceneSelection::default(),
             context_pane: crate::context::ContextPaneState::default(),
+            tool_pickers: Vec::new(),
             editing_committed_dim: None,
             placing_dimension: None,
             status: String::new(),

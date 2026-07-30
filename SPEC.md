@@ -3121,8 +3121,13 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   `bearcad.get{ kind, index }` over lines, circles, sketches, constraints, construction
   planes, extrusions, bodies, and parameters (`count` also takes `drawing`, `sketch_text`,
   and `image`); `bearcad.body_stats(i)` (mesh
-  volume/triangles/bbox); `bearcad.status()`; `bearcad.selection()`; and
-  `bearcad.parameter("get"|"get_expression", name)`.
+  volume/triangles/bbox); `bearcad.status()`; `bearcad.selection()`;
+  `bearcad.parameter("get"|"get_expression", name)`; and **`bearcad.pickers()`** (#968), the
+  active tool's element pickers — per picker its `name`, whether it's `focused`, its `limit`
+  (absent when unlimited), the element-kind names it `accepts`, and the `items` it holds. This
+  is the only way to tell an **accepted** pick from a **rejected** one: a body-set tool consumes
+  the click either way, so `selection()` reads the same whether or not the pick landed. A test
+  asserting a `PickRule` (#953) needs it.
 - **Absolute camera control (#108):** `bearcad.ui.camera{}` reads the pose
   (yaw/pitch/distance/target/projection); `bearcad.ui.camera{ … }` sets any subset instantly
   (no transition animation — deterministic screenshots); `bearcad.ui.zoom_fit()` frames the

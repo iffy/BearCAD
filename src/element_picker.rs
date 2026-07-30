@@ -454,6 +454,15 @@ impl ElementFilter {
         icons
     }
 
+    /// The kinds this filter accepts, in canonical order — for reporting a picker's
+    /// configuration (#968). An accept-everything filter reports every kind.
+    pub fn accepted_kinds(&self) -> Vec<ElementKind> {
+        if self.everything {
+            return ElementKind::ORDER.to_vec();
+        }
+        self.kinds.clone()
+    }
+
     pub fn accepts_kind(&self, kind: ElementKind) -> bool {
         if self.everything {
             return true;

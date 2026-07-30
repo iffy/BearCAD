@@ -2417,6 +2417,45 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // The active tool's element pickers (#968): what each one is called, whether it has focus,
+    // what kinds and how many it accepts, and what it currently holds. Without this a script
+    // can't tell an accepted pick from a rejected one — a body-set tool consumes the click
+    // either way, so `selection()` looks identical.
+    api.set(
+        "pickers",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let out = lua.create_table()?;
+            for (i, view) in state.tool_pickers.iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("name", view.heading)?;
+                entry.set("focused", view.picker.is_focused())?;
+                match view.picker.limit() {
+                    crate::element_picker::PickLimit::Finite(n) => entry.set("limit", n)?,
+                    crate::element_picker::PickLimit::Infinite => {}
+                }
+                let kinds = lua.create_table()?;
+                for (k, kind) in view.picker.filter().accepted_kinds().iter().enumerate() {
+                    kinds.set(k + 1, kind.label())?;
+                }
+                entry.set("accepts", kinds)?;
+                let items = lua.create_table()?;
+                for (n, element) in view.picker.picked().iter().enumerate() {
+                    let item = lua.create_table()?;
+                    item.set("kind", element_kind_name(element.clone()))?;
+                    item.set("index", element_index(element.clone()))?;
+                    items.set(n + 1, item)?;
+                }
+                entry.set("items", items)?;
+                out.set(i + 1, entry)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     // Materials (#834): `bearcad.material{ name = "Steel", color = "#b0b6be", bodies = {0} }`
     // adds one and hands it to the listed bodies; `bearcad.set_material{ body = 0, material =
     // 0 }` (or `material = nil`) assigns/clears one.
