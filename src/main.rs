@@ -1947,9 +1947,21 @@ fn pick_target_loupe_wireframe(
                 .unwrap_or_default(),
             Vec::new(),
         ),
-        PK::ConstructionPlane(_) | PK::Ground(_) | PK::Constraint(_) => {
-            (Vec::new(), vec![anchor])
-        }
+        // A datum plane is drawn as its shaded quad (#979), so its own rectangle is what the
+        // framing has to fit — not the pick spot, which would frame a loupe around nothing.
+        PK::ConstructionPlane(index) => (
+            doc.construction_planes
+                .get(*index)
+                .map(|plane| {
+                    let corners = construction::plane_corners(plane);
+                    (0..corners.len())
+                        .map(|i| (corners[i], corners[(i + 1) % corners.len()]))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Vec::new(),
+        ),
+        PK::Ground(_) | PK::Constraint(_) => (Vec::new(), vec![anchor]),
     }
 }
 
@@ -2167,11 +2179,50 @@ fn draw_pick_target_loupe(
                 }
             }
         }
+        // An axis is its own colour (#976/#979) — red/green/blue is what tells X from Y from
+        // Z, and three identically-accented lines in three loupes told you nothing. Brighter
+        // when this loupe's own thing, dimmed as context, so which loupe is which still reads.
         PK::GlobalAxis(axis) => {
+            let axis_color = if is_highlight {
+                axis.color()
+            } else {
+                axis.color().gamma_multiply(0.5)
+            };
             let (a, b) = construction::global_axis_segment(*axis);
-            seg(a, b);
+            if let (Some(pa), Some(pb)) = (lp(a), lp(b)) {
+                if let Some((ca, cb)) = clip_segment_to_disc(pa, pb, center, radius) {
+                    painter.line_segment([ca, cb], egui::Stroke::new(width, axis_color));
+                }
+            }
         }
-        PK::ConstructionPlane(_) | PK::Ground(_) => {
+        // A datum plane is a **shaded quad** (#979), the way it draws in the 3D view — it used
+        // to be a single dot at the pick spot, which is indistinguishable from a vertex and
+        // says nothing about which plane you're pointing at. Outlined either way, so an
+        // edge-on plane (whose fill collapses to a line) is still visible.
+        PK::ConstructionPlane(index) => {
+            let Some(plane) = doc.construction_planes.get(*index) else {
+                return;
+            };
+            let corners = construction::plane_corners(plane);
+            let screen: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| lp(c)).collect();
+            if let Some(screen) = screen {
+                if is_highlight {
+                    let poly = clip_convex_to_disc(&screen, center, radius);
+                    if poly.len() >= 3 {
+                        painter.add(egui::Shape::convex_polygon(
+                            poly,
+                            construction::PLANE_FILL_RGBA.gamma_multiply(0.30),
+                            egui::Stroke::NONE,
+                        ));
+                    }
+                }
+                for i in 0..corners.len() {
+                    seg(corners[i], corners[(i + 1) % corners.len()]);
+                }
+            }
+        }
+        // The ground plane has no bounds to draw — the pick spot on it is the whole content.
+        PK::Ground(_) => {
             if is_highlight {
                 dot(anchor, width + 1.0);
             }
@@ -28543,6 +28594,94 @@ mod tests {
         let lo = shades.iter().copied().min().unwrap();
         let hi = shades.iter().copied().max().unwrap();
         assert!(hi > lo, "faces at different angles should shade differently");
+    }
+
+    /// #979: a loupe has to show something *of* the thing it stands for. A datum plane drew a
+    /// single dot at the pick spot — indistinguishable from a vertex, and saying nothing about
+    /// which plane you were pointing at. Guarded by totality, so the next kind added can't
+    /// quietly draw nothing either.
+    #[test]
+    fn every_loupe_has_content_to_magnify() {
+        use construction::PickTargetKind as PK;
+        let mut doc = model::Document::default();
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let lines =
+            construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
+        doc.circles
+            .push(model::Circle::from_local_center_radius(sketch, 20.0, 20.0, 4.0, 0.0));
+        doc.extrusions.push(model::Extrusion {
+            sketch,
+            faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.push(model::Body {
+            source: model::BodySource::Extrusion(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let solid = extrude::body_solid_mesh(&doc, 0).expect("body mesh");
+        let tri = solid.triangles[0];
+
+        for kind in [
+            PK::Line(lines[0]),
+            PK::Circle(0),
+            PK::Point(model::ConstraintPoint::LineEndpoint {
+                line: lines[0],
+                end: model::LineEnd::Start,
+            }),
+            PK::BodyEdge { body: 0, a: tri[0], b: tri[1] },
+            PK::BodyVertex { body: 0, position: tri[0] },
+            PK::BodyFace {
+                body: 0,
+                triangles: vec![tri],
+                normal: (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero(),
+            },
+            PK::Body(0),
+            PK::GlobalAxis(construction::GlobalAxis::X),
+            PK::ConstructionPlane(0),
+            PK::SketchFace(model::FaceId::Polygon(lines.to_vec())),
+            // The two whose content is a single spot by nature: a point on the ground, and a
+            // constraint, whose visual is its badge glyph drawn at the loupe's centre.
+            PK::Ground(Vec3::ZERO),
+            PK::Constraint(0),
+        ] {
+            let (segments, points) = pick_target_loupe_wireframe(&doc, &kind, Vec3::ZERO);
+            assert!(
+                !segments.is_empty() || !points.is_empty(),
+                "{kind:?} has nothing for its loupe to magnify"
+            );
+        }
+
+        // The plane's content is its own rectangle, not the pick spot — otherwise the loupe
+        // frames itself around nothing.
+        let (segments, _) = pick_target_loupe_wireframe(&doc, &PK::ConstructionPlane(0), Vec3::ZERO);
+        assert_eq!(segments.len(), 4, "a plane's four edges");
+    }
+
+    /// #979: the world axes draw in **their own** colours in a loupe. Three identically
+    /// accented lines in three loupes told you nothing about which was X.
+    #[test]
+    fn the_axes_keep_their_colours_in_a_loupe() {
+        use construction::GlobalAxis;
+        let colors: Vec<egui::Color32> = [GlobalAxis::X, GlobalAxis::Y, GlobalAxis::Z]
+            .iter()
+            .map(|a| a.color())
+            .collect();
+        let accent = construction::PICK_HOVER_RGBA;
+        for color in &colors {
+            assert_ne!(*color, accent, "an axis is not the loupe's accent");
+        }
+        assert_ne!(colors[0], colors[1]);
+        assert_ne!(colors[1], colors[2]);
+        assert_ne!(colors[0], colors[2]);
     }
 
     /// #976: a loupe magnifies the scene, so what's in it should wear the colour it wears out

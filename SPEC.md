@@ -2594,10 +2594,15 @@ modeled on SolveSpace (https://solvespace.com).
   the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
   be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
   the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.
-  A loupe's solids wear **their own material colour**, shaded per triangle (#976) — the loupe
-  magnifies the scene, so a pink body reads pink in it. Which loupe is hot is the **ring's** job
-  (accent yellow, and thicker), which is what frees the fill to be the thing's own colour; the
-  fill used to be the loupe's accent, so every body in every loupe was the same blue.
+  A loupe's contents wear **their own colours**, not the loupe's accent (#976/#979) — the loupe
+  magnifies the scene, so what's in it should look like what's out there. Solids take their
+  **material**, shaded per triangle; the **world axes** their red/green/blue, which is the only
+  thing telling X from Y from Z; a **datum plane** its shaded quad with an outline, rather than
+  the single dot it used to draw, which was indistinguishable from a vertex. Which loupe is hot
+  is the **ring's** job (accent yellow, and thicker), which is what frees the contents to be
+  their own colour. Every kind has content to magnify (`every_loupe_has_content`), including the
+  two whose content is one spot by nature: a point on the ground, and a constraint, whose visual
+  is its badge glyph at the loupe's centre.
   A hovered leaf also draws a thin grey **leader line** from the element back to the **edge** of its
   loupe (not its centre, #572). Clicking **outside** every loupe just dismisses the fan and **leaves
   the selection untouched** (#575) — the dismiss frame redirects the pointer to nothing so the normal

@@ -13,9 +13,10 @@ handles.
 
 Each handle is a round **loupe**: a magnified view of the pick spot with its one element
 highlighted in blue and the rest dimmed behind it, joined by a thin line back to where it
-really is. Coincident line ends are told apart by a short stub along each line; faces and whole bodies are
-shaded in **their own material colour**, so what's in a loupe looks like what's in the 3D view.
-The loupe's ring — bright and thicker — is what marks the one under your cursor. Something too
+really is. Coincident line ends are told apart by a short stub along each line. What's in a loupe wears its
+own colour, so it looks like what's in the 3D view: faces and whole bodies take their material,
+the X/Y/Z axes their red/green/blue, and a construction plane its shaded rectangle. The loupe's
+ring — bright and thicker — is what marks the one under your cursor. Something too
 big to show at that magnification — a whole body, a face far wider than the pick spot — is framed
 whole in its loupe instead, so there's always something to recognise.
 
