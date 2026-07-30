@@ -3563,6 +3563,13 @@ The model in one place:
   Elements pane, or the graph Elements pane (#963); in the panes, from the row's **name or its
   type icon** (#964). An element the focused picker refuses falls through to the ordinary
   selection rather than being forced in.
+- **One resolution for the hover and the click** (`pick_for_focused_picker`, #958/#970): the
+  crowd under the cursor, kept to what the picker can make of each candidate, ranked by that
+  picker's own priority. What lights up is what lands, by construction. A tool's viewport
+  handler calls `click_into_focused_picker` and keeps only what is genuinely its own — gizmo
+  drags, Enter-to-commit, preview state — and the pick itself goes through `actions::apply_pick`,
+  the same function a pane click and a script use. Tools still writing their own
+  resolve-pick-and-toggle are the cases left to convert.
 - **Switching tools carries the picked set** from the outgoing tool's primary picker to the new
   one's, keeping what it accepts (#956).
 - **What a picker holds is styled as selected** in the viewport and in the Elements pane, in

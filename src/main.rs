@@ -7166,10 +7166,8 @@ impl App {
         ui: &egui::Ui,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
-        cam: &camera::Camera,
-        viewport: egui::Rect,
-        vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         if self.state.sketch_session.is_some() {
             return;
@@ -7190,40 +7188,13 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
-        let gp = cam.ground_point(pp, viewport, vp);
-        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
-        else {
-            return;
-        };
-        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
-            return;
-        };
-        if self
-            .state
-            .doc
-            .bodies
-            .get(bi)
-            .is_some_and(|b| b.shadow)
-        {
-            self.state.status =
-                "That body is already consumed by another operation".to_string();
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
         }
         let cb = self
             .state
             .creating_boolean
             .get_or_insert_with(actions::CreatingBoolean::default);
-        let to_b = cb.picking_b && cb.kind != model::BooleanOpKind::Combine;
-        // A body lives on at most one side; re-clicking it anywhere removes it.
-        if let Some(pos) = cb.a.iter().position(|b| *b == bi) {
-            cb.a.remove(pos);
-        } else if let Some(pos) = cb.b.iter().position(|b| *b == bi) {
-            cb.b.remove(pos);
-        } else if to_b {
-            cb.b.push(bi);
-        } else {
-            cb.a.push(bi);
-        }
         self.state.status = format!(
             "{}: {} body(ies) on A, {} on B",
             cb.kind.label(),
@@ -8199,10 +8170,8 @@ impl App {
         painter: &egui::Painter,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
-        cam: &camera::Camera,
-        viewport: egui::Rect,
-        vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         // Inside a sketch, Mirror reflects sketch geometry across a line (#523/#528).
         if let Some(session) = self.state.sketch_session {
@@ -8236,41 +8205,19 @@ impl App {
             return;
         };
 
-        // No plane yet: the first click picks the mirror plane (a construction plane or a flat
-        // face). Once set, clicks pick bodies (use the context pane's ✕ to change the plane).
-        if self.state.creating_mirror.as_ref().is_some_and(|c| c.plane.is_none()) {
-            if let Some(face) = pick_sketch_face(pp, project, &self.state.doc, self.state.cam.eye()) {
-                if let Some(cm) = self.state.creating_mirror.as_mut() {
-                    cm.plane = Some(face);
-                }
-                self.state.status = "Mirror: plane set — now click bodies to mirror".to_string();
-            }
-            return;
-        }
-
-        let gp = cam.ground_point(pp, viewport, vp);
-        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
-        else {
-            return;
-        };
-        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
-            return;
-        };
-        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
-            self.state.status =
-                "That body is already consumed by another operation".to_string();
+        // The plane is the first pick and the bodies the rest — which is the pickers' focus
+        // chain, not a branch the tool has to write (#970).
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
         }
         let cm = self
             .state
             .creating_mirror
             .get_or_insert_with(actions::CreatingMirror::default);
-        if let Some(pos) = cm.targets.iter().position(|b| *b == bi) {
-            cm.targets.remove(pos);
-        } else {
-            cm.targets.push(bi);
-        }
-        self.state.status = format!("Mirror: {} body(ies) picked", cm.targets.len());
+        self.state.status = match cm.plane.is_some() {
+            false => "Mirror: click a plane or flat face to mirror across".to_string(),
+            true => format!("Mirror: {} body(ies) picked", cm.targets.len()),
+        };
     }
 
     /// In-sketch Mirror (#523/#528): the first click picks a straight sketch line as the
@@ -9362,6 +9309,7 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         // With a sketch open, the Slice tool slices sketch entities/faces instead of bodies (#238).
         if let Some(session) = self.state.sketch_session {
@@ -9385,51 +9333,20 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
-        let picking_cutter = self
-            .state
-            .creating_slice
-            .as_ref()
-            .is_some_and(|c| c.picking_cutter);
-        if picking_cutter {
-            // A cutter is a construction plane or a planar body face.
-            let Some(face) = pick_sketch_face(pp, project, &self.state.doc, cam.eye()) else {
-                return;
-            };
-            let cs = self
-                .state
-                .creating_slice
-                .get_or_insert_with(actions::CreatingSlice::default);
-            if let Some(pos) = cs.cutters.iter().position(|c| *c == face) {
-                cs.cutters.remove(pos);
-            } else {
-                cs.cutters.push(face);
-            }
-            self.state.status = format!("Slice: {} cutter(s) picked", cs.cutters.len());
-            return;
-        }
-        let gp = cam.ground_point(pp, viewport, vp);
-        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
-        else {
-            return;
-        };
-        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
-            return;
-        };
-        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
-            self.state.status =
-                "That body is already consumed by another operation".to_string();
+        // Which of the two sets the click feeds is the picker's business, not the tool's
+        // (#970): Targets takes whole bodies, Cutters takes planes and flat faces.
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
         }
         let cs = self
             .state
             .creating_slice
             .get_or_insert_with(actions::CreatingSlice::default);
-        if let Some(pos) = cs.targets.iter().position(|b| *b == bi) {
-            cs.targets.remove(pos);
-        } else {
-            cs.targets.push(bi);
-        }
-        self.state.status = format!("Slice: {} body(ies) picked", cs.targets.len());
+        self.state.status = format!(
+            "Slice: {} body(ies), {} cutter(s) picked",
+            cs.targets.len(),
+            cs.cutters.len()
+        );
     }
 
     /// In-sketch Slice tool (#238): pick target lines/circles/faces and cutter lines with two
@@ -15157,6 +15074,82 @@ fn face_edge_hover(
     })
 }
 
+/// What a click at `pp` would put into the focused picker (#958/#970): the picker it feeds and
+/// the elements it would take.
+///
+/// One definition for hover and for the click, so what lights up is what lands. It collects
+/// **everything** under the cursor — not the single best by the global priority, which would
+/// hand back whatever happens to outrank the thing this picker wants (a datum plane over the
+/// body a Joint takes) — keeps what the picker can make of each (`expand_pick`, so a face over
+/// an edges picker means that face's edges, #960), and ranks by the picker's own priority
+/// (#959).
+fn pick_for_focused_picker(
+    doc: &model::Document,
+    tool_pickers: &[context::ToolPickerView],
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    eye: Vec3,
+    occlusion: Option<&construction::PickOcclusion>,
+) -> Option<(context::PickerTarget, Vec<SceneElement>)> {
+    let focused = tool_pickers.iter().find(|view| view.picker.is_focused())?;
+    let mut candidates: Vec<(usize, Vec<SceneElement>)> =
+        construction::collect_pick_candidates(pp, project, doc, eye, occlusion)
+            .into_iter()
+            .filter_map(|c| {
+                let element = scene_element_from_pick(&c.kind)?;
+                let taken = crate::element_picker::expand_pick(doc, &focused.picker, &element);
+                let rank =
+                    focused.picker.rank(crate::element_picker::ElementKind::of(taken.first()?));
+                Some((rank, taken))
+            })
+            .collect();
+    candidates.sort_by_key(|(rank, _)| *rank);
+    let taken = candidates.into_iter().next().map(|(_, t)| t)?;
+    (!taken.is_empty()).then_some((focused.target, taken))
+}
+
+impl App {
+    /// One viewport click, offered to the focused picker (#970).
+    ///
+    /// Replaces the resolve-pick-and-toggle each tool wrote out by hand: the crowd, the
+    /// picker's kinds and rules, the face→edges expansion, the toggle and the limit are one
+    /// path now — the same one the hover previews, so what lights up is what lands.
+    fn click_into_focused_picker(
+        &mut self,
+        tool_pickers: &[context::ToolPickerView],
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        occlusion: Option<&construction::PickOcclusion>,
+    ) -> bool {
+        let eye = self.state.cam.eye();
+        let Some((target, taken)) = pick_for_focused_picker(
+            &self.state.doc,
+            tool_pickers,
+            pp,
+            project,
+            eye,
+            occlusion,
+        ) else {
+            // Nothing the armed picker can take is here. A body another operation has already
+            // consumed is the common case, and the one worth saying out loud (#953).
+            if crate::face::pick_body_face(pp, project, &self.state.doc, eye)
+                .as_ref()
+                .and_then(body_index_from_pick)
+                .is_some_and(|bi| self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow))
+            {
+                self.state.status =
+                    "That body is already consumed by another operation".to_string();
+            }
+            return false;
+        };
+        let mut any = false;
+        for element in taken {
+            any |= actions::apply_pick(&mut self.state, target, &element);
+        }
+        any
+    }
+}
+
 fn resolve_viewport_hover_highlight(
     suppress_hover: bool,
     tool: Tool,
@@ -15444,29 +15437,8 @@ fn resolve_viewport_hover_highlight(
         // what a click here would take, and light that. This is the rule the whole match is
         // converging on; the arms above are the cases still written by hand.
         _ => {
-            let focused = tool_pickers.iter().find(|view| view.picker.is_focused())?;
-            // Everything under the cursor, nearest first — not just the single best by the
-            // global priority, which would hand back whatever happens to outrank the thing
-            // this picker actually wants (a datum plane over the body a Joint takes). Then
-            // the first candidate the picker can make something of wins, ties going to the
-            // picker's own ranking (#959).
-            let mut candidates: Vec<(usize, Vec<SceneElement>)> =
-                construction::collect_pick_candidates(pp, project, doc, cam.eye(), occlusion)
-                    .into_iter()
-                    .filter_map(|c| {
-                        let element = scene_element_from_pick(&c.kind)?;
-                        // A face over an edges picker means that face's edges (#960), so the
-                        // hover shows every edge a click would take.
-                        let taken =
-                            crate::element_picker::expand_pick(doc, &focused.picker, &element);
-                        let rank = focused.picker.rank(crate::element_picker::ElementKind::of(
-                            taken.first()?,
-                        ));
-                        Some((rank, taken))
-                    })
-                    .collect();
-            candidates.sort_by_key(|(rank, _)| *rank);
-            let taken = candidates.into_iter().next().map(|(_, t)| t)?;
+            let (_, taken) =
+                pick_for_focused_picker(doc, tool_pickers, pp, project, cam.eye(), occlusion)?;
             match taken.len() {
                 0 => None,
                 1 => Some(gpu_viewport::ViewportHoverHighlight::Element(
@@ -22300,7 +22272,7 @@ impl App {
         }
 
         if self.state.tool == Tool::Combine {
-            self.handle_combine_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_combine_tool(ui, &project, pointer_screen, pick_occlusion, tool_pickers);
         }
 
         if self.state.tool == Tool::Move {
@@ -22315,7 +22287,12 @@ impl App {
 
         if self.state.tool == Tool::Mirror {
             self.handle_mirror_tool(
-                ui, &painter, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion,
+                ui,
+                &painter,
+                &project,
+                pointer_screen,
+                pick_occlusion,
+                tool_pickers,
             );
         }
 
@@ -22355,7 +22332,16 @@ impl App {
         }
 
         if self.state.tool == Tool::Slice {
-            self.handle_slice_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_slice_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
         }
 
         if self.state.tool == Tool::Text {

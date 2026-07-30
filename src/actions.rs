@@ -15069,7 +15069,12 @@ fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::Sc
 }
 
 /// Put one element into the picker named by `target`, toggling it out if it's already there.
-fn apply_pick(
+///
+/// One definition for every path that picks (#963/#970): a viewport click, a pane click, and a
+/// scripted pick all land here, so a tool can't gather one thing from the viewport and another
+/// from the pane — which is exactly what the Combine tool used to do (its "a body lives on one
+/// side only" rule was written in the viewport handler and nowhere else).
+pub fn apply_pick(
     state: &mut AppState,
     target: crate::context::PickerTarget,
     element: &crate::hierarchy::SceneElement,
@@ -15118,6 +15123,43 @@ fn apply_pick(
                         pending_focus: true,
                     })
                 }
+            }
+            true
+        }
+        // The Mirror tool's plane is any face-shaped thing — a construction plane or a flat
+        // body face (#566). Single-pick, so it replaces rather than toggles; clicking the one
+        // already set clears it, which is what the pane's ✕ does.
+        (P::MirrorPlane, element) => {
+            let Some(face) = element.as_face_id() else { return false };
+            let cm = state.creating_mirror.get_or_insert_with(CreatingMirror::default);
+            cm.plane = (cm.plane.as_ref() != Some(&face)).then_some(face);
+            true
+        }
+        (P::MirrorTargets, SceneElement::Body(bi)) => {
+            if state.doc.bodies.get(*bi).is_none_or(|b| b.deleted || b.shadow) {
+                return false;
+            }
+            let cm = state.creating_mirror.get_or_insert_with(CreatingMirror::default);
+            crate::element_picker::toggle_picked(&mut cm.targets, *bi);
+            true
+        }
+        // Combine's two sides: a body lives on **at most one**, so landing it on either side
+        // takes it off the other (#970). This rule used to live only in the viewport handler,
+        // so a pane click could put the same body on both sides at once.
+        (P::CombineA | P::CombineB, SceneElement::Body(bi)) => {
+            if state.doc.bodies.get(*bi).is_none_or(|b| b.deleted || b.shadow) {
+                return false;
+            }
+            let to_b = target == P::CombineB;
+            let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
+            if let Some(pos) = cb.a.iter().position(|b| b == bi) {
+                cb.a.remove(pos);
+            } else if let Some(pos) = cb.b.iter().position(|b| b == bi) {
+                cb.b.remove(pos);
+            } else if to_b && cb.kind != crate::model::BooleanOpKind::Combine {
+                cb.b.push(*bi);
+            } else {
+                cb.a.push(*bi);
             }
             true
         }
