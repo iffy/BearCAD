@@ -3590,7 +3590,10 @@ The model in one place:
   blue by default, the red cut accent for a picker whose elements the operation consumes. The
   viewport iterates the active tool's pickers (`picker_highlights`) rather than matching on the
   tool, so a set lights up because its tool *has* a picker for it, not because the viewport was
-  told about that tool. Deriving the pickers is therefore **not** gated on the Context pane
+  told about that tool. A destructive picker's **bodies** take the red solid fill
+  (`cut_highlight_bodies`); everything else it holds — a Slice cutter's plane or face, an
+  in-sketch cutter line — has no fill to recolour and draws in the picker's colour through
+  `colored_element_highlights` instead. Deriving the pickers is therefore **not** gated on the Context pane
   being visible (#973) — the pane's visibility gates only its rendering.
   While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
   the cursor hover-highlights** as selectable — the same whole-body resolution the click uses

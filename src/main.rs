@@ -14491,20 +14491,26 @@ fn mirror_plane_scene_element(face: &model::FaceId) -> hierarchy::SceneElement {
 /// because the viewport was told about that tool.
 fn picker_highlights(
     views: &[context::ToolPickerView],
-) -> (Vec<SceneElement>, Vec<usize>) {
+) -> (Vec<SceneElement>, Vec<usize>, Vec<(SceneElement, egui::Color32)>) {
     let mut folded = Vec::new();
     let mut cut_bodies = Vec::new();
+    let mut coloured = Vec::new();
     for view in views {
-        let destructive =
-            view.picker.selected_color(crate::theme::FOCUS_ACCENT) == crate::theme::CUT_ACCENT;
+        let color = view.picker.selected_color(crate::theme::FOCUS_ACCENT);
+        let destructive = color == crate::theme::CUT_ACCENT;
         for element in view.picker.picked() {
             match element {
+                // A solid takes a fill, so a destructive body goes down the body-fill path.
                 SceneElement::Body(bi) if destructive => cut_bodies.push(*bi),
+                // Everything else a destructive picker holds — a Slice cutter's plane or
+                // face, an in-sketch cutter line — has no fill to recolour, so it draws in
+                // the picker's colour through the element highlight instead.
+                other if destructive => coloured.push((other.clone(), color)),
                 other => folded.push(other.clone()),
             }
         }
     }
-    (folded, cut_bodies)
+    (folded, cut_bodies, coloured)
 }
 
 /// Apply a tool-owned element picker's row action (#213) to its backing set: `Remove(i)` drops
@@ -15435,6 +15441,7 @@ fn build_viewport_scene_input<'a>(
     colored_pick_highlights: Vec<(construction::PickTargetKind, egui::Color32)>,
     colored_segments: Vec<(Vec3, Vec3, egui::Color32, bool)>,
     parameter_highlight_elements: Vec<SceneElement>,
+    colored_element_highlights: Vec<(SceneElement, egui::Color32)>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
@@ -15901,6 +15908,7 @@ fn build_viewport_scene_input<'a>(
         hover_highlight,
         extra_pick_highlights,
         colored_pick_highlights,
+        colored_element_highlights,
         colored_segments,
         parameter_highlight_elements,
         hover_color: construction::PICK_HOVER_RGBA,
@@ -23571,7 +23579,8 @@ impl App {
         // which bodies to paint red — so a tool missing from it highlighted nothing, and Slice's
         // cutters never got the red this spec has always promised them. Asking the pickers
         // means a tool's sets light up because it *has* pickers, not because it was listed.
-        let (mut folded, cut_highlight_bodies) = picker_highlights(tool_pickers);
+        let (mut folded, cut_highlight_bodies, colored_element_highlights) =
+            picker_highlights(tool_pickers);
         // A picked profile face highlights as the geometry that bounds it (#303) — its circle,
         // or its boundary lines — since an analytic face has no fill of its own to light up.
         let profile_geometry: Vec<SceneElement> = folded
@@ -23932,6 +23941,7 @@ impl App {
                 }
                 highlights
             },
+            colored_element_highlights,
             &gpu_dim_labels,
             planar_label_view,
             Some(&constraint_graphics),
@@ -26789,6 +26799,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -26879,6 +26890,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -26954,6 +26966,7 @@ mod tests {
                 None,
                 None,
                 None,
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -27157,6 +27170,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 &[],
                 None,
                 None,
@@ -27256,6 +27270,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -28044,13 +28059,48 @@ mod tests {
         };
         let kept = body_picker(None, &[1, 2]);
         let consumed = body_picker(Some(crate::theme::CUT_ACCENT), &[3]);
-        let (folded, cut) = picker_highlights(&[kept, consumed]);
+        let (folded, cut, coloured) = picker_highlights(&[kept, consumed]);
         assert_eq!(folded, vec![SceneElement::Body(1), SceneElement::Body(2)]);
         assert_eq!(cut, vec![3], "a consumed body reads red, not blue");
 
         // No pickers at all — nothing to highlight, and nothing to special-case.
-        let (folded, cut) = picker_highlights(&[]);
-        assert!(folded.is_empty() && cut.is_empty());
+        assert!(
+            coloured.is_empty(),
+            "a destructive picker's *bodies* take the fill path, not the element one"
+        );
+
+        let (folded, cut, coloured) = picker_highlights(&[]);
+        assert!(folded.is_empty() && cut.is_empty() && coloured.is_empty());
+    }
+
+    #[test]
+    fn a_destructive_pickers_faces_read_red_through_the_element_channel() {
+        // #961: Slice's cutters are planes and faces. A solid takes a fill, but a face has
+        // none to recolour, so those go down the coloured-element path instead of being
+        // folded into the blue selection — which is what they used to do.
+        use crate::context::{PickerTarget, ToolPickerView};
+        use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
+        let doc = model::Document::default();
+        let mut cutters = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+            PickLimit::Infinite,
+        )
+        .with_selected_color(crate::theme::CUT_ACCENT);
+        cutters.set_picked(&doc, [SceneElement::ConstructionPlane(1)]);
+        let view = ToolPickerView {
+            heading: "Cutters",
+            picker: cutters,
+            target: PickerTarget::SliceCutters,
+            separator_above: true,
+        };
+        let (folded, cut_bodies, coloured) = picker_highlights(&[view]);
+        assert!(folded.is_empty(), "a cutter is not part of the blue selection");
+        assert!(cut_bodies.is_empty(), "it is not a body either");
+        assert_eq!(
+            coloured,
+            vec![(SceneElement::ConstructionPlane(1), crate::theme::CUT_ACCENT)],
+            "it reads in the picker's red"
+        );
     }
 
     #[test]
