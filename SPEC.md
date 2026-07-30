@@ -2705,6 +2705,15 @@ modeled on SolveSpace (https://solvespace.com).
   probe point is the spot on the candidate nearest the cursor, so a partially hidden edge
   stays pickable along its visible stretch; hiding a body (Elements pane) removes it as an
   occluder, restoring the old X-ray behavior deliberately.
+- **A face click fills an edges picker (#960):** when the focused picker takes **edges** and not
+  **faces**, clicking a face means *all of that face's edges*, and hovering it lights all of
+  them up — so what the click does and what the hover shows are the same thing. Without this a
+  face click was simply refused, with nothing on screen to say why.
+  `element_picker::expand_pick` is the rule: the element itself when the picker accepts it,
+  otherwise the face's boundary filtered to what the picker *can* take (a mesh face's feature
+  edges, a sketch profile's lines, a circle profile's circle), and nothing when neither applies.
+  The 3D Chamfer/Fillet tool is the case in the viewport; the Elements pane routes through the
+  same rule (#963).
 - **Pick priority (#959):** when several things crowd the cursor, one shared ranking decides
   which wins — `element_picker::default_pick_band`, by the candidate's element **kind**:
   vertex → the linear kinds (edge, line, circle, axis) → constraint → face → plane/image →

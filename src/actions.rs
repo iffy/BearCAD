@@ -14947,8 +14947,6 @@ pub fn tool_picker_target(state: &AppState, name: &str) -> Option<crate::context
 /// The picker decides: its kinds, its rules, and its limit say whether this is a valid pick, so
 /// a refused element falls through to the ordinary selection path rather than being forced in.
 fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::SceneElement) -> bool {
-    use crate::context::PickerTarget as P;
-    use crate::hierarchy::SceneElement;
     let Some(view) = state
         .tool_pickers
         .iter()
@@ -14956,8 +14954,19 @@ fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::Sc
     else {
         return false;
     };
-    if !view.picker.accepts(&state.doc, element) {
+    // A face clicked into an edges picker means all of that face's edges (#960), so ask what
+    // this pick is actually worth to this picker before deciding it's refused.
+    let expanded = crate::element_picker::expand_pick(&state.doc, &view.picker, element);
+    let Some(first) = expanded.first().cloned() else {
         return false;
+    };
+    if expanded.len() > 1 || first != *element {
+        let target = view.target;
+        let mut any = false;
+        for element in expanded {
+            any |= apply_pick(state, target, &element);
+        }
+        return any;
     }
     let (target, already) = (view.target, view.picker.contains(element));
     // At its limit and not already holding this one: a single-pick picker replaces, a bounded
@@ -14965,6 +14974,17 @@ fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::Sc
     if !already && view.picker.is_full() && !view.picker.limit().is_single() {
         return false;
     }
+    apply_pick(state, target, element)
+}
+
+/// Put one element into the picker named by `target`, toggling it out if it's already there.
+fn apply_pick(
+    state: &mut AppState,
+    target: crate::context::PickerTarget,
+    element: &crate::hierarchy::SceneElement,
+) -> bool {
+    use crate::context::PickerTarget as P;
+    use crate::hierarchy::SceneElement;
     match (target, element) {
         (P::SliceCutters, element) => {
             let Some(face) = element.as_face_id() else { return false };
@@ -14980,6 +15000,34 @@ fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::Sc
         (P::SketchSliceCutters, SceneElement::Line(li)) => {
             let Some(cs) = state.creating_sketch_slice.as_mut() else { return false };
             toggle(&mut cs.cutter_lines, *li);
+            true
+        }
+        (P::TreatmentEdges, SceneElement::BodyEdge { .. }) => {
+            // A body edge maps to the analytic edge the treatment acts on (#960/#166).
+            let Some(resolved) = (match element {
+                SceneElement::BodyEdge { body, a, b } => {
+                    crate::extrude::treatable_edge_for_selection(&state.doc, *body, *a, *b)
+                }
+                _ => None,
+            }) else {
+                return false;
+            };
+            match state.creating_edge_treatment.as_mut() {
+                Some(cet) => cet.toggle_edge(resolved),
+                None => {
+                    state.creating_edge_treatment = Some(CreatingEdgeTreatment {
+                        edges: vec![resolved],
+                        kind: match state.tool {
+                            Tool::Fillet => VertexTreatmentKind::Fillet,
+                            _ => VertexTreatmentKind::Chamfer,
+                        },
+                        amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                        text: String::new(),
+                        user_edited: false,
+                        pending_focus: true,
+                    })
+                }
+            }
             true
         }
         // Everything else the pane can route is a whole body, which the existing per-tool

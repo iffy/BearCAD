@@ -10380,15 +10380,46 @@ impl App {
         // click on another edge restarts with just that edge.
         if primary_pressed {
             if let Some(pp) = pointer_screen {
-                if let Some((extrusion, edge, _, _, _)) =
-                    construction::nearest_treatable_edge(pp, project, &self.state.doc)
-                {
-                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                // An edge under the cursor is the pick. Failing that, a **face** is: this
+                // picker takes edges and not faces, so clicking a face means all of that
+                // face's edges (#960) — otherwise it's a dead click with nothing to say why.
+                let picked: Vec<(usize, model::ExtrusionEdgeRef)> =
+                    match construction::nearest_treatable_edge(pp, project, &self.state.doc) {
+                        Some((extrusion, edge, _, _, _)) => vec![(extrusion, edge)],
+                        None => crate::face::pick_body_face(
+                            pp,
+                            project,
+                            &self.state.doc,
+                            self.state.cam.eye(),
+                        )
+                        .and_then(|kind| match kind {
+                            construction::PickTargetKind::BodyFace { body, triangles, .. } => {
+                                Some(construction::coplanar_face_boundary(&triangles).into_iter()
+                                    .filter_map(|(a, b)| {
+                                        crate::extrude::treatable_edge_for_selection(
+                                            &self.state.doc,
+                                            body,
+                                            hierarchy::quantize_body_point(a),
+                                            hierarchy::quantize_body_point(b),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                    };
+                if let Some(&first) = picked.first() {
                     match self.state.creating_edge_treatment.as_mut() {
-                        Some(cet) if additive => cet.toggle_edge((extrusion, edge)),
+                        Some(cet) if additive => {
+                            for entry in &picked {
+                                cet.toggle_edge(*entry);
+                            }
+                        }
                         _ => {
                             self.state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                                edges: vec![(extrusion, edge)],
+                                edges: picked.clone(),
                                 kind,
                                 amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
                                 text: crate::value::format_length_display(
@@ -10397,6 +10428,7 @@ impl App {
                                 user_edited: false,
                                 pending_focus: true,
                             });
+                            let _ = first;
                         }
                     }
                 }
@@ -23083,15 +23115,40 @@ impl App {
             && !suppress_hover_highlight
         {
             if let Some(pp) = pointer_screen {
-                if let Some((extrusion, edge, _, _, _)) =
-                    construction::nearest_treatable_edge(pp, &project, doc)
-                {
-                    // Highlight the **whole** analytic edge: a hole's rim reaches the tools
-                    // as one `Cap` reference but many mesh chords, and lighting up the one
-                    // chord under the cursor made a circle look like a row of facets (#807).
+                // Which analytic edges a click here would take: the one under the cursor, or —
+                // over a face, which this picker can't hold — all of that face's (#960), so
+                // what lights up is what the click does.
+                let wanted: Vec<(usize, model::ExtrusionEdgeRef)> =
+                    match construction::nearest_treatable_edge(pp, &project, doc) {
+                        Some((extrusion, edge, _, _, _)) => vec![(extrusion, edge)],
+                        None => crate::face::pick_body_face(pp, &project, doc, cam.eye())
+                            .and_then(|kind| match kind {
+                                construction::PickTargetKind::BodyFace {
+                                    body, triangles, ..
+                                } => Some(
+                                    construction::coplanar_face_boundary(&triangles)
+                                        .into_iter()
+                                        .filter_map(|(a, b)| {
+                                            crate::extrude::treatable_edge_for_selection(
+                                                doc,
+                                                body,
+                                                hierarchy::quantize_body_point(a),
+                                                hierarchy::quantize_body_point(b),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>(),
+                                ),
+                                _ => None,
+                            })
+                            .unwrap_or_default(),
+                    };
+                if !wanted.is_empty() {
+                    // Each **whole** analytic edge: a hole's rim reaches the tools as one
+                    // `Cap` reference but many mesh chords, and lighting up the one chord
+                    // under the cursor made a circle look like a row of facets (#807).
                     let segments: Vec<(Vec3, Vec3)> = crate::extrude::treatable_edges(doc)
                         .into_iter()
-                        .filter(|(e, r, _, _)| *e == extrusion && *r == edge)
+                        .filter(|(e, r, _, _)| wanted.contains(&(*e, *r)))
                         .map(|(_, _, a, b)| (a, b))
                         .collect();
                     if !segments.is_empty() {

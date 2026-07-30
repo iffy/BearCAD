@@ -365,6 +365,65 @@ pub fn element_in_sketch(
     }
 }
 
+/// What a pick of `element` should actually put into `picker` (#960).
+///
+/// Normally just the element. But when the picker takes **edges** and not **faces**, clicking a
+/// face means "all of that face's edges" — otherwise a face click is a dead click, since the
+/// picker refuses it and nothing says why. The same rule covers a sketch profile when the
+/// picker wants lines: its boundary lines are what you meant.
+///
+/// Empty when the pick has nothing to offer this picker.
+pub fn expand_pick(
+    doc: &Document,
+    picker: &ElementPicker,
+    element: &SceneElement,
+) -> Vec<SceneElement> {
+    if picker.accepts(doc, element) {
+        return vec![element.clone()];
+    }
+    // Only expand a face, and only into kinds this picker takes but can't reach directly.
+    if ElementKind::of(element) != ElementKind::Face {
+        return Vec::new();
+    }
+    face_boundary_elements(doc, element)
+        .into_iter()
+        .filter(|e| picker.accepts(doc, e))
+        .collect()
+}
+
+/// The elements bounding a face: a mesh face's feature edges, or an analytic face's own
+/// boundary geometry (a profile's lines, a circle profile's circle).
+fn face_boundary_elements(doc: &Document, face: &SceneElement) -> Vec<SceneElement> {
+    match face {
+        SceneElement::BodyFace { body, centroid, normal } => {
+            let Some(tris) = crate::extrude::body_face_triangles(doc, *body, *centroid, *normal)
+            else {
+                return Vec::new();
+            };
+            crate::construction::coplanar_face_boundary(&tris)
+                .into_iter()
+                .map(|(a, b)| {
+                    // Canonically ordered, like every other body-edge key.
+                    let (qa, qb) = (
+                        crate::hierarchy::quantize_body_point(a),
+                        crate::hierarchy::quantize_body_point(b),
+                    );
+                    let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
+                    SceneElement::BodyEdge { body: *body, a: qa, b: qb }
+                })
+                .collect()
+        }
+        SceneElement::SketchFace(face) => match face {
+            crate::model::FaceId::Polygon(lines) => {
+                lines.iter().map(|&li| SceneElement::Line(li)).collect()
+            }
+            crate::model::FaceId::Circle(ci) => vec![SceneElement::Circle(*ci)],
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 /// Which elements a picker will accept.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElementFilter {
@@ -1378,6 +1437,56 @@ mod tests {
             faces_first.rank(ElementKind::Vertex) < faces_first.rank(ElementKind::Body),
             "unlisted kinds keep the default order behind the listed ones"
         );
+    }
+
+    #[test]
+    fn a_face_click_expands_to_its_edges_when_the_picker_wants_edges() {
+        // #960: an edges-only picker refuses a face outright, so clicking one was a dead click.
+        // Now it means "all of that face's edges".
+        let doc = doc_with_two_bodies();
+        let edges_only =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Edge), PickLimit::Infinite);
+        // A sketch profile's boundary is its lines; an edges picker takes none of them, so it
+        // gets nothing rather than something wrong.
+        let profile = SceneElement::from_face_id(crate::model::FaceId::Polygon(vec![0, 1, 2, 3]));
+        assert!(expand_pick(&doc, &edges_only, &profile).is_empty());
+
+        // A lines picker, though, gets exactly the profile's lines.
+        let lines_only =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite);
+        assert_eq!(
+            expand_pick(&doc, &lines_only, &profile),
+            vec![
+                SceneElement::Line(0),
+                SceneElement::Line(1),
+                SceneElement::Line(2),
+                SceneElement::Line(3)
+            ]
+        );
+        // A circle profile is its circle.
+        let circles = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Circle]),
+            PickLimit::Infinite,
+        );
+        let circle_face = SceneElement::from_face_id(crate::model::FaceId::Circle(2));
+        assert_eq!(
+            expand_pick(&doc, &circles, &circle_face),
+            vec![SceneElement::Circle(2)]
+        );
+    }
+
+    #[test]
+    fn a_picker_that_takes_faces_gets_the_face_itself() {
+        // No expansion when the picker can hold what was clicked.
+        let doc = doc_with_two_bodies();
+        let faces =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+        let face = body_face(0);
+        assert_eq!(expand_pick(&doc, &faces, &face), vec![face.clone()]);
+        // And nothing at all when the pick is simply wrong for the picker.
+        let bodies =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
+        assert!(expand_pick(&doc, &bodies, &line(0)).is_empty());
     }
 
     #[test]
