@@ -2642,6 +2642,17 @@ modeled on SolveSpace (https://solvespace.com).
   probe point is the spot on the candidate nearest the cursor, so a partially hidden edge
   stays pickable along its visible stretch; hiding a body (Elements pane) removes it as an
   occluder, restoring the old X-ray behavior deliberately.
+- **Pick priority (#959):** when several things crowd the cursor, one shared ranking decides
+  which wins — `element_picker::default_pick_band`, by the candidate's element **kind**:
+  vertex → the linear kinds (edge, line, circle, axis) → constraint → face → plane/image →
+  sketch → body → operations, with the ground last. A tie *inside* a band goes to whichever is
+  nearest in pixels, so a sketch line and a body edge under the same pixel compete on distance
+  rather than one kind always outranking the other. A picker may override the ranking with
+  `ElementPicker::with_priority` — it names only what it wants promoted (the design's "faces over
+  edges"), and everything unnamed keeps the default order behind those. This is the single
+  definition: `PickTarget::beats` reads it, replacing a `u8` hand-assigned at each of eight
+  candidate construction sites plus a bolted-on vertex-beats-edge special case (#242), which the
+  band ordering now states outright — as it does the origin beating its own axes (#240).
 - **3D body sub-element hover (#144):** with the Select tool, hovering a 3D body highlights the
   **vertex, edge, or face** under the cursor — in that priority order (a corner beats an edge on
   it, which beats the face they lie on), so it is always clear what a pick would grab. Edges are

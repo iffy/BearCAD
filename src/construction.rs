@@ -1325,7 +1325,6 @@ pub struct PickTarget {
     pub kind: PickTargetKind,
     pub reference: PlaneReference,
     distance_px: f32,
-    priority: u8,
 }
 
 impl PickTarget {
@@ -1546,7 +1545,6 @@ pub fn resolve_pick_target(
                     label,
                 },
                 distance_px: dist,
-                priority: 0,
             });
         }
     }
@@ -1561,7 +1559,6 @@ pub fn resolve_pick_target(
                     label,
                 },
                 distance_px: dist,
-                priority: 0,
             });
         }
     }
@@ -1576,7 +1573,6 @@ pub fn resolve_pick_target(
                     label,
                 },
                 distance_px: dist,
-                priority: 0,
             });
         }
     }
@@ -1601,7 +1597,6 @@ pub fn resolve_pick_target(
                             label: "Face".to_string(),
                         },
                         distance_px: 0.0,
-                        priority: 1,
                     });
                 }
             }
@@ -1617,7 +1612,6 @@ pub fn resolve_pick_target(
                 label: axis.label().to_string(),
             },
             distance_px: dist,
-            priority: 0,
         });
     }
 
@@ -1635,7 +1629,6 @@ pub fn resolve_pick_target(
                 label: "Construction plane".to_string(),
             },
             distance_px: dist,
-            priority: 2,
         });
         }
     }
@@ -1649,7 +1642,6 @@ pub fn resolve_pick_target(
                 label: "Ground".to_string(),
             },
             distance_px: f32::MAX,
-            priority: 3,
         });
     }
 
@@ -1688,7 +1680,6 @@ pub fn body_face_pick_target(
         distance_px: 0.0,
         // Beats the construction-plane quads (2) and ground (3); loses to the sharp
         // targets — points, edges, axes (0).
-        priority: 1,
     })
 }
 
@@ -1704,36 +1695,39 @@ pub fn resolve_plane_pick_target(
     occlusion: Option<&PickOcclusion>,
 ) -> Option<PickTarget> {
     let base = resolve_pick_target(screen, project, ground_point, doc, occlusion);
-    if base.as_ref().is_some_and(|t| t.priority == 0) {
+    // A sharp target — a point, an edge, an axis — already won, so keep it. "Sharp" is
+    // everything ranked above a face in the shared priority (#959).
+    let sharp = crate::element_picker::default_pick_band(crate::element_picker::ElementKind::Face);
+    if base.as_ref().is_some_and(|t| pick_band(&t.kind) < sharp) {
         return base;
     }
     body_face_pick_target(screen, project, doc, eye, occlusion).or(base)
 }
 
+/// The pick-priority band of a candidate (#959): the shared
+/// [`element_picker::default_pick_band`] ranking of the element it resolves to. The ground
+/// plane has no element and is the last resort, so it ranks behind everything.
+///
+/// This replaces a `u8` hand-assigned at each candidate's construction site, plus a
+/// vertex-beats-edge special case bolted onto the comparison — the band ordering says that
+/// outright (a corner is band 0, an edge band 1), so the special case is gone.
+pub fn pick_band(kind: &PickTargetKind) -> usize {
+    match scene_element_from_pick(kind) {
+        Some(element) => crate::element_picker::default_pick_band(
+            crate::element_picker::ElementKind::of(&element),
+        ),
+        // The ground: whatever is under the cursor when nothing else is.
+        None => usize::MAX,
+    }
+}
+
 impl PickTarget {
     fn beats(&self, other: &PickTarget) -> bool {
-        if self.priority != other.priority {
-            return self.priority < other.priority;
+        let (mine, theirs) = (pick_band(&self.kind), pick_band(&other.kind));
+        if mine != theirs {
+            return mine < theirs;
         }
-        // A vertex within its (fixed-radius) pick zone beats an edge that merely passes under the
-        // cursor, so hovering near a corner selects the corner, not the edge through it (#242).
-        // Only vertex-vs-edge is reordered here; every other same-priority pair still goes by
-        // pixel distance.
-        let is_vertex = |k: &PickTargetKind| {
-            matches!(k, PickTargetKind::Point(_) | PickTargetKind::BodyVertex { .. })
-        };
-        let is_edge = |k: &PickTargetKind| {
-            matches!(
-                k,
-                PickTargetKind::Line(_) | PickTargetKind::Circle(_) | PickTargetKind::BodyEdge { .. }
-            )
-        };
-        if is_vertex(&self.kind) && is_edge(&other.kind) {
-            return true;
-        }
-        if is_edge(&self.kind) && is_vertex(&other.kind) {
-            return false;
-        }
+        // Same band — a sketch line against a body edge, say — so the nearer one wins.
         self.distance_px < other.distance_px
     }
 }

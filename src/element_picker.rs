@@ -175,6 +175,30 @@ impl ElementKind {
     }
 }
 
+/// The global pick-priority bands (#959): when several things crowd the cursor, the one in the
+/// lower band wins, and a tie inside a band goes to whichever is nearest in pixels.
+///
+/// The sharpest thing first — a corner beats an edge running through it, which beats the face
+/// they lie on, which beats a construction plane behind it, which beats a whole body. Kinds that
+/// should compete on *distance* rather than on kind share a band: a sketch line and a body edge
+/// under the same pixel both read as "the thing you're pointing at", so neither outranks the
+/// other.
+///
+/// A picker may override this with [`ElementPicker::with_priority`]. The match is total, so no
+/// pick can fall off the end of the ranking.
+pub fn default_pick_band(kind: ElementKind) -> usize {
+    match kind {
+        ElementKind::Vertex => 0,
+        ElementKind::Edge | ElementKind::Line | ElementKind::Circle | ElementKind::Axis => 1,
+        ElementKind::Constraint => 2,
+        ElementKind::Face => 3,
+        ElementKind::Plane | ElementKind::Image => 4,
+        ElementKind::Sketch => 5,
+        ElementKind::Body => 6,
+        ElementKind::Component | ElementKind::Joint | ElementKind::Operation => 7,
+    }
+}
+
 /// A history-operation sub-kind, so a picker can accept e.g. only bodies produced by a boolean
 /// while rejecting move/repeat operations (the user's "limit it to selecting only certain
 /// operations").
@@ -508,6 +532,9 @@ pub struct ElementPicker {
     /// The Select tool's picker is always focused and cannot lose focus; `set_focused(false)` is
     /// a no-op for it.
     sticky_focus: bool,
+    /// Kinds this picker prefers among a crowd at the cursor, most-wanted first (#959).
+    /// Empty means the global [`DEFAULT_PICK_PRIORITY`].
+    priority: Vec<ElementKind>,
 
     /// Picked elements in click order (stable for the popup rows and remove-by-index).
     picked: Vec<SceneElement>,
@@ -522,6 +549,7 @@ impl ElementPicker {
             limit,
             selected_color: None,
             sticky_focus: false,
+            priority: Vec::new(),
             picked: Vec::new(),
             focused: false,
         }
@@ -540,6 +568,25 @@ impl ElementPicker {
     pub fn with_selected_color(mut self, color: Color32) -> ElementPicker {
         self.selected_color = Some(color);
         self
+    }
+
+    /// Override the global pick priority (#959) for this picker: the listed kinds win over
+    /// everything else, in the order given. Kinds left out keep their relative
+    /// [`DEFAULT_PICK_PRIORITY`] order, behind every listed kind — so an override only has to
+    /// name what it wants promoted ("faces over edges"), not restate the whole list.
+    pub fn with_priority(mut self, kinds: &[ElementKind]) -> ElementPicker {
+        self.priority = kinds.to_vec();
+        self
+    }
+
+    /// How strongly this picker wants `kind` among a crowd at the cursor — lower wins. Ties
+    /// (kinds in the same band) are broken by pixel distance by the caller.
+    pub fn rank(&self, kind: ElementKind) -> usize {
+        match self.priority.iter().position(|k| *k == kind) {
+            Some(i) => i,
+            // Behind everything the override named, in the default order.
+            None => self.priority.len() + default_pick_band(kind),
+        }
     }
 
     // ---- configuration accessors ----------------------------------------------------------
@@ -1265,6 +1312,61 @@ mod tests {
         assert_eq!(p.pick(&doc, body(0)), PickOutcome::Added);
         p.set_picked(&doc, [body(0), body(1)]);
         assert_eq!(p.picked(), &[body(0)], "set_picked drops what a rule rejects");
+    }
+
+    #[test]
+    fn the_default_priority_puts_the_sharpest_thing_first() {
+        // A corner beats an edge through it, which beats the face they lie on, which beats the
+        // construction plane behind it, which beats a whole body. This is the ordering the pick
+        // resolver hard-coded as a `u8` per candidate (#959).
+        let band = default_pick_band;
+        assert!(
+            band(ElementKind::Vertex) < band(ElementKind::Edge),
+            "a corner beats an edge through it"
+        );
+        assert!(
+            band(ElementKind::Edge) < band(ElementKind::Face),
+            "an edge beats the face it lies on"
+        );
+        assert!(
+            band(ElementKind::Face) < band(ElementKind::Plane),
+            "a face beats a construction plane behind it"
+        );
+        assert!(
+            band(ElementKind::Plane) < band(ElementKind::Body),
+            "a plane beats a whole body"
+        );
+        // The linear kinds share the edge band, so which of them wins is decided by pixel
+        // distance rather than by kind.
+        for kind in [ElementKind::Line, ElementKind::Circle, ElementKind::Axis] {
+            assert_eq!(
+                band(kind),
+                band(ElementKind::Edge),
+                "{kind:?} shares the edge band"
+            );
+        }
+    }
+
+    #[test]
+    fn a_picker_can_override_the_priority() {
+        // The design's example: a picker that wants faces over edges (#959).
+        let default = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+        assert!(
+            default.rank(ElementKind::Vertex) < default.rank(ElementKind::Face),
+            "the default prefers the corner"
+        );
+        let faces_first = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite)
+            .with_priority(&[ElementKind::Face]);
+        assert!(
+            faces_first.rank(ElementKind::Face) < faces_first.rank(ElementKind::Vertex),
+            "an override wins over the default"
+        );
+        // Kinds the override doesn't mention rank behind every kind it does, keeping the
+        // default's relative order among themselves.
+        assert!(
+            faces_first.rank(ElementKind::Vertex) < faces_first.rank(ElementKind::Body),
+            "unlisted kinds keep the default order behind the listed ones"
+        );
     }
 
     #[test]
