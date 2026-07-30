@@ -28,6 +28,7 @@ mod constraint_viewport;
 mod geometric_constraints;
 mod context;
 mod construction;
+mod diag;
 mod dimensions;
 mod drawing;
 mod document_health;
@@ -200,8 +201,16 @@ fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
     }
     *frames_remaining -= 1;
     if *frames_remaining == 0 {
+        diag::log("launch: maximizing");
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
     }
+    // Keep painting until the sequence is done, and for a moment after it (#978). egui is
+    // **reactive** — it draws on input and on request, nothing else — so without this the
+    // countdown can stall before it ever sends the command, and the resize the command causes
+    // can land with no repaint behind it. Either way the window ends up correctly sized and
+    // never drawn: a blank grey rectangle with a title bar.
+    ctx.request_repaint();
+    ctx.request_repaint_after(std::time::Duration::from_millis(150));
 }
 
 /// Vertical wheel travel this frame, unsmoothed.
@@ -436,6 +445,20 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
         e.to_string(),
     ))))?;
 
+    diag::log(format!(
+        "launch: {}×{} window, maximize {}",
+        options.viewport.inner_size.map(|s| s.x).unwrap_or(0.0),
+        options.viewport.inner_size.map(|s| s.y).unwrap_or(0.0),
+        if uses_deferred_launch_maximize() {
+            "deferred"
+        } else if options.viewport.maximized == Some(true) {
+            "on"
+        } else {
+            "off"
+        }
+    ));
+    // A window that never paints looks exactly like a window that painted nothing (#978).
+    diag::watch_first_frame();
     let script_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let script_failed_for_app = script_failed.clone();
     let result = eframe::run_native(
@@ -443,6 +466,18 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
+            match cc.wgpu_render_state.as_ref() {
+                Some(rs) => {
+                    let info = rs.adapter.get_info();
+                    diag::log(format!(
+                        "gpu: {:?} on {} ({:?})",
+                        info.backend, info.name, info.device_type
+                    ));
+                }
+                // Without a wgpu render state nothing 3D can draw, and the cause is upstream
+                // of anything this app does — worth saying out loud.
+                None => diag::warn("no wgpu render state — the 3D viewport cannot draw"),
+            }
             let native_menu = NativeMenu::install(cc).map_err(|e| {
                 eframe::Error::AppCreation(Box::new(std::io::Error::other(
                     e.to_string(),
@@ -3942,7 +3977,13 @@ impl App {
             move_ghost_pose: None,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
-            gpu_viewport: gpu_viewport::install(cc),
+            gpu_viewport: {
+                let ok = gpu_viewport::install(cc);
+                if !ok {
+                    diag::warn("the GPU viewport failed to install — the 3D view will be empty");
+                }
+                ok
+            },
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
             graph_force: true,
@@ -10597,6 +10638,12 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // egui 0.35 hands the app a `Ui` instead of a `Context`; panels nest inside it.
+        // One line per early frame (#978): a run that traces frames but shows nothing is a
+        // painting fault; a run that traces none never got asked to paint at all.
+        {
+            let size = ui.max_rect().size();
+            diag::frame((size.x, size.y), self.gpu_viewport);
+        }
         // Everything below still works off the context, so clone it out once.
         let ctx = &ui.ctx().clone();
         // Tutorial anchors are re-recorded as this frame's UI renders.

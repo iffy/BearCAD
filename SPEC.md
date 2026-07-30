@@ -3157,6 +3157,25 @@ should be added to the shared action layer so they become available headlessly b
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed on its own within
   the given duration, so an unattended/CI launch can't hang forever (#61).
 
+**Launch diagnostics (#978).** A window that comes up blank — title bar and menu present,
+nothing drawn — has several possible causes and no way to tell them apart from the outside.
+`src/diag.rs` splits the reporting in two so an ordinary run stays silent:
+
+- **Always on stderr**, because they are wrong however the app was started: no wgpu render
+  state, the GPU viewport failing to install, and — from a watchdog thread — **no frame drawn
+  within 8s of launch**. That last one is the blank-window discriminator: a run that draws
+  frames and shows nothing is a *painting* fault; a run that draws none never got asked to
+  paint at all.
+- **`BEARCAD_LOG=1`** adds the startup trace: the requested window size and maximize mode, the
+  GPU backend and adapter, the maximize command when it goes, and one line per early frame with
+  the size it was built at.
+
+egui is **reactive** — it draws on input and on request, not continuously — which is why the
+deferred macOS launch-maximize (§11) requests repaints across its whole sequence and a moment
+past it. Without that the countdown can stall before it ever sends the command, and the resize
+the command causes can land with no repaint behind it; either way the window ends up correctly
+sized and never drawn.
+
 ### 9.2 Export formats (required)
 `.3mf`, `.stl`, `.obj`, `.amf`, `.step`/`.stp`. STEP via OCCT; mesh formats via OCCT
 tessellation + writers (or dedicated libraries — license-audited per §1).
