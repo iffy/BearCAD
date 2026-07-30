@@ -3136,6 +3136,38 @@ fn row_primary_double_clicked(response: &egui::Response, ui: &egui::Ui) -> bool 
     pos.is_some_and(|pos| response.rect.contains(pos))
 }
 
+/// Pointer state for one elements-pane row, folded across every part of the row that acts as a
+/// click target (#964). A row is selectable by its **name** and by its **type icon** — both
+/// report into this, so the row reacts whichever one the pointer landed on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowClick {
+    pub clicked: bool,
+    pub double_clicked: bool,
+    pub hovered: bool,
+}
+
+impl RowClick {
+    /// Read one click target's state off its response. `double_clicked` goes through
+    /// [`row_primary_double_clicked`], which also catches a double-click egui attributed to the
+    /// pointer rather than the widget.
+    fn of(response: &egui::Response, ui: &egui::Ui) -> RowClick {
+        RowClick {
+            clicked: response.clicked(),
+            double_clicked: row_primary_double_clicked(response, ui),
+            hovered: response.hovered(),
+        }
+    }
+
+    /// Fold another click target of the same row in.
+    fn or(self, other: RowClick) -> RowClick {
+        RowClick {
+            clicked: self.clicked || other.clicked,
+            double_clicked: self.double_clicked || other.double_clicked,
+            hovered: self.hovered || other.hovered,
+        }
+    }
+}
+
 /// How a sketch row should react to pointer input this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SketchRowAction {
@@ -4402,10 +4434,13 @@ fn show_component_row(
             let next = visibility.toggle(element.clone());
             on_toggle_visibility(element.clone(), next);
         }
-        ui.add(
-            egui::Image::new(sized_texture(ui.ctx(), IconId::Component))
-                .tint(icon_tint_for_row_style(style)),
-        );
+        // The component icon selects the row like its name does (#964).
+        let icon_response = ui
+            .add(
+                egui::Image::new(sized_texture(ui.ctx(), IconId::Component))
+                    .tint(icon_tint_for_row_style(style)),
+            )
+            .interact(egui::Sense::click());
         let label = node_label(doc, HierarchyNode::Component(ci));
         // The active component (#429) — where new elements land — reads in the accent
         // colour with a painted dot marker (#520).
@@ -4419,7 +4454,10 @@ fn show_component_row(
             row_shows_selection(&element, selection, style_selection),
             text,
         );
-        if response.clicked() {
+        if RowClick::of(&response, ui)
+            .or(RowClick::of(&icon_response, ui))
+            .clicked
+        {
             let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
             on_click_element(element.clone(), additive);
         }
@@ -4746,11 +4784,14 @@ fn show_row(
             on_toggle_visibility(element.clone(), next);
         }
 
+        // The type icon selects the row just like its name does (#964), so it is sensed for
+        // clicks rather than being inert decoration.
         let icon_response = icon_for_hierarchy_node(doc, node).map(|icon| {
             ui.add(
                 egui::Image::new(sized_texture(ui.ctx(), icon))
                     .tint(icon_tint_for_row_style(style)),
             )
+            .interact(egui::Sense::click())
         });
 
         let label = node_label(doc, node);
@@ -4777,8 +4818,14 @@ fn show_row(
                 );
             }
         }
+        // Both click targets of the row — its name and its type icon (#964) — feed one
+        // pointer state, so a click, double-click, or hover on either drives the row.
+        let row = RowClick::of(&response, ui).or(icon_response
+            .as_ref()
+            .map(|icon| RowClick::of(icon, ui))
+            .unwrap_or_default());
         // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
-        if response.hovered() {
+        if row.hovered {
             on_hover_element(element.clone());
         }
         // With a drawing open, body and sketch rows drag onto the page (#290): the drop
@@ -4791,8 +4838,9 @@ fn show_row(
             response
                 .interact(egui::Sense::drag())
                 .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
-            if let Some(icon_resp) = icon_response {
+            if let Some(icon_resp) = icon_response.as_ref() {
                 icon_resp
+                    .clone()
                     .interact(egui::Sense::drag())
                     .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
             }
@@ -4808,11 +4856,7 @@ fn show_row(
             HierarchyNode::Document => unreachable!("handled by the early return above"),
             HierarchyNode::Sketch(sketch) => {
                 let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                match sketch_row_action(
-                    row_primary_double_clicked(&response, ui),
-                    response.clicked(),
-                    additive,
-                ) {
+                match sketch_row_action(row.double_clicked, row.clicked, additive) {
                     SketchRowAction::Edit => on_edit_sketch(sketch),
                     SketchRowAction::Select { additive } => {
                         on_click_element(element.clone(), additive)
@@ -4821,17 +4865,17 @@ fn show_row(
                 }
             }
             HierarchyNode::Extrusion(index) => {
-                if row_primary_double_clicked(&response, ui) {
+                if row.double_clicked {
                     on_edit_extrusion(index);
-                } else if response.clicked() {
+                } else if row.clicked {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element.clone(), additive);
                 }
             }
             HierarchyNode::EdgeTreatmentOp(index) => {
-                if row_primary_double_clicked(&response, ui) {
+                if row.double_clicked {
                     on_edit_edge_treatment_op(index);
-                } else if response.clicked() {
+                } else if row.clicked {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element.clone(), additive);
                 }
@@ -4841,15 +4885,15 @@ fn show_row(
             // Every other operation edits the universal way: double-click reopens it in its tool
             // (#546); a plain click selects it.
             node if node_editable_operation(node).is_some() => {
-                if row_primary_double_clicked(&response, ui) {
+                if row.double_clicked {
                     on_edit_operation(element.clone());
-                } else if response.clicked() {
+                } else if row.clicked {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element.clone(), additive);
                 }
             }
             _ => {
-                if response.clicked() {
+                if row.clicked {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element.clone(), additive);
                 }
@@ -5101,6 +5145,36 @@ fn component_member_node(node: HierarchyNode) -> bool {
 mod tests {
     use super::*;
     use crate::model::ShapeKind;
+
+    #[test]
+    fn a_row_reacts_when_either_of_its_click_targets_does() {
+        // #964: the name label and the type icon are both click targets, so the row selects
+        // whichever one the pointer landed on.
+        let label = RowClick {
+            clicked: true,
+            ..RowClick::default()
+        };
+        let icon = RowClick {
+            clicked: true,
+            double_clicked: true,
+            hovered: true,
+        };
+        assert!(RowClick::default().or(icon).clicked, "the icon alone selects");
+        assert!(
+            RowClick::default().or(icon).double_clicked,
+            "the icon alone edits on a double click"
+        );
+        assert!(
+            RowClick::default().or(icon).hovered,
+            "hovering the icon highlights the row's element in the viewport"
+        );
+        assert!(label.or(RowClick::default()).clicked, "the label alone still selects");
+        assert_eq!(
+            RowClick::default().or(RowClick::default()),
+            RowClick::default(),
+            "an untouched row reports nothing"
+        );
+    }
 
     /// A document with one imported unit (a sketch + a body inside) and one instance (#723).
     fn doc_with_unit_instance() -> Document {
