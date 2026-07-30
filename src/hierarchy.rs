@@ -325,6 +325,26 @@ impl SceneElement {
         }
     }
 
+    /// The straight reference this element names, if any — the inverse of
+    /// [`from_revolve_axis`](SceneElement::from_revolve_axis). A Revolve's axis and a Repeat's
+    /// path are both this, so a pick into either picker converts here rather than in a
+    /// per-tool `match` on the pick target (#970).
+    pub fn as_revolve_axis(&self) -> Option<crate::model::RevolveAxis> {
+        use crate::model::RevolveAxis;
+        Some(match self {
+            SceneElement::Line(index) => RevolveAxis::Line(*index),
+            SceneElement::BodyEdge { body, a, b } => RevolveAxis::BodyEdge {
+                body: *body,
+                a: dequantize_body_point(*a),
+                b: dequantize_body_point(*b),
+            },
+            SceneElement::GlobalAxis(crate::construction::GlobalAxis::X) => RevolveAxis::X,
+            SceneElement::GlobalAxis(crate::construction::GlobalAxis::Y) => RevolveAxis::Y,
+            SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z) => RevolveAxis::Z,
+            _ => return None,
+        })
+    }
+
     /// The snap point this element names, if any — the inverse of [`from_move_point`].
     ///
     /// [`from_move_point`]: SceneElement::from_move_point

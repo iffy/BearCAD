@@ -8482,9 +8482,8 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
         cam: &camera::Camera,
-        viewport: egui::Rect,
-        vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         // With a sketch open, the Repeat tool repeats sketch entities instead of bodies (#232).
         if let Some(session) = self.state.sketch_session {
@@ -8550,59 +8549,25 @@ impl App {
             }
             return;
         }
-        let gp = cam.ground_point(pp, viewport, vp);
-        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
-        else {
-            return;
-        };
-        // A circle under the cursor becomes the path (#840): the copies ride round it. Only
-        // while the path picker is what's being picked, so a click on a circle otherwise
-        // still falls through to the body pick below.
-        if let construction::PickTargetKind::Circle(ci) = target.kind {
-            if repeat_axis_pick_active(self.state.creating_repeat.as_ref()) {
-                if let Some(cr) = self.state.creating_repeat.as_mut() {
-                    cr.path_circle = Some(ci);
-                    cr.axis = Some(model::RevolveAxis::Z);
-                    cr.around_axis = false;
-                }
-                self.state.status = "Repeat: path set — round a circle".to_string();
-                return;
-            }
-        }
-        // Any straight reference under the cursor sets the axis (#643): a sketch line, an
-        // origin axis, or a feature edge of a body — the same set the hover highlights.
-        // Origin axes and body edges only count while the axis picker is the focused one,
-        // so a click on a body's edge still toggles that body once an axis is chosen.
-        if let Some(axis) = repeat_axis_from_pick(
-            &target.kind,
-            repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
-        ) {
-            let label = names::revolve_axis_label(&self.state.doc, axis);
-            if let Some(cr) = self.state.creating_repeat.as_mut() {
-                cr.axis = Some(axis);
-                cr.path_circle = None;
-            }
-            self.state.status = format!("Repeat: axis set — {label}");
+        // Whether this click is for the path or for the bodies is the pickers' business
+        // (#970): Path is armed exactly while there is something to repeat and no path yet, so
+        // a straight reference or a circle sets it, and once it's set the same click on a
+        // body's edge goes back to gathering that body.
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
         }
-        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
-            return;
-        };
-        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
-            self.state.status =
-                "That body is already consumed by another operation".to_string();
-            return;
-        }
+        let doc = &self.state.doc;
         let cr = self
             .state
             .creating_repeat
             .get_or_insert_with(actions::CreatingRepeat::default);
-        if let Some(pos) = cr.targets.iter().position(|b| *b == bi) {
-            cr.targets.remove(pos);
-        } else {
-            cr.targets.push(bi);
-        }
-        self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+        self.state.status = match cr.axis {
+            Some(axis) if cr.path_circle.is_none() => {
+                format!("Repeat: axis set — {}", names::revolve_axis_label(doc, axis))
+            }
+            Some(_) => "Repeat: path set — round a circle".to_string(),
+            None => format!("Repeat: {} body(ies) picked", cr.targets.len()),
+        };
     }
 
     /// Which Move picker the next viewport click feeds (#656). A picker the user focused by
@@ -14826,38 +14791,6 @@ fn pickable_body_vertex(
 
 /// Whether the Repeat tool's **axis** picker is the focused one (#643) — the axis is unset and
 /// there's already something to repeat, so the axis is what the next click is for. Mirrors the
-/// pane's own focus rule in `context::context_pane_content`.
-fn repeat_axis_pick_active(creating: Option<&actions::CreatingRepeat>) -> bool {
-    creating.is_some_and(|c| {
-        c.axis.is_none()
-            && (!c.targets.is_empty()
-                || !c.plane_targets.is_empty()
-                || !c.sketch_targets.is_empty()
-                || !c.extrusion_targets.is_empty())
-    })
-}
-
-/// The repeat axis a pick target would set (#643). Sketch lines always count; origin axes and
-/// body feature edges count only while the axis picker is focused (`axis_pick`), so that once
-/// an axis is chosen a click on a body's edge goes back to toggling that body.
-fn repeat_axis_from_pick(
-    kind: &construction::PickTargetKind,
-    axis_pick: bool,
-) -> Option<model::RevolveAxis> {
-    match *kind {
-        construction::PickTargetKind::Line(li) => Some(model::RevolveAxis::Line(li)),
-        construction::PickTargetKind::GlobalAxis(axis) if axis_pick => Some(match axis {
-            construction::GlobalAxis::X => model::RevolveAxis::X,
-            construction::GlobalAxis::Y => model::RevolveAxis::Y,
-            construction::GlobalAxis::Z => model::RevolveAxis::Z,
-        }),
-        construction::PickTargetKind::BodyEdge { body, a, b } if axis_pick => {
-            Some(model::RevolveAxis::BodyEdge { body, a, b })
-        }
-        _ => None,
-    }
-}
-
 /// A throwaway `SketchRepeatOperation` standing in for the in-progress one (#232), so the
 /// offset/extent maths that drives the ghost preview and the pane's computed value can run
 /// against the same code committed repeats use.
@@ -15098,8 +15031,13 @@ fn pick_for_focused_picker(
             .filter_map(|c| {
                 let element = scene_element_from_pick(&c.kind)?;
                 let taken = crate::element_picker::expand_pick(doc, &focused.picker, &element);
-                let rank =
-                    focused.picker.rank(crate::element_picker::ElementKind::of(taken.first()?));
+                if taken.is_empty() {
+                    return None;
+                }
+                // Ranked on the candidate the cursor is *over*, not on what it becomes: a
+                // body's face beats the datum plane behind it, even though a body picker turns
+                // that face into the whole body — which ranks below a plane (#959).
+                let rank = focused.picker.rank(crate::element_picker::ElementKind::of(&element));
                 Some((rank, taken))
             })
             .collect();
@@ -22297,7 +22235,14 @@ impl App {
         }
 
         if self.state.tool == Tool::Repeat {
-            self.handle_repeat_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_repeat_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                pick_occlusion,
+                tool_pickers,
+            );
         }
 
         if self.state.tool == Tool::Offset {
@@ -28710,31 +28655,6 @@ mod tests {
     /// #643: which picks become a repeat axis. Sketch lines always; origin axes and body
     /// edges only while the axis picker is the focused one, so a body's edge still toggles
     /// that body once an axis is chosen.
-    #[test]
-    fn repeat_axis_from_pick_covers_lines_axes_and_body_edges() {
-        use super::repeat_axis_from_pick;
-        use crate::construction::{GlobalAxis, PickTargetKind};
-        let a = glam::Vec3::ZERO;
-        let b = glam::Vec3::X;
-        assert_eq!(
-            repeat_axis_from_pick(&PickTargetKind::Line(3), false),
-            Some(crate::model::RevolveAxis::Line(3))
-        );
-        assert_eq!(
-            repeat_axis_from_pick(&PickTargetKind::GlobalAxis(GlobalAxis::Y), true),
-            Some(crate::model::RevolveAxis::Y)
-        );
-        assert_eq!(repeat_axis_from_pick(&PickTargetKind::GlobalAxis(GlobalAxis::Y), false), None);
-        assert_eq!(
-            repeat_axis_from_pick(&PickTargetKind::BodyEdge { body: 2, a, b }, true),
-            Some(crate::model::RevolveAxis::BodyEdge { body: 2, a, b })
-        );
-        assert_eq!(
-            repeat_axis_from_pick(&PickTargetKind::BodyEdge { body: 2, a, b }, false),
-            None
-        );
-    }
-
     #[test]
     fn constraint_tool_hovers_origin_and_origin_axes() {
         use super::gpu_viewport;

@@ -15126,6 +15126,30 @@ pub fn apply_pick(
             }
             true
         }
+        // A Revolve axis and a Repeat path are the same sort of pick — one straight reference
+        // — so both convert through `as_revolve_axis` rather than through a `match` on the
+        // pick target written out per tool (#970). A circle is the Repeat tool's other path:
+        // the copies ride round it (#840).
+        (P::RevolveAxis, element) => {
+            let Some(axis) = element.as_revolve_axis() else { return false };
+            let cr = state.creating_revolve.get_or_insert_with(CreatingRevolve::default);
+            cr.axis = (cr.axis.as_ref() != Some(&axis)).then_some(axis);
+            true
+        }
+        (P::RepeatPath, SceneElement::Circle(ci)) => {
+            let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
+            cr.path_circle = Some(*ci);
+            cr.axis = Some(crate::model::RevolveAxis::Z);
+            cr.around_axis = false;
+            true
+        }
+        (P::RepeatPath, element) => {
+            let Some(axis) = element.as_revolve_axis() else { return false };
+            let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
+            cr.axis = Some(axis);
+            cr.path_circle = None;
+            true
+        }
         // The Mirror tool's plane is any face-shaped thing — a construction plane or a flat
         // body face (#566). Single-pick, so it replaces rather than toggles; clicking the one
         // already set clears it, which is what the pane's ✕ does.
