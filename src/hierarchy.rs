@@ -272,6 +272,25 @@ impl SceneElement {
         }
     }
 
+    /// The element for a straight reference axis (#952/#955): a sketch line, a body's feature
+    /// edge, or one of the world axes. What the Revolve axis and Repeat path pickers hold.
+    pub fn from_revolve_axis(axis: crate::model::RevolveAxis) -> SceneElement {
+        use crate::model::RevolveAxis;
+        match axis {
+            RevolveAxis::Line(index) => SceneElement::Line(index),
+            RevolveAxis::BodyEdge { body, a, b } => {
+                let (qa, qb) = (quantize_body_point(a), quantize_body_point(b));
+                // Canonically ordered, like every other body-edge key, so either traversal
+                // direction of the same edge is one element.
+                let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
+                SceneElement::BodyEdge { body, a: qa, b: qb }
+            }
+            RevolveAxis::X => SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
+            RevolveAxis::Y => SceneElement::GlobalAxis(crate::construction::GlobalAxis::Y),
+            RevolveAxis::Z => SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z),
+        }
+    }
+
     /// The snap point this element names, if any — the inverse of [`from_move_point`].
     ///
     /// [`from_move_point`]: SceneElement::from_move_point

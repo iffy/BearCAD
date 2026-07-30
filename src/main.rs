@@ -12440,27 +12440,8 @@ impl eframe::App for App {
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
-                        face_count: cr.map(|c| c.faces.len()).unwrap_or(0),
-                        face_rows: cr
-                            .map(|c| {
-                                c.faces
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(n, f)| {
-                                        let kind = match f {
-                                            model::ExtrudeFace::Circle(_) => "Circle",
-                                            model::ExtrudeFace::Polygon(_) => "Loop",
-                                            model::ExtrudeFace::Boolean { .. } => "Region",
-                                            model::ExtrudeFace::TextGlyph { .. } => "Glyph",
-                                        };
-                                        format!("{kind} {}", n + 1)
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        axis_label: cr
-                            .and_then(|c| c.axis)
-                            .map(|a| names::revolve_axis_label(&self.state.doc, a)),
+                        faces: cr.map(|c| c.faces.clone()).unwrap_or_default(),
+                        axis: cr.and_then(|c| c.axis),
                         // Exactly one picker shows the focus ring (#304): Axis once a
                         // profile is picked but no axis yet, Profile otherwise.
                         axis_focused: cr
@@ -12670,19 +12651,6 @@ impl eframe::App for App {
                         match other {
                             context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
                             context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
-                            context::RevolveEdit::RemoveFace(Some(i)) => {
-                                if i < cr.faces.len() {
-                                    cr.faces.remove(i);
-                                }
-                                if cr.faces.is_empty() {
-                                    cr.sketch = None;
-                                }
-                            }
-                            context::RevolveEdit::RemoveFace(None) => {
-                                cr.faces.clear();
-                                cr.sketch = None;
-                            }
-                            context::RevolveEdit::ClearAxis => cr.axis = None,
                             context::RevolveEdit::Commit => unreachable!(),
                         }
                     }
@@ -13659,6 +13627,25 @@ impl eframe::App for App {
                         self.move_focus_override = Some(MoveFocus::Bodies);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    // Revolve's profile and axis (#955). Both are fed by viewport clicks; the
+                    // pane's job is dropping a pick so it can be re-made.
+                    context::PickerTarget::RevolveProfile => {
+                        if let Some(cr) = self.state.creating_revolve.as_mut() {
+                            remove_or_clear(&mut cr.faces, edit);
+                            // The profiles are all coplanar, so an empty set no longer pins a
+                            // sketch plane — the next pick chooses it afresh.
+                            if cr.faces.is_empty() {
+                                cr.sketch = None;
+                            }
+                        }
+                    }
+                    context::PickerTarget::RevolveAxis => {
+                        if let Some(cr) = self.state.creating_revolve.as_mut() {
+                            if edit != context::ToolPickerAction::Focus {
+                                cr.axis = None;
+                            }
                         }
                     }
                     // Slice's two sides (#955): clicking a picker makes it the one the next

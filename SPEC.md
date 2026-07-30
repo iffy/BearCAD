@@ -1711,9 +1711,12 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   current angle and the handle rides its far end (#262) — or by typing (bare numbers are
   degrees; `rad`/`deg` suffixes and parameter expressions work); **Symmetric** sweeps half the
   angle to each side of the
-  profile plane. The context pane shows the picked profile faces and the axis as their own
-  element pickers (each row has a ✕ to remove it; faces/axis are still added by clicking in
-  the viewport) (#261). The result lands as a **new body**, **fused into touching bodies**
+  profile plane. The context pane shows the picked profile faces and the axis as their own real
+  element pickers (#261/#955; each row has a ✕ to remove it; faces/axis are still added by
+  clicking in the viewport). Profile takes analytic faces (`SceneElement::SketchFace`); Axis is
+  **single-pick** and takes a straight reference only — a sketch line with no curve to it, a
+  body's feature edge, or a world axis (`PickRule::Straight` over
+  `SceneElement::from_revolve_axis`), so a circle is never offered as an axis. The result lands as a **new body**, **fused into touching bodies**
   (resolved at commit by mesh-bounds intersection), or **cut from picked bodies** — chosen
   with a segmented icon button group (New body / Add to touching / Cut, the same icons the
   Extrude "into" picker uses) (#261); cut targets are clicked in the viewport and listed in

@@ -160,13 +160,13 @@ pub struct ContextInput<'a> {
 /// through the shared selection picker).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RevolveControl {
-    pub face_count: usize,
-    /// One label per picked profile face, shown in the face element picker (#261).
-    pub face_rows: Vec<String>,
+    /// The picked profile faces and the sweep axis (#955), rendered through real
+    /// [`ElementPicker`]s rather than as label rows.
+    pub faces: Vec<crate::model::ExtrudeFace>,
+    pub axis: Option<crate::model::RevolveAxis>,
     /// Which picker shows the focus ring (#304): exactly one at a time — Profile until a
     /// face is picked, then Axis until the axis is set, then back to Profile.
     pub axis_focused: bool,
-    pub axis_label: Option<String>,
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
     /// In Cut mode, the picked bodies to cut (rendered through the unified element picker, #213).
@@ -822,10 +822,6 @@ pub enum BooleanEdit {
 pub enum RevolveEdit {
     Symmetric(bool),
     BodyChoice(crate::actions::RevolveBodyChoice),
-    /// Remove profile face row `i` from the face picker (`None` clears them all) (#261).
-    RemoveFace(Option<usize>),
-    /// Clear the picked revolve axis (#261).
-    ClearAxis,
     /// The blue primary button / Enter — commit the revolve (#586).
     Commit,
 }
@@ -1254,6 +1250,11 @@ pub enum PickerTarget {
     LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
+    /// The Revolve tool's profile faces (`CreatingRevolve::faces`, #955).
+    RevolveProfile,
+    /// The Revolve tool's sweep axis (`CreatingRevolve::axis`, #955): a straight reference —
+    /// a sketch line, a body edge, or a world axis. Single-pick.
+    RevolveAxis,
     /// The Slice tool's target bodies (`CreatingSlice::targets`, #955).
     SliceTargets,
     /// The Slice tool's cutter faces/planes (`CreatingSlice::cutters`, #955). Consumed
@@ -1800,15 +1801,54 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
     let mut tool_pickers = Vec::new();
     if let Some(r) = input.revolve.as_ref() {
+        // Revolve's own two inputs (#955): the profile faces it sweeps, and the axis it sweeps
+        // them about. Exactly one shows the focus ring (#304).
+        let mut profile = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Face),
+            PickLimit::Infinite,
+        );
+        profile.set_focused(!r.axis_focused);
+        profile.set_picked(
+            input.doc,
+            r.faces
+                .iter()
+                .map(crate::extrude::extrude_face_scene_element),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Profile",
+            picker: profile,
+            target: PickerTarget::RevolveProfile,
+            separator_above: true,
+        });
+        // A straight reference only (#953): a sketch line with no curve to it, a body's feature
+        // edge, or a world axis — never a circle.
+        let mut axis = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Edge, ElementKind::Axis])
+                .rule(PickRule::Straight),
+            PickLimit::Finite(1),
+        );
+        axis.set_focused(r.axis_focused);
+        axis.set_picked(
+            input.doc,
+            r.axis.map(SceneElement::from_revolve_axis),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Axis",
+            picker: axis,
+            target: PickerTarget::RevolveAxis,
+            separator_above: false,
+        });
         if r.body_choice == crate::actions::RevolveBodyChoice::Cut {
-            tool_pickers.push(body_tool_picker(
+            let mut cut = body_tool_picker(
                 input.doc,
                 "Cut bodies",
                 PickerTarget::RevolveCut,
                 &r.cut_bodies,
-                    Some(crate::theme::CUT_ACCENT),
+                Some(crate::theme::CUT_ACCENT),
                 true,
-            ));
+            );
+            cut.separator_above = false;
+            tool_pickers.push(cut);
         }
     }
     if let Some(f) = input.sweep.as_ref() {
@@ -4016,53 +4056,8 @@ pub fn show_pane(
 
     if let Some(control) = &content.revolve {
         any_control = true;
-        ui.separator();
-
-        // Face element picker (#261): the picked profile faces, click one's ✕ to drop it. Faces
-        // are still added by clicking them in the viewport.
-        labeled_row_top(ui, "Profile", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "revolve_faces",
-            !control.axis_focused,
-            false,
-            crate::icons::IconId::Sketch,
-            &control.face_rows,
-        ) {
-            match event {
-                crate::element_picker::PickerEvent::Focus => {}
-                crate::element_picker::PickerEvent::Remove(i) => {
-                    on_revolve_edit(RevolveEdit::RemoveFace(Some(i)))
-                }
-                crate::element_picker::PickerEvent::Clear => {
-                    on_revolve_edit(RevolveEdit::RemoveFace(None))
-                }
-            }
-        }
-        });
-
-        // Axis element picker (#261): the picked edge/axis, click its ✕ to clear. Set it by
-        // clicking a straight line or a global axis in the viewport.
-        let axis_rows: Vec<String> = control.axis_label.iter().cloned().collect();
-        labeled_row_top(ui, "Axis", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "revolve_axis",
-            control.axis_focused,
-            true,
-            crate::icons::IconId::Line,
-            &axis_rows,
-        ) {
-            match event {
-                crate::element_picker::PickerEvent::Focus => {}
-                crate::element_picker::PickerEvent::Remove(_)
-                | crate::element_picker::PickerEvent::Clear => {
-                    on_revolve_edit(RevolveEdit::ClearAxis)
-                }
-            }
-        }
-        });
-
+        // Profile and Axis are real `ToolPickerView`s now (#955), rendered with every other
+        // tool picker above; only the parameters and the commit button live here.
         let mut symmetric = control.symmetric;
         if checkbox_row(ui, "Symmetric", &mut symmetric, None) {
             on_revolve_edit(RevolveEdit::Symmetric(symmetric));
@@ -4098,7 +4093,7 @@ pub fn show_pane(
             }
         });
         // Ready once a profile face and an axis are picked (#586).
-        let ready = control.face_count > 0 && control.axis_label.is_some();
+        let ready = !control.faces.is_empty() && control.axis.is_some();
         if primary_button(ui, ready && controls_enabled, "Revolve") {
             on_revolve_edit(RevolveEdit::Commit);
         }
@@ -7323,10 +7318,9 @@ mod tests {
             tool: Tool::Revolve,
             in_drawing_workbench: false,
             revolve: Some(RevolveControl {
-                face_count: 1,
-                face_rows: vec!["Circle 1".to_string()],
+                faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                axis: Some(crate::model::RevolveAxis::Y),
                 axis_focused: false,
-                axis_label: Some("the Y axis".to_string()),
                 symmetric: false,
                 body_choice: crate::actions::RevolveBodyChoice::Cut,
                 cut_bodies: vec![2, 5],
@@ -7334,9 +7328,14 @@ mod tests {
             ..input(&doc, &selection)
         };
         let content = context_pane_content(&cut_input);
-        assert_eq!(content.tool_pickers.len(), 1);
-        let view = &content.tool_pickers[0];
-        assert_eq!(view.target, PickerTarget::RevolveCut);
+        // Profile and Axis (#955) plus the cut bodies; find the one under test by its target
+        // rather than by position.
+        assert_eq!(content.tool_pickers.len(), 3);
+        let view = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::RevolveCut)
+            .expect("the cut-bodies picker");
         assert_eq!(
             view.picker.picked(),
             &[SceneElement::Body(2), SceneElement::Body(5)]
@@ -7355,16 +7354,21 @@ mod tests {
             in_drawing_workbench: false,
             revolve: Some(RevolveControl {
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
-                face_count: 1,
-                face_rows: vec!["Circle 1".to_string()],
+                faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                axis: None,
                 axis_focused: false,
-                axis_label: None,
                 symmetric: false,
                 cut_bodies: vec![],
             }),
             ..input(&doc, &selection)
         };
-        assert!(context_pane_content(&new_body_input).tool_pickers.is_empty());
+        // Outside Cut mode the tool still shows its own two inputs, just no cut picker.
+        let pickers = context_pane_content(&new_body_input).tool_pickers;
+        assert!(
+            !pickers.iter().any(|v| v.target == PickerTarget::RevolveCut),
+            "no cut picker outside Cut mode"
+        );
+        assert_eq!(pickers.len(), 2, "the profile and axis pickers remain");
     }
 
     /// #834: the material picker shows for a body selection, reports what they share, and
@@ -7558,6 +7562,60 @@ mod tests {
         // With no axis yet, the Bodies picker defers to the Axis picker either way.
         assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
         assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());
+    }
+
+    #[test]
+    fn revolve_yields_a_profile_picker_and_a_straight_axis_picker() {
+        // #955: Revolve's Profile and Axis were label-only. The axis picker is the first real
+        // consumer of both the world-axis element and the `Straight` rule (#952/#953).
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_a_sketch();
+        let selection = SceneSelection::default();
+        let revolve_input = ContextInput {
+            tool: Tool::Revolve,
+            revolve: Some(RevolveControl {
+                faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+                axis: Some(crate::model::RevolveAxis::Z),
+                axis_focused: false,
+                symmetric: false,
+                body_choice: crate::actions::RevolveBodyChoice::NewBody,
+                cut_bodies: Vec::new(),
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&revolve_input).tool_pickers;
+        assert_eq!(pickers.len(), 2, "profile and axis; no cut picker outside Cut mode");
+
+        let profile = &pickers[0];
+        assert_eq!(profile.target, PickerTarget::RevolveProfile);
+        assert_eq!(
+            profile.picker.picked(),
+            &[SceneElement::SketchFace(crate::model::FaceId::Polygon(vec![
+                0, 1, 2, 3
+            ]))],
+            "the profile keeps its analytic-face identity"
+        );
+
+        let axis = &pickers[1];
+        assert_eq!(axis.target, PickerTarget::RevolveAxis);
+        assert_eq!(
+            axis.picker.picked(),
+            &[SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z)],
+            "the world Z axis is an element now"
+        );
+        assert!(matches!(axis.picker.limit(), PickLimit::Finite(1)), "one axis");
+        assert!(
+            axis.picker.accepts(&doc, &SceneElement::Line(0)),
+            "a straight sketch line is a valid axis"
+        );
+        assert!(
+            !axis.picker.accepts(&doc, &SceneElement::Circle(0)),
+            "a revolve axis has to be straight"
+        );
+        assert!(
+            !axis.picker.accepts(&doc, &SceneElement::Body(0)),
+            "a whole body is not an axis"
+        );
     }
 
     #[test]
