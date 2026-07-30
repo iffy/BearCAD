@@ -64,8 +64,13 @@ local with_cutters = kinds_at(20, 15)
 assert(not with_cutters["body"],
   "Cutters cannot take a body, so its fan must not offer one")
 
--- A tool that draws rather than picks has no armed picker, so there is no pick for the fan to
--- disambiguate and Space leaves it closed.
+-- Inside a sketch a draw tool draws rather than picks, so nothing is armed: there is no pick
+-- for the fan to disambiguate and Space leaves it closed. (Outside a sketch the same tool
+-- *does* pick — the face to sketch on — and its fan opens.)
+bearcad.ui.tool("sketch")
+bearcad.ui.wait(5)
+bearcad.ui.click_ground(20, 15)
+bearcad.ui.wait(8)
 bearcad.ui.tool("rectangle")
 bearcad.ui.wait(5)
 local _, closed = kinds_at(40, 30)

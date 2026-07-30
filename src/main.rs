@@ -15105,9 +15105,23 @@ fn resolve_viewport_hover_highlight(
         return None;
     }
     let pp = pointer_screen?;
+    // The arms below are the picks the picker model can't express, and this is the whole list
+    // (#958) — everything else falls to the picker-driven catch-all at the bottom:
+    //
+    // - **A closed profile under the cursor** (Loft, in-sketch Offset over open space): what
+    //   glows is a *loop*, computed from the click, not any element in the crowd.
+    // - **A derived point** (Move's point pickers): the midpoint of the edge or the centre of
+    //   the face under the cursor is nowhere in the crowd — the click means "the point of
+    //   whatever this is".
+    // - **Its own candidate set** (Move's end point B): the constraint-sphere spots mark and
+    //   glow themselves, and the generic hover would light geometry that picker can't use.
+    // - **A pre-empt the priority can't state** (Dimension, Select/Constraint): a body corner
+    //   outranks the edge under it only in 3D, the sketched-on face's own edges have no pick
+    //   target of their own, and Select hovers the **whole body** while its Exploder fan
+    //   offers that body's parts — one picker, two answers, which a filter can't hold.
+    // - **A second priority order** (the plane tool's `resolve_plane_pick_target`): a plane
+    //   anchor prefers a face over the edge crossing it, the reverse of the global order.
     match tool {
-        Tool::Sketch => pick_sketch_face(pp, project, doc, cam.eye())
-            .map(gpu_viewport::ViewportHoverHighlight::SketchFace),
         // Loft tool (#202): glow the closed profile (circle or line loop) under the cursor —
         // the same cross section a click would add — so it has hover feedback like every other
         // pick tool. The whole profile loop lights up, not just the one edge hit.
@@ -15126,18 +15140,10 @@ fn resolve_viewport_hover_highlight(
                 holes: Vec::new(),
             })
         }
-        // The Text tool joins the draw tools (#383): outside a sketch it clicks a face to
-        // begin sketching there, so it hover-highlights faces the same way.
-        Tool::Rectangle | Tool::Line | Tool::Circle | Tool::Text | Tool::Offset
-            if sketch_session.is_none() =>
-        {
-            pick_sketch_face(pp, project, doc, cam.eye())
-                .map(gpu_viewport::ViewportHoverHighlight::SketchFace)
-        }
         // Offset tool in a sketch: glow the line/circle a click would pick, the body edge or
         // face it would project (#595/#938), or — over open sketch space — the closed profile
         // whose whole outline one click takes (#938).
-        Tool::Offset => {
+        Tool::Offset if sketch_session.is_some() => {
             let gp = cam.ground_point(pp, viewport, vp);
             let target = resolve_pick_target(pp, project, gp, doc, occlusion);
             if let Some(target) = target.filter(|t| {

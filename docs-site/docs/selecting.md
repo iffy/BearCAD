@@ -26,8 +26,10 @@ tool arms the source point; pick that, and it arms the target. Click any picker 
 yourself.
 
 A picker only takes what it's for. The Slice tool's **Cutters** wants planes and flat faces, so
-clicking a body while it's armed doesn't fill it — arm **Targets** and the body goes in. A
-Revolve axis takes straight references only, so a circle is never offered as one.
+a body under the cursor reads as its flat cap rather than as the whole solid. A Revolve axis
+takes straight references only, so a circle is never offered as one. What the armed picker
+turns down goes to the tool's first picker, so its main set stays reachable — pick a path for a
+Repeat and you can still add more bodies to repeat.
 
 ## Picking
 

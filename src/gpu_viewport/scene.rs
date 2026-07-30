@@ -3084,19 +3084,42 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
-            // An analytic face (#952) lights up its boundary loop, likewise reusing the
-            // highlight its pick target already draws.
-            SceneElement::SketchFace(face) => {
-                self.push_pick_target_highlight(
-                    doc,
-                    &PickTargetKind::SketchFace(face),
-                    color,
-                    cam,
-                    viewport,
-                    view_proj,
-                    &project,
-                );
-            }
+            // An analytic face (#952/#958) hovers as a **face**: a translucent fill with a
+            // bright border, the same treatment `ViewportHoverHighlight::SketchFace` gives it.
+            // It used to light only its boundary loop, which read as "these edges" rather than
+            // "this surface" — the difference mattered once the face-picking tools' hover
+            // started coming from their pickers rather than a hand-written arm per tool.
+            SceneElement::SketchFace(face) => match face {
+                FaceId::ConstructionPlane(index) => {
+                    if let Some(plane) = doc.construction_planes.get(index) {
+                        self.push_construction_plane_hover_fill(
+                            plane,
+                            index,
+                            color,
+                            FACE_HOVER_FILL_MULTIPLIER,
+                            cam,
+                        );
+                    }
+                }
+                _ => {
+                    self.push_sketch_face_hover(
+                        doc,
+                        face.clone(),
+                        color,
+                        FACE_HOVER_FILL_MULTIPLIER,
+                        cam,
+                    );
+                    self.push_sketch_face_hover_border(
+                        doc,
+                        face,
+                        color,
+                        2.0,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
+            },
             SceneElement::Circle(index) => {
                 self.push_pick_target_highlight(
                     doc,

@@ -3614,12 +3614,20 @@ The model in one place:
   returns nothing — it collects **everything under the cursor**
   (`construction::collect_pick_candidates`, the same crowd the Exploder fans), keeps what the
   **focused picker** can make of each (`expand_pick`), and lights the best by that picker's own
-  ranking (#958/#959). So a tool with no hand-written arm has hover feedback instead of none,
+  ranking (#958/#959) — the same `pick_for_focused_picker` the click uses, so what lights up is
+  what lands. So a tool with no hand-written arm has hover feedback instead of none,
   and it hovers what its picker *wants* rather than whatever happens to outrank it globally — a
   datum plane no longer wins over the body a Joint takes. That path is also what gives a tool's
   **secondary** pickers hover of their own: the body-set arm and Repeat's axis arm are gone, so
   Slice's Cutters and Combine's B side hover what they take rather than what their tools' body
-  sets take. The remaining arms are the cases still written by hand.
+  sets take, and it is why the six tools that pick a **face to sketch on** — Sketch, Text,
+  Rectangle, Line, Circle, Offset — share one picker (a plane or an analytic face, single-pick)
+  instead of four arms: they also share its Exploder fan, which is how you reach a datum plane
+  buried behind a body. The arms that remain are the picks the model can't express, and
+  `resolve_viewport_hover_highlight` lists them: a closed profile computed from the click, a
+  derived point, a picker with its own candidate set (Move's end point B), a pre-empt the
+  priority can't state (Select hovers a whole body while its fan offers that body's parts), and
+  the plane tool's second priority order.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it

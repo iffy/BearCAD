@@ -1456,7 +1456,19 @@ fn selection_picker_for(
         // Sketch / Text outside a sketch: pick a single face plane to open (#497). A body's own
         // cap or side wall is sketchable too (#465), and that is the *analytic* face — the
         // plane the sketch sits on, not the triangles it renders as (#957).
-        Tool::Sketch | Tool::Text if !in_sketch => {
+        //
+        // The draw tools join them (#958): outside a sketch, a Rectangle/Line/Circle/Offset
+        // click picks the face to sketch on before it draws anything, which is the same pick.
+        // Saying so gives all six the same hover and the same Exploder fan — reaching a datum
+        // plane buried behind a body is exactly what the fan is for.
+        Tool::Sketch
+        | Tool::Text
+        | Tool::Rectangle
+        | Tool::Line
+        | Tool::Circle
+        | Tool::Offset
+            if !in_sketch =>
+        {
             let mut p = ElementPicker::new(
                 ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
                 PickLimit::Finite(1),
@@ -1742,9 +1754,12 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
     // is what lets hover, the handoff, the Exploder's fan and `bearcad.pickers()` see it (#958);
     // it draws where it always has, at the top of the pane. Suppressed while a draw
     // construction owns the pane, or in the drawing workbench.
-    let drawing = input.draw_rect_construction.is_some()
-        || input.draw_line_construction.is_some()
-        || input.draw_circle_construction.is_some();
+    // A draw construction owns the pane while its tool is drawing *in a sketch*. Outside one,
+    // those tools are picking the face to sketch on, and that pick wants a picker (#958).
+    let drawing = input.open_sketch.is_some()
+        && (input.draw_rect_construction.is_some()
+            || input.draw_line_construction.is_some()
+            || input.draw_circle_construction.is_some());
     if !drawing && !input.in_drawing_workbench {
         if let Some(picker) =
             selection_picker_for(input.doc, input.tool, input.open_sketch, input.selection)
@@ -2577,13 +2592,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let drawing_align = input.drawing_align_active.then(|| input.drawing_align_base.clone());
     // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
     // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
-    let tool_pickers = tool_picker_views(input);
-    // The unified selection element picker (#213), mirroring the live selection for the tools
-    // that operate on it — registered with the rest (#958) and drawn at the top of the pane.
-    let selection_picker = tool_pickers
-        .iter()
-        .find(|v| v.target == PickerTarget::Selection)
-        .map(|v| v.picker.clone());
+
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
     let sweep = input.sweep.clone();
@@ -2623,6 +2632,15 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sweep_edit_start = input.sweep_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
+    // Built before the draw tools' early returns below: outside a sketch their first click
+    // picks the face to sketch on, which is a pick like any other and shows a picker (#958).
+    let tool_pickers = tool_picker_views(input);
+    // The unified selection element picker (#213), mirroring the live selection for the tools
+    // that operate on it — registered with the rest (#958) and drawn at the top of the pane.
+    let selection_picker = tool_pickers
+        .iter()
+        .find(|v| v.target == PickerTarget::Selection)
+        .map(|v| v.picker.clone());
 
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
@@ -2644,11 +2662,11 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude: extrude.clone(),
             units,
             material: material.clone(),
-            selection_picker: None,
+            selection_picker: selection_picker.clone(),
             dimension_derive: None,
             dimension_edit: None,
             treatment: None,
-            tool_pickers: Vec::new(),
+            tool_pickers: tool_pickers.clone(),
             calibrate_image,
             revolve: revolve.clone(),
             sweep: sweep.clone(),
@@ -2705,11 +2723,11 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude: extrude.clone(),
             units,
             material: material.clone(),
-            selection_picker: None,
+            selection_picker: selection_picker.clone(),
             dimension_derive: None,
             dimension_edit: None,
             treatment: None,
-            tool_pickers: Vec::new(),
+            tool_pickers: tool_pickers.clone(),
             calibrate_image,
             revolve: revolve.clone(),
             sweep: sweep.clone(),
@@ -2768,11 +2786,11 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude: extrude.clone(),
             units,
             material: material.clone(),
-            selection_picker: None,
+            selection_picker: selection_picker.clone(),
             dimension_derive: None,
             dimension_edit: None,
             treatment: None,
-            tool_pickers: Vec::new(),
+            tool_pickers: tool_pickers.clone(),
             calibrate_image,
             revolve: revolve.clone(),
             sweep: sweep.clone(),
@@ -8568,8 +8586,16 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude: None,
-                selection_picker: None,
-            tool_pickers: Vec::new(),
+                // A draw tool outside a sketch picks the face to sketch on, so it has a
+                // picker like every other tool (#958).
+                selection_picker: Some(ElementPicker::select_everything()),
+            tool_pickers: vec![ToolPickerView {
+                heading: "Selection",
+                picker: ElementPicker::select_everything(),
+                target: PickerTarget::Selection,
+                separator_above: true,
+                render: PickerRender::Inline,
+            }],
                 calibrate_image: None,
                 revolve: None,
             sweep: None,
@@ -9003,8 +9029,24 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude: None,
-                selection_picker: None,
-            tool_pickers: Vec::new(),
+                // A draw tool outside a sketch picks the face to sketch on, so it has a
+                // picker like every other tool (#958).
+                selection_picker: Some({
+                    let mut p = ElementPicker::select_everything();
+                    p.set_picked(&doc, [SceneElement::Line(0)]);
+                    p
+                }),
+            tool_pickers: vec![ToolPickerView {
+                heading: "Selection",
+                picker: {
+                    let mut p = ElementPicker::select_everything();
+                    p.set_picked(&doc, [SceneElement::Line(0)]);
+                    p
+                },
+                target: PickerTarget::Selection,
+                separator_above: true,
+                render: PickerRender::Inline,
+            }],
                 calibrate_image: None,
                 revolve: None,
             sweep: None,
