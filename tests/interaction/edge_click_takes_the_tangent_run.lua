@@ -79,5 +79,24 @@ bearcad.ui.wait(10)
 sel, n = selected_lines()
 assert(sel[3] and n == 1, "the line past the corner is a run of one, got " .. n .. " line(s)")
 
+-- Shift adds, and composes with Control: Shift+Ctrl adds the one edge under the cursor to
+-- what is already selected, rather than its whole run.
+bearcad.ui.click_ground(20, 0, { shift = true, ctrl = true })
+bearcad.ui.wait(10)
+sel, n = selected_lines()
+assert(sel[3] and sel[0] and n == 2,
+  "Shift+Ctrl+click should add just the one edge, got " .. n .. " line(s)")
+
+-- Shift alone adds the whole run to what is already selected.
+bearcad.clear_selection()
+bearcad.ui.wait(5)
+bearcad.ui.click_ground(110, 50)
+bearcad.ui.wait(10)
+bearcad.ui.click_ground(20, 0, { shift = true })
+bearcad.ui.wait(10)
+sel, n = selected_lines()
+assert(sel[3] and sel[0] and sel[1] and sel[2] and n == 4,
+  "Shift+click should add the whole run to the selection, got " .. n .. " line(s)")
+
 print("ok: an edge click takes its whole tangent run, and Control takes just the edge")
 bearcad.quit()

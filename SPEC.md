@@ -2514,13 +2514,19 @@ modeled on SolveSpace (https://solvespace.com).
   all-selected takes the whole run out, anything short of that completes it, so a partial
   selection converges on selected rather than toggling piecewise.
   Holding **Control** (`AppState::pick_single_edge`, mirrored from the frame's modifiers next to
-  `tool_pickers`) picks only the edge under the cursor. On platforms where egui's `command` *is*
-  Ctrl — everywhere but macOS — that click is additive as well, so it adds the single edge
-  rather than replacing with it; on macOS ⌘ is the additive modifier and Ctrl is free.
+  `tool_pickers`) picks only the edge under the cursor — on **every** platform, which is what
+  moving the additive modifier to Shift alone bought (see below). Shift still composes with it:
+  a Shift+Ctrl+click adds the one edge to the selection rather than its run.
   The hover says what the click does: the run's other members ride the same
   `extra_pick_highlights` channel a hovered exploder group loupe uses, which draws each line's
   real curve — rather than the multi-take `Curve` the picker-driven hover fallback reduces a
   set to, which would show a bezier as its chord.
+- **Shift alone is the additive click (#984):** `selection::additive_click_modifiers` is
+  `modifiers.shift`, on every platform. ⌘/Ctrl used to add to the selection as well, and that
+  cost more than it bought: egui's `command` is Ctrl everywhere but macOS, so on Linux and
+  Windows Ctrl was already spoken for and could not also mean "the single edge, not its run".
+  One modifier, one meaning, the same keys everywhere — which is what lets Ctrl be the
+  single-edge pick on every platform rather than only on the Mac.
 - **Whole-body selection with the Select tool (#902):** outside sketch mode, clicking a body's
   flat **face** selects the **whole body** — bodies outrank faces — while an **edge** or a
   **corner** still outranks the body it belongs to. Hover follows the click: a face under the

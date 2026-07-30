@@ -4,9 +4,13 @@ use crate::element_picker::ElementPicker;
 use crate::hierarchy::SceneElement;
 use eframe::egui;
 
-/// Shift+click or ⌘/Ctrl+click adds to the current selection instead of replacing it.
+/// **Shift**+click adds to the current selection instead of replacing it — on every platform
+/// (#984). ⌘/Ctrl used to do it too, which cost more than it bought: egui's `command` is Ctrl
+/// everywhere but macOS, so Ctrl was spoken for on Linux and Windows and couldn't mean
+/// "just the edge under the cursor, not its tangent run" there. One modifier, one meaning,
+/// the same keys on every platform.
 pub fn additive_click_modifiers(modifiers: &egui::Modifiers) -> bool {
-    modifiers.command || modifiers.shift
+    modifiers.shift
 }
 
 /// The scene selection — **the Select tool's element picker** (#966).
@@ -228,10 +232,30 @@ mod tests {
         assert_eq!(selection_single(&sel), Some(SceneElement::Line(1)));
     }
 
+    /// #984: Shift is the additive modifier on every platform, and ⌘/Ctrl is not — which is
+    /// what leaves Ctrl free everywhere to mean "just the edge under the cursor". egui's
+    /// `command` is Ctrl on Linux/Windows and ⌘ on macOS, so both spellings must stand down.
     #[test]
-    fn additive_click_modifiers_command() {
+    fn additive_click_modifiers_ignores_command_and_ctrl() {
+        for modifiers in [
+            egui::Modifiers { command: true, ..Default::default() },
+            egui::Modifiers { ctrl: true, ..Default::default() },
+            egui::Modifiers { mac_cmd: true, command: true, ..Default::default() },
+        ] {
+            assert!(
+                !additive_click_modifiers(&modifiers),
+                "{modifiers:?} must not add to the selection"
+            );
+        }
+    }
+
+    /// Shift still wins when it is held alongside Control — a Shift+Ctrl+click adds the one
+    /// edge under the cursor rather than its whole run.
+    #[test]
+    fn additive_click_modifiers_shift_with_ctrl() {
         let modifiers = egui::Modifiers {
-            command: true,
+            shift: true,
+            ctrl: true,
             ..Default::default()
         };
         assert!(additive_click_modifiers(&modifiers));

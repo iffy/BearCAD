@@ -52,7 +52,7 @@ A body extruded off another body's face is made of the same material as that bod
 
 Most tools act on the selection: select two lines and Constraint's Parallel lights up;
 select a line and press **D** to dimension it; select edges and press **F** to fillet.
-Shift+click (or ⌘/Ctrl+click) adds to a selection.
+**Shift+click** adds to a selection.
 
 The **Elements pane** mirrors the selection and offers three views — list, tree, and a
 dependency graph.

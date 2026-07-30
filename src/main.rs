@@ -10386,7 +10386,7 @@ impl App {
         }
 
         // Click a treatable analytic edge (vertical or side/cap) to begin; with a treatment
-        // already in progress, shift/⌘+click toggles the edge in the set (#166) and a plain
+        // already in progress, Shift+click toggles the edge in the set (#166) and a plain
         // click on another edge restarts with just that edge.
         if primary_pressed {
             if let Some(pp) = pointer_screen {
@@ -25695,9 +25695,9 @@ impl App {
                 if self.state.editing_committed_dim.is_some() {
                     "Edit dimension • Enter to commit • Esc to cancel"
                 } else if self.state.sketch_session.is_some() {
-                    "Sketch mode — drag vertices • Shift+click or ⌘/Ctrl+click multi-select • double-click a dimension to edit • Esc: exit sketch"
+                    "Sketch mode — drag vertices • Shift+click multi-select • Ctrl+click one edge • double-click a dimension to edit • Esc: exit sketch"
                 } else {
-                    "Click to select • Shift+click or ⌘/Ctrl+click multi-select • Right-drag: orbit  •  Wheel: zoom  •  s: sketch"
+                    "Click to select • Shift+click multi-select • Ctrl+click one edge • Right-drag: orbit  •  Wheel: zoom  •  s: sketch"
                 }
             }
             Tool::Sketch => {
@@ -25841,7 +25841,7 @@ impl App {
                 if self.state.sketch_session.is_none() {
                     "c: constraint  •  Open a sketch to add geometric constraints"
                 } else {
-                    "c: constraint  •  Shift+click or ⌘/Ctrl+click multi-select • 1–7 apply constraint • context pane shows options"
+                    "c: constraint  •  Shift+click multi-select • 1–7 apply constraint • context pane shows options"
                 }
             }
             Tool::Offset => {

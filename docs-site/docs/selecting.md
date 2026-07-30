@@ -37,8 +37,8 @@ Click in the 3D viewport, or on a row in the Elements pane — either its name o
 Both feed the armed picker.
 
 Hovering shows what a click would take — everything the armed picker accepts lights up, and
-nothing it doesn't. Clicking a picked thing again removes it. Shift+click (or ⌘/Ctrl+click) adds
-to a plain selection.
+nothing it doesn't. Clicking a picked thing again removes it. **Shift+click** adds to a plain
+selection.
 
 Where a picker wants **edges** and you click a **face**, you get all of that face's edges — so
 chamfering the whole top of a box is one click, not four. The face lights up edge by edge on
