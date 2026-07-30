@@ -65,10 +65,10 @@ pub struct ContextInput<'a> {
     /// Selection-picker rows for the active tool (#157/#167): `Some` whenever the tool
     /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
     /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
-    pub edge_treatment_rows: Option<Vec<String>>,
+    pub edge_treatment_edges: Option<Vec<(usize, crate::model::ExtrusionEdgeRef)>>,
     /// Selection-picker rows for the Loft tool (#loft): one row per picked cross section,
     /// `Some` (possibly empty) whenever the Loft tool is active outside a sketch.
-    pub loft_rows: Option<Vec<String>>,
+    pub loft_sections: Option<Vec<crate::model::LoftSection>>,
     /// Image scale calibration (#171): `Some` when a reference segment is ready — either
     /// both guided calibration points are placed (#163), or the selection is exactly one
     /// tracing image plus one line on the image's host plane.
@@ -848,39 +848,6 @@ pub struct CalibrateImageControl {
     pub b: (f32, f32),
 }
 
-/// One selection-picker row (#167) for a treated edge: the owning extrusion's display name
-/// plus the analytic edge's position in its profile.
-pub fn edge_treatment_row_label(
-    doc: &Document,
-    extrusion: usize,
-    edge: crate::model::ExtrusionEdgeRef,
-) -> String {
-    let owner = element_name(doc, SceneElement::Extrusion(extrusion))
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| format!("Extrusion {extrusion}"));
-    let which = match edge {
-        crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => format!("vertical {edge}"),
-        crate::model::ExtrusionEdgeRef::Cap { edge, top: true, .. } => format!("top {edge}"),
-        crate::model::ExtrusionEdgeRef::Cap { edge, top: false, .. } => format!("base {edge}"),
-    };
-    format!("{owner} — {which}")
-}
-
-/// One selection-picker row for a loft cross section: the owning sketch's display name
-/// plus what kind of profile it is.
-pub fn loft_section_row_label(doc: &Document, section: &crate::model::LoftSection) -> String {
-    let owner = element_name(doc, SceneElement::Sketch(section.sketch))
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| format!("Sketch {}", section.sketch));
-    let which = match &section.face {
-        crate::model::ExtrudeFace::Circle(ci) => format!("circle {ci}"),
-        crate::model::ExtrudeFace::Polygon(lines) => format!("loop ({} lines)", lines.len()),
-        crate::model::ExtrudeFace::Boolean { .. } => "combined region".to_string(),
-        crate::model::ExtrudeFace::TextGlyph { .. } => "text glyph".to_string(),
-    };
-    format!("{owner} — {which}")
-}
-
 /// Tools that snap while drawing or moving sketch geometry.
 pub fn tool_uses_snapping(tool: Tool) -> bool {
     matches!(
@@ -956,9 +923,6 @@ pub struct ContextPaneContent {
     pub units: Option<UnitsControl>,
     /// Material picker for the selected bodies (#834).
     pub material: Option<MaterialControl>,
-    /// Generalized selection picker (#157/#167): the elements the active tool operates on.
-    /// Legacy row-list form; being replaced tool-by-tool with [`ContextPaneContent::selection_picker`].
-    pub edge_picker: Option<EdgePickerControl>,
     /// The unified element-picker control (#213). Populated for tools already migrated to
     /// [`ElementPicker`] — currently the Select tool's "select everything" picker, which is
     /// always shown (placeholder when empty) and never loses focus.
@@ -1045,18 +1009,6 @@ pub struct ContextPaneContent {
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
     pub calibrate_pending: Option<usize>,
-}
-
-/// The selection-picker input (#157/#167): the picked elements the active tool will operate
-/// on, one label per row. Rendered with per-row remove buttons and a clear-all; an empty
-/// picker shows a pick hint instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EdgePickerControl {
-    /// Set-count heading, e.g. "Edges" or "Sections".
-    pub heading: &'static str,
-    /// Icon shown for every row/summary chip (these sets are single-kind).
-    pub icon: crate::icons::IconId,
-    pub rows: Vec<String>,
 }
 
 /// What the units picker in the context pane should show and let the user change.
@@ -1251,6 +1203,10 @@ pub enum PickerTarget {
     MoveTargets,
     /// The Extrude tool's profile faces (`CreatingExtrusion::faces`, #268/#955).
     ExtrudeProfile,
+    /// The 3D Chamfer/Fillet tool's analytic edges (`CreatingEdgeTreatment::edges`, #955).
+    TreatmentEdges,
+    /// The Loft tool's cross sections (`CreatingLoft::sections`, #955).
+    LoftSections,
     /// The Sweep tool's profile faces (`CreatingSweep::faces`, #955).
     SweepProfile,
     /// The Sweep tool's path lines (`CreatingSweep::path`, #955), chained tip-to-tail at commit.
@@ -1746,21 +1702,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let material = (input.tool == Tool::Select)
         .then(|| material_control_from_selection(input.doc, input.selection))
         .flatten();
-    let edge_picker = input
-        .edge_treatment_rows
-        .clone()
-        .map(|rows| EdgePickerControl {
-            heading: "Edges",
-            icon: crate::icons::IconId::Line,
-            rows,
-        })
-        .or_else(|| {
-            input.loft_rows.clone().map(|rows| EdgePickerControl {
-                heading: "Sections",
-                icon: crate::icons::IconId::Circle,
-                rows,
-            })
-        });
     // The unified selection element picker (#213), mirroring the live selection for the tools
     // that operate on it. Suppressed while a draw construction owns the pane.
     let drawing = input.draw_rect_construction.is_some()
@@ -1854,6 +1795,43 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             cut.separator_above = false;
             tool_pickers.push(cut);
         }
+    }
+    if let Some(edges) = input.edge_treatment_edges.as_ref() {
+        // The 3D Chamfer/Fillet edge set (#166/#955): the analytic edges one amount applies to.
+        let mut picker =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Edge), PickLimit::Infinite);
+        picker.set_focused(true);
+        picker.set_picked(
+            input.doc,
+            edges.iter().map(|&(extrusion, edge)| {
+                SceneElement::ExtrusionEdge { extrusion, edge }
+            }),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Edges",
+            picker,
+            target: PickerTarget::TreatmentEdges,
+            separator_above: true,
+        });
+    }
+    if let Some(sections) = input.loft_sections.as_ref() {
+        // A loft section is a closed profile, so it needs no element of its own (#952): the
+        // analytic face already names it.
+        let mut picker =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+        picker.set_focused(true);
+        picker.set_picked(
+            input.doc,
+            sections
+                .iter()
+                .map(|s| crate::extrude::extrude_face_scene_element(&s.face)),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Sections",
+            picker,
+            target: PickerTarget::LoftSections,
+            separator_above: true,
+        });
     }
     if let Some(faces) = input.extrude_faces.as_ref() {
         // The Extrude tool's profile faces (#268/#955). Always shown while the tool is active,
@@ -2106,7 +2084,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude: extrude.clone(),
             units,
             material: material.clone(),
-            edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
             dimension_edit: None,
@@ -2168,7 +2145,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude: extrude.clone(),
             units,
             material: material.clone(),
-            edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
             dimension_edit: None,
@@ -2232,7 +2208,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude: extrude.clone(),
             units,
             material: material.clone(),
-            edge_picker: edge_picker.clone(),
             selection_picker: None,
             dimension_derive: None,
             dimension_edit: None,
@@ -2303,7 +2278,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         extrude: extrude.clone(),
         units,
         material,
-        edge_picker,
         selection_picker,
         dimension_derive,
         dimension_edit: input.dimension_edit.clone(),
@@ -3535,7 +3509,6 @@ pub fn show_pane(
     on_extrude_edit: &mut impl FnMut(ExtrudeEdit),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_material_edit: &mut impl FnMut(MaterialEdit),
-    on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_selection_edit: &mut impl FnMut(SelectionEdit),
     on_tool_picker_edit: &mut impl FnMut(PickerTarget, ToolPickerAction),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
@@ -4066,33 +4039,6 @@ pub fn show_pane(
                     crate::element_picker::PickerEvent::Clear => {
                         on_tool_picker_edit(view.target, ToolPickerAction::Clear)
                     }
-                }
-            }
-        });
-        });
-    }
-
-    // Legacy row-list element picker (#loft Sections, Chamfer/Fillet Edges): render right after
-    // the tool-owned pickers so the picked set is the first thing in the tool's section — e.g.
-    // the Loft tool's "Sections" picker sits above its Output/Do controls (#609).
-    if let Some(picker) = &content.edge_picker {
-        any_control = true;
-        ui.separator();
-        labeled_row_top(ui, picker.heading, |ui| {
-        ui.add_enabled_ui(controls_enabled, |ui| {
-            // The active tool's picker is focused (its viewport clicks feed this set).
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                picker.heading,
-                true,
-                false,
-                picker.icon,
-                &picker.rows,
-            ) {
-                match event {
-                    crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(i) => on_edge_picker_edit(Some(i)),
-                    crate::element_picker::PickerEvent::Clear => on_edge_picker_edit(None),
                 }
             }
         });
@@ -6843,8 +6789,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,
@@ -7120,93 +7066,42 @@ mod tests {
         assert!(body.merge_body.is_none(), "Add/Cut stay disabled with no host body");
     }
 
-    /// #157/#167: the selection picker surfaces whenever the input carries rows (the
-    /// Chamfer/Fillet edge set), including an empty set (which renders the pick hint).
+    /// #166/#955: the Chamfer/Fillet edge set is a real element picker, present (empty or
+    /// not) whenever the tool is active.
     #[test]
-    fn edge_picker_control_follows_input_rows() {
+    fn the_treatment_edge_set_is_an_element_picker() {
+        use crate::hierarchy::SceneElement;
         let doc = Document::default();
         let selection = SceneSelection::default();
+        let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         let base = ContextInput {
-            doc: &doc,
-            selection: &selection,
-            tool: Tool::Fillet,
-            in_drawing_workbench: false,
-            draw_rect_construction: None,
-            rect_anchor: None,
-            circle_anchor: None,
-            draw_line_construction: None,
-            draw_circle_construction: None,
-            draw_line_curve_mode: None,
-            draw_line_tangent_constraint: None,
-            in_sketch: false,
-            open_sketch: None,
-            sketch_axis_screen_dirs: None,
-            snapping_enabled: true,
-            extrude_merge_candidate: None,
-            extrude_disjoint_profiles: false,
-            extrude_body_mode: None,
-            extrude_symmetric: None,
-            extrude_faces: None,
-            extrude: None,
-            edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
-            loft_rows: None,
-            calibrate_image: None,
-            revolve: None,
-            sweep: None,
-            plane_tool: None,
-            loft_body: None,
-            boolean_op: None,
-            boolean_edit_start: None,
-            move_op: None,
-            move_edit_start: None,
-            shape: None,
-            joint: None,
-            joint_edit_start: None,
-            mirror_op: None,
-            mirror_edit_start: None,
-            repeat_op: None,
-            sketch_repeat: None,
-            sketch_offset: None,
-            sketch_offset_edit_start: None,
-            sketch_mirror: None,
-            sketch_mirror_edit_start: None,
-            sketch_slice: None,
-            sketch_text: None,
-            drawing_view: None,
-            drawing_annotation: None,
-            drawing_selection: Vec::new(),
-            drawing_align_active: false,
-            drawing_align_base: None,
-            drawing_add_active: false,
-            repeat_edit_start: None,
-            slice_op: None,
-            slice_edit_start: None,
-            revolve_edit_start: None,
-            sweep_edit_start: None,
-            calibrate_start: None,
-            calibrate_pending: None,
-            dimension_derive: None,
-            dimension_edit: None,
-            treatment: None,
+            tool: Tool::Chamfer,
+            edge_treatment_edges: Some(vec![(0, edge)]),
+            ..input(&doc, &selection)
         };
-        let content = context_pane_content(&base);
-        let edges_picker = |rows: Vec<String>| EdgePickerControl {
-            heading: "Edges",
-            icon: crate::icons::IconId::Line,
-            rows,
+        let picker = |input: &ContextInput<'_>| {
+            context_pane_content(input)
+                .tool_pickers
+                .into_iter()
+                .find(|v| v.target == PickerTarget::TreatmentEdges)
         };
+        let view = picker(&base).expect("the edge picker");
         assert_eq!(
-            content.edge_picker,
-            Some(edges_picker(vec!["Block — vertical 0".to_string()]))
+            view.picker.picked(),
+            &[SceneElement::ExtrusionEdge { extrusion: 0, edge }]
         );
+        assert!(view.picker.accepts(
+            &doc,
+            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+        ));
+        assert!(!view.picker.accepts(&doc, &SceneElement::Body(0)));
 
-        let empty = ContextInput { edge_treatment_rows: Some(Vec::new()), ..base };
-        assert_eq!(
-            context_pane_content(&empty).edge_picker,
-            Some(edges_picker(Vec::new()))
-        );
-        let off = ContextInput { edge_treatment_rows: None, ..empty };
-        assert_eq!(context_pane_content(&off).edge_picker, None);
+        // An empty set still shows the picker — that's how you see what to pick.
+        let empty = ContextInput { edge_treatment_edges: Some(Vec::new()), ..base };
+        assert!(picker(&empty).expect("shown while empty").picker.is_empty());
+        // With the tool inactive there is no picker at all.
+        let off = ContextInput { edge_treatment_edges: None, ..empty };
+        assert!(picker(&off).is_none());
     }
 
     /// #202: the Select tool presents the current selection as an element picker, ordered
@@ -7240,8 +7135,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,
@@ -7299,7 +7194,6 @@ mod tests {
             .selection_picker
             .expect("always-present select picker");
         assert!(empty_picker.is_empty());
-        assert_eq!(context_pane_content(&empty).edge_picker, None);
     }
 
     #[test]
@@ -7762,20 +7656,27 @@ mod tests {
 
     #[test]
     fn edge_treatment_row_labels_name_the_extrusion_and_edge() {
+        // The wording moved into `scene_element_label` with the picker (#955), so the row and
+        // any other place that names the edge read the same.
+        use crate::hierarchy::SceneElement;
         let doc = Document::default();
         assert_eq!(
-            edge_treatment_row_label(
+            crate::names::scene_element_label(
                 &doc,
-                3,
-                crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }
+                &SceneElement::ExtrusionEdge {
+                    extrusion: 3,
+                    edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 },
+                }
             ),
             "Extrusion 3 — vertical 2"
         );
         assert_eq!(
-            edge_treatment_row_label(
+            crate::names::scene_element_label(
                 &doc,
-                0,
-                crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true }
+                &SceneElement::ExtrusionEdge {
+                    extrusion: 0,
+                    edge: crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true },
+                }
             ),
             "Extrusion 0 — top 1"
         );
@@ -7803,7 +7704,6 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude: None,
-                edge_picker: None,
                 selection_picker: Some(ElementPicker::select_everything()),
                 tool_pickers: Vec::new(),
                 calibrate_image: None,
@@ -7880,8 +7780,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,
@@ -7943,7 +7843,6 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude: None,
-                edge_picker: None,
                 selection_picker: None,
             tool_pickers: Vec::new(),
                 calibrate_image: None,
@@ -8020,8 +7919,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,
@@ -8097,7 +7996,6 @@ mod tests {
                 extrude_body: None,
                 extrude: None,
                 // #213: the Select tool surfaces the selection through the unified element picker.
-                edge_picker: None,
                 selection_picker: Some({
                     let mut p = ElementPicker::select_everything();
                     p.set_picked(&doc, [SceneElement::Line(0)]);
@@ -8226,8 +8124,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,
@@ -8302,8 +8200,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,
@@ -8367,7 +8265,6 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude: None,
-                edge_picker: None,
                 selection_picker: None,
             tool_pickers: Vec::new(),
                 calibrate_image: None,
@@ -8435,8 +8332,8 @@ mod tests {
             extrude_symmetric: None,
             extrude_faces: None,
             extrude: None,
-            edge_treatment_rows: None,
-            loft_rows: None,
+            edge_treatment_edges: None,
+            loft_sections: None,
             calibrate_image: None,
             revolve: None,
             sweep: None,

@@ -701,7 +701,25 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         }
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
         SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
-        SceneElement::ExtrusionEdge { extrusion, .. } => format!("Edge of Extrusion {extrusion}"),
+        // An analytic edge reads as its owner plus where it sits in the profile (#955) — the
+        // wording the Chamfer/Fillet picker's own row builder used before it became a picker.
+        SceneElement::ExtrusionEdge { extrusion, edge } => {
+            let owner = element_name(doc, SceneElement::Extrusion(*extrusion))
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| format!("Extrusion {extrusion}"));
+            let which = match edge {
+                crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => {
+                    format!("vertical {edge}")
+                }
+                crate::model::ExtrusionEdgeRef::Cap { edge, top: true, .. } => {
+                    format!("top {edge}")
+                }
+                crate::model::ExtrusionEdgeRef::Cap { edge, top: false, .. } => {
+                    format!("base {edge}")
+                }
+            };
+            format!("{owner} — {which}")
+        }
         // A snap point reads by which feature of the body it sits on (#955), the wording the
         // Move tool's own picker rows used before they became real pickers.
         SceneElement::MovePoint(point) => match point.body() {

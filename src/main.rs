@@ -11663,35 +11663,23 @@ impl eframe::App for App {
                 }),
                 // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
                 // edge set (empty rows still show the picker with its pick hint).
-                edge_treatment_rows: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
+                edge_treatment_edges: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
                     && self.state.sketch_session.is_none())
                 .then(|| {
                     self.state
                         .creating_edge_treatment
                         .as_ref()
-                        .map(|cet| {
-                            cet.edges
-                                .iter()
-                                .map(|(ei, edge)| {
-                                    context::edge_treatment_row_label(&self.state.doc, *ei, *edge)
-                                })
-                                .collect()
-                        })
+                        .map(|cet| cet.edges.clone())
                         .unwrap_or_default()
                 }),
                 // Loft tool: one picker row per picked cross section.
-                loft_rows: (self.state.tool == Tool::Loft
+                loft_sections: (self.state.tool == Tool::Loft
                     && self.state.sketch_session.is_none())
                 .then(|| {
                     self.state
                         .creating_loft
                         .as_ref()
-                        .map(|cl| {
-                            cl.sections
-                                .iter()
-                                .map(|sec| context::loft_section_row_label(&self.state.doc, sec))
-                                .collect()
-                        })
+                        .map(|cl| cl.sections.clone())
                         .unwrap_or_default()
                 }),
                 // #171: "Calibrate scale" shows when exactly one tracing image and one
@@ -12443,7 +12431,6 @@ impl eframe::App for App {
             let mut extrude_edit: Option<context::ExtrudeEdit> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut material_edit: Option<context::MaterialEdit> = None;
-            let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut selection_edit: Option<context::SelectionEdit> = None;
             let mut tool_picker_edit: Option<(context::PickerTarget, context::ToolPickerAction)> =
                 None;
@@ -12516,7 +12503,6 @@ impl eframe::App for App {
                         &mut |edit| extrude_edit = Some(edit),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| material_edit = Some(edit),
-                        &mut |edit| edge_picker_edit = Some(edit),
                         &mut |edit| selection_edit = Some(edit),
                         &mut |target, edit| tool_picker_edit = Some((target, edit)),
                         &mut |edit| revolve_edit = Some(edit),
@@ -13520,6 +13506,33 @@ impl eframe::App for App {
                             remove_or_clear(&mut cm.targets, edit);
                         }
                     }
+                    // The 3D Chamfer/Fillet edge set (#166/#955). Dropping the last edge
+                    // cancels the treatment outright — an in-progress one always has an edge.
+                    context::PickerTarget::TreatmentEdges => {
+                        if edit != context::ToolPickerAction::Focus {
+                            if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
+                                remove_or_clear(&mut cet.edges, edit);
+                                if cet.edges.is_empty() {
+                                    self.state.creating_edge_treatment = None;
+                                }
+                            }
+                        }
+                    }
+                    // The Loft tool's cross sections (#955); clearing them all drops the draft.
+                    context::PickerTarget::LoftSections => {
+                        if edit != context::ToolPickerAction::Focus {
+                            match edit {
+                                context::ToolPickerAction::Clear => {
+                                    self.state.creating_loft = None;
+                                }
+                                _ => {
+                                    if let Some(cl) = self.state.creating_loft.as_mut() {
+                                        remove_or_clear(&mut cl.sections, edit);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // The Extrude tool's profile faces (#268/#955). Removal goes through
                     // `ToggleExtrudeFace` rather than a raw `Vec` edit — the action also does
                     // the sketch bookkeeping and lands as one undo step.
@@ -13632,36 +13645,6 @@ impl eframe::App for App {
                                 remove_or_clear(&mut cb.b, edit);
                             }
                         }
-                    }
-                }
-            }
-            if let Some(edit) = edge_picker_edit {
-                // Remove one row (or clear the set) from the active tool's picked set
-                // (#167); dropping the last edge cancels the treatment entirely.
-                if self.state.tool == Tool::Loft {
-                    match edit {
-                        Some(index) => {
-                            if let Some(cl) = self.state.creating_loft.as_mut() {
-                                if index < cl.sections.len() {
-                                    cl.sections.remove(index);
-                                }
-                            }
-                        }
-                        None => self.state.creating_loft = None,
-                    }
-                } else {
-                    match edit {
-                        Some(index) => {
-                            if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
-                                if index < cet.edges.len() {
-                                    cet.edges.remove(index);
-                                }
-                                if cet.edges.is_empty() {
-                                    self.state.creating_edge_treatment = None;
-                                }
-                            }
-                        }
-                        None => self.state.creating_edge_treatment = None,
                     }
                 }
             }
