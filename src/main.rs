@@ -11550,861 +11550,867 @@ impl eframe::App for App {
             self.state.parameters_pane.hovered_name = None;
         }
 
-        if self.state.panes.is_visible(Pane::Context) {
-            // Dimension tool in 3D (#629): prefill the parameter-name box with the derived
-            // default (editable text, not a hint) and keep it refreshed on selection
-            // changes until the user types their own name.
-            if self.state.tool == Tool::Dimension && self.state.sketch_session.is_none() {
-                if let Some(source) = parameters::derived_source_from_selection(
-                    &self.state.doc,
-                    &self.state.scene_selection,
-                ) {
-                    let auto =
-                        parameters::default_derived_parameter_name(&self.state.doc, &source);
-                    if self.state.dimension_param_name.is_empty()
-                        || self.state.dimension_param_name == self.state.dimension_param_auto
-                    {
-                        self.state.dimension_param_name = auto.clone();
-                    }
-                    self.state.dimension_param_auto = auto;
+        // The active tool's controls and pickers are derived every frame, pane or no pane
+        // (#973): the viewport's picked-set highlight, the Selection Exploder, and the hover
+        // path all read them, and none of those should change with whether a pane is showing.
+        // Only the *rendering* below is gated on the pane's visibility.
+        // Dimension tool in 3D (#629): prefill the parameter-name box with the derived
+        // default (editable text, not a hint) and keep it refreshed on selection
+        // changes until the user types their own name.
+        if self.state.tool == Tool::Dimension && self.state.sketch_session.is_none() {
+            if let Some(source) = parameters::derived_source_from_selection(
+                &self.state.doc,
+                &self.state.scene_selection,
+            ) {
+                let auto =
+                    parameters::default_derived_parameter_name(&self.state.doc, &source);
+                if self.state.dimension_param_name.is_empty()
+                    || self.state.dimension_param_name == self.state.dimension_param_auto
+                {
+                    self.state.dimension_param_name = auto.clone();
                 }
+                self.state.dimension_param_auto = auto;
             }
-            let context_input = context::ContextInput {
-                doc: &self.state.doc,
-                selection: &self.state.scene_selection,
-                tool: self.state.tool,
-                in_drawing_workbench: self.state.editing_drawing.is_some(),
-                draw_rect_construction: self.state.rect_draw_construction_mode(),
-                rect_anchor: (self.state.tool == Tool::Rectangle)
-                    .then_some(self.state.rect_anchor),
-                circle_anchor: (self.state.tool == Tool::Circle)
-                    .then_some(self.state.circle_anchor),
-                draw_line_construction: self.state.line_draw_construction_mode(),
-                draw_circle_construction: self.state.circle_draw_construction_mode(),
-                draw_line_curve_mode: self.state.line_curve_mode(),
-                draw_line_tangent_constraint: self.state.line_tangent_constraint(),
-                in_sketch: self.state.sketch_session.is_some(),
-                open_sketch: self.state.sketch_session.map(|s| s.sketch),
-                // The local axes as they project on screen right now (#751): the
-                // axis-parallel constraint buttons draw their glyphs at these angles, in
-                // the axes' own colors, so "which way is X" matches what the user sees.
-                sketch_axis_screen_dirs: self.state.sketch_session.and_then(|session| {
-                    let frame = sketch_geometry_frame(&self.state.doc, session.sketch)?;
-                    let viewport = self.last_viewport?;
-                    let cam = &self.state.cam;
-                    let vp = cam.view_proj(viewport);
-                    let dir = |du: f32, dv: f32| -> Option<egui::Vec2> {
-                        let o = cam.project(local_to_world(&frame, 0.0, 0.0), viewport, &vp)?;
-                        let p = cam.project(local_to_world(&frame, du, dv), viewport, &vp)?;
-                        let d = p - o;
-                        (d.length() > 1e-3).then(|| d.normalized())
-                    };
-                    Some((dir(10.0, 0.0)?, dir(0.0, 10.0)?))
+        }
+        let content = {
+        let context_input = context::ContextInput {
+            doc: &self.state.doc,
+            selection: &self.state.scene_selection,
+            tool: self.state.tool,
+            in_drawing_workbench: self.state.editing_drawing.is_some(),
+            draw_rect_construction: self.state.rect_draw_construction_mode(),
+            rect_anchor: (self.state.tool == Tool::Rectangle)
+                .then_some(self.state.rect_anchor),
+            circle_anchor: (self.state.tool == Tool::Circle)
+                .then_some(self.state.circle_anchor),
+            draw_line_construction: self.state.line_draw_construction_mode(),
+            draw_circle_construction: self.state.circle_draw_construction_mode(),
+            draw_line_curve_mode: self.state.line_curve_mode(),
+            draw_line_tangent_constraint: self.state.line_tangent_constraint(),
+            in_sketch: self.state.sketch_session.is_some(),
+            open_sketch: self.state.sketch_session.map(|s| s.sketch),
+            // The local axes as they project on screen right now (#751): the
+            // axis-parallel constraint buttons draw their glyphs at these angles, in
+            // the axes' own colors, so "which way is X" matches what the user sees.
+            sketch_axis_screen_dirs: self.state.sketch_session.and_then(|session| {
+                let frame = sketch_geometry_frame(&self.state.doc, session.sketch)?;
+                let viewport = self.last_viewport?;
+                let cam = &self.state.cam;
+                let vp = cam.view_proj(viewport);
+                let dir = |du: f32, dv: f32| -> Option<egui::Vec2> {
+                    let o = cam.project(local_to_world(&frame, 0.0, 0.0), viewport, &vp)?;
+                    let p = cam.project(local_to_world(&frame, du, dv), viewport, &vp)?;
+                    let d = p - o;
+                    (d.length() > 1e-3).then(|| d.normalized())
+                };
+                Some((dir(10.0, 0.0)?, dir(0.0, 10.0)?))
+            }),
+            snapping_enabled: self.state.snapping_enabled,
+            extrude_merge_candidate: self
+                .state
+                .creating_extrusion
+                .as_ref()
+                .and_then(|ce| ce.merge_candidate),
+            // More than one disjoint profile means New body and Join differ (#837): one
+            // body each, or one body for the lot.
+            extrude_disjoint_profiles: self
+                .state
+                .creating_extrusion
+                .as_ref()
+                .is_some_and(|ce| {
+                    extrude::disjoint_face_groups(&self.state.doc, &ce.faces).len() > 1
                 }),
-                snapping_enabled: self.state.snapping_enabled,
-                extrude_merge_candidate: self
-                    .state
+            // "Extrude into" and "Symmetric" show for the whole Extrude tool, even before a face
+            // is picked (#587): default to New body / the sticky symmetric preference until an
+            // extrusion is in progress. (Add/Cut stay disabled until a host body is known.)
+            extrude_body_mode: (self.state.tool == Tool::Extrude).then(|| {
+                self.state
                     .creating_extrusion
                     .as_ref()
-                    .and_then(|ce| ce.merge_candidate),
-                // More than one disjoint profile means New body and Join differ (#837): one
-                // body each, or one body for the lot.
-                extrude_disjoint_profiles: self
-                    .state
+                    .map(|ce| ce.body_mode)
+                    .unwrap_or(actions::ExtrudeBodyMode::NewBody)
+            }),
+            extrude_symmetric: (self.state.tool == Tool::Extrude).then(|| {
+                self.state
                     .creating_extrusion
                     .as_ref()
-                    .is_some_and(|ce| {
-                        extrude::disjoint_face_groups(&self.state.doc, &ce.faces).len() > 1
-                    }),
-                // "Extrude into" and "Symmetric" show for the whole Extrude tool, even before a face
-                // is picked (#587): default to New body / the sticky symmetric preference until an
-                // extrusion is in progress. (Add/Cut stay disabled until a host body is known.)
-                extrude_body_mode: (self.state.tool == Tool::Extrude).then(|| {
-                    self.state
-                        .creating_extrusion
-                        .as_ref()
-                        .map(|ce| ce.body_mode)
-                        .unwrap_or(actions::ExtrudeBodyMode::NewBody)
-                }),
-                extrude_symmetric: (self.state.tool == Tool::Extrude).then(|| {
-                    self.state
-                        .creating_extrusion
-                        .as_ref()
-                        .map(|ce| ce.symmetric)
-                        .unwrap_or(self.state.pending_extrude_symmetric)
-                }),
-                // Extrude face element picker rows (#268): one per picked profile face.
-                extrude_faces: (self.state.tool == Tool::Extrude).then(|| {
-                    self.state
-                        .creating_extrusion
-                        .as_ref()
-                        .map(|ce| ce.faces.clone())
-                        .unwrap_or_default()
-                }),
-                // Extrude tool distance/target/commit controls (#584). Present for the whole tool so
-                // the primary button shows even before a face is picked (#601).
-                extrude: (self.state.tool == Tool::Extrude).then(|| {
-                    let ce = self.state.creating_extrusion.as_ref();
-                    let has_target = ce.is_some_and(|ce| ce.target.is_some());
-                    context::ExtrudeControl {
-                        // Null (empty) while an extrude-to target drives the depth (#584).
-                        distance: match ce {
-                            Some(ce) if !has_target => ce.text.clone(),
-                            _ => String::new(),
-                        },
-                        target: ce
-                            .and_then(|ce| ce.target.as_ref())
-                            .map(hierarchy::SceneElement::from_extrude_target),
-                        target_focused: self.extrude_target_pick,
-                        can_commit: ce.is_some_and(|ce| !ce.faces.is_empty()),
-                        has_extrusion: ce.is_some_and(|ce| !ce.faces.is_empty()),
+                    .map(|ce| ce.symmetric)
+                    .unwrap_or(self.state.pending_extrude_symmetric)
+            }),
+            // Extrude face element picker rows (#268): one per picked profile face.
+            extrude_faces: (self.state.tool == Tool::Extrude).then(|| {
+                self.state
+                    .creating_extrusion
+                    .as_ref()
+                    .map(|ce| ce.faces.clone())
+                    .unwrap_or_default()
+            }),
+            // Extrude tool distance/target/commit controls (#584). Present for the whole tool so
+            // the primary button shows even before a face is picked (#601).
+            extrude: (self.state.tool == Tool::Extrude).then(|| {
+                let ce = self.state.creating_extrusion.as_ref();
+                let has_target = ce.is_some_and(|ce| ce.target.is_some());
+                context::ExtrudeControl {
+                    // Null (empty) while an extrude-to target drives the depth (#584).
+                    distance: match ce {
+                        Some(ce) if !has_target => ce.text.clone(),
+                        _ => String::new(),
+                    },
+                    target: ce
+                        .and_then(|ce| ce.target.as_ref())
+                        .map(hierarchy::SceneElement::from_extrude_target),
+                    target_focused: self.extrude_target_pick,
+                    can_commit: ce.is_some_and(|ce| !ce.faces.is_empty()),
+                    has_extrusion: ce.is_some_and(|ce| !ce.faces.is_empty()),
+                }
+            }),
+            // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
+            // edge set (empty rows still show the picker with its pick hint).
+            edge_treatment_edges: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                self.state
+                    .creating_edge_treatment
+                    .as_ref()
+                    .map(|cet| cet.edges.clone())
+                    .unwrap_or_default()
+            }),
+            // Loft tool: one picker row per picked cross section.
+            loft_sections: (self.state.tool == Tool::Loft
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                self.state
+                    .creating_loft
+                    .as_ref()
+                    .map(|cl| cl.sections.clone())
+                    .unwrap_or_default()
+            }),
+            // #171: "Calibrate scale" shows when exactly one tracing image and one
+            // line (on the image's host plane) are selected — the line is the
+            // reference segment drawn over a known image feature.
+            calibrate_image: {
+                // Guided flow (#163): both reference points placed — the length field.
+                let guided = self.state.creating_calibration.as_ref().and_then(|cal| {
+                    (cal.points.len() == 2).then(|| context::CalibrateImageControl {
+                        image: cal.image,
+                        a: cal.points[0],
+                        b: cal.points[1],
+                    })
+                });
+                // Legacy selection flow (#171): exactly one image + one line on the
+                // image's host plane selected.
+                let mut image = None;
+                let mut line = None;
+                let mut extras = false;
+                for element in self.state.scene_selection.iter() {
+                    match element {
+                        SceneElement::Image(i) if image.is_none() => image = Some(i),
+                        SceneElement::Line(li) if line.is_none() => line = Some(li),
+                        _ => extras = true,
                     }
-                }),
-                // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
-                // edge set (empty rows still show the picker with its pick hint).
-                edge_treatment_edges: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    self.state
-                        .creating_edge_treatment
-                        .as_ref()
-                        .map(|cet| cet.edges.clone())
-                        .unwrap_or_default()
-                }),
-                // Loft tool: one picker row per picked cross section.
-                loft_sections: (self.state.tool == Tool::Loft
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    self.state
-                        .creating_loft
-                        .as_ref()
-                        .map(|cl| cl.sections.clone())
-                        .unwrap_or_default()
-                }),
-                // #171: "Calibrate scale" shows when exactly one tracing image and one
-                // line (on the image's host plane) are selected — the line is the
-                // reference segment drawn over a known image feature.
-                calibrate_image: {
-                    // Guided flow (#163): both reference points placed — the length field.
-                    let guided = self.state.creating_calibration.as_ref().and_then(|cal| {
-                        (cal.points.len() == 2).then(|| context::CalibrateImageControl {
-                            image: cal.image,
-                            a: cal.points[0],
-                            b: cal.points[1],
+                }
+                // A selected calibrated image re-opens its length for editing (#424):
+                // the stored marker span is the reference segment.
+                let recalibrate = self.single_selected_tracing_image().and_then(|i| {
+                    let img = self.state.doc.tracing_images.get(i)?;
+                    let cal = img.calibration.as_ref()?;
+                    let (ox, oy) = img.origin;
+                    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                    Some(context::CalibrateImageControl {
+                        image: i,
+                        a: (ox + cal.u0 * w, oy + cal.v0 * h),
+                        b: (ox + cal.u1 * w, oy + cal.v1 * h),
+                    })
+                });
+                guided.or(recalibrate).or(match (image, line, extras) {
+                    (Some(image), Some(li), false) => self
+                        .state
+                        .doc
+                        .tracing_images
+                        .get(image)
+                        .filter(|img| !img.deleted)
+                        .zip(self.state.doc.lines.get(li).filter(|l| !l.deleted))
+                        .filter(|(img, line)| {
+                            self.state.doc.sketch_face(line.sketch)
+                                == Some(model::FaceId::ConstructionPlane(img.plane))
                         })
-                    });
-                    // Legacy selection flow (#171): exactly one image + one line on the
-                    // image's host plane selected.
-                    let mut image = None;
-                    let mut line = None;
-                    let mut extras = false;
-                    for element in self.state.scene_selection.iter() {
-                        match element {
-                            SceneElement::Image(i) if image.is_none() => image = Some(i),
-                            SceneElement::Line(li) if line.is_none() => line = Some(li),
-                            _ => extras = true,
+                        .map(|(_, line)| context::CalibrateImageControl {
+                            image,
+                            a: (line.x0, line.y0),
+                            b: (line.x1, line.y1),
+                        }),
+                    _ => None,
+                })
+            },
+            // "Calibrate scale" button (#163): one tracing image selected, nothing
+            // else, no calibration already running.
+            boolean_op: (self.state.tool == Tool::Combine).then(|| {
+                let cb = self.state.creating_boolean.as_ref();
+                let kind = cb.map(|c| c.kind).unwrap_or(model::BooleanOpKind::Combine);
+                let a_len = cb.map(|c| c.a.len()).unwrap_or(0);
+                let b_len = cb.map(|c| c.b.len()).unwrap_or(0);
+                context::BooleanControl {
+                    kind,
+                    a: cb.map(|c| c.a.clone()).unwrap_or_default(),
+                    b: cb.map(|c| c.b.clone()).unwrap_or_default(),
+                    picking_b: cb.map(|c| c.picking_b).unwrap_or(false),
+                    keep_b: cb.map(|c| c.keep_b).unwrap_or(false),
+                    editing: cb.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: match kind {
+                        model::BooleanOpKind::Combine => a_len >= 2,
+                        _ => a_len >= 1 && b_len >= 1,
+                    },
+                }
+            }),
+            boolean_edit_start: None,
+            // The body-move controls are hidden inside a sketch (#306): there, the Move
+            // tool is the in-sketch selection gizmo, not the whole-body move.
+            move_op: (self.state.tool == Tool::Move
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                let cm = self.state.creating_move.as_ref();
+                // Exactly one Move picker reads as focused (#656/#658): the one the next
+                // viewport click feeds.
+                let move_focus = self.move_focus();
+                context::MoveControl {
+                    angle_snap_deg: self.state.move_angle_snap_deg,
+                    targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                    translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
+                    bodies_focused: move_focus == MoveFocus::Bodies,
+                    start_a: cm.and_then(|c| c.start_point_a),
+                    start_a_focused: move_focus == MoveFocus::StartPointA,
+                    end_a: cm.and_then(|c| c.end_point_a),
+                    end_a_focused: move_focus == MoveFocus::EndPointA,
+                    start_b: cm.and_then(|c| c.start_point_b),
+                    start_b_focused: move_focus == MoveFocus::StartPointB,
+                    end_b: cm.and_then(|c| c.end_point_b),
+                    end_b_focused: move_focus == MoveFocus::EndPointB,
+                    start_c: cm.and_then(|c| c.start_point_c),
+                    start_c_focused: move_focus == MoveFocus::StartPointC,
+                    end_c: cm.and_then(|c| c.end_point_c),
+                    end_c_focused: move_focus == MoveFocus::EndPointC,
+                    tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
+                    ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
+                    tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
+                    editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: cm
+                        .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
+                        .unwrap_or(false),
+                }
+            }),
+            move_edit_start: None,
+            shape: (self.state.tool == Tool::Shape
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                let creating = self.state.creating_shape.clone().unwrap_or_else(|| {
+                    actions::CreatingShape::new(self.state.shape_kind)
+                });
+                context::ShapeControl {
+                    kind: creating.shape.kind,
+                    focus_field: creating.pending_focus.then(|| {
+                        match (creating.shape.kind, creating.phase) {
+                            (_, actions::ShapePhase::Height) => actions::ShapeDimension::Height,
+                            (model::PrimitiveKind::Cuboid, _) => actions::ShapeDimension::Width,
+                            _ => actions::ShapeDimension::Radius,
                         }
+                    }),
+                    width: creating.shape.width.clone(),
+                    depth: creating.shape.depth.clone(),
+                    height: creating.shape.height.clone(),
+                    radius: creating.shape.radius.clone(),
+                    editing: creating.editing.is_some(),
+                    can_commit: creating.can_commit(&self.state.doc),
+                }
+            }),
+            joint: (self.state.tool == Tool::Joint
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                let cj = self.state.creating_joint.as_ref();
+                let joint_focus = self.joint_focus();
+                let members: Vec<model::JointRef> =
+                    cj.map(|c| c.members.clone()).unwrap_or_default();
+                let base = cj.map(|c| c.base).filter(|&b| b < members.len()).unwrap_or(0);
+                context::JointControl {
+                    members: members.clone(),
+                    members_focused: joint_focus == JointFocus::Members,
+                    // Which bodies each side of the joint owns (#953): start points mate
+                    // on the driven part, end points on the base.
+                    driven_bodies: members
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != base)
+                        .flat_map(|(_, m)| joints::member_bodies(&self.state.doc, *m))
+                        .collect(),
+                    base_bodies: members
+                        .get(base)
+                        .map(|m| joints::member_bodies(&self.state.doc, *m))
+                        .unwrap_or_default(),
+                    kind: cj.map(|c| c.kind.clone()).unwrap_or_default(),
+                    base_label: members
+                        .get(base)
+                        .map(|m| self.joint_member_label(*m))
+                        .unwrap_or_default(),
+                    start_a: cj.and_then(|c| c.start_point_a),
+                    start_a_focused: joint_focus == JointFocus::StartPointA,
+                    end_a: cj.and_then(|c| c.end_point_a),
+                    end_a_focused: joint_focus == JointFocus::EndPointA,
+                    start_b: cj.and_then(|c| c.start_point_b),
+                    start_b_focused: joint_focus == JointFocus::StartPointB,
+                    end_b: cj.and_then(|c| c.end_point_b),
+                    end_b_focused: joint_focus == JointFocus::EndPointB,
+                    start_c: cj.and_then(|c| c.start_point_c),
+                    start_c_focused: joint_focus == JointFocus::StartPointC,
+                    end_c: cj.and_then(|c| c.end_point_c),
+                    end_c_focused: joint_focus == JointFocus::EndPointC,
+                    position: cj.map(|c| c.position.clone()).unwrap_or_default(),
+                    position2: cj.map(|c| c.position2.clone()).unwrap_or_default(),
+                    position3: cj.map(|c| c.position3.clone()).unwrap_or_default(),
+                    slide_min: cj.map(|c| c.limits.slide_min.clone()).unwrap_or_default(),
+                    slide_max: cj.map(|c| c.limits.slide_max.clone()).unwrap_or_default(),
+                    turn_min: cj.map(|c| c.limits.turn_min.clone()).unwrap_or_default(),
+                    turn_max: cj.map(|c| c.limits.turn_max.clone()).unwrap_or_default(),
+                    slide_min_stop: cj
+                        .and_then(|c| c.limits.slide_min_target.as_ref())
+                        .map(hierarchy::SceneElement::from_extrude_target),
+                    slide_min_stop_focused: joint_focus == JointFocus::SlideMinStop,
+                    slide_max_stop: cj
+                        .and_then(|c| c.limits.slide_max_target.as_ref())
+                        .map(hierarchy::SceneElement::from_extrude_target),
+                    slide_max_stop_focused: joint_focus == JointFocus::SlideMaxStop,
+                    editing: cj.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: members.len() >= 2,
+                    animate: self.state.animate_joints,
+                }
+            }),
+            joint_edit_start: None,
+            mirror_op: (self.state.tool == Tool::Mirror
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                let cm = self.state.creating_mirror.as_ref();
+                context::MirrorControl {
+                    plane: cm
+                        .and_then(|c| c.plane.clone())
+                        .map(|face| mirror_plane_scene_element(&face)),
+                    targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                    mode: cm.map(|c| c.mode).unwrap_or_default(),
+                    editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: cm.map(|c| c.can_commit()).unwrap_or(false),
+                }
+            }),
+            mirror_edit_start: None,
+            repeat_op: (self.state.tool == Tool::Repeat
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                let cr = self.state.creating_repeat.as_ref();
+                let preview = cr.and_then(|c| {
+                    let probe = self.repeat_probe_op(c)?;
+                    (!c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
+                        .then(|| crate::extrude::repeat_offsets(&self.state.doc, &probe))
+                        .flatten()
+                        .map(|offsets| offsets.len() + 1)
+                });
+                // The value of the computed variable (#257): derived from the offsets + the
+                // targets' along-axis extent L.
+                let computed_value = cr.and_then(|c| {
+                    let probe = self.repeat_probe_op(c)?;
+                    let offsets = crate::extrude::repeat_offsets(&self.state.doc, &probe)?;
+                    // Turning about the axis measures in degrees, and the items have no
+                    // angular extent to subtract (#839).
+                    if c.around_axis {
+                        let angle_unit = self.state.doc.default_angle_unit;
+                        let deg = |v: f32| {
+                            crate::value::format_angle_display_in(v.to_radians(), angle_unit)
+                        };
+                        return Some(match c.computed_var() {
+                            model::RepeatVar::Count => (offsets.len() + 1).to_string(),
+                            model::RepeatVar::Gap => deg(offsets.first().copied().unwrap_or(0.0)),
+                            model::RepeatVar::Distance => {
+                                deg(offsets.last().copied().unwrap_or(0.0))
+                            }
+                        });
                     }
-                    // A selected calibrated image re-opens its length for editing (#424):
-                    // the stored marker span is the reference segment.
-                    let recalibrate = self.single_selected_tracing_image().and_then(|i| {
-                        let img = self.state.doc.tracing_images.get(i)?;
-                        let cal = img.calibration.as_ref()?;
-                        let (ox, oy) = img.origin;
-                        let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
-                        Some(context::CalibrateImageControl {
-                            image: i,
-                            a: (ox + cal.u0 * w, oy + cal.v0 * h),
-                            b: (ox + cal.u1 * w, oy + cal.v1 * h),
+                    let l = crate::extrude::repeat_extent(&self.state.doc, &probe)?;
+                    let unit = self.state.doc.default_length_unit;
+                    let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
+                    Some(match c.computed_var() {
+                        model::RepeatVar::Count => (offsets.len() + 1).to_string(),
+                        model::RepeatVar::Gap => {
+                            let step = offsets.first().copied().unwrap_or(0.0);
+                            fmt(if c.gap_is_offset { step } else { step - l })
+                        }
+                        model::RepeatVar::Distance => {
+                            let last = offsets.last().copied().unwrap_or(0.0);
+                            fmt(if c.distance_is_end { last + l } else { last })
+                        }
+                    })
+                });
+                context::RepeatControl {
+                    around_axis: cr.is_some_and(|c| c.around_axis),
+                    // A curved path is followed, never turned about (#840).
+                    can_turn_about_path: cr.is_none_or(|c| {
+                        c.axis.is_none_or(|axis| {
+                            extrude::repeat_path_polyline_of(
+                                &self.state.doc,
+                                axis,
+                                c.path_circle,
+                            )
+                            .is_none()
                         })
-                    });
-                    guided.or(recalibrate).or(match (image, line, extras) {
-                        (Some(image), Some(li), false) => self
+                    }),
+                    targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
+                    plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
+                    sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
+                    extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
+                    value_field_focused: context::repeat_value_field_focused(ctx),
+                    length_target: cr
+                        .and_then(|c| c.length_target.as_ref())
+                        .map(hierarchy::SceneElement::from_extrude_target),
+                    length_target_focused: self.repeat_target_pick,
+                    length_target_value: cr.and_then(|c| {
+                        let d = self.repeat_length_target_distance(c)?;
+                        Some(crate::value::format_length_display_in(
+                            d,
+                            self.state.doc.default_length_unit,
+                        ))
+                    }),
+                    // A picked circle is the path while it's set (#840); otherwise the axis.
+                    path: cr.and_then(|c| match c.path_circle {
+                        Some(ci) => Some(hierarchy::SceneElement::Circle(ci)),
+                        None => c.axis.map(hierarchy::SceneElement::from_revolve_axis),
+                    }),
+                    mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
+                    count: cr.map(|c| c.count.clone()).unwrap_or_default(),
+                    spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
+                    length: cr.map(|c| c.length.clone()).unwrap_or_default(),
+                    computed_var: cr.map(|c| c.computed_var()).unwrap_or(model::RepeatVar::Distance),
+                    gap_is_offset: cr.map(|c| c.gap_is_offset).unwrap_or(false),
+                    distance_is_end: cr.map(|c| c.distance_is_end).unwrap_or(true),
+                    computed_value,
+                    editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: cr
+                        .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
+                        .unwrap_or(false)
+                        && preview.is_some_and(|n| n > 1),
+                }
+            }),
+            sketch_repeat: self.state.creating_sketch_repeat.as_ref().map(|c| {
+                let mut picked = Vec::new();
+                for &li in &c.line_targets {
+                    picked.push(SceneElement::Line(li));
+                }
+                for &ci in &c.circle_targets {
+                    picked.push(SceneElement::Circle(ci));
+                }
+                // The value of the computed variable (#835), from the same offsets the
+                // ghost preview draws — the in-sketch twin of the 3D section's readout.
+                let computed_value = (|| {
+                    let doc = &self.state.doc;
+                    let probe = sketch_repeat_probe_op(c, doc);
+                    let offsets = extrude::sketch_repeat_offsets(doc, &probe)?;
+                    let l = extrude::sketch_repeat_extent(doc, &probe)?;
+                    let unit = crate::model::effective_length_unit(doc, c.sketch);
+                    let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
+                    Some(match c.computed_var() {
+                        model::RepeatVar::Count => (offsets.len() + 1).to_string(),
+                        model::RepeatVar::Gap => {
+                            let step = offsets.first().copied().unwrap_or(0.0);
+                            fmt(if c.gap_is_offset { step } else { step - l })
+                        }
+                        model::RepeatVar::Distance => {
+                            let last = offsets.last().copied().unwrap_or(0.0);
+                            fmt(if c.distance_is_end { last + l } else { last })
+                        }
+                    })
+                })();
+                context::SketchRepeatControl {
+                    picked,
+                    direction: c.dir_line.map(SceneElement::Line),
+                    // Only the armed picker reads as focused (#835): entities and the
+                    // direction are both sketch lines, so a plain click always toggles an
+                    // entity unless the Direction picker was armed (or Shift is held).
+                    direction_focused: self.sketch_repeat_direction_pick,
+                    value_field_focused: context::repeat_value_field_focused(ctx),
+                    count: c.count.clone(),
+                    spacing: c.spacing.clone(),
+                    length: c.length.clone(),
+                    computed_var: c.computed_var(),
+                    gap_is_offset: c.gap_is_offset,
+                    distance_is_end: c.distance_is_end,
+                    computed_value,
+                    can_commit: c.has_targets(),
+                    editing: c.editing.is_some(),
+                }
+            }),
+            sketch_offset: self.state.creating_sketch_offset.as_ref().map(|c| {
+                let mut picked = Vec::new();
+                for &li in &c.line_targets {
+                    picked.push(SceneElement::Line(li));
+                }
+                for &ci in &c.circle_targets {
+                    picked.push(SceneElement::Circle(ci));
+                }
+                context::SketchOffsetControl {
+                    entity_count: picked.len(),
+                    picked,
+                    distance: c.distance.clone(),
+                    construction: c.construction,
+                    editing: c.editing.is_some(),
+                    can_commit: c.has_targets()
+                        && c.distance_mm(&self.state.doc).is_some(),
+                }
+            }),
+            sketch_offset_edit_start: None,
+            sketch_mirror: (self.state.tool == Tool::Mirror
+                && self.state.sketch_session.is_some())
+            .then(|| {
+                let c = self.state.creating_sketch_mirror.as_ref();
+                let mut picked = Vec::new();
+                if let Some(c) = c {
+                    for &li in &c.line_targets {
+                        picked.push(SceneElement::Line(li));
+                    }
+                    for &ci in &c.circle_targets {
+                        picked.push(SceneElement::Circle(ci));
+                    }
+                }
+                context::SketchMirrorControl {
+                    line: c.and_then(|c| c.line),
+                    picked,
+                    editing: c.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: c.map(|c| c.can_commit()).unwrap_or(false),
+                }
+            }),
+            sketch_mirror_edit_start: None,
+            sketch_slice: (self.state.tool == Tool::Slice
+                && self.state.sketch_session.is_some())
+            .then(|| {
+                let c = self.state.creating_sketch_slice.as_ref();
+                // Lines, then circles, then faces (#955) — the order the removal handler
+                // unpacks a row index back into the three sets.
+                let mut targets: Vec<hierarchy::SceneElement> = Vec::new();
+                let mut cutters: Vec<usize> = Vec::new();
+                let (mut picking_cutter, mut editing, mut has_t, mut has_c) =
+                    (false, false, false, false);
+                if let Some(c) = c {
+                    targets.extend(c.line_targets.iter().map(|&li| {
+                        hierarchy::SceneElement::Line(li)
+                    }));
+                    targets.extend(c.circle_targets.iter().map(|&ci| {
+                        hierarchy::SceneElement::Circle(ci)
+                    }));
+                    targets.extend(c.face_targets.iter().map(|lines| {
+                        hierarchy::SceneElement::from_face_id(model::FaceId::Polygon(
+                            lines.clone(),
+                        ))
+                    }));
+                    cutters = c.cutter_lines.clone();
+                    picking_cutter = c.picking_cutter;
+                    editing = c.editing.is_some();
+                    has_t = c.has_targets();
+                    has_c = c.has_cutters();
+                }
+                context::SketchSliceControl {
+                    targets,
+                    cutters,
+                    picking_cutter,
+                    editing,
+                    can_commit: has_t && has_c,
+                }
+            }),
+            sketch_text: {
+                // A single selected sketch text opens its editor (#286).
+                self.single_selected_sketch_text()
+                    .and_then(|i| self.state.doc.sketch_texts.get(i).map(|t| (i, t)))
+                    .map(|(i, t)| context::SketchTextControl {
+                        index: i,
+                        text: t.text.clone(),
+                        font_family: t.font_family.clone(),
+                        families: crate::text::system_font_families(),
+                        bold: t.bold,
+                        italic: t.italic,
+                        underline: t.underline,
+                        size_expr: if t.size_expr.is_empty() {
+                            format!("{}", t.size)
+                        } else {
+                            t.size_expr.clone()
+                        },
+                        size_mm: t.size,
+                        rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
+                        wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
+                    })
+            },
+            drawing_view: {
+                // The selected projection on the open drawing page (#289).
+                self.state
+                    .selected_drawing_view()
+                    .filter(|(d, _)| self.state.editing_drawing == Some(*d))
+                    .and_then(|(d, v)| {
+                        let view = self
                             .state
                             .doc
-                            .tracing_images
-                            .get(image)
-                            .filter(|img| !img.deleted)
-                            .zip(self.state.doc.lines.get(li).filter(|l| !l.deleted))
-                            .filter(|(img, line)| {
-                                self.state.doc.sketch_face(line.sketch)
-                                    == Some(model::FaceId::ConstructionPlane(img.plane))
-                            })
-                            .map(|(_, line)| context::CalibrateImageControl {
-                                image,
-                                a: (line.x0, line.y0),
-                                b: (line.x1, line.y1),
-                            }),
-                        _ => None,
-                    })
-                },
-                // "Calibrate scale" button (#163): one tracing image selected, nothing
-                // else, no calibration already running.
-                boolean_op: (self.state.tool == Tool::Combine).then(|| {
-                    let cb = self.state.creating_boolean.as_ref();
-                    let kind = cb.map(|c| c.kind).unwrap_or(model::BooleanOpKind::Combine);
-                    let a_len = cb.map(|c| c.a.len()).unwrap_or(0);
-                    let b_len = cb.map(|c| c.b.len()).unwrap_or(0);
-                    context::BooleanControl {
-                        kind,
-                        a: cb.map(|c| c.a.clone()).unwrap_or_default(),
-                        b: cb.map(|c| c.b.clone()).unwrap_or_default(),
-                        picking_b: cb.map(|c| c.picking_b).unwrap_or(false),
-                        keep_b: cb.map(|c| c.keep_b).unwrap_or(false),
-                        editing: cb.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: match kind {
-                            model::BooleanOpKind::Combine => a_len >= 2,
-                            _ => a_len >= 1 && b_len >= 1,
-                        },
-                    }
-                }),
-                boolean_edit_start: None,
-                // The body-move controls are hidden inside a sketch (#306): there, the Move
-                // tool is the in-sketch selection gizmo, not the whole-body move.
-                move_op: (self.state.tool == Tool::Move
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    let cm = self.state.creating_move.as_ref();
-                    // Exactly one Move picker reads as focused (#656/#658): the one the next
-                    // viewport click feeds.
-                    let move_focus = self.move_focus();
-                    context::MoveControl {
-                        angle_snap_deg: self.state.move_angle_snap_deg,
-                        targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
-                        translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
-                        bodies_focused: move_focus == MoveFocus::Bodies,
-                        start_a: cm.and_then(|c| c.start_point_a),
-                        start_a_focused: move_focus == MoveFocus::StartPointA,
-                        end_a: cm.and_then(|c| c.end_point_a),
-                        end_a_focused: move_focus == MoveFocus::EndPointA,
-                        start_b: cm.and_then(|c| c.start_point_b),
-                        start_b_focused: move_focus == MoveFocus::StartPointB,
-                        end_b: cm.and_then(|c| c.end_point_b),
-                        end_b_focused: move_focus == MoveFocus::EndPointB,
-                        start_c: cm.and_then(|c| c.start_point_c),
-                        start_c_focused: move_focus == MoveFocus::StartPointC,
-                        end_c: cm.and_then(|c| c.end_point_c),
-                        end_c_focused: move_focus == MoveFocus::EndPointC,
-                        tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
-                        ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
-                        tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
-                        editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: cm
-                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
-                            .unwrap_or(false),
-                    }
-                }),
-                move_edit_start: None,
-                shape: (self.state.tool == Tool::Shape
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    let creating = self.state.creating_shape.clone().unwrap_or_else(|| {
-                        actions::CreatingShape::new(self.state.shape_kind)
-                    });
-                    context::ShapeControl {
-                        kind: creating.shape.kind,
-                        focus_field: creating.pending_focus.then(|| {
-                            match (creating.shape.kind, creating.phase) {
-                                (_, actions::ShapePhase::Height) => actions::ShapeDimension::Height,
-                                (model::PrimitiveKind::Cuboid, _) => actions::ShapeDimension::Width,
-                                _ => actions::ShapeDimension::Radius,
-                            }
-                        }),
-                        width: creating.shape.width.clone(),
-                        depth: creating.shape.depth.clone(),
-                        height: creating.shape.height.clone(),
-                        radius: creating.shape.radius.clone(),
-                        editing: creating.editing.is_some(),
-                        can_commit: creating.can_commit(&self.state.doc),
-                    }
-                }),
-                joint: (self.state.tool == Tool::Joint
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    let cj = self.state.creating_joint.as_ref();
-                    let joint_focus = self.joint_focus();
-                    let members: Vec<model::JointRef> =
-                        cj.map(|c| c.members.clone()).unwrap_or_default();
-                    let base = cj.map(|c| c.base).filter(|&b| b < members.len()).unwrap_or(0);
-                    context::JointControl {
-                        members: members.clone(),
-                        members_focused: joint_focus == JointFocus::Members,
-                        // Which bodies each side of the joint owns (#953): start points mate
-                        // on the driven part, end points on the base.
-                        driven_bodies: members
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| *i != base)
-                            .flat_map(|(_, m)| joints::member_bodies(&self.state.doc, *m))
-                            .collect(),
-                        base_bodies: members
-                            .get(base)
-                            .map(|m| joints::member_bodies(&self.state.doc, *m))
-                            .unwrap_or_default(),
-                        kind: cj.map(|c| c.kind.clone()).unwrap_or_default(),
-                        base_label: members
-                            .get(base)
-                            .map(|m| self.joint_member_label(*m))
-                            .unwrap_or_default(),
-                        start_a: cj.and_then(|c| c.start_point_a),
-                        start_a_focused: joint_focus == JointFocus::StartPointA,
-                        end_a: cj.and_then(|c| c.end_point_a),
-                        end_a_focused: joint_focus == JointFocus::EndPointA,
-                        start_b: cj.and_then(|c| c.start_point_b),
-                        start_b_focused: joint_focus == JointFocus::StartPointB,
-                        end_b: cj.and_then(|c| c.end_point_b),
-                        end_b_focused: joint_focus == JointFocus::EndPointB,
-                        start_c: cj.and_then(|c| c.start_point_c),
-                        start_c_focused: joint_focus == JointFocus::StartPointC,
-                        end_c: cj.and_then(|c| c.end_point_c),
-                        end_c_focused: joint_focus == JointFocus::EndPointC,
-                        position: cj.map(|c| c.position.clone()).unwrap_or_default(),
-                        position2: cj.map(|c| c.position2.clone()).unwrap_or_default(),
-                        position3: cj.map(|c| c.position3.clone()).unwrap_or_default(),
-                        slide_min: cj.map(|c| c.limits.slide_min.clone()).unwrap_or_default(),
-                        slide_max: cj.map(|c| c.limits.slide_max.clone()).unwrap_or_default(),
-                        turn_min: cj.map(|c| c.limits.turn_min.clone()).unwrap_or_default(),
-                        turn_max: cj.map(|c| c.limits.turn_max.clone()).unwrap_or_default(),
-                        slide_min_stop: cj
-                            .and_then(|c| c.limits.slide_min_target.as_ref())
-                            .map(hierarchy::SceneElement::from_extrude_target),
-                        slide_min_stop_focused: joint_focus == JointFocus::SlideMinStop,
-                        slide_max_stop: cj
-                            .and_then(|c| c.limits.slide_max_target.as_ref())
-                            .map(hierarchy::SceneElement::from_extrude_target),
-                        slide_max_stop_focused: joint_focus == JointFocus::SlideMaxStop,
-                        editing: cj.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: members.len() >= 2,
-                        animate: self.state.animate_joints,
-                    }
-                }),
-                joint_edit_start: None,
-                mirror_op: (self.state.tool == Tool::Mirror
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    let cm = self.state.creating_mirror.as_ref();
-                    context::MirrorControl {
-                        plane: cm
-                            .and_then(|c| c.plane.clone())
-                            .map(|face| mirror_plane_scene_element(&face)),
-                        targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
-                        mode: cm.map(|c| c.mode).unwrap_or_default(),
-                        editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: cm.map(|c| c.can_commit()).unwrap_or(false),
-                    }
-                }),
-                mirror_edit_start: None,
-                repeat_op: (self.state.tool == Tool::Repeat
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    let cr = self.state.creating_repeat.as_ref();
-                    let preview = cr.and_then(|c| {
-                        let probe = self.repeat_probe_op(c)?;
-                        (!c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
-                            .then(|| crate::extrude::repeat_offsets(&self.state.doc, &probe))
-                            .flatten()
-                            .map(|offsets| offsets.len() + 1)
-                    });
-                    // The value of the computed variable (#257): derived from the offsets + the
-                    // targets' along-axis extent L.
-                    let computed_value = cr.and_then(|c| {
-                        let probe = self.repeat_probe_op(c)?;
-                        let offsets = crate::extrude::repeat_offsets(&self.state.doc, &probe)?;
-                        // Turning about the axis measures in degrees, and the items have no
-                        // angular extent to subtract (#839).
-                        if c.around_axis {
-                            let angle_unit = self.state.doc.default_angle_unit;
-                            let deg = |v: f32| {
-                                crate::value::format_angle_display_in(v.to_radians(), angle_unit)
-                            };
-                            return Some(match c.computed_var() {
-                                model::RepeatVar::Count => (offsets.len() + 1).to_string(),
-                                model::RepeatVar::Gap => deg(offsets.first().copied().unwrap_or(0.0)),
-                                model::RepeatVar::Distance => {
-                                    deg(offsets.last().copied().unwrap_or(0.0))
-                                }
-                            });
-                        }
-                        let l = crate::extrude::repeat_extent(&self.state.doc, &probe)?;
-                        let unit = self.state.doc.default_length_unit;
-                        let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
-                        Some(match c.computed_var() {
-                            model::RepeatVar::Count => (offsets.len() + 1).to_string(),
-                            model::RepeatVar::Gap => {
-                                let step = offsets.first().copied().unwrap_or(0.0);
-                                fmt(if c.gap_is_offset { step } else { step - l })
-                            }
-                            model::RepeatVar::Distance => {
-                                let last = offsets.last().copied().unwrap_or(0.0);
-                                fmt(if c.distance_is_end { last + l } else { last })
-                            }
-                        })
-                    });
-                    context::RepeatControl {
-                        around_axis: cr.is_some_and(|c| c.around_axis),
-                        // A curved path is followed, never turned about (#840).
-                        can_turn_about_path: cr.is_none_or(|c| {
-                            c.axis.is_none_or(|axis| {
-                                extrude::repeat_path_polyline_of(
-                                    &self.state.doc,
-                                    axis,
-                                    c.path_circle,
-                                )
-                                .is_none()
-                            })
-                        }),
-                        targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
-                        plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
-                        sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
-                        extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
-                        value_field_focused: context::repeat_value_field_focused(ctx),
-                        length_target: cr
-                            .and_then(|c| c.length_target.as_ref())
-                            .map(hierarchy::SceneElement::from_extrude_target),
-                        length_target_focused: self.repeat_target_pick,
-                        length_target_value: cr.and_then(|c| {
-                            let d = self.repeat_length_target_distance(c)?;
-                            Some(crate::value::format_length_display_in(
-                                d,
-                                self.state.doc.default_length_unit,
-                            ))
-                        }),
-                        // A picked circle is the path while it's set (#840); otherwise the axis.
-                        path: cr.and_then(|c| match c.path_circle {
-                            Some(ci) => Some(hierarchy::SceneElement::Circle(ci)),
-                            None => c.axis.map(hierarchy::SceneElement::from_revolve_axis),
-                        }),
-                        mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
-                        count: cr.map(|c| c.count.clone()).unwrap_or_default(),
-                        spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
-                        length: cr.map(|c| c.length.clone()).unwrap_or_default(),
-                        computed_var: cr.map(|c| c.computed_var()).unwrap_or(model::RepeatVar::Distance),
-                        gap_is_offset: cr.map(|c| c.gap_is_offset).unwrap_or(false),
-                        distance_is_end: cr.map(|c| c.distance_is_end).unwrap_or(true),
-                        computed_value,
-                        editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: cr
-                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
-                            .unwrap_or(false)
-                            && preview.is_some_and(|n| n > 1),
-                    }
-                }),
-                sketch_repeat: self.state.creating_sketch_repeat.as_ref().map(|c| {
-                    let mut picked = Vec::new();
-                    for &li in &c.line_targets {
-                        picked.push(SceneElement::Line(li));
-                    }
-                    for &ci in &c.circle_targets {
-                        picked.push(SceneElement::Circle(ci));
-                    }
-                    // The value of the computed variable (#835), from the same offsets the
-                    // ghost preview draws — the in-sketch twin of the 3D section's readout.
-                    let computed_value = (|| {
-                        let doc = &self.state.doc;
-                        let probe = sketch_repeat_probe_op(c, doc);
-                        let offsets = extrude::sketch_repeat_offsets(doc, &probe)?;
-                        let l = extrude::sketch_repeat_extent(doc, &probe)?;
-                        let unit = crate::model::effective_length_unit(doc, c.sketch);
-                        let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
-                        Some(match c.computed_var() {
-                            model::RepeatVar::Count => (offsets.len() + 1).to_string(),
-                            model::RepeatVar::Gap => {
-                                let step = offsets.first().copied().unwrap_or(0.0);
-                                fmt(if c.gap_is_offset { step } else { step - l })
-                            }
-                            model::RepeatVar::Distance => {
-                                let last = offsets.last().copied().unwrap_or(0.0);
-                                fmt(if c.distance_is_end { last + l } else { last })
-                            }
-                        })
-                    })();
-                    context::SketchRepeatControl {
-                        picked,
-                        direction: c.dir_line.map(SceneElement::Line),
-                        // Only the armed picker reads as focused (#835): entities and the
-                        // direction are both sketch lines, so a plain click always toggles an
-                        // entity unless the Direction picker was armed (or Shift is held).
-                        direction_focused: self.sketch_repeat_direction_pick,
-                        value_field_focused: context::repeat_value_field_focused(ctx),
-                        count: c.count.clone(),
-                        spacing: c.spacing.clone(),
-                        length: c.length.clone(),
-                        computed_var: c.computed_var(),
-                        gap_is_offset: c.gap_is_offset,
-                        distance_is_end: c.distance_is_end,
-                        computed_value,
-                        can_commit: c.has_targets(),
-                        editing: c.editing.is_some(),
-                    }
-                }),
-                sketch_offset: self.state.creating_sketch_offset.as_ref().map(|c| {
-                    let mut picked = Vec::new();
-                    for &li in &c.line_targets {
-                        picked.push(SceneElement::Line(li));
-                    }
-                    for &ci in &c.circle_targets {
-                        picked.push(SceneElement::Circle(ci));
-                    }
-                    context::SketchOffsetControl {
-                        entity_count: picked.len(),
-                        picked,
-                        distance: c.distance.clone(),
-                        construction: c.construction,
-                        editing: c.editing.is_some(),
-                        can_commit: c.has_targets()
-                            && c.distance_mm(&self.state.doc).is_some(),
-                    }
-                }),
-                sketch_offset_edit_start: None,
-                sketch_mirror: (self.state.tool == Tool::Mirror
-                    && self.state.sketch_session.is_some())
-                .then(|| {
-                    let c = self.state.creating_sketch_mirror.as_ref();
-                    let mut picked = Vec::new();
-                    if let Some(c) = c {
-                        for &li in &c.line_targets {
-                            picked.push(SceneElement::Line(li));
-                        }
-                        for &ci in &c.circle_targets {
-                            picked.push(SceneElement::Circle(ci));
-                        }
-                    }
-                    context::SketchMirrorControl {
-                        line: c.and_then(|c| c.line),
-                        picked,
-                        editing: c.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: c.map(|c| c.can_commit()).unwrap_or(false),
-                    }
-                }),
-                sketch_mirror_edit_start: None,
-                sketch_slice: (self.state.tool == Tool::Slice
-                    && self.state.sketch_session.is_some())
-                .then(|| {
-                    let c = self.state.creating_sketch_slice.as_ref();
-                    // Lines, then circles, then faces (#955) — the order the removal handler
-                    // unpacks a row index back into the three sets.
-                    let mut targets: Vec<hierarchy::SceneElement> = Vec::new();
-                    let mut cutters: Vec<usize> = Vec::new();
-                    let (mut picking_cutter, mut editing, mut has_t, mut has_c) =
-                        (false, false, false, false);
-                    if let Some(c) = c {
-                        targets.extend(c.line_targets.iter().map(|&li| {
-                            hierarchy::SceneElement::Line(li)
-                        }));
-                        targets.extend(c.circle_targets.iter().map(|&ci| {
-                            hierarchy::SceneElement::Circle(ci)
-                        }));
-                        targets.extend(c.face_targets.iter().map(|lines| {
-                            hierarchy::SceneElement::from_face_id(model::FaceId::Polygon(
-                                lines.clone(),
-                            ))
-                        }));
-                        cutters = c.cutter_lines.clone();
-                        picking_cutter = c.picking_cutter;
-                        editing = c.editing.is_some();
-                        has_t = c.has_targets();
-                        has_c = c.has_cutters();
-                    }
-                    context::SketchSliceControl {
-                        targets,
-                        cutters,
-                        picking_cutter,
-                        editing,
-                        can_commit: has_t && has_c,
-                    }
-                }),
-                sketch_text: {
-                    // A single selected sketch text opens its editor (#286).
-                    self.single_selected_sketch_text()
-                        .and_then(|i| self.state.doc.sketch_texts.get(i).map(|t| (i, t)))
-                        .map(|(i, t)| context::SketchTextControl {
-                            index: i,
-                            text: t.text.clone(),
-                            font_family: t.font_family.clone(),
-                            families: crate::text::system_font_families(),
-                            bold: t.bold,
-                            italic: t.italic,
-                            underline: t.underline,
-                            size_expr: if t.size_expr.is_empty() {
-                                format!("{}", t.size)
-                            } else {
-                                t.size_expr.clone()
-                            },
-                            size_mm: t.size,
-                            rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
-                            wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
-                        })
-                },
-                drawing_view: {
-                    // The selected projection on the open drawing page (#289).
-                    self.state
-                        .selected_drawing_view()
-                        .filter(|(d, _)| self.state.editing_drawing == Some(*d))
-                        .and_then(|(d, v)| {
-                            let view = self
+                            .drawings
+                            .get(d)
+                            .filter(|dr| !dr.deleted)
+                            .and_then(|dr| dr.views.get(v))?;
+                        let source = match view.sketch {
+                            Some(si) => crate::names::node_label(
+                                &self.state.doc,
+                                hierarchy::HierarchyNode::Sketch(si),
+                            ),
+                            None => crate::names::node_label(
+                                &self.state.doc,
+                                hierarchy::HierarchyNode::Body(view.body),
+                            ),
+                        };
+                        let aligned = view.aligned_parent.is_some();
+                        // Aligned children show their inherited scale (#296/#300).
+                        let scale = if aligned {
+                            crate::drawing::resolved_view_scale(&self.state.doc, d, v)
+                                .unwrap_or_default()
+                        } else {
+                            view.scale.clone().unwrap_or_default()
+                        };
+                        // The orientations an aligned child may switch between while staying in
+                        // line with its base (#332).
+                        let inline_orientations = match (view.aligned_parent, view.aligned_dir) {
+                            (Some(p), Some(dir)) => self
                                 .state
                                 .doc
                                 .drawings
                                 .get(d)
-                                .filter(|dr| !dr.deleted)
-                                .and_then(|dr| dr.views.get(v))?;
-                            let source = match view.sketch {
-                                Some(si) => crate::names::node_label(
-                                    &self.state.doc,
-                                    hierarchy::HierarchyNode::Sketch(si),
-                                ),
-                                None => crate::names::node_label(
-                                    &self.state.doc,
-                                    hierarchy::HierarchyNode::Body(view.body),
-                                ),
-                            };
-                            let aligned = view.aligned_parent.is_some();
-                            // Aligned children show their inherited scale (#296/#300).
-                            let scale = if aligned {
-                                crate::drawing::resolved_view_scale(&self.state.doc, d, v)
-                                    .unwrap_or_default()
-                            } else {
-                                view.scale.clone().unwrap_or_default()
-                            };
-                            // The orientations an aligned child may switch between while staying in
-                            // line with its base (#332).
-                            let inline_orientations = match (view.aligned_parent, view.aligned_dir) {
-                                (Some(p), Some(dir)) => self
-                                    .state
-                                    .doc
-                                    .drawings
-                                    .get(d)
-                                    .and_then(|dr| dr.views.get(p))
-                                    .map(|pv| {
-                                        crate::drawing::aligned_inline_orientations(
-                                            pv.orientation,
-                                            dir,
-                                        )
-                                    })
-                                    .unwrap_or_default(),
-                                _ => Vec::new(),
-                            };
-                            let scale_suffix = crate::drawing::resolved_view_scale(
-                                &self.state.doc,
-                                d,
-                                v,
-                            )
-                            .map(|s| format!(" ({s})"))
-                            .unwrap_or_default();
-                            let auto_label = format!(
-                                "{source} — {}{scale_suffix}",
-                                view.orientation.label()
-                            );
-                            Some(context::DrawingViewControl {
-                                view: v,
-                                source,
-                                orientation: view.orientation,
-                                scale,
-                                aligned,
-                                align_lines: view.align_lines,
-                                inline_orientations,
-                                style: view.style,
-                                label_hidden: view.label_hidden,
-                                label_pos: view.label_pos,
-                                label_text: view.label_text.clone().unwrap_or_default(),
-                                auto_label,
-                            })
-                        })
-                },
-                drawing_annotation: self
-                    .state
-                    .selected_drawing_annotation()
-                    .filter(|(d, _)| self.state.editing_drawing == Some(*d))
-                    .and_then(|(d, a)| {
-                        self.state
-                            .doc
-                            .drawings
-                            .get(d)
-                            .and_then(|dr| dr.annotations.get(a))
-                            .filter(|ann| !ann.deleted)
-                            .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
-                    }),
-                drawing_selection: self
-                    .state
-                    .selected_drawing_elements
-                    .iter()
-                    .map(|(d, element)| {
-                        let node = match element {
-                            context::DrawingElementRef::Projection(view) => {
-                                hierarchy::HierarchyNode::DrawingProjection { drawing: *d, view: *view }
-                            }
-                            context::DrawingElementRef::Text(annotation) => {
-                                hierarchy::HierarchyNode::DrawingAnnotation {
-                                    drawing: *d,
-                                    annotation: *annotation,
-                                }
-                            }
-                            context::DrawingElementRef::Dimension { view, a, b } => {
-                                hierarchy::HierarchyNode::DrawingDimension {
-                                    drawing: *d,
-                                    view: *view,
-                                    a: *a,
-                                    b: *b,
-                                }
-                            }
+                                .and_then(|dr| dr.views.get(p))
+                                .map(|pv| {
+                                    crate::drawing::aligned_inline_orientations(
+                                        pv.orientation,
+                                        dir,
+                                    )
+                                })
+                                .unwrap_or_default(),
+                            _ => Vec::new(),
                         };
-                        (*d, *element, crate::names::node_label(&self.state.doc, node))
+                        let scale_suffix = crate::drawing::resolved_view_scale(
+                            &self.state.doc,
+                            d,
+                            v,
+                        )
+                        .map(|s| format!(" ({s})"))
+                        .unwrap_or_default();
+                        let auto_label = format!(
+                            "{source} — {}{scale_suffix}",
+                            view.orientation.label()
+                        );
+                        Some(context::DrawingViewControl {
+                            view: v,
+                            source,
+                            orientation: view.orientation,
+                            scale,
+                            aligned,
+                            align_lines: view.align_lines,
+                            inline_orientations,
+                            style: view.style,
+                            label_hidden: view.label_hidden,
+                            label_pos: view.label_pos,
+                            label_text: view.label_text.clone().unwrap_or_default(),
+                            auto_label,
+                        })
                     })
-                    .collect(),
-                drawing_add_active: self.state.tool == Tool::DrawingAdd
-                    && self.state.editing_drawing.is_some(),
-                drawing_align_active: self.state.tool == Tool::DrawingAlign
-                    && self.state.editing_drawing.is_some(),
-                drawing_align_base: self.drawing_align_parent.and_then(|v| {
-                    let d = self.state.editing_drawing?;
-                    Some((v, crate::names::node_label(
-                        &self.state.doc,
-                        hierarchy::HierarchyNode::DrawingProjection { drawing: d, view: v },
-                    )))
+            },
+            drawing_annotation: self
+                .state
+                .selected_drawing_annotation()
+                .filter(|(d, _)| self.state.editing_drawing == Some(*d))
+                .and_then(|(d, a)| {
+                    self.state
+                        .doc
+                        .drawings
+                        .get(d)
+                        .and_then(|dr| dr.annotations.get(a))
+                        .filter(|ann| !ann.deleted)
+                        .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
                 }),
-                repeat_edit_start: None,
-                slice_op: (self.state.tool == Tool::Slice).then(|| {
-                    let cs = self.state.creating_slice.as_ref();
-                    context::SliceControl {
-                        targets: cs.map(|c| c.targets.clone()).unwrap_or_default(),
-                        cutters: cs.map(|c| c.cutters.clone()).unwrap_or_default(),
-                        picking_cutter: cs.map(|c| c.picking_cutter).unwrap_or(false),
-                        extend_infinite: cs.map(|c| c.extend_infinite).unwrap_or(true),
-                        editing: cs.map(|c| c.editing.is_some()).unwrap_or(false),
-                        can_commit: cs
-                            .map(|c| !c.targets.is_empty() && !c.cutters.is_empty())
-                            .unwrap_or(false),
-                    }
-                }),
-                slice_edit_start: None,
-                revolve_edit_start: None,
-                sweep_edit_start: None,
-                loft_body: (self.state.tool == Tool::Loft
-                    && self.state.sketch_session.is_none())
-                .then(|| {
-                    let cl = self.state.creating_loft.as_ref();
-                    context::LoftBodyControl {
-                        body_choice: cl.map(|c| c.body_choice).unwrap_or_default(),
-                        cut_bodies: cl.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
-                        // Ready to loft once at least two sections are picked (#586).
-                        can_commit: cl.is_some_and(|c| c.sections.len() >= 2),
-                    }
-                }),
-                plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
-                    let cp = self.state.creating_plane.as_ref();
-                    let pending = self.state.pending_plane_line.as_ref();
-                    context::PlaneToolControl {
-                        anchor_labels: cp
-                            .map(|c| {
-                                if c.anchor_labels.is_empty() {
-                                    vec![c.reference.label().to_string()]
-                                } else {
-                                    c.anchor_labels.clone()
-                                }
-                            })
-                            .or_else(|| pending.map(|p| vec![p.label.clone()]))
-                            .unwrap_or_default(),
-                        normal_labels: cp
-                            .map(|c| {
-                                c.normal_candidates
-                                    .iter()
-                                    .map(|(label, _)| label.clone())
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        normal_choice: cp.map(|c| c.normal_choice).unwrap_or(0),
-                        // An anchor is picked → offset/angle inputs + Do button show (#611).
-                        has_anchor: cp.is_some(),
-                        // Edge/axis anchors get an angle input too; face/plane/vertex only offset
-                        // (#613/#614).
-                        show_angle: cp.is_some_and(|c| c.reference.is_axis()),
-                        offset_text: cp.map(|c| c.offset_text.clone()).unwrap_or_default(),
-                        angle_text: cp.map(|c| c.angle_text.clone()).unwrap_or_default(),
-                        offset_focused: cp
-                            .is_some_and(|c| c.focused == construction::PlaneDim::Offset),
-                        angle_focused: cp.is_some_and(|c| c.focused == construction::PlaneDim::Angle),
-                    }
-                }),
-                sweep: (self.state.tool == Tool::Sweep).then(|| {
-                    let cf = self.state.creating_sweep.as_ref();
-                    context::SweepControl {
-                        faces: cf.map(|c| c.faces.clone()).unwrap_or_default(),
-                        path: cf.map(|c| c.path.clone()).unwrap_or_default(),
-                        // Exactly one picker shows the focus ring: Path once a profile is
-                        // picked but no path line yet, Profile otherwise.
-                        path_focused: cf
-                            .is_some_and(|c| !c.faces.is_empty() && c.path.is_empty()),
-                        body_choice: cf.map(|c| c.body_choice).unwrap_or_default(),
-                        cut_bodies: cf.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
-                    }
-                }),
-                revolve: (self.state.tool == Tool::Revolve).then(|| {
-                    let cr = self.state.creating_revolve.as_ref();
-                    context::RevolveControl {
-                        faces: cr.map(|c| c.faces.clone()).unwrap_or_default(),
-                        axis: cr.and_then(|c| c.axis),
-                        // Exactly one picker shows the focus ring (#304): Axis once a
-                        // profile is picked but no axis yet, Profile otherwise.
-                        axis_focused: cr
-                            .is_some_and(|c| !c.faces.is_empty() && c.axis.is_none()),
-                        symmetric: cr.map(|c| c.symmetric).unwrap_or(false),
-                        body_choice: cr.map(|c| c.body_choice).unwrap_or_default(),
-                        cut_bodies: cr.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
-                    }
-                }),
-                calibrate_start: (self.state.creating_calibration.is_none()).then(|| {
-                    let mut only_image = None;
-                    for element in self.state.scene_selection.iter() {
-                        match (element, only_image) {
-                            (SceneElement::Image(i), None) => only_image = Some(i),
-                            _ => return None,
+            drawing_selection: self
+                .state
+                .selected_drawing_elements
+                .iter()
+                .map(|(d, element)| {
+                    let node = match element {
+                        context::DrawingElementRef::Projection(view) => {
+                            hierarchy::HierarchyNode::DrawingProjection { drawing: *d, view: *view }
                         }
-                    }
-                    only_image.filter(|&i| {
-                        self.state.doc.tracing_images.get(i).is_some_and(|img| !img.deleted)
-                    })
-                }).flatten(),
-                calibrate_pending: self
-                    .state
-                    .creating_calibration
-                    .as_ref()
-                    .filter(|cal| cal.points.len() < 2)
-                    .map(|cal| cal.points.len()),
-                // Dimension tool in 3D (#618): the derived-parameter name/value/commit block.
-                dimension_derive: (self.state.tool == Tool::Dimension
-                    && self.state.sketch_session.is_none()
-                    && self.state.editing_drawing.is_none())
-                .then(|| context::DimensionDeriveControl {
-                    name_text: self.state.dimension_param_name.clone(),
-                }),
-                // The dimension being typed, mirrored into the pane (#775).
-                dimension_edit: self.state.editing_committed_dim.as_ref().map(|edit| {
-                    context::DimensionEditControl {
-                        text: edit.text.clone(),
-                        is_angle: edit.target.is_angle(&self.state.doc),
-                    }
-                }),
-                // The chamfer/fillet amount being set, edge- or vertex-flavoured (#792).
-                treatment: self
-                    .state
-                    .creating_edge_treatment
-                    .as_ref()
-                    .map(|cet| context::TreatmentControl {
-                        text: cet.text.clone(),
-                        kind: cet.kind,
-                    })
-                    .or_else(|| {
-                        self.state.creating_vertex_treatment.as_ref().map(|cvt| {
-                            context::TreatmentControl {
-                                text: cvt.text.clone(),
-                                kind: cvt.kind,
+                        context::DrawingElementRef::Text(annotation) => {
+                            hierarchy::HierarchyNode::DrawingAnnotation {
+                                drawing: *d,
+                                annotation: *annotation,
+                            }
+                        }
+                        context::DrawingElementRef::Dimension { view, a, b } => {
+                            hierarchy::HierarchyNode::DrawingDimension {
+                                drawing: *d,
+                                view: *view,
+                                a: *a,
+                                b: *b,
+                            }
+                        }
+                    };
+                    (*d, *element, crate::names::node_label(&self.state.doc, node))
+                })
+                .collect(),
+            drawing_add_active: self.state.tool == Tool::DrawingAdd
+                && self.state.editing_drawing.is_some(),
+            drawing_align_active: self.state.tool == Tool::DrawingAlign
+                && self.state.editing_drawing.is_some(),
+            drawing_align_base: self.drawing_align_parent.and_then(|v| {
+                let d = self.state.editing_drawing?;
+                Some((v, crate::names::node_label(
+                    &self.state.doc,
+                    hierarchy::HierarchyNode::DrawingProjection { drawing: d, view: v },
+                )))
+            }),
+            repeat_edit_start: None,
+            slice_op: (self.state.tool == Tool::Slice).then(|| {
+                let cs = self.state.creating_slice.as_ref();
+                context::SliceControl {
+                    targets: cs.map(|c| c.targets.clone()).unwrap_or_default(),
+                    cutters: cs.map(|c| c.cutters.clone()).unwrap_or_default(),
+                    picking_cutter: cs.map(|c| c.picking_cutter).unwrap_or(false),
+                    extend_infinite: cs.map(|c| c.extend_infinite).unwrap_or(true),
+                    editing: cs.map(|c| c.editing.is_some()).unwrap_or(false),
+                    can_commit: cs
+                        .map(|c| !c.targets.is_empty() && !c.cutters.is_empty())
+                        .unwrap_or(false),
+                }
+            }),
+            slice_edit_start: None,
+            revolve_edit_start: None,
+            sweep_edit_start: None,
+            loft_body: (self.state.tool == Tool::Loft
+                && self.state.sketch_session.is_none())
+            .then(|| {
+                let cl = self.state.creating_loft.as_ref();
+                context::LoftBodyControl {
+                    body_choice: cl.map(|c| c.body_choice).unwrap_or_default(),
+                    cut_bodies: cl.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
+                    // Ready to loft once at least two sections are picked (#586).
+                    can_commit: cl.is_some_and(|c| c.sections.len() >= 2),
+                }
+            }),
+            plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
+                let cp = self.state.creating_plane.as_ref();
+                let pending = self.state.pending_plane_line.as_ref();
+                context::PlaneToolControl {
+                    anchor_labels: cp
+                        .map(|c| {
+                            if c.anchor_labels.is_empty() {
+                                vec![c.reference.label().to_string()]
+                            } else {
+                                c.anchor_labels.clone()
                             }
                         })
-                    }),
-            };
-            let content = context::context_pane_content(&context_input);
-            context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
-            context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
+                        .or_else(|| pending.map(|p| vec![p.label.clone()]))
+                        .unwrap_or_default(),
+                    normal_labels: cp
+                        .map(|c| {
+                            c.normal_candidates
+                                .iter()
+                                .map(|(label, _)| label.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    normal_choice: cp.map(|c| c.normal_choice).unwrap_or(0),
+                    // An anchor is picked → offset/angle inputs + Do button show (#611).
+                    has_anchor: cp.is_some(),
+                    // Edge/axis anchors get an angle input too; face/plane/vertex only offset
+                    // (#613/#614).
+                    show_angle: cp.is_some_and(|c| c.reference.is_axis()),
+                    offset_text: cp.map(|c| c.offset_text.clone()).unwrap_or_default(),
+                    angle_text: cp.map(|c| c.angle_text.clone()).unwrap_or_default(),
+                    offset_focused: cp
+                        .is_some_and(|c| c.focused == construction::PlaneDim::Offset),
+                    angle_focused: cp.is_some_and(|c| c.focused == construction::PlaneDim::Angle),
+                }
+            }),
+            sweep: (self.state.tool == Tool::Sweep).then(|| {
+                let cf = self.state.creating_sweep.as_ref();
+                context::SweepControl {
+                    faces: cf.map(|c| c.faces.clone()).unwrap_or_default(),
+                    path: cf.map(|c| c.path.clone()).unwrap_or_default(),
+                    // Exactly one picker shows the focus ring: Path once a profile is
+                    // picked but no path line yet, Profile otherwise.
+                    path_focused: cf
+                        .is_some_and(|c| !c.faces.is_empty() && c.path.is_empty()),
+                    body_choice: cf.map(|c| c.body_choice).unwrap_or_default(),
+                    cut_bodies: cf.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
+                }
+            }),
+            revolve: (self.state.tool == Tool::Revolve).then(|| {
+                let cr = self.state.creating_revolve.as_ref();
+                context::RevolveControl {
+                    faces: cr.map(|c| c.faces.clone()).unwrap_or_default(),
+                    axis: cr.and_then(|c| c.axis),
+                    // Exactly one picker shows the focus ring (#304): Axis once a
+                    // profile is picked but no axis yet, Profile otherwise.
+                    axis_focused: cr
+                        .is_some_and(|c| !c.faces.is_empty() && c.axis.is_none()),
+                    symmetric: cr.map(|c| c.symmetric).unwrap_or(false),
+                    body_choice: cr.map(|c| c.body_choice).unwrap_or_default(),
+                    cut_bodies: cr.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
+                }
+            }),
+            calibrate_start: (self.state.creating_calibration.is_none()).then(|| {
+                let mut only_image = None;
+                for element in self.state.scene_selection.iter() {
+                    match (element, only_image) {
+                        (SceneElement::Image(i), None) => only_image = Some(i),
+                        _ => return None,
+                    }
+                }
+                only_image.filter(|&i| {
+                    self.state.doc.tracing_images.get(i).is_some_and(|img| !img.deleted)
+                })
+            }).flatten(),
+            calibrate_pending: self
+                .state
+                .creating_calibration
+                .as_ref()
+                .filter(|cal| cal.points.len() < 2)
+                .map(|cal| cal.points.len()),
+            // Dimension tool in 3D (#618): the derived-parameter name/value/commit block.
+            dimension_derive: (self.state.tool == Tool::Dimension
+                && self.state.sketch_session.is_none()
+                && self.state.editing_drawing.is_none())
+            .then(|| context::DimensionDeriveControl {
+                name_text: self.state.dimension_param_name.clone(),
+            }),
+            // The dimension being typed, mirrored into the pane (#775).
+            dimension_edit: self.state.editing_committed_dim.as_ref().map(|edit| {
+                context::DimensionEditControl {
+                    text: edit.text.clone(),
+                    is_angle: edit.target.is_angle(&self.state.doc),
+                }
+            }),
+            // The chamfer/fillet amount being set, edge- or vertex-flavoured (#792).
+            treatment: self
+                .state
+                .creating_edge_treatment
+                .as_ref()
+                .map(|cet| context::TreatmentControl {
+                    text: cet.text.clone(),
+                    kind: cet.kind,
+                })
+                .or_else(|| {
+                    self.state.creating_vertex_treatment.as_ref().map(|cvt| {
+                        context::TreatmentControl {
+                            text: cvt.text.clone(),
+                            kind: cvt.kind,
+                        }
+                    })
+                }),
+        };
+            context::context_pane_content(&context_input)
+        };
+        context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
+        context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
+        if self.state.panes.is_visible(Pane::Context) {
             let mut construction_change: Option<bool> = None;
             let mut rect_anchor_change: Option<actions::RectAnchor> = None;
             let mut shape_edit: Option<context::ShapeEdit> = None;
@@ -13779,7 +13785,7 @@ impl eframe::App for App {
                     }
                     _ => {
                         self.state.editing_drawing = None;
-                        self.draw_viewport(ui, render_state);
+                        self.draw_viewport(ui, render_state, &content.tool_pickers);
                     }
                 }
             });
@@ -14415,6 +14421,31 @@ fn select_tool_element_from_pick(
 /// else is the analytic face it actually is.
 fn mirror_plane_scene_element(face: &model::FaceId) -> hierarchy::SceneElement {
     hierarchy::SceneElement::from_face_id(face.clone())
+}
+
+/// What the active tool's pickers contribute to the viewport highlight (#961): the elements to
+/// style as selected, and the bodies to paint in the destructive red fill instead.
+///
+/// A picker whose `selected_color` is the cut accent is consuming what it holds, so its bodies
+/// read red rather than blue. Everything else folds into the throwaway selection the scene
+/// renders — which is why a tool's picked set lights up because the tool *has* pickers, not
+/// because the viewport was told about that tool.
+fn picker_highlights(
+    views: &[context::ToolPickerView],
+) -> (Vec<SceneElement>, Vec<usize>) {
+    let mut folded = Vec::new();
+    let mut cut_bodies = Vec::new();
+    for view in views {
+        let destructive =
+            view.picker.selected_color(crate::theme::FOCUS_ACCENT) == crate::theme::CUT_ACCENT;
+        for element in view.picker.picked() {
+            match element {
+                SceneElement::Body(bi) if destructive => cut_bodies.push(*bi),
+                other => folded.push(other.clone()),
+            }
+        }
+    }
+    (folded, cut_bodies)
 }
 
 /// Apply a tool-owned element picker's row action (#213) to its backing set: `Remove(i)` drops
@@ -20832,6 +20863,9 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         render_state: Option<&eframe::egui_wgpu::RenderState>,
+        // The active tool's pickers (#973/#961): what each holds is highlighted in that
+        // picker's own colour, so the viewport never has to know which tool owns which set.
+        tool_pickers: &[context::ToolPickerView],
     ) {
         self.handle_in_progress_object_keyboard(ui);
 
@@ -23446,125 +23480,63 @@ impl App {
                 }
             }
         }
-        // Every tool that gathers a set through an element picker (#213) shows that picked set
-        // with the selection highlight in the viewport — "all currently selected elements on a
-        // focused element picker should be styled as selected" — without disturbing the
-        // persistent selection. Fold each active tool's picked SceneElements into a throwaway
-        // selection used only for the scene. (Chamfer/Fillet edges are highlighted separately
-        // via `creating_edge_treatment` passed to the scene builder.)
-        let mut folded: Vec<SceneElement> = Vec::new();
-        // Bodies picked into a destructive (cut) picker are highlighted red instead of the
-        // blue selection style (#213), so they aren't folded into `render_selection`.
-        let mut cut_highlight_bodies: Vec<usize> = Vec::new();
-        match self.state.tool {
-            Tool::Loft => {
-                if let Some(cl) = self.state.creating_loft.as_ref() {
-                    for section in &cl.sections {
-                        folded.extend(extrude::loft_section_scene_elements(section));
-                    }
-                    // Loft's cut bodies are consumed destructively → red (#479).
-                    cut_highlight_bodies.extend(cl.cut_bodies.iter().copied());
+        // Every tool that gathers a set through an element picker shows that picked set
+        // highlighted in the viewport (#213), in **that picker's own colour** (#961): the
+        // theme's selection blue by default, red for a picker whose elements the operation
+        // consumes. This used to be a per-tool match listing, by hand, which sets to fold and
+        // which bodies to paint red — so a tool missing from it highlighted nothing, and Slice's
+        // cutters never got the red this spec has always promised them. Asking the pickers
+        // means a tool's sets light up because it *has* pickers, not because it was listed.
+        let (mut folded, cut_highlight_bodies) = picker_highlights(tool_pickers);
+        // A picked profile face highlights as the geometry that bounds it (#303) — its circle,
+        // or its boundary lines — since an analytic face has no fill of its own to light up.
+        let profile_geometry: Vec<SceneElement> = folded
+            .iter()
+            .filter_map(|e| e.as_face_id())
+            .filter_map(|face| match face {
+                model::FaceId::Circle(ci) => {
+                    Some(vec![SceneElement::Circle(ci)])
                 }
+                model::FaceId::Polygon(lines) => {
+                    Some(lines.iter().map(|&li| SceneElement::Line(li)).collect())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        folded.extend(profile_geometry);
+        // The in-sketch Mirror tool's line and sources (#528) and the in-sketch Repeat's
+        // targets (#232) have no pickers of their own yet, so they still fold by hand.
+        if self.state.tool == Tool::Mirror {
+            if let Some(sm) = self.state.creating_sketch_mirror.as_ref() {
+                folded.extend(sm.line_targets.iter().map(|&li| SceneElement::Line(li)));
+                folded.extend(sm.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
+                folded.extend(sm.line.map(SceneElement::Line));
             }
-            Tool::Combine => {
-                if let Some(cb) = self.state.creating_boolean.as_ref() {
-                    folded.extend(cb.a.iter().map(|&bi| SceneElement::Body(bi)));
-                    // In a Cut, the B side is carved away — highlight it red; otherwise blue.
-                    if cb.kind == model::BooleanOpKind::Cut {
-                        cut_highlight_bodies.extend(cb.b.iter().copied());
-                    } else {
-                        folded.extend(cb.b.iter().map(|&bi| SceneElement::Body(bi)));
-                    }
-                }
+        }
+        if self.state.tool == Tool::Repeat {
+            if let Some(cr) = self.state.creating_sketch_repeat.as_ref() {
+                folded.extend(cr.line_targets.iter().map(|&li| SceneElement::Line(li)));
+                folded.extend(cr.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
             }
-            Tool::Move => {
-                if let Some(cm) = self.state.creating_move.as_ref() {
-                    folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
-                }
+        }
+        if self.state.tool == Tool::Offset {
+            if let Some(co) = self.state.creating_sketch_offset.as_ref() {
+                folded.extend(co.line_targets.iter().map(|&li| SceneElement::Line(li)));
+                folded.extend(co.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
             }
-            Tool::Joint => {
-                if let Some(cj) = self.state.creating_joint.as_ref() {
-                    for member in &cj.members {
-                        folded.extend(
-                            joints::member_bodies(&self.state.doc, *member)
-                                .into_iter()
-                                .map(SceneElement::Body),
-                        );
-                    }
-                }
-            }
-            Tool::Mirror => {
-                if let Some(cm) = self.state.creating_mirror.as_ref() {
-                    folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
-                }
-                // In-sketch mirror sources (#528).
-                if let Some(sm) = self.state.creating_sketch_mirror.as_ref() {
-                    folded.extend(sm.line_targets.iter().map(|&li| SceneElement::Line(li)));
-                    folded.extend(sm.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
-                    if let Some(li) = sm.line {
-                        folded.push(SceneElement::Line(li));
-                    }
-                }
-            }
-            Tool::Repeat => {
-                if let Some(cr) = self.state.creating_repeat.as_ref() {
-                    folded.extend(cr.targets.iter().map(|&bi| SceneElement::Body(bi)));
-                }
-                // In-sketch Repeat targets (#232).
-                if let Some(cr) = self.state.creating_sketch_repeat.as_ref() {
-                    folded.extend(cr.line_targets.iter().map(|&li| SceneElement::Line(li)));
+        }
+        // The Joint tool's members are parts, so the whole body of each lights up.
+        if self.state.tool == Tool::Joint {
+            if let Some(cj) = self.state.creating_joint.as_ref() {
+                for member in &cj.members {
                     folded.extend(
-                        cr.circle_targets
-                            .iter()
-                            .map(|&ci| SceneElement::Circle(ci)),
+                        joints::member_bodies(&self.state.doc, *member)
+                            .into_iter()
+                            .map(SceneElement::Body),
                     );
                 }
             }
-            Tool::Slice => {
-                if let Some(cs) = self.state.creating_slice.as_ref() {
-                    folded.extend(cs.targets.iter().map(|&bi| SceneElement::Body(bi)));
-                    // Construction-plane cutters map to a scene element; face cutters don't.
-                    folded.extend(cs.cutters.iter().filter_map(|f| match f {
-                        model::FaceId::ConstructionPlane(i) => {
-                            Some(SceneElement::ConstructionPlane(*i))
-                        }
-                        _ => None,
-                    }));
-                }
-            }
-            Tool::Revolve => {
-                if let Some(cr) = self.state.creating_revolve.as_ref() {
-                    // Picked profile faces highlight like selected geometry (#303).
-                    for face in &cr.faces {
-                        folded.extend(extrude::extrude_face_scene_elements(face));
-                    }
-                    // Revolve's cut bodies are consumed destructively → red.
-                    cut_highlight_bodies.extend(cr.cut_bodies.iter().copied());
-                }
-            }
-            Tool::Sweep => {
-                if let Some(cf) = self.state.creating_sweep.as_ref() {
-                    // Picked profile faces and path lines highlight like selected geometry.
-                    for face in &cf.faces {
-                        folded.extend(extrude::extrude_face_scene_elements(face));
-                    }
-                    folded.extend(cf.path.iter().map(|&li| SceneElement::Line(li)));
-                    // The cut bodies are consumed destructively → red.
-                    cut_highlight_bodies.extend(cf.cut_bodies.iter().copied());
-                }
-            }
-            Tool::Offset => {
-                // Entities in the offset set highlight like selected geometry (#512).
-                if let Some(co) = self.state.creating_sketch_offset.as_ref() {
-                    folded.extend(co.line_targets.iter().map(|&li| SceneElement::Line(li)));
-                    folded.extend(
-                        co.circle_targets
-                            .iter()
-                            .map(|&ci| SceneElement::Circle(ci)),
-                    );
-                }
-            }
-            _ => {}
         }
         let render_selection = if folded.is_empty() {
             std::borrow::Cow::Borrowed(&self.state.scene_selection)
@@ -27964,6 +27936,39 @@ mod tests {
     /// #656: the Move tool steps through its pickers on its own — bodies, then the source
     /// point, then the target point when snapping — so picking one thing arms the next. A
     /// picker focused by hand wins until it's satisfied (#658).
+    #[test]
+    fn a_destructive_pickers_bodies_read_red_the_rest_blue() {
+        // #961: the viewport asks each picker for its colour instead of a per-tool match
+        // listing which sets to fold and which bodies to paint red.
+        use crate::context::{PickerTarget, ToolPickerView};
+        use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
+        let doc = model::Document::default();
+        let body_picker = |color: Option<egui::Color32>, bodies: &[usize]| {
+            let mut p =
+                ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
+            if let Some(c) = color {
+                p = p.with_selected_color(c);
+            }
+            // A plain filter with no `LiveBody` rule, so the test needs no real bodies.
+            p.set_picked(&doc, bodies.iter().map(|&b| SceneElement::Body(b)));
+            ToolPickerView {
+                heading: "set",
+                picker: p,
+                target: PickerTarget::SliceTargets,
+                separator_above: true,
+            }
+        };
+        let kept = body_picker(None, &[1, 2]);
+        let consumed = body_picker(Some(crate::theme::CUT_ACCENT), &[3]);
+        let (folded, cut) = picker_highlights(&[kept, consumed]);
+        assert_eq!(folded, vec![SceneElement::Body(1), SceneElement::Body(2)]);
+        assert_eq!(cut, vec![3], "a consumed body reads red, not blue");
+
+        // No pickers at all — nothing to highlight, and nothing to special-case.
+        let (folded, cut) = picker_highlights(&[]);
+        assert!(folded.is_empty() && cut.is_empty());
+    }
+
     #[test]
     fn a_focus_chain_walks_to_the_first_unfilled_picker() {
         // The generic walk behind both the Move and Joint chains (#954/#962): a single-pick

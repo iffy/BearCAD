@@ -2652,7 +2652,13 @@ modeled on SolveSpace (https://solvespace.com).
   (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is
   focused when you click it). Whatever a picker holds is **styled as selected in the viewport**
   while the tool is active (folded into the scene's highlight set, not the persistent
-  selection). While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
+  selection). Which colour it renders in comes from the **picker** (#961): the theme selection
+  blue by default, the red cut accent for a picker whose elements the operation consumes. The
+  viewport iterates the active tool's pickers (`picker_highlights`) rather than matching on the
+  tool, so a set lights up because its tool *has* a picker for it, not because the viewport was
+  told about that tool. Deriving the pickers is therefore **not** gated on the Context pane
+  being visible (#973) — the pane's visibility gates only its rendering.
+  While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
   the cursor hover-highlights** as selectable — the same whole-body resolution the click uses
   (#227).
 - **Whole-body vs. sub-element picking (#218):** a viewport click picks a **whole body** only
