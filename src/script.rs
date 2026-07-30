@@ -1779,6 +1779,21 @@ fn eval_scalar_input(
 
 fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
     match element {
+        // A drawing's three item types script by their own kind names (#363/#967); a
+        // dimension has no index of its own, so it reports the view it is shown on.
+        SceneElement::DrawingElement { element, .. } => {
+            use crate::context::DrawingElementRef as D;
+            let (kind, index) = match element {
+                D::Projection(i) => ("projection", i),
+                D::Text(i) => ("annotation", i),
+                D::Dimension { view, .. } => ("drawing_dimension", view),
+            };
+            ElementScriptTokens {
+                kind,
+                index,
+                point: None,
+            }
+        }
         SceneElement::ConstructionPlane(i) => ElementScriptTokens {
             kind: "construction_plane",
             index: i,

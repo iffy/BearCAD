@@ -8,6 +8,8 @@ use crate::value::format_length_display_in;
 /// Map a selected element to the object that owns a user-visible name.
 pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
     match element {
+        // A drawing's items aren't renameable (#967); the drawing itself is.
+        SceneElement::DrawingElement { .. } => None,
         SceneElement::ConstructionPlane(_)
         | SceneElement::Sketch(_)
         | SceneElement::Line(_)
@@ -155,6 +157,9 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Line(index) => doc.lines.get(index)?.name.as_deref(),
         SceneElement::Circle(index) => doc.circles.get(index)?.name.as_deref(),
         SceneElement::Constraint(index) => doc.constraints.get(index)?.name.as_deref(),
+        // A drawing item's name is the page's own (#967) — a view or a note has no stored
+        // name of its own to rename.
+        SceneElement::DrawingElement { .. } => None,
         SceneElement::Extrusion(index) => doc.extrusions.get(index)?.name.as_deref(),
         SceneElement::Body(index) => doc.bodies.get(index)?.name.as_deref(),
         SceneElement::Image(index) => doc.tracing_images.get(index)?.name.as_deref(),
@@ -237,6 +242,9 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("circle {index} not found"))?;
             circle.name = stored;
+        }
+        SceneElement::DrawingElement { .. } => {
+            return Err("a drawing's items have no name of their own".to_string())
         }
         SceneElement::Constraint(index) => {
             let constraint = doc
@@ -695,6 +703,30 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Constraint(i) => format!("Constraint {i}"),
+        // The same label the Elements pane gives the row (#967), so the picker and the pane
+        // name the thing identically.
+        SceneElement::DrawingElement { drawing, element } => {
+            use crate::context::DrawingElementRef as D;
+            node_label(
+                doc,
+                match element {
+                    D::Projection(view) => HierarchyNode::DrawingProjection {
+                        drawing: *drawing,
+                        view: *view,
+                    },
+                    D::Text(annotation) => HierarchyNode::DrawingAnnotation {
+                        drawing: *drawing,
+                        annotation: *annotation,
+                    },
+                    D::Dimension { view, a, b } => HierarchyNode::DrawingDimension {
+                        drawing: *drawing,
+                        view: *view,
+                        a: *a,
+                        b: *b,
+                    },
+                },
+            )
+        }
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),
         SceneElement::Body(i) => format!("Body {i}"),
         SceneElement::FaceEdge(_) => "Edge".to_string(),

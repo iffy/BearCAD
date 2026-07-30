@@ -3005,6 +3005,8 @@ impl<'a> SceneMesh<'a> {
         let restore = self.index_layer;
         self.set_index_layer(MeshIndexLayer::Wireframe);
         match element {
+            // Nothing on a drawing page draws in the 3D viewport (#967).
+            SceneElement::DrawingElement { .. } => {}
             SceneElement::Line(index) => {
                 self.push_pick_target_highlight(
                     doc,

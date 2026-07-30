@@ -97,6 +97,15 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
         SceneElement::Joint(_) => "joint",
+        // The drawing workbench's three page-item kinds (#363/#967).
+        SceneElement::DrawingElement { element, .. } => {
+            use crate::context::DrawingElementRef as D;
+            match element {
+                D::Projection(_) => "projection",
+                D::Text(_) => "annotation",
+                D::Dimension { .. } => "drawing_dimension",
+            }
+        }
     }
 }
 
@@ -113,6 +122,15 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::MovePoint(_) => None,
         SceneElement::ExtrusionEdge { extrusion, .. } => Some(*extrusion),
         SceneElement::RepeatedFace { instance, .. } => Some(*instance),
+        // A page item indexes by its place on the page; a dimension has no index of its own,
+        // so it reports the view it is shown on (#967).
+        SceneElement::DrawingElement { element, .. } => {
+            use crate::context::DrawingElementRef as D;
+            Some(match element {
+                D::Projection(i) | D::Text(i) => *i,
+                D::Dimension { view, .. } => *view,
+            })
+        }
         // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
         SceneElement::GlobalAxis(axis) => Some(match axis {
             crate::construction::GlobalAxis::X => 0,

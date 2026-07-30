@@ -120,6 +120,15 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Component(_) => "component",
         SceneElement::UnitInstance(_) => "unit_instance",
         SceneElement::Joint(_) => "joint",
+        // A drawing's three item types keep their own script names (#363/#967).
+        SceneElement::DrawingElement { element, .. } => {
+            use crate::context::DrawingElementRef as D;
+            match element {
+                D::Projection(_) => "projection",
+                D::Text(_) => "annotation",
+                D::Dimension { .. } => "drawing_dimension",
+            }
+        }
     }
 }
 
@@ -167,6 +176,15 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::MovePoint(_) => 0,
         SceneElement::ExtrusionEdge { extrusion, .. } => extrusion,
         SceneElement::RepeatedFace { instance, .. } => instance,
+        // A drawing item indexes by its place on the page; a dimension has no index of its
+        // own, so it reports the view it's on.
+        SceneElement::DrawingElement { element, .. } => {
+            use crate::context::DrawingElementRef as D;
+            match element {
+                D::Projection(i) | D::Text(i) => i,
+                D::Dimension { view, .. } => view,
+            }
+        }
     }
 }
 

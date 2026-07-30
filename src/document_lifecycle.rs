@@ -38,6 +38,12 @@ pub fn construction_plane_alive(doc: &Document, index: usize) -> bool {
 /// Whether a scene element is present and not tombstoned.
 pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
     match element {
+        // A drawing item lives as long as its page does; the page's own bookkeeping
+        // renumbers or drops what's on it (#967).
+        SceneElement::DrawingElement { drawing, .. } => doc
+            .drawings
+            .get(drawing)
+            .is_some_and(|d| !d.deleted),
         SceneElement::ConstructionPlane(index) => construction_plane_alive(doc, index),
         SceneElement::Sketch(sketch) => sketch_alive(doc, sketch),
         SceneElement::Line(index) => line_alive(doc, index),
@@ -226,6 +232,9 @@ pub fn delete_targets_from_selection(selection: &SceneSelection) -> Vec<SceneEle
 pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
     let mut changed = false;
     match element {
+        // Deleting from a drawing page goes through the drawing's own actions (#967), which
+        // renumber what's left; there is nothing to tombstone here.
+        SceneElement::DrawingElement { .. } => {}
         // Deleting a component re-homes its members and child components to its parent
         // (#423) — grouping is organizational, so nothing inside is deleted.
         SceneElement::Component(index) => {

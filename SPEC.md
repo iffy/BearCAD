@@ -3646,6 +3646,14 @@ The model in one place:
   summary counts — a pick limit (a whole number or unlimited), an
   optional override of the selected-element highlight color (defaulting to the theme selection
   color), and any number of **pick rules** (#953).
+- **The drawing workbench (#967)** is inside the model, not beside it. A thing on a page is a
+  `SceneElement::DrawingElement { drawing, element }`, and its three sorts are three kinds —
+  `Projection`, `Annotation`, `Dimension` — so each row keeps the icon the Elements pane gives
+  it (#363) and the Aligned-view tool's **Base view** can ask for a projection and nothing else
+  (a `Finite(1)` picker, where it used to be an `Option<Option<…>>` standing in for one). The
+  Select tool's page selection is an ordinary multi-pick picker over the three. The **Add-view**
+  tool has no picker: its click *creates* a projection of what was clicked rather than gathering
+  it, which is a different act from picking.
 - **Two representations of a face (#957):** a body's cap reaches the cursor twice — as the
   quantized mesh face (`ElementKind::Face`) and as the analytic surface that generated it
   (`ElementKind::Profile`: a sketch profile, an extrude cap or side wall, a revolve's flat

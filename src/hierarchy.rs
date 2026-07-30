@@ -119,6 +119,13 @@ pub enum HierarchyNode {
 /// `Copy`. Callers that used to rely on implicit copies now need an explicit `.clone()`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SceneElement {
+    /// A thing on a drawing page (#967): a projected view, a text note, or a shown dimension.
+    /// The drawing workbench had its own parallel selection world because its items weren't
+    /// scene elements; this is what lets its inputs be ordinary element pickers.
+    DrawingElement {
+        drawing: usize,
+        element: crate::context::DrawingElementRef,
+    },
     ConstructionPlane(usize),
     Sketch(SketchId),
     Line(usize),
@@ -537,6 +544,8 @@ impl ElementVisibility {
             }
         }
         match element {
+            // A drawing's items are shown on the page, not hidden through the scene (#967).
+            SceneElement::DrawingElement { .. } => true,
             // A unit instance's visibility is just its own toggle (#723).
             SceneElement::UnitInstance(_) => true,
             SceneElement::Component(index) => doc
@@ -1622,7 +1631,10 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
-        | SceneElement::RepeatedFace { .. } => return None,
+        | SceneElement::RepeatedFace { .. }
+        // A drawing's items have rows under their page, keyed by the page rather than by a
+        // graph node of their own (#967).
+        | SceneElement::DrawingElement { .. } => return None,
     })
 }
 
@@ -2574,6 +2586,8 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
 
 fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement> {
     match element {
+        // A drawing item's parent is its page, which has no scene element of its own (#967).
+        SceneElement::DrawingElement { .. } => None,
         // A unit instance is always a top-level row (#723).
         SceneElement::UnitInstance(_) => None,
         SceneElement::Component(index) => doc
@@ -2679,6 +2693,8 @@ fn collect_ancestors(doc: &Document, element: SceneElement, out: &mut HashSet<Sc
 
 fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<SceneElement>) {
     match element {
+        // Nothing hangs off a drawing item (#967).
+        SceneElement::DrawingElement { .. } => {}
         // A unit's contents have no scene identity to collect (#723).
         SceneElement::UnitInstance(_) => {}
         SceneElement::Component(index) => {

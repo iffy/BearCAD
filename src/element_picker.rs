@@ -56,6 +56,12 @@ pub enum ElementKind {
     /// everything takes both.
     Profile,
     Constraint,
+    /// A projected view on a drawing page (#967).
+    Projection,
+    /// A text note on a drawing page (#967).
+    Annotation,
+    /// A dimension shown on a drawing page (#967).
+    Dimension,
     /// A solid body.
     Body,
     Image,
@@ -77,7 +83,7 @@ impl ElementKind {
     /// walking this list, so a kind left out is one no picker can accept and no summary can
     /// count (which is exactly what happened to `Image`). `every_kind_is_in_the_canonical_order`
     /// guards that.
-    pub const ORDER: [ElementKind; 15] = [
+    pub const ORDER: [ElementKind; 18] = [
         ElementKind::Plane,
         ElementKind::Image,
         ElementKind::Sketch,
@@ -89,6 +95,9 @@ impl ElementKind {
         ElementKind::Face,
         ElementKind::Profile,
         ElementKind::Constraint,
+        ElementKind::Projection,
+        ElementKind::Annotation,
+        ElementKind::Dimension,
         ElementKind::Body,
         ElementKind::Component,
         ElementKind::Joint,
@@ -119,6 +128,17 @@ impl ElementKind {
             SceneElement::RepeatedFace { .. } => ElementKind::Profile,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
+            // A drawing's three item types keep their own kinds (#363/#967), so a picker can
+            // say "projections only" — which is exactly what the Aligned-view tool's base
+            // view wants — and each row keeps the icon the Elements pane gives it.
+            SceneElement::DrawingElement { element, .. } => {
+                use crate::context::DrawingElementRef as D;
+                match element {
+                    D::Projection(_) => ElementKind::Projection,
+                    D::Text(_) => ElementKind::Annotation,
+                    D::Dimension { .. } => ElementKind::Dimension,
+                }
+            }
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
             // accept it without also accepting whole bodies.
             SceneElement::BodyFace { .. } => ElementKind::Face,
@@ -159,6 +179,9 @@ impl ElementKind {
             ElementKind::Edge => IconId::Line,
             ElementKind::Face | ElementKind::Profile => IconId::Face,
             ElementKind::Constraint => IconId::Constraint,
+            ElementKind::Projection => IconId::Projection,
+            ElementKind::Annotation => IconId::Text,
+            ElementKind::Dimension => IconId::Dimension,
             ElementKind::Body => IconId::Body,
             ElementKind::Component => IconId::Component,
             ElementKind::Joint => IconId::Joint,
@@ -180,6 +203,9 @@ impl ElementKind {
             ElementKind::Face => "face",
             ElementKind::Profile => "profile",
             ElementKind::Constraint => "constraint",
+            ElementKind::Projection => "projection",
+            ElementKind::Annotation => "annotation",
+            ElementKind::Dimension => "dimension",
             ElementKind::Body => "body",
             ElementKind::Component => "component",
             ElementKind::Joint => "joint",
@@ -218,6 +244,11 @@ pub fn default_pick_band(kind: ElementKind) -> usize {
         ElementKind::Vertex => 0,
         ElementKind::Edge | ElementKind::Line | ElementKind::Circle | ElementKind::Axis => 1,
         ElementKind::Constraint => 2,
+        // A drawing's items don't share a viewport with anything else, so their band only has
+        // to order them among themselves: a dimension over a note over the view beneath both.
+        ElementKind::Dimension => 2,
+        ElementKind::Annotation => 3,
+        ElementKind::Projection => 5,
         ElementKind::Face | ElementKind::Profile => 3,
         ElementKind::Plane | ElementKind::Image => 4,
         ElementKind::Sketch => 5,

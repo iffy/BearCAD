@@ -23,6 +23,8 @@ pub struct ContextInput<'a> {
     /// True while a technical drawing is open (#317): the model-only "Selection" element picker
     /// is suppressed, since drawing projections/annotations have their own selection state.
     pub in_drawing_workbench: bool,
+    /// The open drawing page (#967), so a drawing item's element can name which page it is on.
+    pub open_drawing: Option<usize>,
     pub draw_rect_construction: Option<bool>,
     /// Rectangle anchor mode (#532): `Some` while the Rectangle tool is active.
     pub rect_anchor: Option<crate::actions::RectAnchor>,
@@ -733,20 +735,11 @@ pub struct DrawingAnnotationControl {
 
 /// A drawing element highlighted on the open page (#328/#341): a projection, a text note, or a
 /// shown dimension. Used to mark the element the Elements-pane row is hovering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DrawingElementRef {
     Projection(usize),
     Text(usize),
     Dimension { view: usize, a: [i32; 3], b: [i32; 3] },
-}
-
-/// The icon for a drawing element, matching the one the Elements pane uses for it (#363).
-pub fn drawing_element_icon(element: DrawingElementRef) -> crate::icons::IconId {
-    match element {
-        DrawingElementRef::Projection(_) => crate::icons::IconId::Projection,
-        DrawingElementRef::Text(_) => crate::icons::IconId::Text,
-        DrawingElementRef::Dimension { .. } => crate::icons::IconId::Dimension,
-    }
 }
 
 /// One edit from the drawing-annotation context section (#312).
@@ -1295,6 +1288,11 @@ pub enum PickerTarget {
     CombineA,
     /// The Combine tool's side-B bodies (`CreatingBoolean::b`).
     CombineB,
+    /// The drawing Select tool's picked page items (#346/#967).
+    DrawingSelection,
+    /// The Aligned-view tool's base projection (#365/#967): the view a new aligned view lines
+    /// up with. Single-pick, projections only.
+    DrawingAlignBase,
     /// The unified selection picker (#213): what the Select, Constraint, Dimension,
     /// Chamfer/Fillet, Sketch and Project tools pick into.
     Selection,
@@ -2370,6 +2368,62 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             picker: shapes,
             target: PickerTarget::SketchMirrorShapes,
             separator_above: false,
+            render: PickerRender::Inline,
+        });
+    }
+    if input.in_drawing_workbench && input.tool == Tool::Select {
+        let rows = &input.drawing_selection;
+        // The drawing workbench's Select tool (#346/#967): its page items are ordinary
+        // elements now, so its input is an ordinary picker — one that takes the three drawing
+        // kinds, each keeping the icon the Elements pane gives it (#363).
+        let mut picker = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Projection,
+                ElementKind::Annotation,
+                ElementKind::Dimension,
+            ]),
+            PickLimit::Infinite,
+        );
+        picker.set_focused(true);
+        picker.set_picked(
+            input.doc,
+            rows.iter().map(|(drawing, element, _)| SceneElement::DrawingElement {
+                drawing: *drawing,
+                element: *element,
+            }),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Selection",
+            picker,
+            target: PickerTarget::DrawingSelection,
+            separator_above: true,
+            render: PickerRender::Inline,
+        });
+    }
+    if input.drawing_align_active {
+        let base = &input.drawing_align_base;
+        // The Aligned-view tool's base view (#365/#967): a single projection, which the
+        // `Projection` kind expresses directly — it used to be an `Option<Option<..>>` standing
+        // in for a `Finite(1)` picker.
+        let mut picker = ElementPicker::new(
+            ElementFilter::kind(ElementKind::Projection),
+            PickLimit::Finite(1),
+        );
+        picker.set_focused(true);
+        if let (Some((view, _)), Some(drawing)) = (base.as_ref(), input.open_drawing) {
+            picker.set_picked(
+                input.doc,
+                [SceneElement::DrawingElement {
+                    drawing,
+                    element: DrawingElementRef::Projection(*view),
+                }],
+            );
+        }
+        tool_pickers.push(ToolPickerView {
+            heading: "Base view",
+            picker,
+            target: PickerTarget::DrawingAlignBase,
+            separator_above: true,
             render: PickerRender::Inline,
         });
     }
@@ -4216,25 +4270,18 @@ pub fn show_pane(
     // Elements pane and the page.
     if let Some(rows) = &content.drawing_selection {
         any_control = true;
-        // Each row carries the same icon the Elements pane uses for that element kind (#363).
-        let icon_rows: Vec<(crate::icons::IconId, String)> = rows
+        // A real picker (#967), drawn here where it belongs in the drawing block. Each row
+        // carries the icon its kind gives it (#363), which is why the three drawing kinds are
+        // separate `ElementKind`s rather than one.
+        let view = content
+            .tool_pickers
             .iter()
-            .map(|(_, element, label)| (drawing_element_icon(*element), label.clone()))
-            .collect();
+            .find(|v| v.target == PickerTarget::DrawingSelection);
         labeled_row_top(ui, "Selection", |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
-            if let Some(event) = crate::element_picker::show_rows(
-                ui,
-                "drawing_selection_picker",
-                true,
-                &[
-                    crate::icons::IconId::Projection,
-                    crate::icons::IconId::Text,
-                    crate::icons::IconId::Dimension,
-                ],
-                false,
-                &icon_rows,
-            ) {
+            if let Some(event) = view.and_then(|view| {
+                crate::element_picker::show(ui, &view.picker, doc, "drawing_selection_picker")
+            }) {
                 match event {
                     crate::element_picker::PickerEvent::Focus => {}
                     crate::element_picker::PickerEvent::Remove(i) => {
@@ -4258,20 +4305,16 @@ pub fn show_pane(
     // projection (on the page or in the Elements pane). Always focused as a pick cue.
     if let Some(base) = &content.drawing_align {
         any_control = true;
-        let rows: Vec<(crate::icons::IconId, String)> = base
+        let _ = base;
+        let view = content
+            .tool_pickers
             .iter()
-            .map(|(_, label)| (crate::icons::IconId::Projection, label.clone()))
-            .collect();
+            .find(|v| v.target == PickerTarget::DrawingAlignBase);
         labeled_row_top(ui, "Base view", |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
-            if let Some(event) = crate::element_picker::show_rows(
-                ui,
-                "drawing_align_base_picker",
-                true,
-                &[crate::icons::IconId::Projection],
-                true,
-                &rows,
-            ) {
+            if let Some(event) = view.and_then(|view| {
+                crate::element_picker::show(ui, &view.picker, doc, "drawing_align_base_picker")
+            }) {
                 if matches!(
                     event,
                     crate::element_picker::PickerEvent::Remove(_)
@@ -7227,6 +7270,7 @@ mod tests {
             selection,
             tool: Tool::Select,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: None,
             rect_anchor: None,
             circle_anchor: None,
@@ -7356,6 +7400,7 @@ mod tests {
         let repeat = context_pane_content(&ContextInput {
             tool: Tool::Repeat,
             in_drawing_workbench: false,
+            open_drawing: None,
             ..input(&doc, &selection)
         });
         assert!(repeat.units.is_none(), "Repeat tool hides the units control");
@@ -7387,6 +7432,7 @@ mod tests {
         let dim = context_pane_content(&ContextInput {
             tool: Tool::Dimension,
             in_drawing_workbench: true,
+            open_drawing: None,
             drawing_view: Some(view_control.clone()),
             ..input(&doc, &selection)
         });
@@ -7396,6 +7442,7 @@ mod tests {
         let text = context_pane_content(&ContextInput {
             tool: Tool::Text,
             in_drawing_workbench: true,
+            open_drawing: None,
             drawing_view: Some(view_control),
             ..input(&doc, &selection)
         });
@@ -7439,6 +7486,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             tool: Tool::Extrude,
             in_drawing_workbench: false,
+            open_drawing: None,
             extrude_faces: Some(vec![
                 crate::model::ExtrudeFace::Circle(0),
                 crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
@@ -7576,6 +7624,7 @@ mod tests {
             selection: &selection,
             tool: Tool::Select,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: None,
             rect_anchor: None,
             circle_anchor: None,
@@ -7670,6 +7719,7 @@ mod tests {
             open_sketch: Some(0),
             sketch_axis_screen_dirs: None,
             in_drawing_workbench: false,
+            open_drawing: None,
             ..input(&doc, &selection)
         };
         let picker = context_pane_content(&input)
@@ -7688,6 +7738,7 @@ mod tests {
         let cut_input = ContextInput {
             tool: Tool::Revolve,
             in_drawing_workbench: false,
+            open_drawing: None,
             revolve: Some(RevolveControl {
                 faces: vec![crate::model::ExtrudeFace::Circle(0)],
                 axis: Some(crate::model::RevolveAxis::Y),
@@ -7723,6 +7774,7 @@ mod tests {
         let new_body_input = ContextInput {
             tool: Tool::Revolve,
             in_drawing_workbench: false,
+            open_drawing: None,
             revolve: Some(RevolveControl {
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
                 faces: vec![crate::model::ExtrudeFace::Circle(0)],
@@ -7816,6 +7868,7 @@ mod tests {
         let move_input = ContextInput {
             tool: Tool::Move,
             in_drawing_workbench: false,
+            open_drawing: None,
             move_op: Some(MoveControl {
                 plane_targets: Vec::new(),
                 image_targets: Vec::new(),
@@ -7874,6 +7927,7 @@ mod tests {
         let repeat_input = ContextInput {
             tool: Tool::Repeat,
             in_drawing_workbench: false,
+            open_drawing: None,
             repeat_op: Some(RepeatControl {
                 around_axis: false,
                 can_turn_about_path: true,
@@ -7950,6 +8004,7 @@ mod tests {
             context_pane_content(&ContextInput {
                 tool: Tool::Repeat,
                 in_drawing_workbench: false,
+                open_drawing: None,
                 repeat_op: Some(c),
                 ..input(&doc, &selection)
             })
@@ -8247,6 +8302,7 @@ mod tests {
         let make = |kind, a: Vec<usize>, b: Vec<usize>, picking_b| ContextInput {
             tool: Tool::Combine,
             in_drawing_workbench: false,
+            open_drawing: None,
             boolean_op: Some(BooleanControl {
                 kind,
                 a,
@@ -8431,6 +8487,7 @@ mod tests {
             selection: &SceneSelection::default(),
             tool: Tool::Select,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: Some(true),
             rect_anchor: None,
             circle_anchor: None,
@@ -8570,6 +8627,7 @@ mod tests {
             selection: &SceneSelection::default(),
             tool: Tool::Line,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: None,
             rect_anchor: None,
             circle_anchor: None,
@@ -8785,6 +8843,7 @@ mod tests {
             selection: &SceneSelection::default(),
             tool: Tool::Select,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: Some(false),
             rect_anchor: None,
             circle_anchor: None,
@@ -8861,6 +8920,7 @@ mod tests {
             selection: &sel,
             tool: Tool::Select,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: Some(true),
             rect_anchor: None,
             circle_anchor: None,
@@ -8993,6 +9053,7 @@ mod tests {
             selection: &SceneSelection::default(),
             tool: Tool::Constraint,
             in_drawing_workbench: false,
+            open_drawing: None,
             draw_rect_construction: None,
             rect_anchor: None,
             circle_anchor: None,

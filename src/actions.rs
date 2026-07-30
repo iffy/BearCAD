@@ -5620,6 +5620,9 @@ fn validate_slice_inputs(
 
 fn element_label(element: SceneElement) -> String {
     match element {
+        SceneElement::DrawingElement { drawing, element } => {
+            format!("{element:?} on drawing {drawing}")
+        }
         SceneElement::Component(i) => format!("Component {i}"),
         SceneElement::UnitInstance(i) => format!("Unit instance {i}"),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
@@ -14896,7 +14899,8 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         }
         P::SketchRepeatDirection => state.sketch_repeat_direction_pick = true,
         // The selection picker never blurs while its tool is up — there is nothing to arm.
-        P::Selection => {}
+        // Nor do the drawing workbench's two, each its tool's only picker (#967).
+        P::Selection | P::DrawingSelection | P::DrawingAlignBase => {}
         P::CombineA => {
             if let Some(cb) = state.creating_boolean.as_mut() {
                 cb.picking_b = false;

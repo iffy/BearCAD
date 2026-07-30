@@ -3161,6 +3161,8 @@ pub fn selection_world_bounds(
     };
     for element in selection.iter() {
         match element {
+            // A drawing item is on a page, not in the model, so it contributes no bounds.
+            SceneElement::DrawingElement { .. } => {}
             SceneElement::RepeatOp(op) => {
                 let outputs = doc
                     .repeat_ops

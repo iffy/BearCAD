@@ -11483,6 +11483,7 @@ impl eframe::App for App {
             selection: &self.state.scene_selection,
             tool: self.state.tool,
             in_drawing_workbench: self.state.editing_drawing.is_some(),
+            open_drawing: self.state.editing_drawing,
             draw_rect_construction: self.state.rect_draw_construction_mode(),
             rect_anchor: (self.state.tool == Tool::Rectangle)
                 .then_some(self.state.rect_anchor),
@@ -13542,6 +13543,10 @@ impl eframe::App for App {
                             }
                         }
                     }
+                    // The drawing workbench's pickers are drawn by its own blocks, whose
+                    // removals arrive as a `DrawingSelectionEdit` (#967).
+                    context::PickerTarget::DrawingSelection
+                    | context::PickerTarget::DrawingAlignBase => {}
                     // The selection picker's removals arrive as a `SelectionEdit`, which edits
                     // the selection itself rather than a tool-owned set (#958).
                     context::PickerTarget::Selection => {}
