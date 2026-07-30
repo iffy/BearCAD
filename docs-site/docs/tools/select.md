@@ -60,7 +60,8 @@ dependency graph.
 
 The context pane's **element picker** summarizes the selection by kind (e.g.
 `2 ⟨line⟩ · 1 ⟨body⟩`); click it to list each element, remove any, or **Clear all**. Every
-tool that gathers elements uses this same control.
+tool that gathers elements uses this same control — see
+[Selecting things](/docs/selecting).
 
 With nothing selected, the context pane holds the document's
 [**Default units**](/docs/parameters#display-units). **Delete** removes the selection;

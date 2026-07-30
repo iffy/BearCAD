@@ -2616,77 +2616,9 @@ modeled on SolveSpace (https://solvespace.com).
     (`ExploderState::hovered_leaf`); a hovered **group** loupe instead lights up **all its members**
     at once in the 3D view (`hovered_group_members` → the scene's `extra_pick_highlights`); a back
     loupe only navigates. Single-element loupes still select their element on click, unchanged.
-- **Element picker for the Select tool (#202/#213):** while the Select tool is active the
-  context pane shows the unified **element picker** — a focusable, combo-box-style input that
-  is the single, consistent way every tool gathers the elements it operates on. Collapsed it
-  reads like a text input: a **generic empty state** (#388) — the count (`0`, or `0/1` for a
-  single-select picker) beside dimmed icons of the element kinds this picker can take (no
-  per-tool placeholder prose) — otherwise a compact
-  `N ⟨icon⟩` summary per element kind (e.g. `2 ⟨line⟩ · 1 ⟨body⟩`; a single-select picker
-  reads `1/1`). Clicking it opens a popup
-  listing each picked element (kind icon + name) with a per-row remove button and a clear-all.
-  The Select tool's instance is configured to accept **every** element kind and is
-  **always shown and always focused** (it never blurs). Suppressed only while a draw
-  construction owns the pane. Each picker instance is configured with: the subset of element
-  kinds it accepts — the full set (`ElementKind::ORDER`, #952) is planes, images, sketches,
-  lines, circles, **axes**, vertices, edges, faces, constraints, bodies, **components**,
-  **joints**, and operations (and, for operations, which sub-kinds); every kind must be listed
-  in `ORDER`, since that is what `ElementFilter::kinds` builds from and what the collapsed
-  summary counts — a pick limit (a whole number or unlimited), an
-  optional override of the selected-element highlight color (defaulting to the theme selection
-  color), and any number of **pick rules** (#953).
-- **Pick rules (#953):** a picker's kinds say *what sort* of thing it takes; its rules say
-  *which ones*, the design's "restrict selection to particular elements/components/bodies". All
-  of a picker's rules must pass, and they gate every path equally — `accepts`, `pick`, and
-  `set_picked` — so a viewport click, a pane click, and a tool handoff can never disagree.
-  `PickRule` is data, not a closure, because a picker lives inside the diffed
-  `ContextPaneContent` and must stay `Clone + Debug + PartialEq`. The rules:
-  `InSketch(sketch)` (what the open sketch owns, #742 — the same `element_in_sketch` the hover
-  and click paths use, so there is one definition and not three), `LiveBody` (not deleted, not
-  consumed by another operation), `OnBodies` / `OffBodies` (the Move tool's start points land on
-  a **moving** body, its end points on stationary geometry, #649/#650), `Straight` (a
-  Revolve axis or Repeat path takes no curve), `Construction(bool)`, and `NotIn(…)` (Combine's B
-  side can't take what side A holds). The Select and Constraint tools mirror the live selection; the construction tools
-  (Combine, Move, Repeat, Slice, Revolve-cut, Loft, Chamfer/Fillet) each present their own
-  in-progress picked set through the same control — with the currently-active picker focused
-  (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is
-  focused when you click it). Whatever a picker holds is **styled as selected in the viewport
-  and in the Elements pane** while the tool is active (#965; folded into the highlight set each
-  of them shows, not into the persistent selection) — a body gathered into Move's set is as
-  picked as one in the selection, and the two views should not disagree about the same thing.
-  Which colour it renders in comes from the **picker** (#961): the theme selection
-  blue by default, the red cut accent for a picker whose elements the operation consumes. The
-  viewport iterates the active tool's pickers (`picker_highlights`) rather than matching on the
-  tool, so a set lights up because its tool *has* a picker for it, not because the viewport was
-  told about that tool. Deriving the pickers is therefore **not** gated on the Context pane
-  being visible (#973) — the pane's visibility gates only its rendering.
-  While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
-  the cursor hover-highlights** as selectable — the same whole-body resolution the click uses
-  (#227).
-- **A tool switch carries the picked set (#956):** changing tools hands the outgoing tool's
-  **primary** picker (its first — the main set it works on) to the new tool's primary picker,
-  which keeps whatever its filter, rules, and limit accept and drops the rest. So bodies
-  gathered in Combine are what Move moves and Repeat repeats, without re-picking; switching to
-  a tool whose primary picker takes faces carries nothing, because nothing offered is valid.
-  The primary rather than the merely focused picker: once the Move tool has advanced focus to a
-  point picker, its focused set is two mating points, which means nothing to Repeat — the
-  bodies do. When the outgoing tool has no picker of its own, the Select tool's **selection**
-  stands in, since that is its picker; the pre-existing "select bodies, then pick Combine"
-  behaviour (#943/#900/#523/#439) is that same rule rather than a separate path.
-- **Whole-body vs. sub-element picking (#218):** a viewport click picks a **whole body** only
-  when the focused picker's accepted types exclude edges, faces, and vertices — so the
-  body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,
-  select a whole body by clicking anywhere on it (edge, corner, or flat face); the Select tool,
-  which accepts sub-elements, picks the edge or corner instead (its **face** picks resolve to the
-  whole body, #902). Regardless of that, an element
-  **clicked in the Elements pane** (or otherwise selected) is offered to the **focused** picker
-  first (#963) — the same picker a viewport click feeds — so you can gather from the pane even
-  for tools where the viewport is picking sub-elements, and a tool's *secondary* picker is
-  reachable from the pane at all (a construction plane clicked while Slice's **Cutters** is
-  armed lands in Cutters). The picker decides: its kinds, rules, and limit say whether the
-  element is a valid pick, and one it refuses falls through to the ordinary selection rather
-  than being forced in. A picker is armed by clicking it, or from a script with
-  `bearcad.ui.picker_focus(name)`.
+- **How selection works** is normative in **§11.4a**, not here: pickers, focus, hover, the
+  Exploder's fan, pick priority, pane clicks, tool-switch handoff, and highlight colour. This
+  section covers what the *constraint tool* selects, not how selecting works.
 - **Fade descendants while editing (#260):** while an operation is being edited (an extrusion,
   a Move/Combine/Repeat/Slice op, or a revolve), the bodies **downstream** of its outputs
   (`extrude::descendant_bodies`, walked forward through consuming operations) render dimmed and
@@ -2697,43 +2629,6 @@ modeled on SolveSpace (https://solvespace.com).
   stays warm), and every faded descendant renders that recomputed geometry in the preview style
   instead of its stale committed solid. Edits without a scratch replay (e.g. boolean/slice input
   re-picks) keep the plain fade.
-- **No picking through bodies (#155/#265):** while selecting (Select/Constraint tools, picks
-  made for a tool such as construction-plane references or dimension targets, and the
-  body-set tools Combine/Move/Repeat/Slice/Revolve), geometry hidden **behind** a visible
-  body under the cursor is not a pick candidate — clicking a body never selects a line buried
-  inside or behind it, and a body-set tool can't pick a body through one in front of it. The
-  probe point is the spot on the candidate nearest the cursor, so a partially hidden edge
-  stays pickable along its visible stretch; hiding a body (Elements pane) removes it as an
-  occluder, restoring the old X-ray behavior deliberately.
-- **A face click fills an edges picker (#960):** when the focused picker takes **edges** and not
-  **faces**, clicking a face means *all of that face's edges*, and hovering it lights all of
-  them up — so what the click does and what the hover shows are the same thing. Without this a
-  face click was simply refused, with nothing on screen to say why.
-  `element_picker::expand_pick` is the rule: the element itself when the picker accepts it,
-  otherwise the face's boundary filtered to what the picker *can* take (a mesh face's feature
-  edges, a sketch profile's lines, a circle profile's circle), and nothing when neither applies.
-  The 3D Chamfer/Fillet tool is the case in the viewport; the Elements pane routes through the
-  same rule (#963).
-- **Pick priority (#959):** when several things crowd the cursor, one shared ranking decides
-  which wins — `element_picker::default_pick_band`, by the candidate's element **kind**:
-  vertex → the linear kinds (edge, line, circle, axis) → constraint → face → plane/image →
-  sketch → body → operations, with the ground last. A tie *inside* a band goes to whichever is
-  nearest in pixels, so a sketch line and a body edge under the same pixel compete on distance
-  rather than one kind always outranking the other. A picker may override the ranking with
-  `ElementPicker::with_priority` — it names only what it wants promoted (the design's "faces over
-  edges"), and everything unnamed keeps the default order behind those. This is the single
-  definition: `PickTarget::beats` reads it, replacing a `u8` hand-assigned at each of eight
-  candidate construction sites plus a bolted-on vertex-beats-edge special case (#242), which the
-  band ordering now states outright — as it does the origin beating its own axes (#240).
-- **3D body sub-element hover (#144):** with the Select tool, hovering a 3D body highlights the
-  **vertex, edge, or face** under the cursor — in that priority order (a corner beats an edge on
-  it, which beats the face they lie on), so it is always clear what a pick would grab. Edges are
-  the solid mesh's feature edges (`solid_mesh_unique_edges`, the same crease/boundary edges the
-  wireframe draws, so this works for any body — extrusion-sourced, boolean-cut, or imported);
-  vertices are the mesh corners; a face is the maximal edge-connected group of coplanar triangles
-  (`solid_mesh_coplanar_faces`), so a whole box side or cylinder cap highlights as one face, with
-  the nearer face winning when two project onto the cursor. The Chamfer/Fillet tool likewise
-  hover-highlights the treatable analytic edge under the cursor before it is clicked.
 - **Selected-body fill (#174):** a selected body's solid also fills in a **more saturated
   blue** than the neutral body grey (in every shading mode), so selection reads on the body itself (#455).
 - **Selected/hovered-body highlight (#455, replacing the #145/#148 aura):** selection and
@@ -3612,6 +3507,155 @@ color constants — regenerated by `cargo test generate_style_swatches -- --igno
   UI font lacks the codepoint, which is exactly the bug this rule prevents. A button that pairs
   an icon with a text label uses `egui::Button::image_and_text` with the SVG texture, not a
   glyph baked into the label string.
+
+### 11.4a Selection model (#951)
+
+**This is the normative description of selection. Every tool follows it; a tool that needs to
+deviate has to say so here, against the stated default.** The per-tool sections declare *which*
+pickers a tool has and what each takes — they do not restate *how* picking behaves.
+
+**Adding a tool?** Its entry point is declaring its pickers. Give the tool an ordered list of
+`ToolPickerView`s (the first is its **primary**), each an `ElementPicker` configured with the
+element kinds it accepts, any `PickRule`s, a pick limit, and — only if its elements are consumed
+by the operation — a selected-colour override. Everything below then applies without further
+work: focus stepping, hover, the Exploder's fan, pane clicks, tool-switch handoff, and the
+viewport highlight. Nothing about a new tool should need a new arm in a `match tool { … }`.
+
+The model in one place:
+
+- **Selection is scoped to element pickers.** A picker holds a list of elements, and defines the
+  **number** and **types** it will take, plus any instance-level **rules** (`PickRule`, #953) —
+  the design's "restrict selection to particular elements/components/bodies". The rules gate
+  every path equally, so a viewport click, a pane click, and a tool-switch handoff can never
+  disagree about what a valid pick is.
+- **Exactly one picker has focus.** A tool declares its pickers in order; focus walks to the
+  first unfilled one, which is how a single-pick picker hands focus on the moment it's filled
+  (`FocusChain`, #954/#962). A hand-picked focus pins the chain until that picker is satisfied,
+  except on the primary — focusing that by hand means "I want to keep adding to it".
+- **Picks land in the focused picker**, whether they come from the 3D viewport, the list
+  Elements pane, or the graph Elements pane (#963); in the panes, from the row's **name or its
+  type icon** (#964). An element the focused picker refuses falls through to the ordinary
+  selection rather than being forced in.
+- **Switching tools carries the picked set** from the outgoing tool's primary picker to the new
+  one's, keeping what it accepts (#956).
+- **What a picker holds is styled as selected** in the viewport and in the Elements pane, in
+  **that picker's** colour (#961/#965).
+- **One pick priority** decides among things crowding the cursor, overridable per picker (#959).
+- **A face click fills an edges picker** with that face's edges when the picker takes edges and
+  not faces (#960).
+- **Everything the focused picker can take highlights on hover**, and the Selection Exploder
+  fans only what it can take. *Not yet true in the code*: the hover path
+  (`resolve_viewport_hover_highlight`) and the Exploder's crowd filter
+  (`exploder_tool_accepts`) still match on the **tool** rather than asking the focused picker,
+  so both have per-tool gaps — #958 and #957 close them. The rule above is what they converge on.
+- **Element picker for the Select tool (#202/#213):** while the Select tool is active the
+  context pane shows the unified **element picker** — a focusable, combo-box-style input that
+  is the single, consistent way every tool gathers the elements it operates on. Collapsed it
+  reads like a text input: a **generic empty state** (#388) — the count (`0`, or `0/1` for a
+  single-select picker) beside dimmed icons of the element kinds this picker can take (no
+  per-tool placeholder prose) — otherwise a compact
+  `N ⟨icon⟩` summary per element kind (e.g. `2 ⟨line⟩ · 1 ⟨body⟩`; a single-select picker
+  reads `1/1`). Clicking it opens a popup
+  listing each picked element (kind icon + name) with a per-row remove button and a clear-all.
+  The Select tool's instance is configured to accept **every** element kind and is
+  **always shown and always focused** (it never blurs). Suppressed only while a draw
+  construction owns the pane. Each picker instance is configured with: the subset of element
+  kinds it accepts — the full set (`ElementKind::ORDER`, #952) is planes, images, sketches,
+  lines, circles, **axes**, vertices, edges, faces, constraints, bodies, **components**,
+  **joints**, and operations (and, for operations, which sub-kinds); every kind must be listed
+  in `ORDER`, since that is what `ElementFilter::kinds` builds from and what the collapsed
+  summary counts — a pick limit (a whole number or unlimited), an
+  optional override of the selected-element highlight color (defaulting to the theme selection
+  color), and any number of **pick rules** (#953).
+- **Pick rules (#953):** a picker's kinds say *what sort* of thing it takes; its rules say
+  *which ones*, the design's "restrict selection to particular elements/components/bodies". All
+  of a picker's rules must pass, and they gate every path equally — `accepts`, `pick`, and
+  `set_picked` — so a viewport click, a pane click, and a tool handoff can never disagree.
+  `PickRule` is data, not a closure, because a picker lives inside the diffed
+  `ContextPaneContent` and must stay `Clone + Debug + PartialEq`. The rules:
+  `InSketch(sketch)` (what the open sketch owns, #742 — the same `element_in_sketch` the hover
+  and click paths use, so there is one definition and not three), `LiveBody` (not deleted, not
+  consumed by another operation), `OnBodies` / `OffBodies` (the Move tool's start points land on
+  a **moving** body, its end points on stationary geometry, #649/#650), `Straight` (a
+  Revolve axis or Repeat path takes no curve), `Construction(bool)`, and `NotIn(…)` (Combine's B
+  side can't take what side A holds). The Select and Constraint tools mirror the live selection; the construction tools
+  (Combine, Move, Repeat, Slice, Revolve-cut, Loft, Chamfer/Fillet) each present their own
+  in-progress picked set through the same control — with the currently-active picker focused
+  (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is
+  focused when you click it). Whatever a picker holds is **styled as selected in the viewport
+  and in the Elements pane** while the tool is active (#965; folded into the highlight set each
+  of them shows, not into the persistent selection) — a body gathered into Move's set is as
+  picked as one in the selection, and the two views should not disagree about the same thing.
+  Which colour it renders in comes from the **picker** (#961): the theme selection
+  blue by default, the red cut accent for a picker whose elements the operation consumes. The
+  viewport iterates the active tool's pickers (`picker_highlights`) rather than matching on the
+  tool, so a set lights up because its tool *has* a picker for it, not because the viewport was
+  told about that tool. Deriving the pickers is therefore **not** gated on the Context pane
+  being visible (#973) — the pane's visibility gates only its rendering.
+  While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
+  the cursor hover-highlights** as selectable — the same whole-body resolution the click uses
+  (#227).
+- **A tool switch carries the picked set (#956):** changing tools hands the outgoing tool's
+  **primary** picker (its first — the main set it works on) to the new tool's primary picker,
+  which keeps whatever its filter, rules, and limit accept and drops the rest. So bodies
+  gathered in Combine are what Move moves and Repeat repeats, without re-picking; switching to
+  a tool whose primary picker takes faces carries nothing, because nothing offered is valid.
+  The primary rather than the merely focused picker: once the Move tool has advanced focus to a
+  point picker, its focused set is two mating points, which means nothing to Repeat — the
+  bodies do. When the outgoing tool has no picker of its own, the Select tool's **selection**
+  stands in, since that is its picker; the pre-existing "select bodies, then pick Combine"
+  behaviour (#943/#900/#523/#439) is that same rule rather than a separate path.
+- **Whole-body vs. sub-element picking (#218):** a viewport click picks a **whole body** only
+  when the focused picker's accepted types exclude edges, faces, and vertices — so the
+  body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,
+  select a whole body by clicking anywhere on it (edge, corner, or flat face); the Select tool,
+  which accepts sub-elements, picks the edge or corner instead (its **face** picks resolve to the
+  whole body, #902). Regardless of that, an element
+  **clicked in the Elements pane** (or otherwise selected) is offered to the **focused** picker
+  first (#963) — the same picker a viewport click feeds — so you can gather from the pane even
+  for tools where the viewport is picking sub-elements, and a tool's *secondary* picker is
+  reachable from the pane at all (a construction plane clicked while Slice's **Cutters** is
+  armed lands in Cutters). The picker decides: its kinds, rules, and limit say whether the
+  element is a valid pick, and one it refuses falls through to the ordinary selection rather
+  than being forced in. A picker is armed by clicking it, or from a script with
+  `bearcad.ui.picker_focus(name)`.
+- **No picking through bodies (#155/#265):** while selecting (Select/Constraint tools, picks
+  made for a tool such as construction-plane references or dimension targets, and the
+  body-set tools Combine/Move/Repeat/Slice/Revolve), geometry hidden **behind** a visible
+  body under the cursor is not a pick candidate — clicking a body never selects a line buried
+  inside or behind it, and a body-set tool can't pick a body through one in front of it. The
+  probe point is the spot on the candidate nearest the cursor, so a partially hidden edge
+  stays pickable along its visible stretch; hiding a body (Elements pane) removes it as an
+  occluder, restoring the old X-ray behavior deliberately.
+- **A face click fills an edges picker (#960):** when the focused picker takes **edges** and not
+  **faces**, clicking a face means *all of that face's edges*, and hovering it lights all of
+  them up — so what the click does and what the hover shows are the same thing. Without this a
+  face click was simply refused, with nothing on screen to say why.
+  `element_picker::expand_pick` is the rule: the element itself when the picker accepts it,
+  otherwise the face's boundary filtered to what the picker *can* take (a mesh face's feature
+  edges, a sketch profile's lines, a circle profile's circle), and nothing when neither applies.
+  The 3D Chamfer/Fillet tool is the case in the viewport; the Elements pane routes through the
+  same rule (#963).
+- **Pick priority (#959):** when several things crowd the cursor, one shared ranking decides
+  which wins — `element_picker::default_pick_band`, by the candidate's element **kind**:
+  vertex → the linear kinds (edge, line, circle, axis) → constraint → face → plane/image →
+  sketch → body → operations, with the ground last. A tie *inside* a band goes to whichever is
+  nearest in pixels, so a sketch line and a body edge under the same pixel compete on distance
+  rather than one kind always outranking the other. A picker may override the ranking with
+  `ElementPicker::with_priority` — it names only what it wants promoted (the design's "faces over
+  edges"), and everything unnamed keeps the default order behind those. This is the single
+  definition: `PickTarget::beats` reads it, replacing a `u8` hand-assigned at each of eight
+  candidate construction sites plus a bolted-on vertex-beats-edge special case (#242), which the
+  band ordering now states outright — as it does the origin beating its own axes (#240).
+- **3D body sub-element hover (#144):** with the Select tool, hovering a 3D body highlights the
+  **vertex, edge, or face** under the cursor — in that priority order (a corner beats an edge on
+  it, which beats the face they lie on), so it is always clear what a pick would grab. Edges are
+  the solid mesh's feature edges (`solid_mesh_unique_edges`, the same crease/boundary edges the
+  wireframe draws, so this works for any body — extrusion-sourced, boolean-cut, or imported);
+  vertices are the mesh corners; a face is the maximal edge-connected group of coplanar triangles
+  (`solid_mesh_coplanar_faces`), so a whole box side or cylinder cap highlights as one face, with
+  the nearer face winning when two project onto the cursor. The Chamfer/Fillet tool likewise
+  hover-highlights the treatable analytic edge under the cursor before it is clicked.
 
 ### 11.5 3D interaction
 - Orbit/pan/zoom the 3D rendering; select faces/edges/vertices; manipulate sketches and

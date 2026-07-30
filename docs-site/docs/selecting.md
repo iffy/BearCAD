@@ -1,0 +1,62 @@
+---
+sidebar_position: 5
+title: Selecting things
+---
+
+# Selecting things
+
+Every tool that needs you to point at something gathers it the same way: through an **element
+picker** in the context pane. Learn it once and every tool works the way you expect.
+
+## Pickers
+
+A picker is the combo-box-shaped input beside a tool's label — **Bodies**, **Profile**,
+**Cutters**, **Axis**. Each one takes a particular sort of thing and a particular number of
+them. Empty, it shows what it's after: a count and the icons of the kinds it accepts. Filled, it
+counts what it holds by kind — `2 ⟨line⟩ · 1 ⟨body⟩`. Click it to list what's in it, drop any
+row with its ✕, or **Clear all**.
+
+A single-pick input reads `0/1`, and `1/1` once it's filled.
+
+## One picker is armed at a time
+
+The armed picker wears a bright ring, and it's the one your next click feeds — in the viewport
+or the Elements pane. Tools step through their pickers for you: pick the bodies to move, and the
+tool arms the source point; pick that, and it arms the target. Click any picker to arm it
+yourself.
+
+A picker only takes what it's for. The Slice tool's **Cutters** wants planes and flat faces, so
+clicking a body while it's armed doesn't fill it — arm **Targets** and the body goes in. A
+Revolve axis takes straight references only, so a circle is never offered as one.
+
+## Picking
+
+Click in the 3D viewport, or on a row in the Elements pane — either its name or its type icon.
+Both feed the armed picker.
+
+Hovering shows what a click would take. Clicking a picked thing again removes it. Shift+click
+(or ⌘/Ctrl+click) adds to a plain selection.
+
+Where a picker wants **edges** and you click a **face**, you get all of that face's edges — so
+chamfering the whole top of a box is one click, not four. The face lights up edge by edge on
+hover, so you can see it coming.
+
+When several things overlap under the cursor, press **Space** for the
+[Selection Exploder](/docs/selection-exploder).
+
+## What a picker holds is highlighted
+
+Everything in a picker is styled as selected — in the viewport and in the Elements pane, so both
+agree about what you've gathered. Things a tool will **consume** read **red** instead: a Combine
+cut's second side, a Revolve's cut bodies.
+
+## Switching tools keeps your picks
+
+Gather three bodies with Combine, decide you meant Move, and the bodies come with you. The new
+tool's first picker takes whatever it accepts and leaves the rest, so switching to a tool that
+wants faces starts empty rather than carrying bodies it can't use.
+
+## See also
+
+- [Select](/docs/tools/select) — the tool for looking and picking.
+- [Selection Exploder](/docs/selection-exploder) — reaching one thing in a crowd.

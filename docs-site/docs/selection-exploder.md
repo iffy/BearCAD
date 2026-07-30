@@ -35,5 +35,6 @@ whole body.
 
 ## See also
 
+- [Selecting things](/docs/selecting) — how every tool gathers what it acts on.
 - [Select](/docs/tools/select) — the default tool for looking and picking.
 - [Navigation](/docs/tools/navigation) — camera, views, and the command palette.
