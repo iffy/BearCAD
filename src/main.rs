@@ -14917,110 +14917,117 @@ fn joint_drag_status(kind: &model::JointKind, values: (f32, f32, f32)) -> String
     }
 }
 
+/// One tool's ordered pickers and whether each is filled (#954/#962) — the "focus chain".
+///
+/// A tool declares its pickers in order; focus walks to the first unfilled one, so a
+/// single-pick picker hands focus to the next input the moment it's filled. The Move and Joint
+/// tools ran the same algorithm written out twice (seven states and nine); this is it once.
+///
+/// The first entry is the tool's **primary** picker. It is special in one way: a hand-picked
+/// focus on it is never released automatically (see [`focus_chain_satisfied`]) — you may well
+/// want to add a second body after the first.
+type FocusChain<F> = Vec<(F, bool)>;
+
+/// The picker focus takes: an explicit, hand-picked one if set, else the first unfilled step,
+/// else back to the primary picker once everything is filled.
+fn focus_chain_step<F: Copy>(chain: &FocusChain<F>, explicit: Option<F>, primary: F) -> F {
+    if let Some(explicit) = explicit {
+        return explicit;
+    }
+    chain
+        .iter()
+        .find(|(_, filled)| !filled)
+        .map(|(focus, _)| *focus)
+        .unwrap_or(primary)
+}
+
+/// Whether a hand-picked focus now has what it needs, so the automatic step-through can take
+/// over again. The primary picker (the chain's first entry) never counts as satisfied: focusing
+/// it by hand means "I want to keep adding to it".
+fn focus_chain_satisfied<F: Copy + PartialEq>(chain: &FocusChain<F>, focus: F) -> bool {
+    match chain.split_first() {
+        Some(((primary, _), rest)) if *primary != focus => rest
+            .iter()
+            .find(|(f, _)| *f == focus)
+            .is_some_and(|(_, filled)| *filled),
+        _ => false,
+    }
+}
+
+/// The Move tool's pickers in order (#656/#741): the bodies, then the A pair, then the optional
+/// B pair that adds the rotation, then the C pair that pins the spin B leaves free.
+///
+/// Only a **Snap** move has the point pairs — a Free move is driven by its translation fields —
+/// so in Free mode the chain is just the bodies and start A.
+fn move_focus_chain(cm: &actions::CreatingMove) -> FocusChain<MoveFocus> {
+    let mut chain = vec![
+        (MoveFocus::Bodies, !cm.targets.is_empty()),
+        (MoveFocus::StartPointA, cm.start_point_a.is_some()),
+    ];
+    if cm.translate_mode == model::MoveTranslateMode::Snap {
+        chain.extend([
+            (MoveFocus::EndPointA, cm.end_point_a.is_some()),
+            (MoveFocus::StartPointB, cm.start_point_b.is_some()),
+            (MoveFocus::EndPointB, cm.end_point_b.is_some()),
+            (MoveFocus::StartPointC, cm.start_point_c.is_some()),
+            (MoveFocus::EndPointC, cm.end_point_c.is_some()),
+        ]);
+    }
+    chain
+}
+
+/// The Joint tool's pickers in order (#894), the Move chain's twin: the two parts, then the
+/// A/B/C mating pairs. Every pair is optional — parts already in place join with no points at
+/// all — so the chain simply stops advancing once the user commits.
+///
+/// The slide stops (#896) are hand-focused from the pane rather than stepped into, so they
+/// aren't chain entries; [`joint_focus_satisfied`] handles them separately.
+fn joint_focus_chain(cj: &actions::CreatingJoint) -> FocusChain<JointFocus> {
+    vec![
+        (JointFocus::Members, cj.members.len() >= 2),
+        (JointFocus::StartPointA, cj.start_point_a.is_some()),
+        (JointFocus::EndPointA, cj.end_point_a.is_some()),
+        (JointFocus::StartPointB, cj.start_point_b.is_some()),
+        (JointFocus::EndPointB, cj.end_point_b.is_some()),
+        (JointFocus::StartPointC, cj.start_point_c.is_some()),
+        (JointFocus::EndPointC, cj.end_point_c.is_some()),
+    ]
+}
+
 fn move_focus_for(
     creating: Option<&actions::CreatingMove>,
     focus_override: Option<MoveFocus>,
 ) -> MoveFocus {
-    if let Some(explicit) = focus_override {
-        return explicit;
-    }
     let Some(cm) = creating else {
-        return MoveFocus::Bodies;
+        return focus_override.unwrap_or(MoveFocus::Bodies);
     };
-    if cm.targets.is_empty() {
-        return MoveFocus::Bodies;
-    }
-    if cm.start_point_a.is_none() {
-        return MoveFocus::StartPointA;
-    }
-    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_a.is_none() {
-        return MoveFocus::EndPointA;
-    }
-    // With the A pair set, the chain walks straight into the optional B pair (#741):
-    // start B is what the next click most likely means — the Bodies picker stays a
-    // hand-focus away. End B then follows once start B opts into the rotation (#669).
-    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.start_point_b.is_none() {
-        return MoveFocus::StartPointB;
-    }
-    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_b.is_none() {
-        return MoveFocus::EndPointB;
-    }
-    // B still leaves the bodies free to spin about `end A → end B`; the C pair pins it, so
-    // the chain walks on into it the same way.
-    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.start_point_c.is_none() {
-        return MoveFocus::StartPointC;
-    }
-    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_c.is_none() {
-        return MoveFocus::EndPointC;
-    }
-    MoveFocus::Bodies
+    focus_chain_step(&move_focus_chain(cm), focus_override, MoveFocus::Bodies)
 }
 
-/// The Joint tool's focus chain (#894), mirroring [`move_focus_for`]: members first, then
-/// the A/B/C pairs in order. Every pair is optional — parts already in place join with no
-/// points at all — so the chain only advances into a pair once its start is picked.
 fn joint_focus_for(
     creating: Option<&actions::CreatingJoint>,
     focus_override: Option<JointFocus>,
 ) -> JointFocus {
-    if let Some(explicit) = focus_override {
-        return explicit;
-    }
     let Some(cj) = creating else {
-        return JointFocus::Members;
+        return focus_override.unwrap_or(JointFocus::Members);
     };
-    if cj.members.len() < 2 {
-        return JointFocus::Members;
-    }
-    if cj.start_point_a.is_none() {
-        return JointFocus::StartPointA;
-    }
-    if cj.end_point_a.is_none() {
-        return JointFocus::EndPointA;
-    }
-    if cj.start_point_b.is_none() {
-        return JointFocus::StartPointB;
-    }
-    if cj.end_point_b.is_none() {
-        return JointFocus::EndPointB;
-    }
-    if cj.start_point_c.is_none() {
-        return JointFocus::StartPointC;
-    }
-    if cj.end_point_c.is_none() {
-        return JointFocus::EndPointC;
-    }
-    JointFocus::Members
+    focus_chain_step(&joint_focus_chain(cj), focus_override, JointFocus::Members)
 }
 
-/// Whether a hand-picked Joint focus now has what it needs, so the automatic step-through
-/// can take over again — the Joint twin of [`move_focus_satisfied`].
+/// Whether a hand-picked Joint focus now has what it needs. The slide stops sit outside the
+/// chain (they're hand-focused from the pane, never stepped into), so they're checked here.
 fn joint_focus_satisfied(cj: &actions::CreatingJoint, focus: JointFocus) -> bool {
     match focus {
-        JointFocus::Members => false,
-        JointFocus::StartPointA => cj.start_point_a.is_some(),
-        JointFocus::EndPointA => cj.end_point_a.is_some(),
-        JointFocus::StartPointB => cj.start_point_b.is_some(),
-        JointFocus::EndPointB => cj.end_point_b.is_some(),
-        JointFocus::StartPointC => cj.start_point_c.is_some(),
-        JointFocus::EndPointC => cj.end_point_c.is_some(),
         JointFocus::SlideMinStop => cj.limits.slide_min_target.is_some(),
         JointFocus::SlideMaxStop => cj.limits.slide_max_target.is_some(),
+        _ => focus_chain_satisfied(&joint_focus_chain(cj), focus),
     }
 }
 
-/// Whether a hand-picked Move focus now has what it needs (#656), so the automatic
-/// step-through can take over again. See [`App::release_satisfied_move_focus`].
+/// Whether a hand-picked Move focus now has what it needs (#656). See
+/// [`App::release_satisfied_move_focus`].
 fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
-    match focus {
-        MoveFocus::Bodies => false,
-        MoveFocus::StartPointA => cm.start_point_a.is_some(),
-        MoveFocus::EndPointA => cm.end_point_a.is_some(),
-        MoveFocus::StartPointB => cm.start_point_b.is_some(),
-        MoveFocus::EndPointB => cm.end_point_b.is_some(),
-        MoveFocus::StartPointC => cm.start_point_c.is_some(),
-        MoveFocus::EndPointC => cm.end_point_c.is_some(),
-    }
+    focus_chain_satisfied(&move_focus_chain(cm), focus)
 }
 
 /// Whether a selection-family pick belongs to the open sketch (#742). One definition, shared
@@ -28075,6 +28082,62 @@ mod tests {
     /// #656: the Move tool steps through its pickers on its own — bodies, then the source
     /// point, then the target point when snapping — so picking one thing arms the next. A
     /// picker focused by hand wins until it's satisfied (#658).
+    #[test]
+    fn a_focus_chain_walks_to_the_first_unfilled_picker() {
+        // The generic walk behind both the Move and Joint chains (#954/#962): a single-pick
+        // picker hands focus on the moment it's filled.
+        use super::{focus_chain_satisfied, focus_chain_step};
+        let chain = vec![("primary", true), ("second", false), ("third", false)];
+        assert_eq!(focus_chain_step(&chain, None, "primary"), "second");
+        // A hand-picked focus pins the chain regardless of what's filled.
+        assert_eq!(focus_chain_step(&chain, Some("third"), "primary"), "third");
+        // Everything filled falls back to the primary picker.
+        let full = vec![("primary", true), ("second", true)];
+        assert_eq!(focus_chain_step(&full, None, "primary"), "primary");
+
+        // A hand-picked focus is released once its picker is filled...
+        assert!(focus_chain_satisfied(&full, "second"));
+        assert!(!focus_chain_satisfied(&chain, "second"));
+        // ...except on the primary, where focusing by hand means "I want to add more".
+        assert!(
+            !focus_chain_satisfied(&full, "primary"),
+            "the primary picker is never auto-released"
+        );
+    }
+
+    #[test]
+    fn the_joint_focus_chain_matches_the_move_one() {
+        // Both tools run the same walk (#954), so the Joint chain steps like Move's.
+        use super::{joint_focus_for, joint_focus_satisfied};
+        use crate::model::MovePointRef;
+        let point = |body| MovePointRef::Vertex { body, p: [0; 3] };
+        let focus = |cj: &actions::CreatingJoint| joint_focus_for(Some(cj), None);
+        assert_eq!(joint_focus_for(None, None), JointFocus::Members);
+
+        let mut cj = actions::CreatingJoint::default();
+        assert_eq!(focus(&cj), JointFocus::Members, "no parts picked yet");
+        cj.members.push(crate::model::JointRef::Body(0));
+        assert_eq!(focus(&cj), JointFocus::Members, "a joint takes two parts");
+        cj.members.push(crate::model::JointRef::Body(1));
+        assert_eq!(focus(&cj), JointFocus::StartPointA);
+        cj.start_point_a = Some(point(0));
+        assert_eq!(focus(&cj), JointFocus::EndPointA);
+        cj.end_point_a = Some(point(1));
+        assert_eq!(focus(&cj), JointFocus::StartPointB);
+
+        // The slide stops sit outside the chain — hand-focused from the pane, never stepped
+        // into — so they're satisfied by their own targets, not by chain position.
+        assert!(!joint_focus_satisfied(&cj, JointFocus::SlideMinStop));
+        assert!(
+            joint_focus_satisfied(&cj, JointFocus::EndPointA),
+            "a filled pair releases its hand-picked focus"
+        );
+        assert!(
+            !joint_focus_satisfied(&cj, JointFocus::Members),
+            "the primary picker is never auto-released"
+        );
+    }
+
     #[test]
     fn move_focus_steps_through_its_pickers() {
         use super::{move_focus_for, move_focus_satisfied};

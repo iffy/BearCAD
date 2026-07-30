@@ -786,6 +786,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the exact candidate **point** (#739) — the corner, the edge's midpoint, or the face's
   middle (#738) — never the whole edge or face it sits on.
 
+  **The chain is generic (#954/#962).** A tool declares its pickers in order with whether each
+  is filled (`FocusChain`); focus is the first unfilled one (`focus_chain_step`), which is how a
+  single-pick picker hands focus to the next input the moment it's filled. A hand-picked focus
+  pins the chain until that picker is satisfied (`focus_chain_satisfied`) — except on the
+  tool's **primary** picker (the chain's first entry), where focusing by hand means "I want to
+  keep adding to it", so it is never auto-released. The Move and Joint tools were the same
+  algorithm written out twice, seven states and nine; they now declare a chain each
+  (`move_focus_chain` / `joint_focus_chain`) and share the walk. A Free move has no point
+  pairs, so its chain is just the bodies and start A; the Joint tool's slide stops (#896) are
+  hand-focused from the pane rather than stepped into, so they sit outside its chain.
+
   - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
     B** on stationary geometry, adds the **rotation** — the pane labels the B and C rows
     **Rotation** (#915), since those four points turn the part rather than move it, and
