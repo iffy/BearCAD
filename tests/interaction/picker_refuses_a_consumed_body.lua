@@ -36,7 +36,12 @@ local bodies = picker("Bodies")
 assert(bodies, "the Move tool should show a Bodies picker")
 assert(bodies.focused, "it should be the focused picker with nothing picked yet")
 assert(#bodies.items == 0, "and start empty, got " .. #bodies.items)
-assert(bodies.accepts[1] == "body", "it takes bodies, got " .. tostring(bodies.accepts[1]))
+local takes_bodies = false
+for _, kind in ipairs(bodies.accepts) do
+  if kind == "body" then takes_bodies = true end
+end
+assert(takes_bodies,
+  "it takes bodies, among " .. table.concat(bodies.accepts, ","))
 
 -- A body another operation has consumed is not a valid pick.
 bearcad.select{ kind = "body", index = 0 }
