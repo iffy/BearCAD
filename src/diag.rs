@@ -73,24 +73,55 @@ pub fn frames_drawn() -> u64 {
     FRAMES.load(Ordering::Relaxed)
 }
 
-/// Watch for a launch that never paints (#978).
+/// Report something once per process, however many times it happens. For a per-frame fault
+/// there is no point in a line per frame — the first one is the whole message.
+pub fn warn_once(slot: &'static AtomicBool, message: impl std::fmt::Display) {
+    if !slot.swap(true, Ordering::SeqCst) {
+        warn(message);
+    }
+}
+
+/// Watch a launch that comes up blank (#978).
 ///
 /// egui is **reactive**: it draws on input and on request, not continuously. So a window can
-/// legitimately sit unpainted — but not at startup, and not for seconds. If no frame has been
-/// built by then, say so on stderr rather than leaving a grey rectangle and no explanation.
+/// legitimately sit unpainted — but not at startup, and not for seconds. Two different faults
+/// look identical from outside the window, and this is what tells them apart:
+///
+/// - **No frame at all** — the app never got as far as drawing. It is wedged before its first
+///   frame, or nothing ever asked it to paint.
+/// - **Frames, but very few** — it drew and then stopped. On macOS the launch sequence resizes
+///   the window a beat after opening, and a reactive app that doesn't repaint behind that
+///   resize leaves a correctly sized, never-redrawn surface.
+///
+/// Silence means it kept drawing, which points at presentation rather than scheduling.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn watch_first_frame() {
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(FIRST_FRAME_GRACE_SECS));
-        if frames_drawn() == 0 && !WATCHDOG_FIRED.swap(true, Ordering::SeqCst) {
-            warn(format!(
+        if WATCHDOG_FIRED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        match frames_drawn() {
+            0 => warn(format!(
                 "no frame drawn {FIRST_FRAME_GRACE_SECS}s after launch — the window will look \
                  blank. The app is running but never asked to paint, or is wedged before its \
                  first frame. Re-run with BEARCAD_LOG=1 for the startup trace."
-            ));
+            )),
+            // The launch sequence itself accounts for a handful. Stopping there means the app
+            // drew, then stopped being asked to — the window shows whatever the surface held.
+            n if n <= LAUNCH_FRAMES_EXPECTED => warn(format!(
+                "only {n} frame(s) drawn in {FIRST_FRAME_GRACE_SECS}s — the window may look \
+                 blank or stale. Drawing stopped after launch. Re-run with BEARCAD_LOG=1 for \
+                 the startup trace."
+            )),
+            _ => log("watchdog: frames are being drawn"),
         }
     });
 }
+
+/// Frames a quiet launch is expected to draw: the opening frames plus the ones the deferred
+/// maximize adds. Drawing no more than this in eight seconds means it stopped.
+const LAUNCH_FRAMES_EXPECTED: u64 = 4;
 
 #[cfg(test)]
 mod tests {

@@ -24273,6 +24273,16 @@ impl App {
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
             self.gpu_viewport && gpu_viewport::paint(render_state, &painter, viewport, scene);
+        // Frames being built while nothing reaches the screen is the other half of the
+        // blank-window question (#978) — the watchdog only sees whether frames happen at all.
+        if self.gpu_viewport && !gpu_drawn {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            diag::warn_once(
+                &WARNED,
+                "the 3D viewport built a scene but could not paint it — its GPU resources are                  missing. The viewport will stay empty.",
+            );
+        }
 
         // The hovered sweep's angle (#919/#947), on top of the scene so the number is readable
         // over the ghost solid and the arcs it labels.

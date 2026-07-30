@@ -3177,10 +3177,12 @@ nothing drawn — has several possible causes and no way to tell them apart from
 `src/diag.rs` splits the reporting in two so an ordinary run stays silent:
 
 - **Always on stderr**, because they are wrong however the app was started: no wgpu render
-  state, the GPU viewport failing to install, and — from a watchdog thread — **no frame drawn
-  within 8s of launch**. That last one is the blank-window discriminator: a run that draws
-  frames and shows nothing is a *painting* fault; a run that draws none never got asked to
-  paint at all.
+  state, the GPU viewport failing to install, a scene built that the GPU could not paint, and —
+  from a watchdog thread at 8s — **no frame drawn**, or **only the launch frames drawn**. Those
+  last two are the blank-window discriminators. No frames at all means the app never got as far
+  as drawing. A handful and then nothing means it drew and stopped being asked to, which is what
+  the deferred macOS maximize used to cause. Silence from the watchdog means drawing continued,
+  which points at presentation rather than scheduling.
 - **`BEARCAD_LOG=1`** adds the startup trace: the requested window size and maximize mode, the
   GPU backend and adapter, the maximize command when it goes, and one line per early frame with
   the size it was built at.
