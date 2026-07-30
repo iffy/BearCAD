@@ -29584,6 +29584,42 @@ mod tests {
         assert_eq!(fanned(&profiles, &[plane, cap.clone()]), vec![cap]);
     }
 
+    /// #982: while a sketch is open the Select tool's picker carries the sketch-only rule
+    /// (#742), so the Exploder's fan offers exactly what a click can select — the sketch's own
+    /// geometry — and never a datum plane, world axis, or body a click would refuse.
+    #[test]
+    fn exploder_select_fan_in_a_sketch_is_sketch_only() {
+        use crate::element_picker::{ElementPicker, PickRule};
+        use construction::PickTargetKind as K;
+
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+
+        let line = K::Line(0);
+        let endpoint = K::Point(crate::model::ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: crate::model::LineEnd::Start,
+        });
+        let all = [
+            line.clone(),
+            endpoint.clone(),
+            K::ConstructionPlane(1),
+            K::GlobalAxis(construction::GlobalAxis::X),
+            K::Body(0),
+            K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
+        ];
+
+        // The picker the context pane hands the Exploder for Select-in-a-sketch: the selection
+        // picker scoped by the same rule the click path enforces.
+        let select = ElementPicker::select_everything().with_rule(PickRule::InSketch(sketch));
+        let mut candidates = crowd(&all);
+        exploder_keep_for_picker(&doc, &select, &mut candidates);
+        let kept: Vec<K> = candidates.into_iter().map(|c| c.kind).collect();
+        assert_eq!(kept, vec![line, endpoint]);
+    }
+
     #[test]
     fn exploder_offers_constraints_only_to_pickers_that_take_them() {
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};

@@ -246,8 +246,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   sketched-on face's own edges/corners (#26/#27). Outside bodies, other sketches, and 3D
   body sub-elements neither glow nor select; clicking them clears the selection like
   empty space. One filter (`element_in_sketch`) gates both the hover-highlight and the
-  click path. Outside geometry enters a sketch only through the Projection tool (#140) —
-  or **Y** on a selection made before the sketch was opened.
+  click path, and the Select picker the context pane hands out carries it as a
+  `PickRule::InSketch` while a sketch is open (#982) — so the Selection Exploder's fan,
+  which prunes to what the focused picker takes, can never offer a datum plane, world
+  axis, or body that a click would refuse. Outside geometry enters a sketch only through
+  the Projection tool (#140) — or **Y** on a selection made before the sketch was opened.
 - **Projections (#140):** selecting external 3D geometry (a body's
   edges via 3D selection, #156 — or a whole body/extrusion, which projects all of its
   feature edges) and, with a sketch open, pressing **Y** (or "Project Selection into

@@ -719,6 +719,13 @@ impl ElementPicker {
         self
     }
 
+    /// This picker with one more instance-level [`PickRule`] on its filter (#953) — how an
+    /// already-configured picker (the selection's, say) is scoped to the open sketch.
+    pub fn with_rule(mut self, rule: PickRule) -> ElementPicker {
+        self.filter = self.filter.rule(rule);
+        self
+    }
+
     /// Override the global pick priority (#959) for this picker: the listed kinds win over
     /// everything else, in the order given. Kinds left out keep their relative
     /// [`DEFAULT_PICK_PRIORITY`] order, behind every listed kind — so an override only has to

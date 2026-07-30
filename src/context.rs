@@ -1410,8 +1410,16 @@ fn selection_picker_for(
         // Select: the selection **is** this picker (#966), so it's handed back rather than
         // rebuilt — that's what gives the popup's rows a stable order without sorting by each
         // element's debug string, and what makes any rule it carries real rather than applied
-        // after the fact.
-        Tool::Select => return Some(selection.picker().clone()),
+        // after the fact. While a sketch is open it carries the sketch-only rule (#742) like
+        // every other sketch-scoped picker, so the Exploder's fan and the hover path can never
+        // offer what the click path would refuse (#982).
+        Tool::Select => {
+            let picker = selection.picker().clone();
+            return Some(match open_sketch {
+                Some(sketch) => picker.with_rule(PickRule::InSketch(sketch)),
+                None => picker,
+            });
+        }
         // Constraint / Dimension: sketch geometry only (points, lines, circles, body/face
         // edges). Dimension's picker mirrors the live selection so a pre-selected line or
         // pair shows up and the tool can proceed as if those were just picked (#486).
@@ -7167,6 +7175,31 @@ fn orientation_pick_to_drawing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
+    /// (#742) — the one the click path enforces — so the Exploder's fan and every other
+    /// picker-driven path refuse a datum plane or outside body exactly as a click does.
+    #[test]
+    fn select_picker_is_sketch_scoped_while_a_sketch_is_open() {
+        use crate::hierarchy::SceneElement;
+
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let selection = crate::selection::SceneSelection::default();
+
+        let open = selection_picker_for(&doc, Tool::Select, Some(sketch), &selection)
+            .expect("Select always has its picker");
+        assert!(open.accepts(&doc, &SceneElement::Line(0)));
+        assert!(!open.accepts(&doc, &SceneElement::ConstructionPlane(1)));
+        assert!(!open.accepts(&doc, &SceneElement::Body(0)));
+
+        // Outside a sketch it takes everything again.
+        let closed = selection_picker_for(&doc, Tool::Select, None, &selection)
+            .expect("Select always has its picker");
+        assert!(closed.accepts(&doc, &SceneElement::ConstructionPlane(1)));
+    }
 
     /// #392: registering system fonts for the chooser preview must never crash — every face
     /// handed to egui parses (ab_glyph-validated, correct .ttc index), and the family is only
