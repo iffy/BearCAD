@@ -13564,7 +13564,9 @@ impl eframe::App for App {
                     context::PickerTarget::SketchSliceTargets => {
                         if let Some(cs) = self.state.creating_sketch_slice.as_mut() {
                             match edit {
-                                context::ToolPickerAction::Focus => cs.picking_cutter = false,
+                                context::ToolPickerAction::Focus => {
+                                    actions::focus_tool_picker(&mut self.state, target)
+                                }
                                 context::ToolPickerAction::Clear => {
                                     cs.line_targets.clear();
                                     cs.circle_targets.clear();
@@ -13587,7 +13589,7 @@ impl eframe::App for App {
                     context::PickerTarget::SketchSliceCutters => {
                         if let Some(cs) = self.state.creating_sketch_slice.as_mut() {
                             if edit == context::ToolPickerAction::Focus {
-                                cs.picking_cutter = true;
+                                actions::focus_tool_picker(&mut self.state, target);
                             } else {
                                 remove_or_clear(&mut cs.cutter_lines, edit);
                             }
@@ -13598,7 +13600,7 @@ impl eframe::App for App {
                     context::PickerTarget::SliceTargets => {
                         if let Some(cs) = self.state.creating_slice.as_mut() {
                             if edit == context::ToolPickerAction::Focus {
-                                cs.picking_cutter = false;
+                                actions::focus_tool_picker(&mut self.state, target);
                             } else {
                                 remove_or_clear(&mut cs.targets, edit);
                             }
@@ -13607,7 +13609,7 @@ impl eframe::App for App {
                     context::PickerTarget::SliceCutters => {
                         if let Some(cs) = self.state.creating_slice.as_mut() {
                             if edit == context::ToolPickerAction::Focus {
-                                cs.picking_cutter = true;
+                                actions::focus_tool_picker(&mut self.state, target);
                             } else {
                                 remove_or_clear(&mut cs.cutters, edit);
                             }
@@ -13638,7 +13640,7 @@ impl eframe::App for App {
                     context::PickerTarget::CombineA => {
                         if let Some(cb) = self.state.creating_boolean.as_mut() {
                             if edit == context::ToolPickerAction::Focus {
-                                cb.picking_b = false;
+                                actions::focus_tool_picker(&mut self.state, target);
                             } else {
                                 remove_or_clear(&mut cb.a, edit);
                             }
@@ -13647,7 +13649,7 @@ impl eframe::App for App {
                     context::PickerTarget::CombineB => {
                         if let Some(cb) = self.state.creating_boolean.as_mut() {
                             if edit == context::ToolPickerAction::Focus {
-                                cb.picking_b = true;
+                                actions::focus_tool_picker(&mut self.state, target);
                             } else {
                                 remove_or_clear(&mut cb.b, edit);
                             }

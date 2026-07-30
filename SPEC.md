@@ -2676,10 +2676,15 @@ modeled on SolveSpace (https://solvespace.com).
   body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,
   select a whole body by clicking anywhere on it (edge, corner, or flat face); the Select tool,
   which accepts sub-elements, picks the edge or corner instead (its **face** picks resolve to the
-  whole body, #902). Regardless of that, a body
-  **clicked in the Elements pane** (or otherwise selected) always feeds the active body-set
-  tool's picker — so you can gather bodies from the pane even for tools where the viewport is
-  picking sub-elements.
+  whole body, #902). Regardless of that, an element
+  **clicked in the Elements pane** (or otherwise selected) is offered to the **focused** picker
+  first (#963) — the same picker a viewport click feeds — so you can gather from the pane even
+  for tools where the viewport is picking sub-elements, and a tool's *secondary* picker is
+  reachable from the pane at all (a construction plane clicked while Slice's **Cutters** is
+  armed lands in Cutters). The picker decides: its kinds, rules, and limit say whether the
+  element is a valid pick, and one it refuses falls through to the ordinary selection rather
+  than being forced in. A picker is armed by clicking it, or from a script with
+  `bearcad.ui.picker_focus(name)`.
 - **Fade descendants while editing (#260):** while an operation is being edited (an extrusion,
   a Move/Combine/Repeat/Slice op, or a revolve), the bodies **downstream** of its outputs
   (`extrude::descendant_bodies`, walked forward through consuming operations) render dimmed and

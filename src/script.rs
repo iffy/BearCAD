@@ -537,6 +537,8 @@ pub enum Instruction {
     SetAutoZoom { on: bool },
     /// Toggle snapping (#913).
     SetSnapping { on: bool },
+    /// Arm one of the active tool's element pickers by heading (#963/#968).
+    FocusPicker { name: String },
     /// The Move tool's rotation-candidate spacing, in degrees (#917).
     SetMoveAngleSnap { degrees: f32 },
     /// Toggle the joint preview's animation (#906).
@@ -1309,6 +1311,9 @@ impl Instruction {
             }
             Instruction::SetSnapping { on } => {
                 format!("bearcad.ui.snapping({on})")
+            }
+            Instruction::FocusPicker { name } => {
+                format!("bearcad.ui.picker_focus({name:?})")
             }
             Instruction::SetMoveAngleSnap { degrees } => {
                 format!("bearcad.ui.angle_snap({degrees})")
@@ -5143,6 +5148,10 @@ impl ScriptRunner {
             }
             Instruction::SetSnapping { on } => {
                 let _ = state.apply(Action::SetSnapping(on));
+                StepResult::Continue
+            }
+            Instruction::FocusPicker { name } => {
+                let _ = state.apply(Action::FocusPicker(name));
                 StepResult::Continue
             }
             Instruction::SetMoveAngleSnap { degrees } => {

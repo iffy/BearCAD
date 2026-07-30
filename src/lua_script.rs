@@ -2421,6 +2421,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // what kinds and how many it accepts, and what it currently holds. Without this a script
     // can't tell an accepted pick from a rejected one — a body-set tool consumes the click
     // either way, so `selection()` looks identical.
+    // Arm a picker by name (#963/#968), the scripted equivalent of clicking it in the pane.
+    api.set(
+        "picker_focus",
+        lua.create_function(|lua, name: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FocusPicker { name }) }
+        })?,
+    )?;
+
     api.set(
         "pickers",
         lua.create_function(|lua, ()| {
@@ -5017,7 +5026,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "angle_snap",
+            "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "picker_focus", "angle_snap",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "touch",
             "move", "click", "move_ground", "click_ground",

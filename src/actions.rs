@@ -2436,6 +2436,9 @@ pub enum Action {
     SetExtrudeSymmetric { symmetric: bool },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
+    /// Arm one of the active tool's element pickers by its heading (#963/#968), so the next
+    /// pick — viewport or Elements pane — lands there. Unknown names are ignored.
+    FocusPicker(String),
     /// Add the constraint implied by leaving `point` on a snap target.
     ApplySnapConstraint {
         point: ConstraintPoint,
@@ -12057,6 +12060,11 @@ label_hidden: false,
                 // (#218) — the Elements pane picks bodies regardless of viewport sub-element
                 // picking — rather than touching the persistent selection. A line clicked while
                 // the Move tool is active sets its rotation axis (#216), like a viewport pick.
+                // The focused picker gets first refusal (#963); the cascade below is the
+                // remaining per-tool routing it hasn't absorbed yet.
+                if pick_into_focused_picker(self, &element) {
+                    return ActionResult::Ok;
+                }
                 let consumed_by_tool = match &element {
                     // The Add-view tool (#289): a body or sketch clicked (Elements pane) drops
                     // a projection of it on the open drawing page and selects that projection
@@ -12224,6 +12232,13 @@ label_hidden: false,
                             });
                         }
                     }
+                }
+                ActionResult::Ok
+            }
+            Action::FocusPicker(name) => {
+                match tool_picker_target(self, &name) {
+                    Some(target) => focus_tool_picker(self, target),
+                    None => self.status = format!("No picker called '{name}'"),
                 }
                 ActionResult::Ok
             }
@@ -14852,6 +14867,137 @@ fn handoff_bodies(
         }
     }
     out
+}
+
+/// Make one tool picker the focused one (#963/#968), by setting whichever backing flag its tool
+/// uses to remember which of its sets the next pick feeds. One definition, so a click on a
+/// picker in the pane and a scripted `picker_focus` arm the same thing.
+///
+/// Pickers whose focus is *derived* rather than stored — Mirror's plane (focused while unset),
+/// Revolve's axis, Repeat's path — have nothing to set; their turn comes from the state of the
+/// pick itself, so focusing them by hand is a no-op.
+pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTarget) {
+    use crate::context::PickerTarget as P;
+    match target {
+        P::SliceTargets => {
+            if let Some(cs) = state.creating_slice.as_mut() {
+                cs.picking_cutter = false;
+            }
+        }
+        P::SliceCutters => {
+            if let Some(cs) = state.creating_slice.as_mut() {
+                cs.picking_cutter = true;
+            }
+        }
+        P::SketchSliceTargets => {
+            if let Some(cs) = state.creating_sketch_slice.as_mut() {
+                cs.picking_cutter = false;
+            }
+        }
+        P::SketchSliceCutters => {
+            if let Some(cs) = state.creating_sketch_slice.as_mut() {
+                cs.picking_cutter = true;
+            }
+        }
+        P::CombineA => {
+            if let Some(cb) = state.creating_boolean.as_mut() {
+                cb.picking_b = false;
+            }
+        }
+        P::CombineB => {
+            if let Some(cb) = state.creating_boolean.as_mut() {
+                cb.picking_b = true;
+            }
+        }
+        P::RevolveCut
+        | P::SweepCut
+        | P::LoftCut
+        | P::MoveTargets
+        | P::MirrorPlane
+        | P::MirrorTargets
+        | P::RepeatTargets
+        | P::ExtrudeProfile
+        | P::TreatmentEdges
+        | P::LoftSections
+        | P::RevolveProfile
+        | P::RevolveAxis
+        | P::SweepProfile
+        | P::SweepPath => {}
+    }
+}
+
+/// The picker target a heading names, among the active tool's pickers (#968).
+pub fn tool_picker_target(state: &AppState, name: &str) -> Option<crate::context::PickerTarget> {
+    state
+        .tool_pickers
+        .iter()
+        .find(|view| view.heading == name)
+        .map(|view| view.target)
+}
+
+/// Offer an element clicked in the Elements pane to the **focused** picker (#963), returning
+/// whether it landed there.
+///
+/// The pane and the viewport should feed the same set: whichever picker is armed. Before this
+/// the pane ran a cascade of `(element kind, tool)` cases that only routed bodies, planes,
+/// sketches, extrusions and images, and always to the tool's one hardcoded set — so a plane
+/// could never reach Slice's Cutters, and no tool's *secondary* picker was reachable from the
+/// pane at all.
+///
+/// The picker decides: its kinds, its rules, and its limit say whether this is a valid pick, so
+/// a refused element falls through to the ordinary selection path rather than being forced in.
+fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::SceneElement) -> bool {
+    use crate::context::PickerTarget as P;
+    use crate::hierarchy::SceneElement;
+    let Some(view) = state
+        .tool_pickers
+        .iter()
+        .find(|view| view.picker.is_focused())
+    else {
+        return false;
+    };
+    if !view.picker.accepts(&state.doc, element) {
+        return false;
+    }
+    let (target, already) = (view.target, view.picker.contains(element));
+    // At its limit and not already holding this one: a single-pick picker replaces, a bounded
+    // multi-pick one refuses.
+    if !already && view.picker.is_full() && !view.picker.limit().is_single() {
+        return false;
+    }
+    match (target, element) {
+        (P::SliceCutters, element) => {
+            let Some(face) = element.as_face_id() else { return false };
+            let Some(cs) = state.creating_slice.as_mut() else { return false };
+            match cs.cutters.iter().position(|f| *f == face) {
+                Some(i) => {
+                    cs.cutters.remove(i);
+                }
+                None => cs.cutters.push(face),
+            }
+            true
+        }
+        (P::SketchSliceCutters, SceneElement::Line(li)) => {
+            let Some(cs) = state.creating_sketch_slice.as_mut() else { return false };
+            toggle(&mut cs.cutter_lines, *li);
+            true
+        }
+        // Everything else the pane can route is a whole body, which the existing per-tool
+        // routing already handles — including the unit-instance remapping and the Joint tool's
+        // two-part cap.
+        (_, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
+        _ => false,
+    }
+}
+
+/// Toggle a value in a picked set: in if absent, out if present.
+fn toggle(set: &mut Vec<usize>, value: usize) {
+    match set.iter().position(|v| *v == value) {
+        Some(i) => {
+            set.remove(i);
+        }
+        None => set.push(value),
+    }
 }
 
 pub fn body_gathering_tool_active(state: &AppState) -> bool {
