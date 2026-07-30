@@ -2446,6 +2446,17 @@ modeled on SolveSpace (https://solvespace.com).
   row highlights all of its entities, a construction plane its fill, and a body or
   extrusion a recolor in the hover color (#455). Drawn depth-test-disabled like other
   pick highlights (#153).
+
+  **Every** row lights something (#977), and `every_pane_row_lights_up_when_hovered` guards it.
+  Rows whose element isn't in the 3D view at all — a history operation, a component, a joint —
+  light what they **made**: an operation its output bodies, a component every body under it,
+  a joint the parts it joins (`hierarchy::produced_bodies`, which reads the same descendant
+  map the pane's own tree does rather than re-deriving outputs per op kind). Those wear
+  `DERIVED_OUTPUT_HIGHLIGHT`, a colour of their own rather than the hover colour: the hover
+  colour means "this is the thing under your cursor", and the cursor is on the row, not on the
+  body. A joint additionally marks its **badge**, the one part of it that is in the view. A
+  tracing image outlines its quad. The one row that adds no overlay is a **body**, which
+  recolours in the main pass instead (#455).
 - **3D body sub-element selection (#156/#555):** outside sketch mode, the Select tool can select
   a body's **edges, vertices, and faces** (the same feature edges/corners/faces the hover highlight
   shows, #144), not just sketch entities. Shift/⌘-click multi-selects them like any other element.

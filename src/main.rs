@@ -24357,7 +24357,13 @@ impl App {
                 &self.state.document_health,
                 &self.state.scene_selection,
                 &joint_icon_placements,
-                hovered_joint_icon,
+                // The badge under the pointer, or the one whose row the Elements pane is
+                // hovering (#977) — a joint's marker is the only part of it in the 3D view,
+                // so pointing at its row has to mark it.
+                hovered_joint_icon.or(match self.state.hover_element {
+                    Some(hierarchy::SceneElement::Joint(ji)) => Some(ji),
+                    _ => None,
+                }),
                 col::DIM_ANNOTATION,
                 col::DIM_EDGE_HIGHLIGHT,
             );

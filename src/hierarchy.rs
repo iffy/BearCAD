@@ -3044,6 +3044,38 @@ pub fn selection_related_constraints(
     related
 }
 
+/// The bodies an element **produced**, for showing what a history step made (#977).
+///
+/// Hovering an operation's row in the Elements pane has nothing of its own to light — an
+/// operation isn't in the 3D view — so it lights its outputs instead. A component lights every
+/// body under it, recursively, and a joint lights the parts it joins. Descendants, filtered to
+/// live bodies: `collect_descendants` already knows every operation's outputs, so this doesn't
+/// re-derive them per op kind.
+pub fn produced_bodies(doc: &Document, element: &SceneElement) -> Vec<usize> {
+    let mut out = HashSet::new();
+    collect_descendants(doc, element.clone(), &mut out);
+    let mut bodies: Vec<usize> = out
+        .into_iter()
+        .filter_map(|e| match e {
+            SceneElement::Body(bi) => Some(bi),
+            _ => None,
+        })
+        .filter(|bi| doc.bodies.get(*bi).is_some_and(|b| !b.deleted && !b.shadow))
+        .collect();
+    // A joint has no descendants — what it "produces" is the parts it holds together (#891),
+    // the same set hovering its badge in the viewport already glows (#899).
+    if let SceneElement::Joint(index) = element {
+        if let Some(joint) = doc.joints.get(*index).filter(|j| !j.deleted) {
+            for member in &joint.members {
+                bodies.extend(crate::joints::member_bodies(doc, *member));
+            }
+        }
+    }
+    bodies.sort_unstable();
+    bodies.dedup();
+    bodies
+}
+
 /// Selected elements plus their ancestors, descendants, and related constraints.
 pub fn selection_context_elements(
     doc: &Document,
@@ -5406,6 +5438,82 @@ fn component_member_node(node: HierarchyNode) -> bool {
 mod tests {
     use super::*;
     use crate::model::ShapeKind;
+
+    /// #977: an operation, a component and a joint have no shape of their own in the 3D view,
+    /// so hovering their Elements-pane rows lights what they **made** instead. This is the
+    /// mapping that finds it.
+    #[test]
+    fn produced_bodies_finds_what_a_row_made() {
+        use crate::model::{Body, BodySource, Component, ComponentMember, JointKind, JointRef};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let lines =
+            crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
+        doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        let live = |source| Body {
+            source,
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        };
+        doc.bodies.push(live(BodySource::Extrusion(0))); // body 0
+        doc.bodies.push(live(BodySource::Extrusion(0))); // body 1
+        // A consumed input, which is not an output of anything the user can point at.
+        doc.bodies.push(Body {
+            shadow: true,
+            ..live(BodySource::Extrusion(0))
+        });
+
+        assert_eq!(
+            produced_bodies(&doc, &SceneElement::Extrusion(0)),
+            vec![0, 1],
+            "an operation's outputs, and not the input it consumed"
+        );
+
+        // A component lights every body under it.
+        doc.components.push(Component {
+            name: None,
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+            deleted: false,
+        });
+        doc.component_members.push((ComponentMember::Body, 1, 0));
+        assert_eq!(produced_bodies(&doc, &SceneElement::Component(0)), vec![1]);
+
+        // A joint has no descendants at all — what it holds together is the answer.
+        doc.joints.push(crate::model::Joint {
+            members: vec![JointRef::Body(0), JointRef::Body(1)],
+            base: 0,
+            kind: JointKind::Rigid,
+            frame_a: crate::model::JointFrame::default(),
+            frame_b: crate::model::JointFrame::default(),
+            position: String::new(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: crate::model::JointLimits::default(),
+            name: None,
+            deleted: false,
+        });
+        assert_eq!(produced_bodies(&doc, &SceneElement::Joint(0)), vec![0, 1]);
+
+        // A body isn't an operation; it has nothing downstream to stand in for it.
+        assert!(produced_bodies(&doc, &SceneElement::Body(0)).is_empty());
+    }
 
     #[test]
     fn a_row_reacts_when_either_of_its_click_targets_does() {

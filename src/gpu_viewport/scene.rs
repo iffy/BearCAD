@@ -125,6 +125,13 @@ pub fn body_material_fill(doc: &crate::model::Document, body: &crate::model::Bod
 /// [`SOLID_FILL`], so pointing at read-only unit geometry is visibly different from
 /// pointing at the document's own bodies.
 pub const UNIT_SOLID_FILL: Color32 = Color32::from_rgb(178, 162, 144);
+/// The wash an element's **outputs** wear while its Elements-pane row is hovered (#977): what
+/// this step made, what this component holds, what this joint joins. Deliberately not the plain
+/// hover colour — that says "this is the thing under your cursor", and the thing under your
+/// cursor is the row, not the body. A history operation isn't in the 3D view at all, so its
+/// outputs are the only thing it *can* light.
+pub const DERIVED_OUTPUT_HIGHLIGHT: Color32 = Color32::from_rgb(170, 130, 240);
+
 /// Green glow for the dimensions/geometry driven by the parameter hovered or focused in
 /// the Parameters pane (#620).
 pub const PARAMETER_HIGHLIGHT: Color32 = Color32::from_rgb(90, 220, 130);
@@ -263,6 +270,18 @@ pub struct ViewportImageQuad {
     pub height_px: u32,
     pub rgba: std::sync::Arc<Vec<u8>>,
     pub opacity: f32,
+}
+
+/// A tracing image's four world corners, in UV order: (0,0), (1,0), (1,1), (0,1) — v flipped,
+/// since image v grows downward and plane-local v grows up. One definition (#977), shared by the
+/// textured quad and by the hover outline its Elements-pane row draws.
+fn tracing_image_corners(doc: &Document, image: usize) -> Option<[Vec3; 4]> {
+    let img = doc.tracing_images.get(image).filter(|i| !i.deleted)?;
+    let frame = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))?;
+    let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
+    let (x0, y0) = img.origin;
+    let (x1, y1) = (x0 + img.width_mm, y0 + img.height_mm);
+    Some([at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)])
 }
 
 /// Decode memo for tracing images (#170): decoding a PNG/JPEG every frame would dwarf the
@@ -621,21 +640,15 @@ impl ViewportScene {
             {
                 continue;
             }
-            let Some(frame) =
-                crate::face::sketch_frame(input.doc, FaceId::ConstructionPlane(img.plane))
-            else {
-                continue;
-            };
             let Some((id, w, h, rgba)) = decoded_tracing_image(img) else {
                 continue;
             };
-            let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
-            let (x0, y0) = img.origin;
-            let (x1, y1) = (x0 + img.width_mm, y0 + img.height_mm);
+            let Some(corners) = tracing_image_corners(input.doc, ii) else {
+                continue;
+            };
             scene.images.push(ViewportImageQuad {
                 id,
-                // UV v grows downward in image space; plane-local v grows up — flip v.
-                corners: [at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)],
+                corners,
                 width_px: w,
                 height_px: h,
                 rgba,
@@ -3289,12 +3302,28 @@ impl<'a> SceneMesh<'a> {
                     self.push_line_segment(a, b, color, 4.0, cam, viewport, view_proj);
                 }
             }
-            // The origin and the sketch axes draw their own hover, where the sketch frame that
-            // places them is in hand (see the origin marker in `build`).
-            SceneElement::FaceEdge(_)
-            | SceneElement::Origin
-            | SceneElement::Image(_)
-            | SceneElement::BooleanOp(_)
+            // A tracing image (#170/#977): its quad's outline, so pointing at its row says
+            // where on the plane it sits.
+            SceneElement::Image(index) => {
+                if let Some(corners) = tracing_image_corners(doc, index) {
+                    for i in 0..corners.len() {
+                        self.push_line_segment(
+                            corners[i],
+                            corners[(i + 1) % corners.len()],
+                            color,
+                            3.0,
+                            cam,
+                            viewport,
+                            view_proj,
+                        );
+                    }
+                }
+            }
+            // Everything whose own shape isn't in the 3D view lights what it **made** instead
+            // (#977): an operation its output bodies, a component every body under it, a joint
+            // the parts it joins. In a colour of their own — the plain hover colour would claim
+            // those bodies are what the cursor is on, and it's on the row.
+            SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::MirrorOp(_)
             | SceneElement::RepeatOp(_)
@@ -3309,7 +3338,26 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::Shape(_)
             | SceneElement::SweepOp(_)
             | SceneElement::Joint(_)
-            | SceneElement::Component(_) => {}
+            | SceneElement::Component(_) => {
+                for body in crate::hierarchy::produced_bodies(doc, &element) {
+                    if let Some(solid) = crate::extrude::body_solid_mesh(doc, body) {
+                        if matches!(cam.shading_mode(), crate::camera::ShadingMode::Wireframe) {
+                            self.push_solid_wireframe(
+                                &solid,
+                                DERIVED_OUTPUT_HIGHLIGHT,
+                                cam,
+                                viewport,
+                                view_proj,
+                            );
+                        } else {
+                            self.push_solid_translucent(&solid, DERIVED_OUTPUT_HIGHLIGHT, 0.45);
+                        }
+                    }
+                }
+            }
+            // The origin and the sketch axes draw their own hover, where the sketch frame that
+            // places them is in hand (see the origin marker in `build`).
+            SceneElement::FaceEdge(_) | SceneElement::Origin => {}
             // A selected/hovered unit instance outlines its placed meshes (#723).
             SceneElement::UnitInstance(index) => {
                 for solid in crate::units::placed_instance_meshes(doc, index) {
@@ -5402,9 +5450,12 @@ mod tests {
             constraint_connector_color: None,
         });
             // Every buffer a hover can land in: screen-space discs go to the base mesh, face
-            // fills to the overlay, and pick targets to the depth-test-disabled wireframe
-            // layer (#153). A check for "did this light up?" has to count them all.
+            // fills to the overlay, translucent solids to the plane-fill layer, and pick
+            // targets to the depth-test-disabled wireframe layer (#153). A check for "did this
+            // light up?" has to count them all.
             scene.indices.len()
+                + scene.sketch_fill_indices.len()
+                + scene.plane_fill_indices.len()
                 + scene.overlay_indices.len()
                 + scene.wireframe_indices.len()
                 + scene.gizmo_indices.len()
@@ -5426,6 +5477,104 @@ mod tests {
             30,
             "construction-plane hover should add a biased fill quad and its border"
         );
+    }
+
+    /// #977: hovering an Elements-pane row lights what that row *is* — and for the things that
+    /// aren't in the 3D view at all (a history operation, a component, a joint), what it made.
+    /// Guarded by totality, like the crowd's kinds: a `SceneElement` that draws nothing fails
+    /// here rather than shipping as "that row doesn't highlight".
+    #[test]
+    fn every_pane_row_lights_up_when_hovered() {
+        use crate::model::{ExtrudeFace, JointKind, JointRef};
+        let mut state = state_with_one_body();
+        // A second body, so the ops below have two things to work on.
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            20.0,
+            0.0,
+            30.0,
+            5.0,
+            [false; 4],
+        );
+        state.apply(crate::actions::Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 7.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+        });
+        assert_eq!(state.doc.bodies.len(), 2);
+        // A component holding the first body, and a joint between the two.
+        state.doc.components.push(crate::model::Component {
+            name: None,
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+            deleted: false,
+        });
+        state.doc.component_members.push((
+            crate::model::ComponentMember::Body,
+            0,
+            state.doc.components.len() - 1,
+        ));
+        state.doc.joints.push(crate::model::Joint {
+            members: vec![JointRef::Body(0), JointRef::Body(1)],
+            base: 0,
+            kind: JointKind::Rigid,
+            frame_a: crate::model::JointFrame::default(),
+            frame_b: crate::model::JointFrame::default(),
+            position: String::new(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: crate::model::JointLimits::default(),
+            name: None,
+            deleted: false,
+        });
+
+        // A tracing image on the XY plane — its quad's outline is what its row lights.
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: 0,
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 40.0,
+            height_mm: 30.0,
+            name: None,
+            deleted: false,
+            calibration: None,
+        });
+
+        let drawn = |element: SceneElement| {
+            hover_overlay_indices(&state, ViewportHoverHighlight::Element(element))
+        };
+        for element in [
+            SceneElement::Extrusion(0),
+            SceneElement::Body(0),
+            SceneElement::Component(state.doc.components.len() - 1),
+            SceneElement::Joint(0),
+            SceneElement::Image(0),
+            SceneElement::Line(0),
+            SceneElement::Sketch(sketch),
+            SceneElement::ConstructionPlane(0),
+        ] {
+            // `Body` recolours in the main pass rather than as an overlay (#455), so it is the
+            // one that legitimately adds nothing here.
+            if matches!(element, SceneElement::Body(_)) {
+                continue;
+            }
+            assert!(
+                drawn(element.clone()) > 0,
+                "hovering {element:?} drew nothing — every pane row must light something"
+            );
+        }
     }
 
     /// #974, the general form: **every** kind the crowd can offer must light up when its
