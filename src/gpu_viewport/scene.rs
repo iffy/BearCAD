@@ -3011,6 +3011,18 @@ impl<'a> SceneMesh<'a> {
                     &project,
                 );
             }
+            // An extrusion's analytic edge (#952) lights up **whole**: a hole's rim is one
+            // `Cap` reference but many mesh chords, so drawing one chord would make a circle
+            // read as a row of facets (#807).
+            SceneElement::ExtrusionEdge { extrusion, edge } => {
+                for (a, b) in crate::extrude::treatable_edges(doc)
+                    .into_iter()
+                    .filter(|(e, r, _, _)| *e == extrusion && *r == edge)
+                    .map(|(_, _, a, b)| (a, b))
+                {
+                    self.push_polyline_segment(&[a, b], color, 3.0, cam, viewport, view_proj);
+                }
+            }
             // A Move/Joint snap point (#952) lights up as the point it resolves to.
             SceneElement::MovePoint(point) => {
                 if let Some(world) = crate::extrude::move_point_world(doc, &point) {

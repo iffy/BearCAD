@@ -215,6 +215,14 @@ pub enum SceneElement {
     /// identity, its round trip, and its highlight are in place ahead of that.
     #[allow(dead_code)]
     MovePoint(crate::model::MovePointRef),
+    /// One **analytic** edge of an extrusion's solid (#952) — what the 3D Chamfer/Fillet tool
+    /// treats. Distinct from [`SceneElement::BodyEdge`], the quantized *mesh* edge: this one is
+    /// the parametric edge a committed `EdgeTreatment` is defined against.
+    #[allow(dead_code)]
+    ExtrusionEdge {
+        extrusion: usize,
+        edge: crate::model::ExtrusionEdgeRef,
+    },
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
     Component(usize),
@@ -530,6 +538,10 @@ impl ElementVisibility {
             // An analytic face (#952) has no row of its own; its owner's visibility governs
             // whether it can be seen at all, and that is enforced where the owner draws.
             SceneElement::SketchFace(_) => true,
+            // An extrusion's analytic edge (#952) shows when its extrusion does.
+            SceneElement::ExtrusionEdge { extrusion, .. } => {
+                self.effective_visible(doc, SceneElement::Extrusion(extrusion))
+            }
             // A snap point (#952) shows exactly when the body it sits on does.
             SceneElement::MovePoint(point) => match point.body() {
                 Some(body) => self.effective_visible(doc, SceneElement::Body(body)),
@@ -1531,7 +1543,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
-        | SceneElement::MovePoint(_) => return None,
+        | SceneElement::MovePoint(_)
+        | SceneElement::ExtrusionEdge { .. } => return None,
     })
 }
 
@@ -2533,7 +2546,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
-        | SceneElement::MovePoint(_) => None,
+        | SceneElement::MovePoint(_)
+        | SceneElement::ExtrusionEdge { .. } => None,
         // A tracing image nests under its host construction plane (#169).
         SceneElement::Image(index) => doc
             .tracing_images
@@ -2682,6 +2696,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
+        | SceneElement::ExtrusionEdge { .. }
         | SceneElement::SketchText(_)
         // A joint has no outputs — nothing descends from it (#891).
         | SceneElement::Joint(_)

@@ -60,6 +60,8 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::SketchFace(face) => crate::face::sketch_frame(doc, face).is_some(),
         // A Move/Joint snap point (#952) lives as long as the body it sits on, like the other
         // geometry-keyed sub-elements; the world origin always does.
+        // An extrusion's analytic edge (#952) lives as long as its extrusion.
+        SceneElement::ExtrusionEdge { extrusion, .. } => extrusion_alive(doc, extrusion),
         SceneElement::MovePoint(point) => match point {
             crate::model::MovePointRef::Origin => true,
             crate::model::MovePointRef::Vertex { body, .. }
@@ -301,7 +303,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
-        | SceneElement::MovePoint(_) => {}
+        | SceneElement::MovePoint(_)
+        | SceneElement::ExtrusionEdge { .. } => {}
         SceneElement::Joint(index) => {
             if doc.joints.get(index).is_some_and(|j| !j.deleted) {
                 doc.joints[index].deleted = true;

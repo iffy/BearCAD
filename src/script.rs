@@ -1843,6 +1843,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: None,
         },
+        SceneElement::ExtrusionEdge { extrusion, .. } => ElementScriptTokens {
+            kind: "extrusion_edge",
+            index: extrusion,
+            point: None,
+        },
         SceneElement::BodyFace { .. } => ElementScriptTokens {
             kind: "body_face",
             index: 0,

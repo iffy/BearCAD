@@ -76,6 +76,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::BodyFace { .. } => "body_face",
         SceneElement::SketchFace(_) => "face",
         SceneElement::MovePoint(_) => "move_point",
+        SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -109,6 +110,7 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_) => None,
+        SceneElement::ExtrusionEdge { extrusion, .. } => Some(*extrusion),
         // X/Y/Z report as 0/1/2 (#952), matching `lua_script::element_index`.
         SceneElement::GlobalAxis(axis) => Some(match axis {
             crate::construction::GlobalAxis::X => 0,

@@ -5581,6 +5581,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
         SceneElement::SketchFace(_) => "Face".to_string(),
         SceneElement::MovePoint(_) => "Point".to_string(),
+        SceneElement::ExtrusionEdge { extrusion, .. } => format!("Edge of extrusion {extrusion}"),
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),

@@ -326,7 +326,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   face's middle — so their twelve point pickers hold elements like every other picker. Built with
   `SceneElement::from_move_point`, which normalizes the two cases that already have an element: a
   body corner is `BodyVertex`, the origin point is `Origin`. `as_move_point` is the inverse, for
-  handing a picker's contents back to the geometry code. The **sketch's two axes are always drawn** while a sketch is open
+  handing a picker's contents back to the geometry code.
+- **Analytic extrusion edges are selectable (#952):** `SceneElement::ExtrusionEdge { extrusion,
+  edge }` names what the 3D Chamfer/Fillet tool treats — distinct from `BodyEdge`, the quantized
+  mesh edge. It highlights the **whole** analytic edge, so a hole's rim (one `Cap` reference,
+  many mesh chords) reads as one circle rather than a row of facets (#807).
+  A **loft section** needs no element of its own: it is a profile plus its sketch, and the
+  profile is a `FaceId`, so the analytic face already names it
+  (`extrude::extrude_face_scene_element`). The **sketch's two axes are always drawn** while a sketch is open
   (#577): the X (u) axis in the red axis colour and Y (v) axis in green, through the origin, faint
   normally and brighter when hovered — the "floating origin" that makes the sketch frame's
   orientation unambiguous now that the camera takes the shortest roll instead of forcing u-right.

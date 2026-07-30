@@ -3037,6 +3037,16 @@ pub fn loft_section_scene_elements(
     extrude_face_scene_elements(&section.face)
 }
 
+/// The scene element a picked profile face **is** (#952) — its analytic-face identity, which
+/// is what an element picker holds. Distinct from [`extrude_face_scene_elements`], which
+/// returns the constituent geometry to *highlight*, not the face's identity.
+///
+/// A loft section needs no element of its own: it is a profile plus its sketch, and the sketch
+/// follows from the profile, so this names it too.
+pub fn extrude_face_scene_element(face: &ExtrudeFace) -> crate::hierarchy::SceneElement {
+    crate::hierarchy::SceneElement::from_face_id(face.face_id())
+}
+
 /// The scene elements a picked profile face maps to, for folding a tool's picked faces into
 /// the render selection so they highlight like selected geometry (#303): a circle face is its
 /// circle, a polygon face is its boundary lines, a text glyph is its whole text.
@@ -3385,6 +3395,8 @@ pub fn selection_world_bounds(
             | SceneElement::SketchFace(_)
             // A snap point's bounds are a single point on a body that frames itself.
             | SceneElement::MovePoint(_)
+            // An analytic edge's bounds come from the extrusion that owns it.
+            | SceneElement::ExtrusionEdge { .. }
             // The in-sketch repeat's own bounds come from its duplicated lines/circles, which are
             // selected/framed as their own elements; the op node itself contributes nothing here.
             | SceneElement::SketchRepeatOp(_)

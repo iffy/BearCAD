@@ -103,6 +103,8 @@ impl ElementKind {
             SceneElement::SketchFace(_) => ElementKind::Face,
             // A Move/Joint snap point (#952) is a point, whatever geometry it sits on.
             SceneElement::MovePoint(_) => ElementKind::Vertex,
+            // An extrusion's analytic edge (#952) is an edge, like the mesh edge it draws as.
+            SceneElement::ExtrusionEdge { .. } => ElementKind::Edge,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
@@ -965,6 +967,33 @@ mod tests {
                 "{point:?} should survive the round trip"
             );
         }
+    }
+
+    #[test]
+    fn an_extrusion_edge_is_an_edge_a_picker_can_hold() {
+        // #952: the 3D Chamfer/Fillet set is `Vec<(usize, ExtrusionEdgeRef)>` — the analytic
+        // edge, not the quantized mesh `BodyEdge` — so it had no element and kept its own state
+        // behind the legacy row-list picker.
+        let edge = SceneElement::ExtrusionEdge {
+            extrusion: 2,
+            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 1 },
+        };
+        assert_eq!(ElementKind::of(&edge), ElementKind::Edge);
+        assert!(ElementFilter::kind(ElementKind::Edge).accepts(&edge));
+        assert!(!ElementFilter::kind(ElementKind::Body).accepts(&edge));
+    }
+
+    #[test]
+    fn a_loft_section_needs_no_element_of_its_own() {
+        // A loft section is a closed profile plus its sketch, and the profile is a `FaceId` —
+        // so the analytic face element already names it; the sketch follows from the face.
+        let section = crate::model::ExtrudeFace::Circle(4);
+        let element = SceneElement::from_face_id(crate::model::FaceId::Circle(4));
+        assert_eq!(
+            crate::extrude::extrude_face_scene_element(&section),
+            element
+        );
+        assert_eq!(ElementKind::of(&element), ElementKind::Face);
     }
 
     #[test]

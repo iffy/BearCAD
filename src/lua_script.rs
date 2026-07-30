@@ -99,6 +99,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::BodyFace { .. } | SceneElement::SketchFace(_) => "face",
         SceneElement::MovePoint(_) => "move_point",
+        SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -163,6 +164,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_) => 0,
+        SceneElement::ExtrusionEdge { extrusion, .. } => extrusion,
     }
 }
 
