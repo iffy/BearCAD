@@ -12334,29 +12334,9 @@ impl eframe::App for App {
                 repeat_edit_start: None,
                 slice_op: (self.state.tool == Tool::Slice).then(|| {
                     let cs = self.state.creating_slice.as_ref();
-                    let target_rows = cs
-                        .map(|c| {
-                            c.targets
-                                .iter()
-                                .map(|&bi| {
-                                    names::element_name(&self.state.doc, SceneElement::Body(bi))
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| format!("Body {bi}"))
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let cutter_rows = cs
-                        .map(|c| {
-                            c.cutters
-                                .iter()
-                                .map(|f| crate::face::face_label(&self.state.doc, f.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
                     context::SliceControl {
-                        target_rows,
-                        cutter_rows,
+                        targets: cs.map(|c| c.targets.clone()).unwrap_or_default(),
+                        cutters: cs.map(|c| c.cutters.clone()).unwrap_or_default(),
                         picking_cutter: cs.map(|c| c.picking_cutter).unwrap_or(false),
                         extend_infinite: cs.map(|c| c.extend_infinite).unwrap_or(true),
                         editing: cs.map(|c| c.editing.is_some()).unwrap_or(false),
@@ -13565,20 +13545,7 @@ impl eframe::App for App {
                             .creating_slice
                             .get_or_insert_with(actions::CreatingSlice::default);
                         match edit {
-                            context::SliceEdit::PickingCutter(v) => cs.picking_cutter = v,
                             context::SliceEdit::ExtendInfinite(v) => cs.extend_infinite = v,
-                            context::SliceEdit::RemoveTarget(Some(i)) => {
-                                if i < cs.targets.len() {
-                                    cs.targets.remove(i);
-                                }
-                            }
-                            context::SliceEdit::RemoveTarget(None) => cs.targets.clear(),
-                            context::SliceEdit::RemoveCutter(Some(i)) => {
-                                if i < cs.cutters.len() {
-                                    cs.cutters.remove(i);
-                                }
-                            }
-                            context::SliceEdit::RemoveCutter(None) => cs.cutters.clear(),
                             context::SliceEdit::Commit => unreachable!(),
                         }
                     }
@@ -13692,6 +13659,26 @@ impl eframe::App for App {
                         self.move_focus_override = Some(MoveFocus::Bodies);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    // Slice's two sides (#955): clicking a picker makes it the one the next
+                    // viewport click feeds; otherwise remove/clear that side.
+                    context::PickerTarget::SliceTargets => {
+                        if let Some(cs) = self.state.creating_slice.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                cs.picking_cutter = false;
+                            } else {
+                                remove_or_clear(&mut cs.targets, edit);
+                            }
+                        }
+                    }
+                    context::PickerTarget::SliceCutters => {
+                        if let Some(cs) = self.state.creating_slice.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                cs.picking_cutter = true;
+                            } else {
+                                remove_or_clear(&mut cs.cutters, edit);
+                            }
                         }
                     }
                     context::PickerTarget::MirrorPlane => {
@@ -14536,10 +14523,11 @@ fn mirror_plane_scene_element(face: &model::FaceId) -> hierarchy::SceneElement {
     hierarchy::SceneElement::from_face_id(face.clone())
 }
 
-/// Apply a tool-owned element picker's row action (#213) to its backing body-index vector:
-/// `Remove(i)` drops row `i`, `Clear` empties the set, `Focus` is a no-op here (the caller
-/// handles active-picker switching for multi-picker tools).
-fn remove_or_clear(bodies: &mut Vec<usize>, action: context::ToolPickerAction) {
+/// Apply a tool-owned element picker's row action (#213) to its backing set: `Remove(i)` drops
+/// row `i`, `Clear` empties the set, `Focus` is a no-op here (the caller handles active-picker
+/// switching for multi-picker tools). Generic over the item, since a picker's set is body
+/// indices for most tools but face references for others (Slice's cutters, #955).
+fn remove_or_clear<T>(bodies: &mut Vec<T>, action: context::ToolPickerAction) {
     match action {
         context::ToolPickerAction::Focus => {}
         context::ToolPickerAction::Remove(index) if index < bodies.len() => {

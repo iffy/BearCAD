@@ -636,8 +636,11 @@ pub enum RepeatEdit {
 /// cutters, which picker the next viewport click lands on, and the extend-to-infinity flag.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SliceControl {
-    pub target_rows: Vec<String>,
-    pub cutter_rows: Vec<String>,
+    /// The bodies being sliced, and the planar faces/planes doing the slicing (#955). The
+    /// pane renders both through real [`ElementPicker`]s, so they carry their own filters,
+    /// focus, and — for the cutters, which are consumed — the red highlight.
+    pub targets: Vec<usize>,
+    pub cutters: Vec<crate::model::FaceId>,
     /// `true` while the cutter picker is active (the next viewport click adds a cutter).
     pub picking_cutter: bool,
     pub extend_infinite: bool,
@@ -648,13 +651,7 @@ pub struct SliceControl {
 /// One edit from the Slice context section.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SliceEdit {
-    /// Choose which picker the next viewport click lands on (`true` = cutter).
-    PickingCutter(bool),
     ExtendInfinite(bool),
-    /// Remove target row `i` (`None` clears the target set).
-    RemoveTarget(Option<usize>),
-    /// Remove cutter row `i` (`None` clears the cutter set).
-    RemoveCutter(Option<usize>),
     Commit,
 }
 
@@ -1257,6 +1254,11 @@ pub enum PickerTarget {
     LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
+    /// The Slice tool's target bodies (`CreatingSlice::targets`, #955).
+    SliceTargets,
+    /// The Slice tool's cutter faces/planes (`CreatingSlice::cutters`, #955). Consumed
+    /// destructively, so they carry the red highlight override.
+    SliceCutters,
     /// The Mirror tool's mirror plane (`CreatingMirror::plane`, #566): a plane or flat face.
     MirrorPlane,
     /// The Mirror tool's target bodies (`CreatingMirror::targets`, #523).
@@ -1844,6 +1846,37 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             None,
             m.bodies_focused,
         ));
+    }
+    if let Some(sl) = input.slice_op.as_ref() {
+        // Slice's two pickers (#955): the bodies it splits, and the planes/flat faces doing the
+        // splitting. Exactly one is focused — whichever the next viewport click feeds.
+        tool_pickers.push(body_tool_picker(
+            input.doc,
+            "Targets",
+            PickerTarget::SliceTargets,
+            &sl.targets,
+            None,
+            !sl.picking_cutter,
+        ));
+        // The cutters are consumed by the operation, so they take the red override — the
+        // example SPEC has always cited for it (#213/#961).
+        let mut cutters = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+            PickLimit::Infinite,
+        )
+        .with_selected_color(crate::theme::CUT_ACCENT);
+        cutters.set_focused(sl.picking_cutter);
+        cutters.set_picked(
+            input.doc,
+            sl.cutters.iter().cloned().map(SceneElement::from_face_id),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Cutters",
+            picker: cutters,
+            target: PickerTarget::SliceCutters,
+            // No divider between the two pickers and the toggle below — one Slice block (#602).
+            separator_above: false,
+        });
     }
     if let Some(m) = input.mirror_op.as_ref() {
         // Primary picker: the mirror plane — a construction plane or a flat body face (#566).
@@ -5644,42 +5677,9 @@ pub fn show_pane(
 
     if let Some(control) = &content.slice_op {
         any_control = true;
-        ui.separator();
         let mut pending: Option<SliceEdit> = None;
-        // Two element pickers; the focused one is the side the next viewport click lands on
-        // (clicking a picker makes it active, replacing the old Bodies/Cutters toggle).
-        labeled_row_top(ui, "Bodies", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "slice_targets",
-            !control.picking_cutter,
-            false,
-            crate::icons::IconId::Body,
-            &control.target_rows,
-        ) {
-            pending = Some(match event {
-                crate::element_picker::PickerEvent::Focus => SliceEdit::PickingCutter(false),
-                crate::element_picker::PickerEvent::Remove(i) => SliceEdit::RemoveTarget(Some(i)),
-                crate::element_picker::PickerEvent::Clear => SliceEdit::RemoveTarget(None),
-            });
-        }
-        });
-        labeled_row_top(ui, "Cutters", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "slice_cutters",
-            control.picking_cutter,
-            false,
-            crate::icons::IconId::Plane,
-            &control.cutter_rows,
-        ) {
-            pending = Some(match event {
-                crate::element_picker::PickerEvent::Focus => SliceEdit::PickingCutter(true),
-                crate::element_picker::PickerEvent::Remove(i) => SliceEdit::RemoveCutter(Some(i)),
-                crate::element_picker::PickerEvent::Clear => SliceEdit::RemoveCutter(None),
-            });
-        }
-        });
+        // The Targets and Cutters pickers are real `ToolPickerView`s now (#955), rendered with
+        // every other tool picker above; only the toggle and the commit button live here.
         let mut extend = control.extend_infinite;
         if checkbox_row(ui, "Infinite cut", &mut extend, None) {
             pending = Some(SliceEdit::ExtendInfinite(extend));
@@ -7558,6 +7558,53 @@ mod tests {
         // With no axis yet, the Bodies picker defers to the Axis picker either way.
         assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
         assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());
+    }
+
+    #[test]
+    fn slice_yields_a_body_picker_and_a_red_cutter_picker() {
+        // #955: Slice's Targets and Cutters were label-only, so neither had a filter, a focus,
+        // or the red highlight SPEC names Slice cutters as *the* example of.
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_bodies(4);
+        let selection = SceneSelection::default();
+        let slice_input = ContextInput {
+            tool: Tool::Slice,
+            slice_op: Some(SliceControl {
+                targets: vec![1],
+                cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
+                picking_cutter: true,
+                extend_infinite: true,
+                editing: false,
+                can_commit: true,
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&slice_input).tool_pickers;
+        assert_eq!(pickers.len(), 2, "targets and cutters");
+
+        let targets = &pickers[0];
+        assert_eq!(targets.target, PickerTarget::SliceTargets);
+        assert_eq!(targets.picker.picked(), &[SceneElement::Body(1)]);
+        assert!(targets.picker.accepts(&doc, &SceneElement::Body(0)));
+        assert!(!targets.picker.is_focused(), "the cutter picker has focus");
+
+        let cutters = &pickers[1];
+        assert_eq!(cutters.target, PickerTarget::SliceCutters);
+        assert_eq!(
+            cutters.picker.picked(),
+            &[SceneElement::ConstructionPlane(0)],
+            "a plane cutter keeps its plane identity"
+        );
+        assert!(cutters.picker.is_focused());
+        assert!(
+            !cutters.picker.accepts(&doc, &SceneElement::Body(0)),
+            "a whole body is not a cutter"
+        );
+        assert_eq!(
+            cutters.picker.selected_color(crate::theme::FOCUS_ACCENT),
+            crate::theme::CUT_ACCENT,
+            "cutters are consumed destructively, so they read red"
+        );
     }
 
     #[test]

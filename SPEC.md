@@ -1162,10 +1162,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - Scripting: `bearcad.material{ name?, color? = "#rrggbb", bodies? = {..} }` and
   `bearcad.set_material{ body, material }` (`material = nil` for the default).
 
-- **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
-  (the targets, multi-select) and **Cutters** (construction planes and/or planar body
-  faces, multi-select) — with a *Picking* switch in the context pane choosing where the
-  next viewport click lands. Each target is split independently: for every cutter the
+- **Slice tool (#181):** cuts whole bodies with planar cutters. Two real element pickers
+  (#955) — **Targets** (bodies, multi-select, refusing one already consumed by another
+  operation) and **Cutters** (construction planes and/or planar body faces, multi-select) —
+  with the focused one taking the next viewport click; clicking a picker makes it the focused
+  one. The cutters are consumed by the operation, so that picker carries the **red** selected
+  highlight (#213/#961) — the example this spec has always cited for the override. Each target is split independently: for every cutter the
   current pieces are divided by the cutter's plane, so *n* cutters through a body can yield
   up to *2ⁿ* fragments. Each fragment is an output body (`BodySource::Sliced { op, target,
   piece }`) nested under an editable **slice operation element** (`Document::slice_ops`,
