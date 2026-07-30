@@ -1840,22 +1840,44 @@ fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<e
 /// loupe reads as a solid object rather than a see-through jumble. The shade is the same
 /// two-sided Lambert term the viewport's `push_solid` uses, so a body looks in the loupe the way
 /// it looks in the scene.
+/// How a loupe's own contents are drawn (#980) — the same three states a body has in the 3D
+/// view, so a loupe shows what the thing would look like if you picked it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoupeState {
+    /// A context loupe, or this loupe's thing at rest: its own colour.
+    Idle,
+    /// The loupe under the cursor.
+    Hovered,
+    /// Its thing is already in the selection.
+    Selected,
+}
+
 fn loupe_face_shade(tri: &[Vec3; 3]) -> f32 {
     let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
     let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
     (0.4 + 0.6 * normal.dot(light).abs()).clamp(0.0, 1.0)
 }
 
-/// A loupe magnifies the scene, so a solid in it wears the colour it wears out there (#976):
-/// its **material**, shaded per triangle — not the loupe's accent, which used to paint every
-/// body the same blue whatever it was made of. Which loupe is hot is the ring's job (accent
-/// yellow and thicker), so the fill is free to be the thing's own colour.
-fn loupe_solid_fill(doc: &model::Document, body: usize, shade: f32) -> egui::Color32 {
-    let base = doc
-        .bodies
-        .get(body)
-        .map(|b| gpu_viewport::body_material_fill(doc, b))
-        .unwrap_or(gpu_viewport::SOLID_FILL);
+/// A loupe magnifies the scene, so a solid in it wears the colour it wears out there (#976) —
+/// **and in the state it's in** (#980). The 3D view's own rule, exactly: selected, then
+/// hovered, then the body's material. Reading the material as the *only* answer was the
+/// mistake: it made a hovered loupe indistinguishable from a cold one, since the fill is the
+/// whole visual for a body and a thin ring around the disc isn't the signal a hover needs.
+fn loupe_solid_fill(
+    doc: &model::Document,
+    body: usize,
+    shade: f32,
+    state: LoupeState,
+) -> egui::Color32 {
+    let base = match state {
+        LoupeState::Selected => gpu_viewport::SOLID_FILL_SELECTED,
+        LoupeState::Hovered => gpu_viewport::SOLID_FILL_HOVERED,
+        LoupeState::Idle => doc
+            .bodies
+            .get(body)
+            .map(|b| gpu_viewport::body_material_fill(doc, b))
+            .unwrap_or(gpu_viewport::SOLID_FILL),
+    };
     egui::Color32::from_rgb(
         (base.r() as f32 * shade) as u8,
         (base.g() as f32 * shade) as u8,
@@ -1874,10 +1896,21 @@ fn body_loupe_faces(
         .iter()
         .map(|tri| (*tri, (loupe_face_shade(tri) * 255.0) as u8))
         .collect();
-    // Far-to-near. `sort_by` is stable, so coplanar triangles keep mesh order and the result is
+    // Far-to-near, keyed on each triangle's **farthest** vertex rather than its centroid
+    // (#981). There's no depth buffer here — a loupe is painted — so the order is the whole
+    // correctness argument, and a centroid gets it wrong wherever triangles differ in size: a
+    // big side wall whose centre is far can still have a corner nearer than every triangle of
+    // the cap in front of it, and would paint over it. The farthest point is the exact key for
+    // a convex solid and much closer to right for everything else.
+    //
+    // `sort_by` is stable, so coplanar triangles keep mesh order and the result is
     // deterministic.
     faces.sort_by(|(a, _), (b, _)| {
-        let d = |t: &[Vec3; 3]| ((t[0] + t[1] + t[2]) / 3.0 - eye).length();
+        let d = |t: &[Vec3; 3]| {
+            t.iter()
+                .map(|p| (*p - eye).length())
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
         d(b).total_cmp(&d(a))
     });
     Some(faces)
@@ -2047,6 +2080,9 @@ fn draw_pick_target_loupe(
     is_highlight: bool,
     // Camera position, for depth-sorting a whole body's shaded faces (#972).
     eye: Vec3,
+    // Whether this loupe is the one under the cursor, or holds something already selected
+    // (#980) — a solid inside it takes the same fill it would in the 3D view in that state.
+    state: LoupeState,
 ) {
     use construction::PickTargetKind as PK;
     let lp = |w: Vec3| project(w).map(loupe);
@@ -2161,14 +2197,16 @@ fn draw_pick_target_loupe(
             // it doesn't muddy the loupe.
             if is_highlight {
                 for tri in triangles {
-                    let fill = loupe_solid_fill(doc, *body, loupe_face_shade(tri));
+                    let fill = loupe_solid_fill(doc, *body, loupe_face_shade(tri), state);
                     if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
                         let poly = clip_convex_to_disc(&[a, b, c], center, radius);
                         if poly.len() >= 3 {
+                            // Stroked in its own fill, to cover the antialiasing seam two
+                            // triangles leave along a shared edge (#981).
                             painter.add(egui::Shape::convex_polygon(
                                 poly,
                                 fill,
-                                egui::Stroke::NONE,
+                                egui::Stroke::new(1.0, fill),
                             ));
                         }
                     }
@@ -2246,11 +2284,20 @@ fn draw_pick_target_loupe(
                 return;
             };
             for (tri, shade) in faces {
-                let fill = loupe_solid_fill(doc, *bi, shade as f32 / 255.0);
+                let fill = loupe_solid_fill(doc, *bi, shade as f32 / 255.0, state);
                 if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
                     let poly = clip_convex_to_disc(&[a, b, c], center, radius);
                     if poly.len() >= 3 {
-                        painter.add(egui::Shape::convex_polygon(poly, fill, egui::Stroke::NONE));
+                        // Stroked in its own fill (#981). egui feathers a polygon's edge for
+                        // antialiasing, so two triangles sharing an edge each fade out along
+                        // it and leave a hairline of background between them — across a whole
+                        // mesh that reads as a web of cracks over the solid. A hairline stroke
+                        // of the same colour covers the seam.
+                        painter.add(egui::Shape::convex_polygon(
+                            poly,
+                            fill,
+                            egui::Stroke::new(1.0, fill),
+                        ));
                     }
                 }
             }
@@ -20862,6 +20909,7 @@ impl App {
                     draw_pick_target_loupe(
                         painter, project, &loupe, center, r_loupe, &self.state.doc,
                         &member.target, member.anchor, context_color, 1.2, false, eye,
+                        LoupeState::Idle,
                     );
                 }
             }
@@ -20879,6 +20927,13 @@ impl App {
                 draw_pick_target_loupe(
                     painter, project, &loupe, center, r_loupe, &self.state.doc,
                     &member.target, member.anchor, highlight, 2.4, true, eye,
+                    if selected {
+                        LoupeState::Selected
+                    } else if hot {
+                        LoupeState::Hovered
+                    } else {
+                        LoupeState::Idle
+                    },
                 );
             }
             // A faint centre mark = the cursor's hitbox centre, for orientation. A loupe of
@@ -20993,6 +21048,9 @@ impl App {
                                     painter, project, &mini_loupe, mc, r_mini, &self.state.doc,
                                     &ex.items[li].target, ex.items[li].anchor, idle_blue, 1.0, true,
                                     eye,
+                                    // A Back loupe's mini-cluster is a preview of where you
+                                    // came from, never the thing under the cursor.
+                                    LoupeState::Idle,
                                 );
                             }
                             painter.circle_stroke(
@@ -21058,6 +21116,8 @@ impl App {
                         painter, project, &gloupe, gc, gr, &self.state.doc,
                         &ex.items[li].target, ex.items[li].anchor,
                         ghost_col(idle_blue, 255.0), 1.6, true, eye,
+                        // A dissolving ghost from the level being left behind (#567).
+                        LoupeState::Idle,
                     );
                 }
                 let ring = if g.is_group {
@@ -28576,10 +28636,14 @@ mod tests {
         assert!(faces.len() > 4, "a box has more than four triangles");
 
         // Painter's algorithm: every triangle is at least as far from the eye as the one
-        // drawn after it, so nearer faces paint over farther ones.
+        // drawn after it, so nearer faces paint over farther ones. Keyed on the **farthest**
+        // vertex, not the centroid (#981) — a big triangle whose centre is far can still have
+        // a corner nearer than everything in front of it, and a centroid key would let it
+        // paint over them.
         let depth = |tri: &[Vec3; 3]| {
-            let c = (tri[0] + tri[1] + tri[2]) / 3.0;
-            (c - eye).length()
+            tri.iter()
+                .map(|p| (*p - eye).length())
+                .fold(f32::NEG_INFINITY, f32::max)
         };
         for pair in faces.windows(2) {
             assert!(
@@ -28704,10 +28768,10 @@ mod tests {
             shadow: false,
         });
         // Unshaded, the fill is the material itself.
-        let full = loupe_solid_fill(&doc, 0, 1.0);
+        let full = loupe_solid_fill(&doc, 0, 1.0, LoupeState::Idle);
         assert_eq!((full.r(), full.g(), full.b()), (230, 120, 170));
         // Shading dims it without tinting it — the hue is still the body's.
-        let dim = loupe_solid_fill(&doc, 0, 0.5);
+        let dim = loupe_solid_fill(&doc, 0, 0.5, LoupeState::Idle);
         assert!(dim.r() > dim.b() && dim.b() > dim.g(), "still pink: {dim:?}");
         assert!(dim.r() < full.r(), "and darker");
         // A body with no material of its own keeps the document's default look, not the accent.
@@ -28718,7 +28782,18 @@ mod tests {
             deleted: false,
             shadow: false,
         });
-        assert_ne!(loupe_solid_fill(&doc, 1, 1.0), full);
+        assert_ne!(loupe_solid_fill(&doc, 1, 1.0, LoupeState::Idle), full);
+
+        // #980: and it changes with the loupe's state, the way a body's fill does in the 3D
+        // view — otherwise a hovered loupe looks exactly like a cold one, since the fill is
+        // the whole visual for a body.
+        let hovered = loupe_solid_fill(&doc, 0, 1.0, LoupeState::Hovered);
+        let selected = loupe_solid_fill(&doc, 0, 1.0, LoupeState::Selected);
+        assert_ne!(hovered, full, "a hovered loupe must read differently");
+        assert_ne!(selected, full, "so must one holding something selected");
+        assert_ne!(hovered, selected);
+        assert_eq!(hovered, gpu_viewport::SOLID_FILL_HOVERED, "the 3D view's own hover fill");
+        assert_eq!(selected, gpu_viewport::SOLID_FILL_SELECTED);
     }
 
     #[test]

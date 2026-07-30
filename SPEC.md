@@ -2600,9 +2600,19 @@ modeled on SolveSpace (https://solvespace.com).
   thing telling X from Y from Z; a **datum plane** its shaded quad with an outline, rather than
   the single dot it used to draw, which was indistinguishable from a vertex. Which loupe is hot
   is the **ring's** job (accent yellow, and thicker), which is what frees the contents to be
-  their own colour. Every kind has content to magnify (`every_loupe_has_content`), including the
-  two whose content is one spot by nature: a point on the ground, and a constraint, whose visual
-  is its badge glyph at the loupe's centre.
+  their own colour — **in the state it's in** (#980), by the 3D view's own rule: selected, then
+  hovered, then the material. The material alone made a hovered loupe indistinguishable from a
+  cold one, since the fill is the whole visual for a body and a ring around the disc is not the
+  signal a hover needs. Every kind has content to magnify (`every_loupe_has_content`), including
+  the two whose content is one spot by nature: a point on the ground, and a constraint, whose
+  visual is its badge glyph at the loupe's centre.
+
+  A loupe is **painted**, not depth-buffered, so a solid in one is drawn far-to-near and the
+  order is the whole correctness argument (#981). The key is each triangle's **farthest** vertex,
+  not its centroid: a big side wall whose centre is far can still have a corner nearer than
+  everything in front of it, and a centroid key lets it paint over them. Each triangle is also
+  stroked in its own fill, because egui feathers a polygon's edge for antialiasing and two
+  triangles sharing one each fade out along it — across a mesh that reads as a web of cracks.
   A hovered leaf also draws a thin grey **leader line** from the element back to the **edge** of its
   loupe (not its centre, #572). Clicking **outside** every loupe just dismisses the fan and **leaves
   the selection untouched** (#575) — the dismiss frame redirects the pointer to nothing so the normal
