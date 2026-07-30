@@ -34,15 +34,17 @@ Revolve axis takes straight references only, so a circle is never offered as one
 Click in the 3D viewport, or on a row in the Elements pane — either its name or its type icon.
 Both feed the armed picker.
 
-Hovering shows what a click would take. Clicking a picked thing again removes it. Shift+click
-(or ⌘/Ctrl+click) adds to a plain selection.
+Hovering shows what a click would take — everything the armed picker accepts lights up, and
+nothing it doesn't. Clicking a picked thing again removes it. Shift+click (or ⌘/Ctrl+click) adds
+to a plain selection.
 
 Where a picker wants **edges** and you click a **face**, you get all of that face's edges — so
 chamfering the whole top of a box is one click, not four. The face lights up edge by edge on
 hover, so you can see it coming.
 
 When several things overlap under the cursor, press **Space** for the
-[Selection Exploder](/docs/selection-exploder).
+[Selection Exploder](/docs/selection-exploder). It fans out the things the armed picker can
+take, so a tool after bodies offers one handle per body and a tool after faces offers faces.
 
 ## What a picker holds is highlighted
 

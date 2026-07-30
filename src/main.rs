@@ -1275,33 +1275,50 @@ impl ExploderState {
 /// Whether the active tool can pick a Selection-Exploder crowd candidate of this kind (#560): the
 /// crowd is pruned to this so it never fans out things the tool could never use. Most tools accept
 /// everything (their own pick path sorts it out); face-only tools are the exception.
-fn exploder_tool_accepts(tool: Tool, kind: &construction::PickTargetKind) -> bool {
-    use construction::PickTargetKind as K;
-    match tool {
-        // The Extrude tool operates on faces — don't offer a corner's edges or vertices too
-        // (#560). It fans the **analytic** faces its own pick path accepts (#625): sketch
-        // profiles, body caps/side walls, and revolve flat faces — never raw mesh facet
-        // groups (which include curved surfaces it can't use) and never construction planes.
-        Tool::Extrude => {
-            matches!(kind, K::SketchFace(face) if !matches!(face, FaceId::ConstructionPlane(_)))
+/// Prune the crowd to what the **focused picker** can take (#957), and to one leaf per thing.
+///
+/// This replaced a hand-written `match tool` whose last two arms encoded the awkward part: a
+/// body's cap reaches the cursor **twice** — once as the analytic `SketchFace` and once as the
+/// quantized mesh `BodyFace` — and they are different elements, so the crowd's own dedup can't
+/// collapse them. Which one to offer is now a property of the picker rather than a list of
+/// tools: a picker that takes only [`ElementKind::Profile`] gets the analytic face, and one
+/// that takes both representations (the Select tool's accept-everything picker) gets the mesh
+/// one, exactly as before.
+///
+/// Everything else falls out of the picker's own filter: a Slice cutters fan offers planes and
+/// flat faces, an Extrude fan offers profiles and not the corner's edges under them, and a
+/// constraint badge appears only where a picker actually takes constraints.
+fn exploder_keep_for_picker(
+    doc: &model::Document,
+    picker: &crate::element_picker::ElementPicker,
+    candidates: &mut Vec<construction::CrowdCandidate>,
+) {
+    use crate::element_picker::{expand_pick, ElementKind};
+    let takes_both = picker.filter().accepts_kind(ElementKind::Profile)
+        && picker.filter().accepts_kind(ElementKind::Face);
+    // A picker that takes whole bodies turns a face, an edge and a corner of the same body all
+    // into that body — one leaf, not four. Keyed on what the pick would *become*, and the leaf
+    // is relabelled as that: the loupe should show the body it would pick, not the facet the
+    // cursor happened to land on.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kept = Vec::with_capacity(candidates.len());
+    for mut candidate in candidates.drain(..) {
+        let Some(element) = scene_element_from_pick(&candidate.kind) else {
+            continue;
+        };
+        if takes_both && ElementKind::of(&element) == ElementKind::Profile {
+            continue;
         }
-        // The Sketch and Text tools open a sketch on a face, so they fan the analytic
-        // sketchable faces — **including** construction planes (#860), which is the whole
-        // point when the plane you want is behind a body.
-        Tool::Sketch | Tool::Text => matches!(kind, K::SketchFace(_)),
-        // A constraint badge can only be *selected*, so only the tools that act on a picked scene
-        // element accept one from the fan (#568); every other tool ignores it.
-        _ if matches!(kind, K::Constraint(_)) => {
-            matches!(tool, Tool::Select | Tool::Constraint | Tool::Dimension)
+        let taken = expand_pick(doc, picker, &element);
+        if taken.is_empty() || !seen.insert(format!("{taken:?}")) {
+            continue;
         }
-        // A whole body (#902) is the Select tool's own leaf — the other tools reach a body
-        // through their own kinds (a face, an edge) or their pickers.
-        _ if matches!(kind, K::Body(_)) => tool == Tool::Select,
-        // Analytic face candidates exist for the face-picking tools; everything else keeps its
-        // own kinds (a Select fan already offers the same face as a `BodyFace`).
-        _ if matches!(kind, K::SketchFace(_)) => false,
-        _ => true,
+        if let [SceneElement::Body(body)] = taken.as_slice() {
+            candidate.kind = construction::PickTargetKind::Body(*body);
+        }
+        kept.push(candidate);
     }
+    *candidates = kept;
 }
 
 /// Recursively collect the flat item-indices of every `Leaf` under a node (#559), in tree order.
@@ -13672,6 +13689,9 @@ impl eframe::App for App {
                             }
                         }
                     }
+                    // The selection picker's removals arrive as a `SelectionEdit`, which edits
+                    // the selection itself rather than a tool-owned set (#958).
+                    context::PickerTarget::Selection => {}
                     // The in-sketch tools draw their own pickers, whose removals arrive as
                     // that tool's own edit rather than here (#958).
                     context::PickerTarget::SketchRepeatEntities
@@ -20415,6 +20435,9 @@ impl App {
         // The constraint annotation icons currently drawn (#568), so their badges can join the fan.
         constraint_hits: &[crate::constraint_viewport::ConstraintIconHit],
         suppress: bool,
+        // The active tool's pickers (#957): the fan offers what the focused one can take, and
+        // with none armed it does not open at all.
+        tool_pickers: &[context::ToolPickerView],
     ) -> (bool, Option<egui::Pos2>, bool) {
         // Consume any pending palette request every frame so it never lingers (#576).
         let palette_request = std::mem::take(&mut self.exploder_palette_request);
@@ -20637,10 +20660,14 @@ impl App {
                 dist_px: (pp - hit.rect.center()).length(),
             });
         }
-        // Only offer what the active tool can actually pick (#560): e.g. the Extrude tool operates
-        // on faces, so it must not fan out a corner's edges/vertices it could never use.
-        let tool = self.state.tool;
-        candidates.retain(|c| exploder_tool_accepts(tool, &c.kind));
+        // Only offer what the focused picker can actually take (#560/#957): the Extrude tool's
+        // Profile picker must not fan out a corner's edges it could never use, and Slice's
+        // Cutters must offer planes rather than the bodies its Targets picker takes.
+        let Some(focused) = tool_pickers.iter().find(|v| v.picker.is_focused()) else {
+            // Nothing is armed, so there is no pick for the fan to disambiguate (#951).
+            return (false, None, false);
+        };
+        exploder_keep_for_picker(&self.state.doc, &focused.picker, &mut candidates);
         // End point B takes only its sphere candidates (#747): the fan offers exactly the
         // blue spots — never faces, edges, or corners that picker can't use.
         if let Some((spots, _)) = self
@@ -21682,6 +21709,7 @@ impl App {
                 || self.state.creating_rect.is_some()
                 || self.state.creating_line.is_some()
                 || self.state.creating_circle.is_some(),
+            tool_pickers,
         );
         // Redirect the tool's pick/hover to the hovered handle's real thing (or nothing when no
         // handle is hovered). The exploder itself already hit-tested the real cursor above.
@@ -29200,34 +29228,73 @@ mod tests {
         assert_eq!(leaves, idxs, "all coincident leaves recovered");
     }
 
+    /// A crowd of one candidate per kind, at the same spot — what the exploder prunes.
+    fn crowd(kinds: &[construction::PickTargetKind]) -> Vec<construction::CrowdCandidate> {
+        kinds
+            .iter()
+            .cloned()
+            .map(|kind| construction::CrowdCandidate {
+                kind,
+                anchor: Vec3::ZERO,
+                dist_px: 0.0,
+            })
+            .collect()
+    }
+
+    /// What the fan would offer a tool whose focused picker is `picker`.
+    fn fanned(
+        picker: &crate::element_picker::ElementPicker,
+        kinds: &[construction::PickTargetKind],
+    ) -> Vec<construction::PickTargetKind> {
+        let mut candidates = crowd(kinds);
+        exploder_keep_for_picker(&model::Document::default(), picker, &mut candidates);
+        candidates.into_iter().map(|c| c.kind).collect()
+    }
+
+    fn picker_of(
+        filter: crate::element_picker::ElementFilter,
+        limit: crate::element_picker::PickLimit,
+    ) -> crate::element_picker::ElementPicker {
+        crate::element_picker::ElementPicker::new(filter, limit)
+    }
+
     #[test]
-    fn exploder_extrude_tool_accepts_only_faces() {
+    fn exploder_extrude_profile_picker_is_offered_only_faces() {
+        use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
         use construction::PickTargetKind as K;
         let face = K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z };
         let edge = K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X };
         let vertex = K::BodyVertex { body: 0, position: Vec3::ZERO };
         let sketch_face = K::SketchFace(FaceId::Polygon(vec![0, 1, 2, 3]));
         let plane_face = K::SketchFace(FaceId::ConstructionPlane(0));
-        // Extrude fans out only the analytic faces its own pick path accepts (#560/#625):
-        // sketch profiles and body/revolve flat faces — not mesh facet groups (which
-        // include curved surfaces), not planes, and never edges or vertices.
-        assert!(exploder_tool_accepts(Tool::Extrude, &sketch_face));
-        assert!(!exploder_tool_accepts(Tool::Extrude, &plane_face));
-        assert!(!exploder_tool_accepts(Tool::Extrude, &face));
-        assert!(!exploder_tool_accepts(Tool::Extrude, &edge));
-        assert!(!exploder_tool_accepts(Tool::Extrude, &vertex));
-        // Select accepts everything it can already pick; the analytic-face kind is
-        // extrude-only (the same face reaches Select as a `BodyFace`).
-        assert!(exploder_tool_accepts(Tool::Select, &edge));
-        assert!(exploder_tool_accepts(Tool::Select, &vertex));
-        assert!(exploder_tool_accepts(Tool::Select, &face));
-        assert!(!exploder_tool_accepts(Tool::Select, &sketch_face));
+        let all = [
+            sketch_face.clone(),
+            plane_face.clone(),
+            face.clone(),
+            edge.clone(),
+            vertex.clone(),
+        ];
+
+        // Extrude's Profile picker takes the analytic faces its own pick path accepts
+        // (#560/#625): sketch profiles and body/revolve flat faces — not mesh facet groups
+        // (which include curved surfaces), not planes, and never edges or vertices.
+        let profiles = picker_of(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
+        assert_eq!(fanned(&profiles, &all), vec![sketch_face.clone()]);
+
+        // The Select tool's picker takes both representations of a face, so it gets the mesh
+        // one — otherwise the same surface would fan as two loupes (#957). A `SketchFace`
+        // naming a *construction plane* isn't a second representation of anything, though: it
+        // is the plane, and Select takes planes. The old rule dropped it by pick-target kind
+        // and so could lose a datum plane from the fan altogether.
+        let select = ElementPicker::select_everything();
+        assert_eq!(fanned(&select, &all), vec![plane_face, face, edge, vertex]);
     }
 
     /// #860: the Sketch tool's fan is the analytic sketchable faces — construction planes
     /// included, which is the whole point when the plane you want is behind a body.
     #[test]
     fn exploder_offers_the_sketch_tool_its_faces_planes_and_all() {
+        use crate::element_picker::{ElementFilter, ElementKind, PickLimit};
         use construction::PickTargetKind as K;
         let plane = K::SketchFace(FaceId::ConstructionPlane(1));
         let cap = K::SketchFace(FaceId::Circle(0));
@@ -29236,28 +29303,60 @@ mod tests {
             triangles: Vec::new(),
             normal: Vec3::Z,
         };
+        let all = [plane.clone(), cap.clone(), body_face];
 
-        for tool in [Tool::Sketch, Tool::Text] {
-            assert!(exploder_tool_accepts(tool, &plane), "{tool:?} should offer datum planes");
-            assert!(exploder_tool_accepts(tool, &cap));
-            // Raw mesh facet groups aren't what these tools sketch on.
-            assert!(!exploder_tool_accepts(tool, &body_face));
-        }
+        // Sketch and Text pick one plane or analytic face to open a sketch on.
+        let sketchable = picker_of(
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
+            PickLimit::Finite(1),
+        );
+        assert_eq!(fanned(&sketchable, &all), vec![plane.clone(), cap.clone()]);
+
         // Extrude keeps its own rule: analytic faces, never a datum plane.
-        assert!(exploder_tool_accepts(Tool::Extrude, &cap));
-        assert!(!exploder_tool_accepts(Tool::Extrude, &plane));
+        let profiles = picker_of(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
+        assert_eq!(fanned(&profiles, &[plane, cap.clone()]), vec![cap]);
     }
 
     #[test]
-    fn exploder_accepts_constraints_only_in_selection_tools() {
+    fn exploder_offers_constraints_only_to_pickers_that_take_them() {
+        use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
         use construction::PickTargetKind as K;
-        let c = K::Constraint(0);
-        // A constraint badge can only be selected (#568), so only the element-selecting tools fan
-        // it out; tools that consume geometry (Extrude) ignore it.
-        assert!(exploder_tool_accepts(Tool::Select, &c));
-        assert!(exploder_tool_accepts(Tool::Constraint, &c));
-        assert!(exploder_tool_accepts(Tool::Dimension, &c));
-        assert!(!exploder_tool_accepts(Tool::Extrude, &c));
+        let c = [K::Constraint(0)];
+        // A constraint badge can only be selected (#568), so it reaches the fan exactly where a
+        // picker takes constraints — not because of a list of tools.
+        assert_eq!(fanned(&ElementPicker::select_everything(), &c), c.to_vec());
+        let constraint_tool = picker_of(
+            ElementFilter::kinds(&[
+                ElementKind::Vertex,
+                ElementKind::Line,
+                ElementKind::Circle,
+                ElementKind::Edge,
+                ElementKind::Constraint,
+            ]),
+            PickLimit::Infinite,
+        );
+        assert_eq!(fanned(&constraint_tool, &c), c.to_vec());
+        let profiles = picker_of(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
+        assert!(fanned(&profiles, &c).is_empty());
+    }
+
+    #[test]
+    fn exploder_gives_a_body_picker_one_leaf_per_body() {
+        use crate::element_picker::{ElementFilter, ElementKind, PickLimit};
+        use construction::PickTargetKind as K;
+        // A body picker takes a click anywhere on the body (#218), so the face, the edge and
+        // the corner of one body all mean the same thing — one leaf, not three.
+        let bodies = picker_of(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
+        let kept = fanned(
+            &bodies,
+            &[
+                K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
+                K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X },
+                K::BodyVertex { body: 0, position: Vec3::ZERO },
+                K::BodyVertex { body: 1, position: Vec3::ZERO },
+            ],
+        );
+        assert_eq!(kept.len(), 2, "one leaf each for body 0 and body 1, got {kept:?}");
     }
 
     // Three top-level groups of two leaves each (so a drilled level has ≥ 2 siblings and thus a Back

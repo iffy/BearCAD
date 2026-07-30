@@ -45,8 +45,16 @@ pub enum ElementKind {
     /// An edge of a body/face boundary (as opposed to a free sketch [`Line`](ElementKind::Line)).
     Edge,
     /// A flat face of a solid body (#555/#566), distinct from the whole [`Body`](ElementKind::Body):
-    /// a picker can accept planes-or-faces without also taking whole bodies.
+    /// a picker can accept planes-or-faces without also taking whole bodies. This is the **mesh**
+    /// face — a group of coplanar triangles, quantized from the body's geometry.
     Face,
+    /// The same surface as an *analytic* face (#957): a sketch profile, a body's extrude cap or
+    /// side wall, a revolve's flat face — named by the geometry that generated it rather than by
+    /// the triangles it renders as. A body's cap reaches the cursor **both** ways, and the two
+    /// are different elements, so they are different kinds: the tools that build from a face
+    /// (Extrude, Revolve, Sweep, Loft) want the analytic one, and only a picker taking
+    /// everything takes both.
+    Profile,
     Constraint,
     /// A solid body.
     Body,
@@ -69,7 +77,7 @@ impl ElementKind {
     /// walking this list, so a kind left out is one no picker can accept and no summary can
     /// count (which is exactly what happened to `Image`). `every_kind_is_in_the_canonical_order`
     /// guards that.
-    pub const ORDER: [ElementKind; 14] = [
+    pub const ORDER: [ElementKind; 15] = [
         ElementKind::Plane,
         ElementKind::Image,
         ElementKind::Sketch,
@@ -79,6 +87,7 @@ impl ElementKind {
         ElementKind::Vertex,
         ElementKind::Edge,
         ElementKind::Face,
+        ElementKind::Profile,
         ElementKind::Constraint,
         ElementKind::Body,
         ElementKind::Component,
@@ -98,15 +107,16 @@ impl ElementKind {
                 ElementKind::Vertex
             }
             SceneElement::GlobalAxis(_) => ElementKind::Axis,
-            // An analytic face (#952). `from_face_id` has already peeled off the
-            // construction-plane case, so anything left here really is a face.
-            SceneElement::SketchFace(_) => ElementKind::Face,
+            // An analytic face (#952/#957). `from_face_id` has already peeled off the
+            // construction-plane case, so anything left here really is a profile.
+            SceneElement::SketchFace(_) => ElementKind::Profile,
             // A Move/Joint snap point (#952) is a point, whatever geometry it sits on.
             SceneElement::MovePoint(_) => ElementKind::Vertex,
             // An extrusion's analytic edge (#952) is an edge, like the mesh edge it draws as.
             SceneElement::ExtrusionEdge { .. } => ElementKind::Edge,
-            // A repeat instance's face (#955) is still a face.
-            SceneElement::RepeatedFace { .. } => ElementKind::Face,
+            // A repeat instance's face (#955) is an analytic one — it is the source face's
+            // plane, translated, not any mesh in the document.
+            SceneElement::RepeatedFace { .. } => ElementKind::Profile,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
@@ -147,7 +157,7 @@ impl ElementKind {
             // No dedicated point glyph; the coincident icon reads as "a point".
             ElementKind::Vertex => IconId::Coincident,
             ElementKind::Edge => IconId::Line,
-            ElementKind::Face => IconId::Face,
+            ElementKind::Face | ElementKind::Profile => IconId::Face,
             ElementKind::Constraint => IconId::Constraint,
             ElementKind::Body => IconId::Body,
             ElementKind::Component => IconId::Component,
@@ -168,6 +178,7 @@ impl ElementKind {
             ElementKind::Vertex => "vertex",
             ElementKind::Edge => "edge",
             ElementKind::Face => "face",
+            ElementKind::Profile => "profile",
             ElementKind::Constraint => "constraint",
             ElementKind::Body => "body",
             ElementKind::Component => "component",
@@ -207,7 +218,7 @@ pub fn default_pick_band(kind: ElementKind) -> usize {
         ElementKind::Vertex => 0,
         ElementKind::Edge | ElementKind::Line | ElementKind::Circle | ElementKind::Axis => 1,
         ElementKind::Constraint => 2,
-        ElementKind::Face => 3,
+        ElementKind::Face | ElementKind::Profile => 3,
         ElementKind::Plane | ElementKind::Image => 4,
         ElementKind::Sketch => 5,
         ElementKind::Body => 6,
@@ -406,8 +417,12 @@ pub fn expand_pick(
             }
         }
     }
-    // Otherwise expand a face, and only into kinds this picker takes but can't reach directly.
-    if ElementKind::of(element) != ElementKind::Face {
+    // Otherwise expand a face — either representation of one (#957) — and only into kinds this
+    // picker takes but can't reach directly.
+    if !matches!(
+        ElementKind::of(element),
+        ElementKind::Face | ElementKind::Profile
+    ) {
         return Vec::new();
     }
     // Not into a single-pick input, though: "all of this face's edges" has nowhere to go in a
@@ -1199,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn an_analytic_face_is_a_face_a_picker_can_hold() {
+    fn an_analytic_face_is_a_profile_a_picker_can_hold() {
         // #952: Extrude profiles, Revolve/Sweep profiles and Slice cutters all carry a `FaceId`
         // — the *analytic* face, a different identity from the quantized mesh `BodyFace` — and
         // had no scene element, so those inputs kept bespoke `Vec<FaceId>` state.
@@ -1208,10 +1223,20 @@ mod tests {
             profile,
             SceneElement::SketchFace(crate::model::FaceId::Circle(3))
         );
-        assert_eq!(ElementKind::of(&profile), ElementKind::Face);
-        let faces = ElementFilter::kind(ElementKind::Face);
-        assert!(faces.accepts(&Document::default(), &profile));
-        assert!(!faces.accepts(&Document::default(), &body(0)));
+        // #957: and it is a *different kind* from the mesh face over the same surface, so a
+        // picker can say which of the two representations it wants — which is what stops the
+        // Exploder fanning one face twice.
+        assert_eq!(ElementKind::of(&profile), ElementKind::Profile);
+        let profiles = ElementFilter::kind(ElementKind::Profile);
+        assert!(profiles.accepts(&Document::default(), &profile));
+        assert!(!profiles.accepts(&Document::default(), &body(0)));
+        let mesh = SceneElement::BodyFace {
+            body: 0,
+            centroid: [0, 0, 0],
+            normal: [0, 0, 1],
+        };
+        assert!(!profiles.accepts(&Document::default(), &mesh));
+        assert!(!ElementFilter::kind(ElementKind::Face).accepts(&Document::default(), &profile));
     }
 
     #[test]
@@ -1298,7 +1323,7 @@ mod tests {
             crate::extrude::extrude_face_scene_element(&section),
             element
         );
-        assert_eq!(ElementKind::of(&element), ElementKind::Face);
+        assert_eq!(ElementKind::of(&element), ElementKind::Profile);
     }
 
     /// A document with two solid bodies, a straight line and a curved one, so the rules have

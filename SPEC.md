@@ -2514,15 +2514,23 @@ modeled on SolveSpace (https://solvespace.com).
   so a constraint icon buried beneath overlapping geometry can be fanned out and selected. Its loupe
   shows the constraint's icon glyph (`icons::paint_icon`), and hovering it (or a group of them) glows
   the real badge in the annotation overlay via `draw_constraint_icons`'s hovered set. The crowd is
-  then pruned to what the **active tool** can actually pick (`exploder_tool_accepts`, #560) — e.g. the
-  Extrude tool operates on faces, so it fans out only faces, never a corner's edges/vertices it
-  couldn't use; constraint badges are offered only to the element-selecting tools (Select/Constraint/
-  Dimension), which apply the pick as a `SceneElement::Constraint`. The crowd also carries
+  then pruned to what the **focused picker** can actually take (`exploder_keep_for_picker`,
+  #560/#957) — e.g. the Extrude tool's Profile picker takes faces, so its fan holds only faces,
+  never a corner's edges/vertices it couldn't use; constraint badges appear only where a picker
+  takes constraints (Select, Constraint, Dimension), which apply the pick as a
+  `SceneElement::Constraint`. One leaf per distinct thing the picker would take: a picker that
+  takes whole bodies turns a face, an edge and a corner of one body into a single **body** loupe
+  rather than three, and the leaf is relabelled as that body so the loupe shows what a click
+  gets. **With no picker armed the fan does not open** — a tool that draws rather than picks
+  (Rectangle, Line, Circle) has no pick to disambiguate. The crowd also carries
   **analytic sketchable faces** (`PickTargetKind::SketchFace`, exploder-only like `Constraint`,
   #625): every `face::pick_sketch_face` candidate near the cursor — sketch profiles,
   extrusion caps/side walls, revolve flat faces, construction planes — via
-  `face::sketch_faces_near`. The Extrude tool fans **exactly these** (minus construction
-  planes) instead of raw mesh facet groups, so its fan matches its own pick path: the sketch
+  `face::sketch_faces_near`. These are `ElementKind::Profile`, a different kind from the mesh
+  `Face` over the same surface (§11.4a), which is what lets a picker say which representation it
+  wants. The Extrude tool fans **exactly these** (minus construction
+  planes, which its Profile picker doesn't take) instead of raw mesh facet groups, so its fan
+  matches its own pick path: the sketch
   profile buried under a body appears, a curved surface it can't use doesn't. The **Sketch and
   Text** tools fan the same analytic faces **including construction planes** (#860) — a datum
   plane behind a body is exactly what the fan is for — and a click applies the chosen face
@@ -3574,8 +3582,7 @@ The model in one place:
   datum plane no longer wins over the body a Joint takes. That path is also what gives a tool's
   **secondary** pickers hover of their own: the body-set arm and Repeat's axis arm are gone, so
   Slice's Cutters and Combine's B side hover what they take rather than what their tools' body
-  sets take. The remaining arms are the cases still written by hand. The Exploder's crowd filter
-  (`exploder_tool_accepts`) still matches on the tool (#957).
+  sets take. The remaining arms are the cases still written by hand.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it
@@ -3589,12 +3596,20 @@ The model in one place:
   **always shown and always focused** (it never blurs). Suppressed only while a draw
   construction owns the pane. Each picker instance is configured with: the subset of element
   kinds it accepts — the full set (`ElementKind::ORDER`, #952) is planes, images, sketches,
-  lines, circles, **axes**, vertices, edges, faces, constraints, bodies, **components**,
-  **joints**, and operations (and, for operations, which sub-kinds); every kind must be listed
+  lines, circles, **axes**, vertices, edges, faces, **profiles**, constraints, bodies,
+  **components**, **joints**, and operations (and, for operations, which sub-kinds); every kind
+  must be listed
   in `ORDER`, since that is what `ElementFilter::kinds` builds from and what the collapsed
   summary counts — a pick limit (a whole number or unlimited), an
   optional override of the selected-element highlight color (defaulting to the theme selection
   color), and any number of **pick rules** (#953).
+- **Two representations of a face (#957):** a body's cap reaches the cursor twice — as the
+  quantized mesh face (`ElementKind::Face`) and as the analytic surface that generated it
+  (`ElementKind::Profile`: a sketch profile, an extrude cap or side wall, a revolve's flat
+  face). They are different elements, so the crowd's dedup can't collapse them, and a picker
+  says which it wants: the tools that *build* from a face (Extrude, Revolve, Sweep, Loft, the
+  Slice cutters, the Mirror plane, the three "up to" targets) take `Profile`; only a picker
+  taking everything takes both, and gets the mesh one.
 - **Pick rules (#953):** a picker's kinds say *what sort* of thing it takes; its rules say
   *which ones*, the design's "restrict selection to particular elements/components/bodies". All
   of a picker's rules must pass, and they gate every path equally — `accepts`, `pick`, and

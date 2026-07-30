@@ -14954,6 +14954,8 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
             }
         }
         P::SketchRepeatDirection => state.sketch_repeat_direction_pick = true,
+        // The selection picker never blurs while its tool is up — there is nothing to arm.
+        P::Selection => {}
         P::CombineA => {
             if let Some(cb) = state.creating_boolean.as_mut() {
                 cb.picking_b = false;

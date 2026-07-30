@@ -28,10 +28,12 @@ which keeps a crowd that all leans one way fanned out on that side.
 - **Scroll** to zoom the loupes in.
 - Press **Space** or **Esc**, or click empty space, to dismiss.
 
-It works with every tool and every kind of thing — vertices, lines, circles, body edges and
-faces, whole bodies, even constraint badges. The camera holds still while the fan is open.
-It's how you pick one **face** of a body with the Select tool, which otherwise selects the
-whole body.
+The fan holds what the armed picker takes, one handle per thing it would pick — so the Slice
+tool's **Cutters** fans planes and flat faces, while its **Targets** fans one handle per body.
+It works with every tool that picks, and every kind of thing: vertices, lines, circles, body
+edges and faces, whole bodies, even constraint badges. The camera holds still while the fan is
+open. It's how you pick one **face** of a body with the Select tool, which otherwise selects
+the whole body.
 
 ## See also
 

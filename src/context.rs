@@ -1295,6 +1295,9 @@ pub enum PickerTarget {
     CombineA,
     /// The Combine tool's side-B bodies (`CreatingBoolean::b`).
     CombineB,
+    /// The unified selection picker (#213): what the Select, Constraint, Dimension,
+    /// Chamfer/Fillet, Sketch and Project tools pick into.
+    Selection,
     /// The Construction Plane tool's anchor set (`CreatingConstructionPlane::anchor_elements`,
     /// #474/#483/#955): a face, a straight edge or axis, a vertex, or a line **and** a point.
     PlaneAnchor,
@@ -1418,6 +1421,9 @@ fn selection_picker_for(
                     ElementKind::Line,
                     ElementKind::Circle,
                     ElementKind::Edge,
+                    // A placed constraint's badge is selectable too (#568) — that is how one is
+                    // reached to edit or delete it, and it is why these tools' fans offer badges.
+                    ElementKind::Constraint,
                 ])),
                 PickLimit::Infinite,
             );
@@ -1446,10 +1452,12 @@ fn selection_picker_for(
             p.set_focused(true);
             p
         }
-        // Sketch / Text outside a sketch: pick a single face plane to open (#497).
+        // Sketch / Text outside a sketch: pick a single face plane to open (#497). A body's own
+        // cap or side wall is sketchable too (#465), and that is the *analytic* face — the
+        // plane the sketch sits on, not the triangles it renders as (#957).
         Tool::Sketch | Tool::Text if !in_sketch => {
             let mut p = ElementPicker::new(
-                ElementFilter::kind(ElementKind::Plane),
+                ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
                 PickLimit::Finite(1),
             );
             p.set_focused(true);
@@ -1728,11 +1736,32 @@ fn in_sketch(filter: ElementFilter, sketch: Option<crate::model::SketchId>) -> E
 
 pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
     let mut tool_pickers = Vec::new();
+    // The selection picker (#213) is a tool picker like any other — it is what Select,
+    // Constraint, Dimension, Chamfer/Fillet, Sketch and Project pick into. Registering it here
+    // is what lets hover, the handoff, the Exploder's fan and `bearcad.pickers()` see it (#958);
+    // it draws where it always has, at the top of the pane. Suppressed while a draw
+    // construction owns the pane, or in the drawing workbench.
+    let drawing = input.draw_rect_construction.is_some()
+        || input.draw_line_construction.is_some()
+        || input.draw_circle_construction.is_some();
+    if !drawing && !input.in_drawing_workbench {
+        if let Some(picker) =
+            selection_picker_for(input.doc, input.tool, input.open_sketch, input.selection)
+        {
+            tool_pickers.push(ToolPickerView {
+                heading: "Selection",
+                picker,
+                target: PickerTarget::Selection,
+                separator_above: true,
+                render: PickerRender::Inline,
+            });
+        }
+    }
     if let Some(r) = input.revolve.as_ref() {
         // Revolve's own two inputs (#955): the profile faces it sweeps, and the axis it sweeps
         // them about. Exactly one shows the focus ring (#304).
         let mut profile = ElementPicker::new(
-            ElementFilter::kind(ElementKind::Face),
+            ElementFilter::kind(ElementKind::Profile),
             PickLimit::Infinite,
         );
         profile.set_focused(!r.axis_focused && !(!r.faces.is_empty() && r.axis.is_some()));
@@ -1811,7 +1840,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             .as_ref()
             .is_some_and(|l| l.body_choice == crate::actions::RevolveBodyChoice::Cut);
         let mut picker =
-            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+            ElementPicker::new(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
         picker.set_focused(!(cutting && sections.len() >= 2));
         picker.set_picked(
             input.doc,
@@ -1862,7 +1891,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             ("Max stop", PickerTarget::JointMaxStop, j.slide_max_stop.clone(), j.slide_max_stop_focused),
         ] {
             let mut picker = ElementPicker::new(
-                ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+                ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
                 PickLimit::Finite(1),
             );
             picker.set_focused(focused);
@@ -1904,7 +1933,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // Extrude's "Up to" (#584/#958): a single plane, face or vertex the depth runs to.
         // Inline — it sits under the Distance field — but registered like every other picker.
         let mut target = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face, ElementKind::Vertex]),
+            ElementFilter::kinds(&[
+                ElementKind::Plane,
+                ElementKind::Profile,
+                ElementKind::Vertex,
+            ]),
             PickLimit::Finite(1),
         );
         target.set_focused(e.target_focused);
@@ -1923,7 +1956,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // wears the focus ring (#962).
         let target_armed = input.extrude.as_ref().is_some_and(|e| e.target_focused);
         let mut profile =
-            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+            ElementPicker::new(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
         profile.set_focused(!target_armed);
         profile.set_picked(
             input.doc,
@@ -1941,7 +1974,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // Sweep's two inputs (#955), the Revolve pair's twin: the profiles, and the path they
         // travel. Exactly one shows the focus ring.
         let mut profile =
-            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+            ElementPicker::new(ElementFilter::kind(ElementKind::Profile), PickLimit::Infinite);
         profile.set_focused(!f.path_focused && !(!f.faces.is_empty() && !f.path.is_empty()));
         profile.set_picked(
             input.doc,
@@ -2071,7 +2104,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The in-sketch Slice tool's two sides (#238/#955): the entities being cut, and the
         // lines cutting them. Cutters are consumed by the operation, so they read red.
         let mut targets = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle, ElementKind::Face]),
+            ElementFilter::kinds(&[
+                ElementKind::Line,
+                ElementKind::Circle,
+                ElementKind::Profile,
+            ]),
             PickLimit::Infinite,
         );
         targets.set_focused(!sl.picking_cutter);
@@ -2110,7 +2147,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The cutters are consumed by the operation, so they take the red override — the
         // example SPEC has always cited for it (#213/#961).
         let mut cutters = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
             PickLimit::Infinite,
         )
         .with_selected_color(crate::theme::CUT_ACCENT);
@@ -2132,7 +2169,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // Primary picker: the mirror plane — a construction plane or a flat body face (#566).
         // Single-pick, and focused (the pick target) until a plane is chosen.
         let mut plane_picker = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
             PickLimit::Finite(1),
         );
         plane_picker.set_focused(m.plane.is_none());
@@ -2172,7 +2209,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         let axis_is_next = r.path.is_none() && has_targets;
         // Repeat's "Distance to" (#645/#958): inline under the Distance field, registered here.
         let mut length_target = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face, ElementKind::Vertex]),
+            ElementFilter::kinds(&[
+                ElementKind::Plane,
+                ElementKind::Profile,
+                ElementKind::Vertex,
+            ]),
             PickLimit::Finite(1),
         );
         length_target.set_focused(r.length_target_focused && !r.around_axis);
@@ -2330,6 +2371,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         let mut anchor = ElementPicker::new(
             ElementFilter::kinds(&[
                 ElementKind::Face,
+                ElementKind::Profile,
                 ElementKind::Plane,
                 ElementKind::Line,
                 ElementKind::Edge,
@@ -2439,16 +2481,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let material = (input.tool == Tool::Select)
         .then(|| material_control_from_selection(input.doc, input.selection))
         .flatten();
-    // The unified selection element picker (#213), mirroring the live selection for the tools
-    // that operate on it. Suppressed while a draw construction owns the pane.
-    let drawing = input.draw_rect_construction.is_some()
-        || input.draw_line_construction.is_some()
-        || input.draw_circle_construction.is_some();
-    let selection_picker = (!drawing && !input.in_drawing_workbench)
-        .then(|| {
-            selection_picker_for(input.doc, input.tool, input.open_sketch, input.selection)
-        })
-        .flatten();
     // Dimension tool in 3D (#618): measure the current selection for the derive block —
     // one line → its length; two parallel lines → the distance between them; two
     // non-parallel lines → the angle; two vertices → the distance.
@@ -2482,6 +2514,12 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
     // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
     let tool_pickers = tool_picker_views(input);
+    // The unified selection element picker (#213), mirroring the live selection for the tools
+    // that operate on it — registered with the rest (#958) and drawn at the top of the pane.
+    let selection_picker = tool_pickers
+        .iter()
+        .find(|v| v.target == PickerTarget::Selection)
+        .map(|v| v.picker.clone());
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
     let sweep = input.sweep.clone();
@@ -8318,7 +8356,13 @@ mod tests {
                 extrude_body: None,
                 extrude: None,
                 selection_picker: Some(ElementPicker::select_everything()),
-                tool_pickers: Vec::new(),
+                tool_pickers: vec![ToolPickerView {
+                    heading: "Selection",
+                    picker: ElementPicker::select_everything(),
+                    target: PickerTarget::Selection,
+                    separator_above: true,
+                    render: PickerRender::Inline,
+                }],
                 calibrate_image: None,
                 revolve: None,
             sweep: None,
@@ -8614,7 +8658,17 @@ mod tests {
                     p.set_picked(&doc, [SceneElement::Line(0)]);
                     p
                 }),
-                tool_pickers: Vec::new(),
+                tool_pickers: vec![ToolPickerView {
+                    heading: "Selection",
+                    picker: {
+                        let mut p = ElementPicker::select_everything();
+                        p.set_picked(&doc, [SceneElement::Line(0)]);
+                        p
+                    },
+                    target: PickerTarget::Selection,
+                    separator_above: true,
+                    render: PickerRender::Inline,
+                }],
                 calibrate_image: None,
                 revolve: None,
             sweep: None,
