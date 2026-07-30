@@ -11327,12 +11327,35 @@ impl eframe::App for App {
                     let mut queue_activate_component = |component: Option<usize>| {
                         activate_component = Some(component);
                     };
+                    // Rows the active tool's pickers hold read as selected too (#965): the
+                    // viewport already highlights them, and a body gathered into Move's set is
+                    // just as "picked" as one in the persistent selection — the pane saying
+                    // otherwise made the two views disagree about the same thing.
+                    let pane_selection = {
+                        let picked = self
+                            .state
+                            .tool_pickers
+                            .iter()
+                            .flat_map(|view| view.picker.picked())
+                            .cloned();
+                        let mut sel = self.state.scene_selection.clone();
+                        let mut any = false;
+                        for element in picked {
+                            sel.insert(element);
+                            any = true;
+                        }
+                        if any {
+                            std::borrow::Cow::Owned(sel)
+                        } else {
+                            std::borrow::Cow::Borrowed(&self.state.scene_selection)
+                        }
+                    };
                     hierarchy::show_pane(
                         ui,
                         &self.state.doc,
                         self.state.sketch_session,
                         &mut self.state.element_visibility,
-                        &self.state.scene_selection,
+                        &pane_selection,
                         &self.state.document_health,
                         &mut self.state.hierarchy_view_mode,
                         &mut self.graph_layout,

@@ -2650,9 +2650,11 @@ modeled on SolveSpace (https://solvespace.com).
   (Combine, Move, Repeat, Slice, Revolve-cut, Loft, Chamfer/Fillet) each present their own
   in-progress picked set through the same control — with the currently-active picker focused
   (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is
-  focused when you click it). Whatever a picker holds is **styled as selected in the viewport**
-  while the tool is active (folded into the scene's highlight set, not the persistent
-  selection). Which colour it renders in comes from the **picker** (#961): the theme selection
+  focused when you click it). Whatever a picker holds is **styled as selected in the viewport
+  and in the Elements pane** while the tool is active (#965; folded into the highlight set each
+  of them shows, not into the persistent selection) — a body gathered into Move's set is as
+  picked as one in the selection, and the two views should not disagree about the same thing.
+  Which colour it renders in comes from the **picker** (#961): the theme selection
   blue by default, the red cut accent for a picker whose elements the operation consumes. The
   viewport iterates the active tool's pickers (`picker_highlights`) rather than matching on the
   tool, so a set lights up because its tool *has* a picker for it, not because the viewport was
