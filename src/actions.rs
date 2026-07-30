@@ -12114,8 +12114,15 @@ label_hidden: false,
                 // (#218) — the Elements pane picks bodies regardless of viewport sub-element
                 // picking — rather than touching the persistent selection. A line clicked while
                 // the Move tool is active sets its rotation axis (#216), like a viewport pick.
-                // The focused picker gets first refusal (#963); the cascade below is the
-                // remaining per-tool routing it hasn't absorbed yet.
+                // The focused picker takes it (#963), whatever its kind — a body, a plane, a
+                // sketch, a cut extrusion. What's left below is not per-tool routing: the
+                // drawing Add-view tool *creates* something from the click rather than picking
+                // it (#967), which is a different act.
+                //
+                // The picker set is the last frame's (`AppState::tool_pickers`), which the
+                // pane rebuilds every frame whether or not it is visible. A click can only
+                // arrive after a frame, so the only cold case is a headless `AppState` with no
+                // pane at all — a test, which should seed the pickers it is testing against.
                 if pick_into_focused_picker(self, &element) {
                     return ActionResult::Ok;
                 }
@@ -12156,72 +12163,6 @@ label_hidden: false,
                         true
                     }
                     SceneElement::Body(bi) => toggle_body_in_active_tool(self, *bi),
-                    // A construction plane clicked with the Move tool joins its plane set (#217).
-                    SceneElement::ConstructionPlane(pi) if self.tool == Tool::Move => {
-                        let set = &mut self
-                            .creating_move
-                            .get_or_insert_with(CreatingMove::default)
-                            .plane_targets;
-                        if let Some(pos) = set.iter().position(|p| p == pi) {
-                            set.remove(pos);
-                        } else {
-                            set.push(*pi);
-                        }
-                        true
-                    }
-                    // A construction plane clicked with the Repeat tool joins its plane set (#221).
-                    SceneElement::ConstructionPlane(pi) if self.tool == Tool::Repeat => {
-                        let set = &mut self
-                            .creating_repeat
-                            .get_or_insert_with(CreatingRepeat::default)
-                            .plane_targets;
-                        if let Some(pos) = set.iter().position(|p| p == pi) {
-                            set.remove(pos);
-                        } else {
-                            set.push(*pi);
-                        }
-                        true
-                    }
-                    // A sketch clicked with the Repeat tool joins its sketch set (#231/#234).
-                    SceneElement::Sketch(si) if self.tool == Tool::Repeat => {
-                        let set = &mut self
-                            .creating_repeat
-                            .get_or_insert_with(CreatingRepeat::default)
-                            .sketch_targets;
-                        if let Some(pos) = set.iter().position(|s| s == si) {
-                            set.remove(pos);
-                        } else {
-                            set.push(*si);
-                        }
-                        true
-                    }
-                    // An extrusion clicked with the Repeat tool joins its replay set (#220/#235):
-                    // its cut/add effect is replayed at each offset.
-                    SceneElement::Extrusion(ei) if self.tool == Tool::Repeat => {
-                        let set = &mut self
-                            .creating_repeat
-                            .get_or_insert_with(CreatingRepeat::default)
-                            .extrusion_targets;
-                        if let Some(pos) = set.iter().position(|e| e == ei) {
-                            set.remove(pos);
-                        } else {
-                            set.push(*ei);
-                        }
-                        true
-                    }
-                    // A tracing image clicked with the Move tool joins its image set (#217).
-                    SceneElement::Image(ii) if self.tool == Tool::Move => {
-                        let set = &mut self
-                            .creating_move
-                            .get_or_insert_with(CreatingMove::default)
-                            .image_targets;
-                        if let Some(pos) = set.iter().position(|i| i == ii) {
-                            set.remove(pos);
-                        } else {
-                            set.push(*ii);
-                        }
-                        true
-                    }
                     _ => false,
                 };
                 if !consumed_by_tool {
@@ -15038,10 +14979,20 @@ pub fn tool_picker_target(state: &AppState, name: &str) -> Option<crate::context
 /// The picker decides: its kinds, its rules, and its limit say whether this is a valid pick, so
 /// a refused element falls through to the ordinary selection path rather than being forced in.
 fn pick_into_focused_picker(state: &mut AppState, element: &crate::hierarchy::SceneElement) -> bool {
-    let Some(view) = state
-        .tool_pickers
-        .iter()
-        .find(|view| view.picker.is_focused())
+    // The armed picker gets first refusal; the tool's **primary** gets what it turns down, and
+    // only then does the click fall through to the ordinary selection (#963/#970). Without the
+    // fallback, arming a secondary picker would make the tool's main set unreachable — with
+    // Repeat's Path armed, a second body to repeat could not be added at all.
+    let armed = state.tool_pickers.iter().position(|v| v.picker.is_focused());
+    let candidates: Vec<usize> = armed
+        .into_iter()
+        .chain((armed != Some(0)).then_some(0))
+        .filter(|i| *i < state.tool_pickers.len())
+        .collect();
+    let Some(view) = candidates
+        .into_iter()
+        .map(|i| &state.tool_pickers[i])
+        .find(|view| !crate::element_picker::expand_pick(&state.doc, &view.picker, element).is_empty())
     else {
         return false;
     };
@@ -15148,6 +15099,35 @@ pub fn apply_pick(
             let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
             cr.axis = Some(axis);
             cr.path_circle = None;
+            true
+        }
+        // Move and Repeat gather more than bodies (#217/#220/#221/#231): construction planes
+        // and tracing images move; planes, sketches and cut extrusions repeat. Each used to be
+        // its own `(SceneElement, Tool)` arm in the pane's click cascade, invisible to every
+        // other path (#963).
+        (P::MoveTargets, SceneElement::ConstructionPlane(pi)) => {
+            let cm = state.creating_move.get_or_insert_with(CreatingMove::default);
+            crate::element_picker::toggle_picked(&mut cm.plane_targets, *pi);
+            true
+        }
+        (P::MoveTargets, SceneElement::Image(ii)) => {
+            let cm = state.creating_move.get_or_insert_with(CreatingMove::default);
+            crate::element_picker::toggle_picked(&mut cm.image_targets, *ii);
+            true
+        }
+        (P::RepeatTargets, SceneElement::ConstructionPlane(pi)) => {
+            let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
+            crate::element_picker::toggle_picked(&mut cr.plane_targets, *pi);
+            true
+        }
+        (P::RepeatTargets, SceneElement::Sketch(si)) => {
+            let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
+            crate::element_picker::toggle_picked(&mut cr.sketch_targets, *si);
+            true
+        }
+        (P::RepeatTargets, SceneElement::Extrusion(ei)) => {
+            let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
+            crate::element_picker::toggle_picked(&mut cr.extrusion_targets, *ei);
             true
         }
         // The Mirror tool's plane is any face-shaped thing — a construction plane or a flat
@@ -21077,6 +21057,26 @@ mod tests {
         );
     }
 
+    /// Seed the picker cache the way a pane frame does (#963). A pane click routes through the
+    /// focused picker, and a headless `AppState` has never drawn a pane — so a test of pane
+    /// routing has to say which picker is armed, exactly as the app's last frame would have.
+    fn arm_repeat_targets(state: &mut AppState) {
+        use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
+        let mut picker = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Body, ElementKind::Plane, ElementKind::Sketch])
+                .operations(&[crate::element_picker::OperationKind::Extrude]),
+            PickLimit::Infinite,
+        );
+        picker.set_focused(true);
+        state.tool_pickers = vec![crate::context::ToolPickerView {
+            heading: "Bodies",
+            picker,
+            target: crate::context::PickerTarget::RepeatTargets,
+            separator_above: true,
+            render: crate::context::PickerRender::Shared,
+        }];
+    }
+
     /// #234: clicking a sketch while the Repeat tool is active adds it to the operand set
     /// (mirrors plane/body picking), so it can be repeated along the axis.
     #[test]
@@ -21084,6 +21084,7 @@ mod tests {
         let mut state = two_box_state(false);
         let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         state.apply(Action::SetTool(Tool::Repeat));
+        arm_repeat_targets(&mut state);
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Sketch(si),
             additive: false,
@@ -21107,6 +21108,7 @@ mod tests {
     fn repeat_tool_click_toggles_extrusion_target() {
         let mut state = two_box_state(false);
         state.apply(Action::SetTool(Tool::Repeat));
+        arm_repeat_targets(&mut state);
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Extrusion(0),
             additive: false,

@@ -3561,8 +3561,16 @@ The model in one place:
   except on the primary — focusing that by hand means "I want to keep adding to it".
 - **Picks land in the focused picker**, whether they come from the 3D viewport, the list
   Elements pane, or the graph Elements pane (#963); in the panes, from the row's **name or its
-  type icon** (#964). An element the focused picker refuses falls through to the ordinary
-  selection rather than being forced in.
+  type icon** (#964). The armed picker gets first refusal; what it turns down goes to the
+  tool's **primary** picker, and only then does the click fall through to the ordinary
+  selection rather than being forced in. The fallback is what keeps a tool's main set reachable
+  while a secondary picker is armed: Repeat arms its Path once there is something to repeat
+  (#439), and without it a second body to repeat could not be gathered at all.
+
+  Move and Repeat gather more than bodies — construction planes and tracing images move;
+  planes, sketches and cut extrusions repeat — and each of those was its own
+  `(SceneElement, Tool)` arm in the pane's cascade, invisible to the viewport and to scripts.
+  They route by picker target now, so all three paths gather the same things.
 - **One resolution for the hover and the click** (`pick_for_focused_picker`, #958/#970): the
   crowd under the cursor, kept to what the picker can make of each candidate, ranked by that
   picker's own priority. What lights up is what lands, by construction. A tool's viewport

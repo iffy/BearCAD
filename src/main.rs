@@ -14987,7 +14987,31 @@ fn pick_for_focused_picker(
     eye: Vec3,
     occlusion: Option<&construction::PickOcclusion>,
 ) -> Option<(context::PickerTarget, Vec<SceneElement>)> {
-    let focused = tool_pickers.iter().find(|view| view.picker.is_focused())?;
+    let armed = tool_pickers.iter().find(|view| view.picker.is_focused());
+    // The armed picker gets first refusal; the tool's **primary** gets what it turns down
+    // (#970). Repeat is why: gathering one body arms the Path picker (#439), and without the
+    // fallback the next body would be refused because a body is not a path — so a set of
+    // bodies could only be gathered one at a time, with a trip to the pane between each.
+    armed
+        .and_then(|view| pick_into(doc, view, pp, project, eye, occlusion))
+        .or_else(|| {
+            let primary = tool_pickers.first()?;
+            (Some(primary.target) != armed.map(|v| v.target))
+                .then(|| pick_into(doc, primary, pp, project, eye, occlusion))
+                .flatten()
+        })
+}
+
+/// The elements one picker would take from a click at `pp`, or `None` if it would take none.
+fn pick_into(
+    doc: &model::Document,
+    view: &context::ToolPickerView,
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    eye: Vec3,
+    occlusion: Option<&construction::PickOcclusion>,
+) -> Option<(context::PickerTarget, Vec<SceneElement>)> {
+    let focused = view;
     let mut candidates: Vec<(usize, Vec<SceneElement>)> =
         construction::collect_pick_candidates(pp, project, doc, eye, occlusion)
             .into_iter()
@@ -15008,6 +15032,7 @@ fn pick_for_focused_picker(
     let taken = candidates.into_iter().next().map(|(_, t)| t)?;
     (!taken.is_empty()).then_some((focused.target, taken))
 }
+
 
 impl App {
     /// One viewport click, offered to the focused picker (#970).
