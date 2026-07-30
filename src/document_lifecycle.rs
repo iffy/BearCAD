@@ -62,6 +62,11 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         // geometry-keyed sub-elements; the world origin always does.
         // An extrusion's analytic edge (#952) lives as long as its extrusion.
         SceneElement::ExtrusionEdge { extrusion, .. } => extrusion_alive(doc, extrusion),
+        // A repeat instance's face (#955) lives as long as both the repeat and the source face.
+        SceneElement::RepeatedFace { face, op, .. } => {
+            doc.repeat_ops.get(op).is_some_and(|o| !o.deleted)
+                && crate::face::sketch_frame(doc, face).is_some()
+        }
         SceneElement::MovePoint(point) => match point {
             crate::model::MovePointRef::Origin => true,
             crate::model::MovePointRef::Vertex { body, .. }
@@ -304,7 +309,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
-        | SceneElement::ExtrusionEdge { .. } => {}
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. } => {}
         SceneElement::Joint(index) => {
             if doc.joints.get(index).is_some_and(|j| !j.deleted) {
                 doc.joints[index].deleted = true;

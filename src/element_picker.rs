@@ -105,6 +105,8 @@ impl ElementKind {
             SceneElement::MovePoint(_) => ElementKind::Vertex,
             // An extrusion's analytic edge (#952) is an edge, like the mesh edge it draws as.
             SceneElement::ExtrusionEdge { .. } => ElementKind::Edge,
+            // A repeat instance's face (#955) is still a face.
+            SceneElement::RepeatedFace { .. } => ElementKind::Face,
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can

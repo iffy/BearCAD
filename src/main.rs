@@ -11652,10 +11652,9 @@ impl eframe::App for App {
                             Some(ce) if !has_target => ce.text.clone(),
                             _ => String::new(),
                         },
-                        target_rows: ce
+                        target: ce
                             .and_then(|ce| ce.target.as_ref())
-                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
-                            .unwrap_or_default(),
+                            .map(hierarchy::SceneElement::from_extrude_target),
                         target_focused: self.extrude_target_pick,
                         can_commit: ce.is_some_and(|ce| !ce.faces.is_empty()),
                         has_extrusion: ce.is_some_and(|ce| !ce.faces.is_empty()),
@@ -11866,15 +11865,13 @@ impl eframe::App for App {
                         slide_max: cj.map(|c| c.limits.slide_max.clone()).unwrap_or_default(),
                         turn_min: cj.map(|c| c.limits.turn_min.clone()).unwrap_or_default(),
                         turn_max: cj.map(|c| c.limits.turn_max.clone()).unwrap_or_default(),
-                        slide_min_stop_rows: cj
+                        slide_min_stop: cj
                             .and_then(|c| c.limits.slide_min_target.as_ref())
-                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
-                            .unwrap_or_default(),
+                            .map(hierarchy::SceneElement::from_extrude_target),
                         slide_min_stop_focused: joint_focus == JointFocus::SlideMinStop,
-                        slide_max_stop_rows: cj
+                        slide_max_stop: cj
                             .and_then(|c| c.limits.slide_max_target.as_ref())
-                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
-                            .unwrap_or_default(),
+                            .map(hierarchy::SceneElement::from_extrude_target),
                         slide_max_stop_focused: joint_focus == JointFocus::SlideMaxStop,
                         editing: cj.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: members.len() >= 2,
@@ -11961,10 +11958,9 @@ impl eframe::App for App {
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
                         extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
                         value_field_focused: context::repeat_value_field_focused(ctx),
-                        length_target_rows: cr
+                        length_target: cr
                             .and_then(|c| c.length_target.as_ref())
-                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
-                            .unwrap_or_default(),
+                            .map(hierarchy::SceneElement::from_extrude_target),
                         length_target_focused: self.repeat_target_pick,
                         length_target_value: cr.and_then(|c| {
                             let d = self.repeat_length_target_distance(c)?;

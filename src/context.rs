@@ -383,9 +383,10 @@ pub struct JointControl {
     pub slide_max: String,
     pub turn_min: String,
     pub turn_max: String,
-    pub slide_min_stop_rows: Vec<String>,
+    /// The travel stops (#896/#955): a plane or flat face the slide ends at.
+    pub slide_min_stop: Option<crate::hierarchy::SceneElement>,
     pub slide_min_stop_focused: bool,
-    pub slide_max_stop_rows: Vec<String>,
+    pub slide_max_stop: Option<crate::hierarchy::SceneElement>,
     pub slide_max_stop_focused: bool,
     pub editing: bool,
     pub can_commit: bool,
@@ -484,7 +485,8 @@ pub struct RepeatControl {
     pub can_turn_about_path: bool,
     /// Label of the picked distance target (#645), if any — the face/plane/vertex the fill
     /// length is measured to. Empty means the Distance expression governs.
-    pub length_target_rows: Vec<String>,
+    /// The "Distance to" target (#645) the fill length is measured to, as an element (#955).
+    pub length_target: Option<crate::hierarchy::SceneElement>,
     /// Whether the distance-target picker is armed (the next viewport click sets it, #645).
     pub length_target_focused: bool,
     /// The distance the picked target works out to, formatted — shown read-only in the
@@ -1094,8 +1096,9 @@ pub struct ExtrudeControl {
     /// Distance value-input text — mirrors the 3D field. **Empty ("" → null)** while an
     /// extrude-to target is set, since the depth then comes from the target plane/face.
     pub distance: String,
-    /// The extrude-to target picker's rows: one label when a plane/face target is set, else empty.
-    pub target_rows: Vec<String>,
+    /// The extrude-to target (#584/#955): the plane, face, vertex, or repeat-instance face the
+    /// depth runs up to, as the element the picker holds.
+    pub target: Option<crate::hierarchy::SceneElement>,
     /// Whether the target picker shows the focus ring (armed so the next viewport click on a
     /// plane/face sets the target).
     pub target_focused: bool,
@@ -4903,22 +4906,22 @@ pub fn show_pane(
             }
             drop(field);
             if slides {
+                // A stop is a plane or a flat face the travel ends at (#896/#955).
                 let mut stop_row = |ui: &mut egui::Ui,
-                                    label: &str,
+                                    label: &'static str,
                                     id: &'static str,
-                                    rows: &[String],
+                                    stop: Option<crate::hierarchy::SceneElement>,
                                     focused: bool,
                                     on_focus: JointEdit,
                                     on_clear: JointEdit| {
+                    let mut picker = ElementPicker::new(
+                        ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+                        PickLimit::Finite(1),
+                    );
+                    picker.set_focused(focused);
+                    picker.set_picked(doc, stop);
                     labeled_row_top(ui, label, |ui| {
-                        if let Some(event) = crate::element_picker::show_labeled(
-                            ui,
-                            id,
-                            focused,
-                            true,
-                            crate::icons::IconId::Plane,
-                            rows,
-                        ) {
+                        if let Some(event) = crate::element_picker::show(ui, &picker, doc, id) {
                             pending = Some(match event {
                                 crate::element_picker::PickerEvent::Focus => on_focus,
                                 crate::element_picker::PickerEvent::Remove(_)
@@ -4931,7 +4934,7 @@ pub fn show_pane(
                     ui,
                     "Min stop",
                     "joint_slide_min_stop",
-                    &control.slide_min_stop_rows,
+                    control.slide_min_stop.clone(),
                     control.slide_min_stop_focused,
                     JointEdit::SlideMinStopFocus,
                     JointEdit::ClearSlideMinStop,
@@ -4940,7 +4943,7 @@ pub fn show_pane(
                     ui,
                     "Max stop",
                     "joint_slide_max_stop",
-                    &control.slide_max_stop_rows,
+                    control.slide_max_stop.clone(),
                     control.slide_max_stop_focused,
                     JointEdit::SlideMaxStopFocus,
                     JointEdit::ClearSlideMaxStop,
@@ -5212,7 +5215,7 @@ pub fn show_pane(
                     // A picked distance target (#645) drives the Distance value, so its field
                     // reads back the derived length instead of an expression.
                     let target_driven = var == RepeatVar::Distance
-                        && !control.length_target_rows.is_empty();
+                        && control.length_target.is_some();
                     if target_driven {
                         read_only(
                             ui,
@@ -5308,16 +5311,21 @@ pub fn show_pane(
         // the Repeat tool's version of the Extrude tool's "Up to" picker. Focus it, then
         // click the target in the viewport; the ✕ hands Distance back to its expression.
         // A sweep has nothing to measure to, so the distance-target picker stands down (#839).
+        let mut length_target = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Plane,
+                ElementKind::Face,
+                ElementKind::Vertex,
+            ]),
+            PickLimit::Finite(1),
+        );
+        length_target.set_focused(control.length_target_focused && !control.around_axis);
+        length_target.set_picked(doc, control.length_target.clone());
         labeled_row_top(ui, "Distance to", |ui| {
             ui.add_enabled_ui(!control.around_axis, |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                "repeat_length_target",
-                control.length_target_focused && !control.around_axis,
-                true,
-                crate::icons::IconId::Plane,
-                &control.length_target_rows,
-            ) {
+            if let Some(event) =
+                crate::element_picker::show(ui, &length_target, doc, "repeat_length_target")
+            {
                 pending = Some(match event {
                     crate::element_picker::PickerEvent::Focus => RepeatEdit::LengthTargetFocus,
                     crate::element_picker::PickerEvent::Remove(_)
@@ -6191,15 +6199,20 @@ pub fn show_pane(
             });
             // Extrude-to target picker (#584): a plane or face to extrude up to. Focus it, then
             // click a plane/face in the viewport — or drag the gizmo onto one, which fills this in.
+            let mut target = ElementPicker::new(
+                ElementFilter::kinds(&[
+                    ElementKind::Plane,
+                    ElementKind::Face,
+                    ElementKind::Vertex,
+                ]),
+                PickLimit::Finite(1),
+            );
+            target.set_focused(control.target_focused);
+            target.set_picked(doc, control.target.clone());
             labeled_row_top(ui, "Up to", |ui| {
-                if let Some(event) = crate::element_picker::show_labeled(
-                    ui,
-                    "extrude_target",
-                    control.target_focused,
-                    true,
-                    crate::icons::IconId::Plane,
-                    &control.target_rows,
-                ) {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &target, doc, "extrude_target")
+                {
                     match event {
                         crate::element_picker::PickerEvent::Focus => {
                             on_extrude_edit(ExtrudeEdit::TargetFocus)
@@ -7014,7 +7027,7 @@ mod tests {
             tool: Tool::Extrude,
             extrude: Some(ExtrudeControl {
                 distance: "15 mm".to_string(),
-                target_rows: Vec::new(),
+                target: None,
                 target_focused: false,
                 can_commit: true,
                 has_extrusion: true,
@@ -7023,7 +7036,7 @@ mod tests {
         });
         let control = content.extrude.expect("extrude control present");
         assert_eq!(control.distance, "15 mm");
-        assert!(control.target_rows.is_empty());
+        assert!(control.target.is_none());
         assert!(control.can_commit);
 
         // Target-driven: a picked "Up to" target with the distance field nulled.
@@ -7031,7 +7044,7 @@ mod tests {
             tool: Tool::Extrude,
             extrude: Some(ExtrudeControl {
                 distance: String::new(),
-                target_rows: vec!["Plane 2".to_string()],
+                target: Some(crate::hierarchy::SceneElement::ConstructionPlane(2)),
                 target_focused: false,
                 can_commit: true,
                 has_extrusion: true,
@@ -7040,7 +7053,10 @@ mod tests {
         });
         let control = content.extrude.expect("extrude control present");
         assert!(control.distance.is_empty(), "distance is null while a target drives the depth");
-        assert_eq!(control.target_rows, vec!["Plane 2".to_string()]);
+        assert_eq!(
+            control.target,
+            Some(crate::hierarchy::SceneElement::ConstructionPlane(2))
+        );
     }
 
     /// #587: "Extrude into" and "Symmetric" surface for the Extrude tool even before a face is
@@ -7407,7 +7423,7 @@ mod tests {
                     crate::construction::GlobalAxis::X,
                 )),
                 value_field_focused: false,
-                length_target_rows: Vec::new(),
+                length_target: None,
                 length_target_focused: false,
                 length_target_value: None,
                 mode: crate::model::RepeatMode::CountGap,
@@ -7447,7 +7463,7 @@ mod tests {
             extrusion_targets: Vec::new(),
             path,
             value_field_focused,
-            length_target_rows: Vec::new(),
+            length_target: None,
             length_target_focused: false,
             length_target_value: None,
             mode: crate::model::RepeatMode::CountGap,

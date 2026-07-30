@@ -43,7 +43,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
-        | SceneElement::ExtrusionEdge { .. } => None,
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. } => None,
     }
 }
 
@@ -188,7 +189,8 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
-        | SceneElement::ExtrusionEdge { .. } => None,
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. } => None,
     }?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -426,7 +428,8 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
-        | SceneElement::ExtrusionEdge { .. } => {
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. } => {
             return Err("body edges, vertices, and faces cannot be renamed".to_string());
         }
     }
@@ -703,6 +706,11 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
         // An analytic edge reads as its owner plus where it sits in the profile (#955) — the
         // wording the Chamfer/Fillet picker's own row builder used before it became a picker.
+        // A repeat instance's face names the source face and which copy (#955).
+        SceneElement::RepeatedFace { face, instance, .. } => format!(
+            "{} (copy {instance})",
+            crate::face::face_label(doc, face.clone())
+        ),
         SceneElement::ExtrusionEdge { extrusion, edge } => {
             let owner = element_name(doc, SceneElement::Extrusion(*extrusion))
                 .map(|n| n.to_string())

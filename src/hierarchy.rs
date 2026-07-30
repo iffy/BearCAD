@@ -220,6 +220,16 @@ pub enum SceneElement {
         extrusion: usize,
         edge: crate::model::ExtrusionEdgeRef,
     },
+    /// A **repeat instance's** face (#452/#955): the source face's plane translated along the
+    /// repeat axis by that instance's offset. Parametric — it follows when the repeat's spacing
+    /// or the source body changes — and it is not the source face, which is a different plane,
+    /// so it needs an identity of its own. What an "extrude up to" / "distance to" / joint-stop
+    /// picker holds when the user snapped to a copy rather than to the original.
+    RepeatedFace {
+        face: FaceId,
+        op: usize,
+        instance: usize,
+    },
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
     Component(usize),
@@ -265,6 +275,23 @@ impl SceneElement {
             MovePointRef::Vertex { body, p } => SceneElement::BodyVertex { body, p },
             MovePointRef::Origin => SceneElement::Origin,
             other => SceneElement::MovePoint(other),
+        }
+    }
+
+    /// The element for an "extrude up to" style target (#955): a vertex, a face, a plane, or a
+    /// repeat instance's translated face. Every `ExtrudeTarget` maps to exactly one element.
+    pub fn from_extrude_target(target: &crate::model::ExtrudeTarget) -> SceneElement {
+        use crate::model::ExtrudeTarget;
+        match target {
+            ExtrudeTarget::Vertex(point) => SceneElement::Point(point.clone()),
+            ExtrudeTarget::Face(face) => SceneElement::from_face_id(face.face_id()),
+            ExtrudeTarget::Plane(index) => SceneElement::ConstructionPlane(*index),
+            ExtrudeTarget::BodyFace(face) => SceneElement::from_face_id(face.clone()),
+            ExtrudeTarget::RepeatedFace { face, op, instance } => SceneElement::RepeatedFace {
+                face: face.clone(),
+                op: *op,
+                instance: *instance,
+            },
         }
     }
 
@@ -567,6 +594,10 @@ impl ElementVisibility {
             // An extrusion's analytic edge (#952) shows when its extrusion does.
             SceneElement::ExtrusionEdge { extrusion, .. } => {
                 self.effective_visible(doc, SceneElement::Extrusion(extrusion))
+            }
+            // A repeat instance's face shows when its repeat does (#955).
+            SceneElement::RepeatedFace { op, .. } => {
+                self.effective_visible(doc, SceneElement::RepeatOp(op))
             }
             // A snap point (#952) shows exactly when the body it sits on does.
             SceneElement::MovePoint(point) => match point.body() {
@@ -1570,7 +1601,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
-        | SceneElement::ExtrusionEdge { .. } => return None,
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. } => return None,
     })
 }
 
@@ -2573,7 +2605,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         | SceneElement::BodyFace { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
-        | SceneElement::ExtrusionEdge { .. } => None,
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. } => None,
         // A tracing image nests under its host construction plane (#169).
         SceneElement::Image(index) => doc
             .tracing_images
@@ -2723,6 +2756,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::RepeatedFace { .. }
         | SceneElement::SketchText(_)
         // A joint has no outputs — nothing descends from it (#891).
         | SceneElement::Joint(_)

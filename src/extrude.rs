@@ -3397,6 +3397,8 @@ pub fn selection_world_bounds(
             | SceneElement::MovePoint(_)
             // An analytic edge's bounds come from the extrusion that owns it.
             | SceneElement::ExtrusionEdge { .. }
+            // A repeat instance's face is framed by the repeat that produced it.
+            | SceneElement::RepeatedFace { .. }
             // The in-sketch repeat's own bounds come from its duplicated lines/circles, which are
             // selected/framed as their own elements; the op node itself contributes nothing here.
             | SceneElement::SketchRepeatOp(_)

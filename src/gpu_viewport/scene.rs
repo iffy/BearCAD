@@ -3040,6 +3040,30 @@ impl<'a> SceneMesh<'a> {
                     );
                 }
             }
+            // A repeat instance's face (#955): the source face's boundary run through that
+            // instance's transform — the plane the user snapped to, not the original.
+            SceneElement::RepeatedFace { face, op, instance } => {
+                if let (Some(loop_), Some(xf)) = (
+                    crate::construction::sketch_face_boundary_world(doc, &face),
+                    doc.repeat_ops
+                        .get(op)
+                        .filter(|o| !o.deleted)
+                        .and_then(|o| crate::extrude::repeat_instance_transform(doc, o, instance)),
+                ) {
+                    let moved: Vec<Vec3> =
+                        loop_.iter().map(|p| xf.transform_point3(*p)).collect();
+                    for i in 0..moved.len() {
+                        self.push_polyline_segment(
+                            &[moved[i], moved[(i + 1) % moved.len()]],
+                            color,
+                            3.0,
+                            cam,
+                            viewport,
+                            view_proj,
+                        );
+                    }
+                }
+            }
             // An analytic face (#952) lights up its boundary loop, likewise reusing the
             // highlight its pick target already draws.
             SceneElement::SketchFace(face) => {

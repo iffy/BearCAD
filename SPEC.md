@@ -327,6 +327,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `SceneElement::from_move_point`, which normalizes the two cases that already have an element: a
   body corner is `BodyVertex`, the origin point is `Origin`. `as_move_point` is the inverse, for
   handing a picker's contents back to the geometry code.
+- **Repeat-instance faces are selectable (#955):** `SceneElement::RepeatedFace { face, op,
+  instance }` names a repeat copy's translated plane (#452) — the source face's plane moved by
+  that instance's offset. It is not the source face (a different plane) and has no independent
+  existence in the document, so it needs an identity of its own; without one, the three
+  "extrude up to"-style pickers couldn't hold what the user had actually snapped to.
+  `SceneElement::from_extrude_target` maps every `ExtrudeTarget` onto an element, which is what
+  the Extrude **Up to**, Repeat **Distance to**, and Joint **Min/Max stop** pickers hold. It
+  highlights as the source face's boundary run through the instance transform.
 - **Analytic extrusion edges are selectable (#952):** `SceneElement::ExtrusionEdge { extrusion,
   edge }` names what the 3D Chamfer/Fillet tool treats — distinct from `BodyEdge`, the quantized
   mesh edge. It highlights the **whole** analytic edge, so a hole's rim (one `Cap` reference,

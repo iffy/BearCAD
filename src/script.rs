@@ -1848,6 +1848,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: extrusion,
             point: None,
         },
+        SceneElement::RepeatedFace { instance, .. } => ElementScriptTokens {
+            kind: "repeated_face",
+            index: instance,
+            point: None,
+        },
         SceneElement::BodyFace { .. } => ElementScriptTokens {
             kind: "body_face",
             index: 0,
