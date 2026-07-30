@@ -3568,8 +3568,23 @@ The model in one place:
   picker's own priority. What lights up is what lands, by construction. A tool's viewport
   handler calls `click_into_focused_picker` and keeps only what is genuinely its own — gizmo
   drags, Enter-to-commit, preview state — and the pick itself goes through `actions::apply_pick`,
-  the same function a pane click and a script use. Tools still writing their own
-  resolve-pick-and-toggle are the cases left to convert.
+  the same function a pane click and a script use.
+
+  Four kinds of pick genuinely can't be an "element under the cursor", and their tools keep
+  their own resolution — this is the whole list, and a new tool needs a reason this good to
+  join it:
+  - **A profile region** (Extrude, Revolve, Sweep, Loft): what's picked is the region the
+    cursor is *inside*, which can be a boolean of two overlapping shapes
+    (`ExtrudeFace::Boolean`). No element names it — `FaceId` flattens it to one operand — so
+    `pick_extrude_face` builds it from the click.
+  - **A derived point** (the Move and Joint snap pickers): an edge's midpoint or a face's
+    centre isn't in the crowd at all; the click means "the point *of* the thing under the
+    cursor".
+  - **A geometric relation to an earlier pick** (a Sweep path line must leave the profile's
+    plane; an Extrude/Repeat "up to" target must lie ahead along the normal): the test is
+    against another pick, not a property of the element.
+  - **Restart-on-plain-click** (3D Chamfer/Fillet): a plain click starts a new edge set and
+    only ⌘/Shift adds, which is the opposite of the picker's toggle.
 - **Switching tools carries the picked set** from the outgoing tool's primary picker to the new
   one's, keeping what it accepts (#956).
 - **What a picker holds is styled as selected** in the viewport and in the Elements pane, in

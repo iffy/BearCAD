@@ -6877,6 +6877,7 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         if self.state.sketch_session.is_some() {
             return;
@@ -6978,53 +6979,23 @@ impl App {
             );
             return;
         }
-        // 2) axis line / global axis / 3) cut bodies
-        let gp = cam.ground_point(pp, viewport, vp);
-        if let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
-        {
-            match target.kind {
-                construction::PickTargetKind::Line(li) => {
-                    let cr = self
-                        .state
-                        .creating_revolve
-                        .get_or_insert_with(actions::CreatingRevolve::default);
-                    cr.axis = Some(model::RevolveAxis::Line(li));
-                    self.state.status =
-                        "Revolve: axis set — drag the handle or type an angle".to_string();
-                    return;
-                }
-                construction::PickTargetKind::GlobalAxis(axis) => {
-                    let cr = self
-                        .state
-                        .creating_revolve
-                        .get_or_insert_with(actions::CreatingRevolve::default);
-                    cr.axis = Some(match axis {
-                        construction::GlobalAxis::X => model::RevolveAxis::X,
-                        construction::GlobalAxis::Y => model::RevolveAxis::Y,
-                        construction::GlobalAxis::Z => model::RevolveAxis::Z,
-                    });
-                    self.state.status =
-                        "Revolve: axis set — drag the handle or type an angle".to_string();
-                    return;
-                }
-                ref kind => {
-                    // In Cut mode, clicking a body toggles it into the cut set.
-                    if let Some(bi) = self.pick_whole_body(pp, project, cam, kind) {
-                        if let Some(cr) = self.state.creating_revolve.as_mut() {
-                            if cr.body_choice == actions::RevolveBodyChoice::Cut {
-                                if let Some(pos) = cr.cut_bodies.iter().position(|b| *b == bi) {
-                                    cr.cut_bodies.remove(pos);
-                                } else {
-                                    cr.cut_bodies.push(bi);
-                                }
-                                self.state.status =
-                                    format!("Revolve: cutting {} body(ies)", cr.cut_bodies.len());
-                            }
-                        }
-                    }
-                }
-            }
+        // 2) the axis, or — in Cut mode — the bodies. Both are ordinary element picks, so the
+        // armed picker decides which (#970): Axis while there's a profile and no axis yet,
+        // Cut bodies once both are settled.
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
+            return;
         }
+        let cr = self
+            .state
+            .creating_revolve
+            .get_or_insert_with(actions::CreatingRevolve::default);
+        self.state.status = match cr.axis.is_some() {
+            false => "Revolve: click an axis line".to_string(),
+            true if cr.body_choice == actions::RevolveBodyChoice::Cut => {
+                format!("Revolve: cutting {} body(ies)", cr.cut_bodies.len())
+            }
+            true => "Revolve: axis set — drag the handle or type an angle".to_string(),
+        };
     }
 
     /// Sweep tool (#sweep): click coplanar profile faces, then click sketch
@@ -7040,6 +7011,7 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         if self.state.sketch_session.is_some() {
             return;
@@ -7136,23 +7108,18 @@ impl App {
                     );
                     return;
                 }
-                ref kind => {
-                    // In Cut mode, clicking a body toggles it into the cut set.
-                    if let Some(bi) = self.pick_whole_body(pp, project, cam, kind) {
-                        if let Some(cf) = self.state.creating_sweep.as_mut() {
-                            if cf.body_choice == actions::RevolveBodyChoice::Cut {
-                                if let Some(pos) = cf.cut_bodies.iter().position(|b| *b == bi) {
-                                    cf.cut_bodies.remove(pos);
-                                } else {
-                                    cf.cut_bodies.push(bi);
-                                }
-                                self.state.status = format!(
-                                    "Sweep: cutting {} body(ies)",
-                                    cf.cut_bodies.len()
-                                );
-                            }
-                        }
+                _ => {
+                    // Anything else is for the armed picker — in Cut mode, the bodies (#970).
+                    if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion)
+                    {
+                        return;
                     }
+                    let cf = self
+                        .state
+                        .creating_sweep
+                        .get_or_insert_with(actions::CreatingSweep::default);
+                    self.state.status =
+                        format!("Sweep: cutting {} body(ies)", cf.cut_bodies.len());
                 }
             }
         }
@@ -10106,6 +10073,7 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
+        tool_pickers: &[context::ToolPickerView],
     ) {
         if self.state.sketch_session.is_some() {
             return;
@@ -10142,20 +10110,15 @@ impl App {
             self.state.apply(Action::ToggleLoftSection { section });
             return;
         }
-        // In Cut mode, clicking a body toggles it into the cut set (#479).
-        if let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) {
-            if let Some(cl) = self.state.creating_loft.as_mut() {
-                if cl.body_choice == actions::RevolveBodyChoice::Cut {
-                    if let Some(pos) = cl.cut_bodies.iter().position(|b| *b == bi) {
-                        cl.cut_bodies.remove(pos);
-                    } else {
-                        cl.cut_bodies.push(bi);
-                    }
-                    self.state.status =
-                        format!("Loft: cutting {} body(ies)", cl.cut_bodies.len());
-                }
-            }
+        // Otherwise it's for the armed picker — in Cut mode, the bodies (#479/#970).
+        if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
+            return;
         }
+        let cl = self
+            .state
+            .creating_loft
+            .get_or_insert_with(actions::CreatingLoft::default);
+        self.state.status = format!("Loft: cutting {} body(ies)", cl.cut_bodies.len());
     }
 
     fn handle_edge_treatment_tool(
@@ -22197,16 +22160,43 @@ impl App {
         }
 
         if self.state.tool == Tool::Loft {
-            self.handle_loft_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_loft_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
         }
 
         if self.state.tool == Tool::Revolve {
-            self.handle_revolve_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_revolve_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
             self.show_revolve_angle_input(ui, &project);
         }
 
         if self.state.tool == Tool::Sweep {
-            self.handle_sweep_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.handle_sweep_tool(
+                ui,
+                &project,
+                pointer_screen,
+                &cam,
+                viewport,
+                &vp,
+                pick_occlusion,
+                tool_pickers,
+            );
         }
 
         if self.state.tool == Tool::Combine {

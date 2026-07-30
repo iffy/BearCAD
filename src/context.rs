@@ -1764,7 +1764,14 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             ElementFilter::kind(ElementKind::Profile),
             PickLimit::Infinite,
         );
-        profile.set_focused(!r.axis_focused && !(!r.faces.is_empty() && r.axis.is_some()));
+        // Profile is the primary, so it stays armed unless another picker's turn has come:
+        // the Axis while there's a profile and no axis, or the Cut bodies once both are
+        // settled in Cut mode. Otherwise nothing would be armed and a click would do nothing
+        // (#962/#970).
+        let cut_armed = r.body_choice == crate::actions::RevolveBodyChoice::Cut
+            && !r.faces.is_empty()
+            && r.axis.is_some();
+        profile.set_focused(!r.axis_focused && !cut_armed);
         profile.set_picked(
             input.doc,
             r.faces
