@@ -56,9 +56,9 @@ pub struct ContextInput<'a> {
     pub extrude_body_mode: Option<ExtrudeBodyMode>,
     /// Symmetric extrude toggle while an extrusion is in progress (#504).
     pub extrude_symmetric: Option<bool>,
-    /// One label per picked extrude profile face, shown in the Extrude tool's face element
-    /// picker (#268); `None` when the Extrude tool isn't active.
-    pub extrude_faces: Option<Vec<String>>,
+    /// The picked extrude profile faces (#268/#955), shown through the Extrude tool's face
+    /// element picker; `None` when the Extrude tool isn't active.
+    pub extrude_faces: Option<Vec<crate::model::ExtrudeFace>>,
     /// The Extrude tool's in-context distance/target/commit controls (#584); `Some` while an
     /// extrusion is in progress.
     pub extrude: Option<ExtrudeControl>,
@@ -943,8 +943,6 @@ pub struct ContextPaneContent {
     pub snapping: Option<bool>,
     /// New-body/merge-into choice for an in-progress or edited extrusion (#32).
     pub extrude_body: Option<ExtrudeBodyControl>,
-    /// Picked extrude profile faces, shown as an element picker (#268).
-    pub extrude_faces: Option<Vec<String>>,
     /// In-context distance/target/commit controls for the Extrude tool (#584).
     pub extrude: Option<ExtrudeControl>,
     /// Default length/angle unit picker: document-level when nothing is selected, or
@@ -1246,6 +1244,8 @@ pub enum PickerTarget {
     LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
+    /// The Extrude tool's profile faces (`CreatingExtrusion::faces`, #268/#955).
+    ExtrudeProfile,
     /// The Sweep tool's profile faces (`CreatingSweep::faces`, #955).
     SweepProfile,
     /// The Sweep tool's path lines (`CreatingSweep::path`, #955), chained tip-to-tail at commit.
@@ -1712,7 +1712,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             symmetric: input.extrude_symmetric.unwrap_or(false),
         }
     });
-    let extrude_faces = input.extrude_faces.clone();
     let extrude = input.extrude.clone();
     // The Default-units section is only relevant to selection/sketch editing, not to the modeling,
     // transform, dimension, or constraint tools whose own busy context sections don't need it
@@ -1850,6 +1849,23 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             cut.separator_above = false;
             tool_pickers.push(cut);
         }
+    }
+    if let Some(faces) = input.extrude_faces.as_ref() {
+        // The Extrude tool's profile faces (#268/#955). Always shown while the tool is active,
+        // empty or not, and always the focused picker — Extrude has only the one.
+        let mut profile =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+        profile.set_focused(true);
+        profile.set_picked(
+            input.doc,
+            faces.iter().map(crate::extrude::extrude_face_scene_element),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Faces",
+            picker: profile,
+            target: PickerTarget::ExtrudeProfile,
+            separator_above: true,
+        });
     }
     if let Some(f) = input.sweep.as_ref() {
         // Sweep's two inputs (#955), the Revolve pair's twin: the profiles, and the path they
@@ -2082,7 +2098,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             constraint_axis_dirs: None,
             snapping,
             extrude_body,
-            extrude_faces: extrude_faces.clone(),
             extrude: extrude.clone(),
             units,
             material: material.clone(),
@@ -2145,7 +2160,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             constraint_axis_dirs: None,
             snapping,
             extrude_body,
-            extrude_faces: extrude_faces.clone(),
             extrude: extrude.clone(),
             units,
             material: material.clone(),
@@ -2210,7 +2224,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             constraint_axis_dirs: None,
             snapping,
             extrude_body,
-            extrude_faces: extrude_faces.clone(),
             extrude: extrude.clone(),
             units,
             material: material.clone(),
@@ -2282,7 +2295,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         constraint_axis_dirs: input.sketch_axis_screen_dirs,
         snapping,
         extrude_body,
-        extrude_faces: extrude_faces.clone(),
         extrude: extrude.clone(),
         units,
         material,
@@ -3515,7 +3527,6 @@ pub fn show_pane(
     on_snapping_changed: &mut impl FnMut(bool),
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
     on_extrude_symmetric_changed: &mut impl FnMut(bool),
-    on_extrude_face_remove: &mut impl FnMut(Option<usize>),
     on_extrude_edit: &mut impl FnMut(ExtrudeEdit),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_material_edit: &mut impl FnMut(MaterialEdit),
@@ -6182,28 +6193,6 @@ pub fn show_pane(
         });
     }
 
-    if let Some(faces) = &content.extrude_faces {
-        any_control = true;
-        // Extrude face element picker (#268): the picked profile faces, each with a ✕ to drop
-        // it. Faces are added by clicking them in the viewport.
-        labeled_row_top(ui, "Faces", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "extrude_faces",
-            true,
-            false,
-            crate::icons::IconId::Sketch,
-            faces,
-        ) {
-            match event {
-                crate::element_picker::PickerEvent::Focus => {}
-                crate::element_picker::PickerEvent::Remove(i) => on_extrude_face_remove(Some(i)),
-                crate::element_picker::PickerEvent::Clear => on_extrude_face_remove(None),
-            }
-        }
-        });
-    }
-
     if let Some(control) = &content.extrude {
         any_control = true;
         // The Distance and "Up to" rows only appear once an extrusion is in progress; the primary
@@ -7012,18 +7001,33 @@ mod tests {
     /// #268: the Extrude tool surfaces its picked profile faces as an element picker.
     #[test]
     fn extrude_tool_surfaces_a_face_picker() {
-        let doc = Document::default();
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_a_sketch();
         let selection = SceneSelection::default();
         let content = context_pane_content(&ContextInput {
             tool: Tool::Extrude,
             in_drawing_workbench: false,
-            extrude_faces: Some(vec!["Circle 1".to_string(), "Region 2".to_string()]),
+            extrude_faces: Some(vec![
+                crate::model::ExtrudeFace::Circle(0),
+                crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+            ]),
             ..input(&doc, &selection)
         });
+        let picker = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::ExtrudeProfile)
+            .expect("the Extrude face picker");
         assert_eq!(
-            content.extrude_faces.as_deref(),
-            Some(["Circle 1".to_string(), "Region 2".to_string()].as_slice())
+            picker.picker.picked(),
+            &[
+                SceneElement::SketchFace(crate::model::FaceId::Circle(0)),
+                SceneElement::SketchFace(crate::model::FaceId::Polygon(vec![0, 1, 2, 3])),
+            ],
+            "profiles keep their analytic-face identity (#955)"
         );
+        assert!(picker.picker.is_focused(), "Extrude has only the one picker");
+        assert!(!picker.picker.accepts(&doc, &SceneElement::Body(0)));
     }
 
     /// #584: the Extrude tool surfaces its in-context distance/target/commit controls.
@@ -7767,7 +7771,6 @@ mod tests {
                 constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
-                extrude_faces: None,
                 extrude: None,
                 edge_picker: None,
                 selection_picker: Some(ElementPicker::select_everything()),
@@ -7908,7 +7911,6 @@ mod tests {
                 constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
-                extrude_faces: None,
                 extrude: None,
                 edge_picker: None,
                 selection_picker: None,
@@ -8062,7 +8064,6 @@ mod tests {
                 constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
-                extrude_faces: None,
                 extrude: None,
                 // #213: the Select tool surfaces the selection through the unified element picker.
                 edge_picker: None,
@@ -8334,7 +8335,6 @@ mod tests {
                 constraint_axis_dirs: None,
                 snapping: None,
                 extrude_body: None,
-                extrude_faces: None,
                 extrude: None,
                 edge_picker: None,
                 selection_picker: None,

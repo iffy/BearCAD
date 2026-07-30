@@ -11647,21 +11647,7 @@ impl eframe::App for App {
                     self.state
                         .creating_extrusion
                         .as_ref()
-                        .map(|ce| {
-                            ce.faces
-                                .iter()
-                                .enumerate()
-                                .map(|(n, f)| {
-                                    let kind = match f {
-                                        model::ExtrudeFace::Circle(_) => "Circle",
-                                        model::ExtrudeFace::Polygon(_) => "Loop",
-                                        model::ExtrudeFace::Boolean { .. } => "Region",
-                                        model::ExtrudeFace::TextGlyph { .. } => "Glyph",
-                                    };
-                                    format!("{kind} {}", n + 1)
-                                })
-                                .collect()
-                        })
+                        .map(|ce| ce.faces.clone())
                         .unwrap_or_default()
                 }),
                 // Extrude tool distance/target/commit controls (#584). Present for the whole tool so
@@ -12487,7 +12473,6 @@ impl eframe::App for App {
             let mut snapping_change: Option<bool> = None;
             let mut extrude_body_mode_change: Option<actions::ExtrudeBodyMode> = None;
             let mut extrude_symmetric_change: Option<bool> = None;
-            let mut extrude_face_remove: Option<Option<usize>> = None;
             let mut extrude_edit: Option<context::ExtrudeEdit> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut material_edit: Option<context::MaterialEdit> = None;
@@ -12561,7 +12546,6 @@ impl eframe::App for App {
                         &mut |enabled| snapping_change = Some(enabled),
                         &mut |mode| extrude_body_mode_change = Some(mode),
                         &mut |symmetric| extrude_symmetric_change = Some(symmetric),
-                        &mut |remove| extrude_face_remove = Some(remove),
                         &mut |edit| extrude_edit = Some(edit),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| material_edit = Some(edit),
@@ -12695,18 +12679,6 @@ impl eframe::App for App {
                             context::SweepEdit::BodyChoice(choice) => cf.body_choice = choice,
                             context::SweepEdit::Commit => unreachable!(),
                         }
-                    }
-                }
-            }
-            if let Some(remove) = extrude_face_remove {
-                // Removing a face from the picker toggles it back off (#268).
-                if let Some(ce) = self.state.creating_extrusion.as_ref() {
-                    let faces: Vec<model::ExtrudeFace> = match remove {
-                        Some(i) => ce.faces.get(i).cloned().into_iter().collect(),
-                        None => ce.faces.clone(),
-                    };
-                    for face in faces {
-                        self.state.apply(Action::ToggleExtrudeFace { face });
                     }
                 }
             }
@@ -13579,6 +13551,26 @@ impl eframe::App for App {
                         self.move_focus_override = Some(MoveFocus::Bodies);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    // The Extrude tool's profile faces (#268/#955). Removal goes through
+                    // `ToggleExtrudeFace` rather than a raw `Vec` edit — the action also does
+                    // the sketch bookkeeping and lands as one undo step.
+                    context::PickerTarget::ExtrudeProfile => {
+                        if edit != context::ToolPickerAction::Focus {
+                            let faces: Vec<model::ExtrudeFace> = match (
+                                edit,
+                                self.state.creating_extrusion.as_ref(),
+                            ) {
+                                (context::ToolPickerAction::Remove(i), Some(ce)) => {
+                                    ce.faces.get(i).cloned().into_iter().collect()
+                                }
+                                (context::ToolPickerAction::Clear, Some(ce)) => ce.faces.clone(),
+                                _ => Vec::new(),
+                            };
+                            for face in faces {
+                                self.state.apply(Action::ToggleExtrudeFace { face });
+                            }
                         }
                     }
                     // Sweep's profile and path (#955).

@@ -573,6 +573,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     preview reflects the snapped target immediately while still dragging (not just after
     release), so extruding to a slanted or irregular target shows the actual resulting shape —
     e.g. a slanted top cap — rather than a generic blind/rectangular extrude (#63).
+  - **Faces picker (#268/#955):** the picked profile faces show in a real element picker over
+    analytic faces (`SceneElement::SketchFace`), always focused — Extrude has only the one
+    picker. Dropping a row goes through `Action::ToggleExtrudeFace`, so it does the same sketch
+    bookkeeping and lands as the same single undo step as clicking the face off in the viewport.
   - **In-context distance / target / commit (#584):** the Extrude tool's context section carries a
     full alternative to the 3D gizmo — a **Distance** value input that mirrors the floating 3D field,
     an **"Up to"** element picker (single-select, planes/faces) for the extrude-to target, and an
