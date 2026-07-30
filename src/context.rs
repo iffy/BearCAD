@@ -1690,108 +1690,13 @@ fn axis_constraint_button(
     response
 }
 
-pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
-    let tool_title = tool_context_title(input);
-    let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
-    // The selected unit instance's own section (#734).
-    let unit_instance = match input.selection.single() {
-        Some(SceneElement::UnitInstance(instance)) => {
-            unit_instance_control(input.doc, instance)
-        }
-        _ => None,
-    };
-    // Snapping shows for the drawing tools in 3D as well as in a sketch (#636): the
-    // Rectangle/Line/Circle sections read identically either way, and the toggle is sticky,
-    // so setting it in 3D carries into the sketch the first click opens. The Select tool
-    // keeps its sketch-only toggle — there's nothing to snap while picking in 3D.
-    let snapping = (tool_uses_snapping(input.tool)
-        && (input.in_sketch || is_draw_tool(input.tool) || input.tool == Tool::Shape))
-    .then_some(input.snapping_enabled);
-    // #505: always show New/Add/Cut while extruding (Add/Cut need a host body candidate).
-    let extrude_body = input.extrude_body_mode.map(|mode| {
-        let merge_body = input.extrude_merge_candidate;
-        let merge_body_label = merge_body
-            .and_then(|bi| element_name(input.doc, SceneElement::Body(bi)).map(|n| n.to_string()))
-            .unwrap_or_else(|| "body".to_string());
-        ExtrudeBodyControl {
-            mode,
-            merge_body,
-            merge_body_label,
-            can_join_profiles: input.extrude_disjoint_profiles,
-            symmetric: input.extrude_symmetric.unwrap_or(false),
-        }
-    });
-    let extrude = input.extrude.clone();
-    // The Default-units section is only relevant to selection/sketch editing, not to the modeling,
-    // transform, dimension, or constraint tools whose own busy context sections don't need it
-    // (#257/#330/#585). It's suppressed while any of those tools is active.
-    let units_suppressed = matches!(
-        input.tool,
-        Tool::Repeat
-            | Tool::Text
-            | Tool::Extrude
-            | Tool::Sweep
-            | Tool::Loft
-            | Tool::Revolve
-            | Tool::Combine
-            | Tool::Move
-            | Tool::Mirror
-            | Tool::Slice
-            | Tool::Dimension
-            | Tool::Constraint
-    );
-    let units = (!units_suppressed)
-        .then(|| units_control_from_selection(input.doc, input.selection))
-        .flatten();
-    // Material picker (#834): shown whenever the selection is bodies, so what a body is made
-    // of sits right where its name does.
-    // Materials belong to the Select tool's pane (#934): while a tool is running, the pane
-    // is that tool's controls, and a body's material isn't one of them.
-    let material = (input.tool == Tool::Select)
-        .then(|| material_control_from_selection(input.doc, input.selection))
-        .flatten();
-    // The unified selection element picker (#213), mirroring the live selection for the tools
-    // that operate on it. Suppressed while a draw construction owns the pane.
-    let drawing = input.draw_rect_construction.is_some()
-        || input.draw_line_construction.is_some()
-        || input.draw_circle_construction.is_some();
-    let selection_picker = (!drawing && !input.in_drawing_workbench)
-        .then(|| {
-            selection_picker_for(input.doc, input.tool, input.open_sketch, input.selection)
-        })
-        .flatten();
-    // Dimension tool in 3D (#618): measure the current selection for the derive block —
-    // one line → its length; two parallel lines → the distance between them; two
-    // non-parallel lines → the angle; two vertices → the distance.
-    let dimension_derive = input.dimension_derive.as_ref().map(|c| {
-        let source =
-            crate::parameters::derived_source_from_selection(input.doc, input.selection);
-        let value = source.as_ref().and_then(|s| {
-            crate::parameters::derived_source_value(input.doc, s).map(|(v, is_angle)| {
-                if is_angle {
-                    crate::value::format_angle_display_in(
-                        v.to_radians(),
-                        input.doc.default_angle_unit,
-                    )
-                } else {
-                    crate::value::format_length_display_in(v, input.doc.default_length_unit)
-                }
-            })
-        });
-        DimensionDeriveView {
-            name_text: c.name_text.clone(),
-            can_commit: value.is_some(),
-            value,
-        }
-    });
-    // The drawing workbench's Select tool gets its own always-visible element picker (#346),
-    // mirroring the multi-selection of projections/text/dimensions.
-    let drawing_selection = (input.in_drawing_workbench && input.tool == Tool::Select)
-        .then(|| input.drawing_selection.clone());
-    // The Aligned-view tool shows a "Base view" picker (#365) for the projection to align to.
-    let drawing_align = input.drawing_align_active.then(|| input.drawing_align_base.clone());
-    // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
-    // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
+/// Every element picker the active tool has (#963), in order — its **primary** first.
+///
+/// Built on demand from the tool's state rather than cached from the last pane frame: a pick
+/// arriving before such a frame (right after a tool switch, or in a headless test) would
+/// otherwise find no pickers and silently do nothing. The context pane renders from this; so
+/// does the click routing, the viewport highlight, the hover fallback and `bearcad.pickers()`.
+pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
     let mut tool_pickers = Vec::new();
     if let Some(r) = input.revolve.as_ref() {
         // Revolve's own two inputs (#955): the profile faces it sweeps, and the axis it sweeps
@@ -2312,6 +2217,111 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers.push(side_b);
         }
     }
+    tool_pickers
+}
+pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
+    let tool_title = tool_context_title(input);
+    let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
+    // The selected unit instance's own section (#734).
+    let unit_instance = match input.selection.single() {
+        Some(SceneElement::UnitInstance(instance)) => {
+            unit_instance_control(input.doc, instance)
+        }
+        _ => None,
+    };
+    // Snapping shows for the drawing tools in 3D as well as in a sketch (#636): the
+    // Rectangle/Line/Circle sections read identically either way, and the toggle is sticky,
+    // so setting it in 3D carries into the sketch the first click opens. The Select tool
+    // keeps its sketch-only toggle — there's nothing to snap while picking in 3D.
+    let snapping = (tool_uses_snapping(input.tool)
+        && (input.in_sketch || is_draw_tool(input.tool) || input.tool == Tool::Shape))
+    .then_some(input.snapping_enabled);
+    // #505: always show New/Add/Cut while extruding (Add/Cut need a host body candidate).
+    let extrude_body = input.extrude_body_mode.map(|mode| {
+        let merge_body = input.extrude_merge_candidate;
+        let merge_body_label = merge_body
+            .and_then(|bi| element_name(input.doc, SceneElement::Body(bi)).map(|n| n.to_string()))
+            .unwrap_or_else(|| "body".to_string());
+        ExtrudeBodyControl {
+            mode,
+            merge_body,
+            merge_body_label,
+            can_join_profiles: input.extrude_disjoint_profiles,
+            symmetric: input.extrude_symmetric.unwrap_or(false),
+        }
+    });
+    let extrude = input.extrude.clone();
+    // The Default-units section is only relevant to selection/sketch editing, not to the modeling,
+    // transform, dimension, or constraint tools whose own busy context sections don't need it
+    // (#257/#330/#585). It's suppressed while any of those tools is active.
+    let units_suppressed = matches!(
+        input.tool,
+        Tool::Repeat
+            | Tool::Text
+            | Tool::Extrude
+            | Tool::Sweep
+            | Tool::Loft
+            | Tool::Revolve
+            | Tool::Combine
+            | Tool::Move
+            | Tool::Mirror
+            | Tool::Slice
+            | Tool::Dimension
+            | Tool::Constraint
+    );
+    let units = (!units_suppressed)
+        .then(|| units_control_from_selection(input.doc, input.selection))
+        .flatten();
+    // Material picker (#834): shown whenever the selection is bodies, so what a body is made
+    // of sits right where its name does.
+    // Materials belong to the Select tool's pane (#934): while a tool is running, the pane
+    // is that tool's controls, and a body's material isn't one of them.
+    let material = (input.tool == Tool::Select)
+        .then(|| material_control_from_selection(input.doc, input.selection))
+        .flatten();
+    // The unified selection element picker (#213), mirroring the live selection for the tools
+    // that operate on it. Suppressed while a draw construction owns the pane.
+    let drawing = input.draw_rect_construction.is_some()
+        || input.draw_line_construction.is_some()
+        || input.draw_circle_construction.is_some();
+    let selection_picker = (!drawing && !input.in_drawing_workbench)
+        .then(|| {
+            selection_picker_for(input.doc, input.tool, input.open_sketch, input.selection)
+        })
+        .flatten();
+    // Dimension tool in 3D (#618): measure the current selection for the derive block —
+    // one line → its length; two parallel lines → the distance between them; two
+    // non-parallel lines → the angle; two vertices → the distance.
+    let dimension_derive = input.dimension_derive.as_ref().map(|c| {
+        let source =
+            crate::parameters::derived_source_from_selection(input.doc, input.selection);
+        let value = source.as_ref().and_then(|s| {
+            crate::parameters::derived_source_value(input.doc, s).map(|(v, is_angle)| {
+                if is_angle {
+                    crate::value::format_angle_display_in(
+                        v.to_radians(),
+                        input.doc.default_angle_unit,
+                    )
+                } else {
+                    crate::value::format_length_display_in(v, input.doc.default_length_unit)
+                }
+            })
+        });
+        DimensionDeriveView {
+            name_text: c.name_text.clone(),
+            can_commit: value.is_some(),
+            value,
+        }
+    });
+    // The drawing workbench's Select tool gets its own always-visible element picker (#346),
+    // mirroring the multi-selection of projections/text/dimensions.
+    let drawing_selection = (input.in_drawing_workbench && input.tool == Tool::Select)
+        .then(|| input.drawing_selection.clone());
+    // The Aligned-view tool shows a "Base view" picker (#365) for the projection to align to.
+    let drawing_align = input.drawing_align_active.then(|| input.drawing_align_base.clone());
+    // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
+    // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
+    let tool_pickers = tool_picker_views(input);
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
     let sweep = input.sweep.clone();
