@@ -2661,6 +2661,16 @@ modeled on SolveSpace (https://solvespace.com).
   While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
   the cursor hover-highlights** as selectable — the same whole-body resolution the click uses
   (#227).
+- **A tool switch carries the picked set (#956):** changing tools hands the outgoing tool's
+  **primary** picker (its first — the main set it works on) to the new tool's primary picker,
+  which keeps whatever its filter, rules, and limit accept and drops the rest. So bodies
+  gathered in Combine are what Move moves and Repeat repeats, without re-picking; switching to
+  a tool whose primary picker takes faces carries nothing, because nothing offered is valid.
+  The primary rather than the merely focused picker: once the Move tool has advanced focus to a
+  point picker, its focused set is two mating points, which means nothing to Repeat — the
+  bodies do. When the outgoing tool has no picker of its own, the Select tool's **selection**
+  stands in, since that is its picker; the pre-existing "select bodies, then pick Combine"
+  behaviour (#943/#900/#523/#439) is that same rule rather than a separate path.
 - **Whole-body vs. sub-element picking (#218):** a viewport click picks a **whole body** only
   when the focused picker's accepted types exclude edges, faces, and vertices — so the
   body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,

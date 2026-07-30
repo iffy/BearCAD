@@ -6477,6 +6477,24 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetTool(tool) => {
+                // What the outgoing tool's **primary** picker was holding (#956) — its first,
+                // the main set the tool works on. The new tool's primary picker walks this and
+                // keeps whatever it can accept, so gathering a set in one tool and then
+                // realising you wanted a different one doesn't mean picking it all again.
+                //
+                // The primary rather than the merely *focused* one: once the Move tool advances
+                // focus to a point picker, its focused set is two mating points, which means
+                // nothing to the Repeat tool. The bodies do.
+                //
+                // When the outgoing tool had no picker of its own — the Select tool — the
+                // selection *is* its picker, so it stands in. That's the same rule, not a
+                // second one, and it's why the seeding below reads one list either way.
+                let handoff: Vec<crate::hierarchy::SceneElement> = self
+                    .tool_pickers
+                    .first()
+                    .map(|view| view.picker.picked().to_vec())
+                    .filter(|items| !items.is_empty())
+                    .unwrap_or_else(|| self.scene_selection.ordered());
                 if self.creating_rect.is_some() && tool != Tool::Rectangle {
                     self.creating_rect = None;
                 }
@@ -6516,7 +6534,7 @@ impl AppState {
                     // solids, pick Combine, and they're the operands — they were highlighted in
                     // the viewport but counted as nothing before.
                     let mut cb = CreatingBoolean::default();
-                    for element in self.scene_selection.iter() {
+                    for element in handoff.iter().cloned() {
                         if let crate::hierarchy::SceneElement::Body(bi) = element {
                             if self
                                 .doc
@@ -6538,7 +6556,11 @@ impl AppState {
                     self.creating_move = None;
                 }
                 if tool == Tool::Move && self.creating_move.is_none() {
-                    self.creating_move = Some(CreatingMove::default());
+                    // Whatever the outgoing picker held that can be moved (#956).
+                    self.creating_move = Some(CreatingMove {
+                        targets: handoff_bodies(&self.doc, &handoff),
+                        ..CreatingMove::default()
+                    });
                 }
                 if self.creating_joint.is_some() && tool != Tool::Joint {
                     self.creating_joint = None;
@@ -6548,7 +6570,7 @@ impl AppState {
                     // things, pick the Joint tool, and they're the members — the
                     // tie-together flow without re-picking.
                     let mut cj = CreatingJoint::default();
-                    for element in self.scene_selection.iter() {
+                    for element in handoff.iter().cloned() {
                         let member = match element {
                             crate::hierarchy::SceneElement::Body(bi) => {
                                 match self.doc.bodies.get(bi).map(|b| &b.source) {
@@ -6589,7 +6611,7 @@ impl AppState {
                     if let Some(session) = self.sketch_session {
                         if self.creating_sketch_mirror.is_none() {
                             let mut sm = CreatingSketchMirror::new(session.sketch);
-                            for element in self.scene_selection.iter() {
+                            for element in handoff.iter().cloned() {
                                 match element {
                                     crate::hierarchy::SceneElement::Line(li)
                                         if self.doc.lines.get(li).is_some_and(|l| {
@@ -6614,7 +6636,7 @@ impl AppState {
                 } else if tool == Tool::Mirror && self.creating_mirror.is_none() {
                     // Outside a sketch: mirror whole bodies. Seed from the selection (#523/#439).
                     let mut cm = CreatingMirror::default();
-                    for element in self.scene_selection.iter() {
+                    for element in handoff.iter().cloned() {
                         if let crate::hierarchy::SceneElement::Body(bi) = element {
                             if self.doc.bodies.get(bi).is_some_and(|b| !b.deleted && !b.shadow)
                                 && !cm.targets.contains(&bi)
@@ -6642,7 +6664,7 @@ impl AppState {
                     if let Some(session) = self.sketch_session {
                         if self.creating_sketch_offset.is_none() {
                             let mut co = CreatingSketchOffset::new(session.sketch);
-                            for element in self.scene_selection.iter() {
+                            for element in handoff.iter().cloned() {
                                 match element {
                                     crate::hierarchy::SceneElement::Line(li)
                                         if self.doc.lines.get(li).is_some_and(|l| {
@@ -6670,7 +6692,7 @@ impl AppState {
                     // selected before picking the tool is what you want to repeat, so
                     // the next thing to pick is the axis.
                     let mut cr = CreatingRepeat::default();
-                    for element in self.scene_selection.iter() {
+                    for element in handoff.iter().cloned() {
                         match element {
                             crate::hierarchy::SceneElement::Body(bi)
                                 if self.doc.bodies.get(bi).is_some_and(|b| !b.deleted && !b.shadow) =>
@@ -6704,7 +6726,10 @@ impl AppState {
                     self.creating_sketch_slice = None;
                 }
                 if tool == Tool::Slice && self.creating_slice.is_none() {
-                    self.creating_slice = Some(CreatingSlice::default());
+                    self.creating_slice = Some(CreatingSlice {
+                        targets: handoff_bodies(&self.doc, &handoff),
+                        ..CreatingSlice::default()
+                    });
                 }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
@@ -14809,6 +14834,26 @@ fn move_status(bodies: usize, planes: usize, images: usize) -> String {
 /// Whether the active tool gathers whole bodies from clicks (#218/#726) — the states in
 /// which a unit's materialized body must pass through as a raw body index (so Combine,
 /// Slice, Move, Repeat, and cut pickers can take it) instead of reading as its instance.
+/// Seed a tool's body set from what the outgoing picker held (#956), keeping only bodies that
+/// are really there and not already consumed — the same `LiveBody` rule the picker itself
+/// applies, so the pane and the handoff agree about what a valid body is.
+fn handoff_bodies(
+    doc: &crate::model::Document,
+    handoff: &[crate::hierarchy::SceneElement],
+) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for element in handoff {
+        if let crate::hierarchy::SceneElement::Body(bi) = element {
+            if doc.bodies.get(*bi).is_some_and(|b| !b.deleted && !b.shadow)
+                && !out.contains(bi)
+            {
+                out.push(*bi);
+            }
+        }
+    }
+    out
+}
+
 pub fn body_gathering_tool_active(state: &AppState) -> bool {
     match state.tool {
         Tool::Move | Tool::Repeat | Tool::Slice | Tool::Combine | Tool::Joint => true,
