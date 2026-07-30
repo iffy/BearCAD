@@ -1223,6 +1223,14 @@ pub enum PickerTarget {
     LoftSections,
     /// The Joint tool's member parts (`CreatingJoint::members`, #894/#955).
     JointMembers,
+    /// The Move tool's six mating-point pickers (#649/#650/#958). Rendered inline among the
+    /// tool's other controls, but registered like every other picker.
+    MoveStartA,
+    MoveEndA,
+    MoveStartB,
+    MoveEndB,
+    MoveStartC,
+    MoveEndC,
     /// The Sweep tool's profile faces (`CreatingSweep::faces`, #955).
     SweepProfile,
     /// The Sweep tool's path lines (`CreatingSweep::path`, #955), chained tip-to-tail at commit.
@@ -1970,6 +1978,39 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             None,
             m.bodies_focused,
         ));
+    }
+    if let Some(m) = input.move_op.as_ref() {
+        // The Move tool's six point pickers (#649/#650/#955). They draw between the Rotation
+        // heading and the Angle-snap slider, so they're `Inline` — but they belong in this list
+        // like every other picker (#958), or focus, hover and scripts can't see them.
+        let moving = m.targets.clone();
+        for (heading, target, point, on_moving, focused) in [
+            ("Start point A", PickerTarget::MoveStartA, m.start_a, true, m.start_a_focused),
+            ("End point A", PickerTarget::MoveEndA, m.end_a, false, m.end_a_focused),
+            ("Start point B", PickerTarget::MoveStartB, m.start_b, true, m.start_b_focused),
+            ("End point B", PickerTarget::MoveEndB, m.end_b, false, m.end_b_focused),
+            ("Start point C", PickerTarget::MoveStartC, m.start_c, true, m.start_c_focused),
+            ("End point C", PickerTarget::MoveEndC, m.end_c, false, m.end_c_focused),
+        ] {
+            let rule = if on_moving {
+                PickRule::OnBodies(moving.clone())
+            } else {
+                PickRule::OffBodies(moving.clone())
+            };
+            let mut picker = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Vertex).rule(rule),
+                PickLimit::Finite(1),
+            );
+            picker.set_focused(focused);
+            picker.set_picked(input.doc, point.map(SceneElement::from_move_point));
+            tool_pickers.push(ToolPickerView {
+                heading,
+                picker,
+                target,
+                separator_above: false,
+                render: PickerRender::Inline,
+            });
+        }
     }
     if let Some(sl) = input.sketch_slice.as_ref() {
         // The in-sketch Slice tool's two sides (#238/#955): the entities being cut, and the
@@ -4450,31 +4491,23 @@ pub fn show_pane(
         }
         // Start point A is picked in both modes (#649/#668): it's the handle a snap moves
         // *from*.
-        // Each point picker takes a corner, an edge midpoint, or a face middle — a **start**
-        // point on one of the moving bodies, an **end** point on anything else (#953). The rule
-        // lives in the picker, so the pane, the viewport hover, and the click path agree.
-        let moving = control.targets.clone();
+        // Each point picker is built with the other tool pickers (#958) and drawn here, where
+        // it belongs among the tool's controls — between the Rotation heading and the
+        // Angle-snap slider, which is why it can't be hoisted into the shared block. Its rule
+        // (a **start** point on one of the moving bodies, an **end** point on anything else,
+        // #953) lives in the picker, so pane, hover and click path agree.
+        let tool_pickers = &content.tool_pickers;
         let mut picker_row = |ui: &mut egui::Ui,
                               label: &'static str,
                               id: &'static str,
-                              point: Option<crate::model::MovePointRef>,
-                              on_moving: bool,
-                              focused: bool,
+                              target: PickerTarget,
                               on_focus: MoveEdit,
                               on_clear: MoveEdit| {
-            let rule = if on_moving {
-                PickRule::OnBodies(moving.clone())
-            } else {
-                PickRule::OffBodies(moving.clone())
+            let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                return;
             };
-            let mut picker = ElementPicker::new(
-                ElementFilter::kind(ElementKind::Vertex).rule(rule),
-                PickLimit::Finite(1),
-            );
-            picker.set_focused(focused);
-            picker.set_picked(doc, point.map(SceneElement::from_move_point));
             labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show(ui, &picker, doc, id) {
+                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
                     pending = Some(match event {
                         crate::element_picker::PickerEvent::Focus => on_focus,
                         crate::element_picker::PickerEvent::Remove(_)
@@ -4487,9 +4520,7 @@ pub fn show_pane(
             ui,
             "Start point A",
             "move_start_point_a",
-            control.start_a,
-            true,
-            control.start_a_focused,
+            PickerTarget::MoveStartA,
             MoveEdit::StartAFocus,
             MoveEdit::ClearStartA,
         );
@@ -4501,9 +4532,7 @@ pub fn show_pane(
                 ui,
                 "End point A",
                 "move_end_point_a",
-                control.end_a,
-            false,
-                control.end_a_focused,
+                PickerTarget::MoveEndA,
                 MoveEdit::EndAFocus,
                 MoveEdit::ClearEndA,
             );
@@ -4544,9 +4573,7 @@ pub fn show_pane(
                 ui,
                 "Start point B",
                 "move_start_point_b",
-                control.start_b,
-            true,
-                control.start_b_focused,
+                PickerTarget::MoveStartB,
                 MoveEdit::StartBFocus,
                 MoveEdit::ClearStartB,
             );
@@ -4554,9 +4581,7 @@ pub fn show_pane(
                 ui,
                 "End point B",
                 "move_end_point_b",
-                control.end_b,
-            false,
-                control.end_b_focused,
+                PickerTarget::MoveEndB,
                 MoveEdit::EndBFocus,
                 MoveEdit::ClearEndB,
             );
@@ -4564,9 +4589,7 @@ pub fn show_pane(
                 ui,
                 "Start point C",
                 "move_start_point_c",
-                control.start_c,
-            true,
-                control.start_c_focused,
+                PickerTarget::MoveStartC,
                 MoveEdit::StartCFocus,
                 MoveEdit::ClearStartC,
             );
@@ -4574,9 +4597,7 @@ pub fn show_pane(
                 ui,
                 "End point C",
                 "move_end_point_c",
-                control.end_c,
-            false,
-                control.end_c_focused,
+                PickerTarget::MoveEndC,
                 MoveEdit::EndCFocus,
                 MoveEdit::ClearEndC,
             );
@@ -7448,7 +7469,21 @@ mod tests {
             ..input(&doc, &selection)
         };
         let pickers = context_pane_content(&move_input).tool_pickers;
-        assert_eq!(pickers.len(), 1);
+        // Bodies plus the six point pickers (#958): they render inline among the tool's own
+        // controls but are registered like every other picker, so find this one by target.
+        assert_eq!(pickers.len(), 7);
+        assert_eq!(
+            pickers
+                .iter()
+                .filter(|v| v.render == PickerRender::Shared)
+                .count(),
+            1,
+            "only Bodies draws in the shared block"
+        );
+        let pickers: Vec<&ToolPickerView> = pickers
+            .iter()
+            .filter(|v| v.target == PickerTarget::MoveTargets)
+            .collect();
         assert_eq!(pickers[0].target, PickerTarget::MoveTargets);
         assert_eq!(
             pickers[0].picker.picked(),

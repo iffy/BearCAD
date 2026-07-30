@@ -3532,6 +3532,13 @@ The model in one place:
   the design's "restrict selection to particular elements/components/bodies". The rules gate
   every path equally, so a viewport click, a pane click, and a tool-switch handoff can never
   disagree about what a valid pick is.
+- **Every picker is registered, wherever it draws.** A tool's pickers all live in
+  `ContextPaneContent::tool_pickers`; `ToolPickerView::render` says whether one draws in the
+  shared block at the top of the tool's section (`Shared`) or in place among the tool's own
+  controls (`Inline`) — the Move tool's point rows sit between the Rotation heading and the
+  Angle-snap slider, so they can't be hoisted. Focus, hover, the tool-switch handoff, the
+  Exploder's fan and `bearcad.pickers()` all read that one list, and a picker missing from it is
+  invisible to every one of them (#958). A tool pushes its **primary** picker first.
 - **Exactly one picker has focus.** A tool declares its pickers in order; focus walks to the
   first unfilled one, which is how a single-pick picker hands focus on the moment it's filled
   (`FocusChain`, #954/#962). A hand-picked focus pins the chain until that picker is satisfied,

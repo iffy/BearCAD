@@ -6498,6 +6498,9 @@ impl AppState {
                 // When the outgoing tool had no picker of its own — the Select tool — the
                 // selection *is* its picker, so it stands in. That's the same rule, not a
                 // second one, and it's why the seeding below reads one list either way.
+                // `first()` is the primary because a tool pushes its main set first — the
+                // point/stop rows that follow are secondary by construction. Keep it that way
+                // when adding pickers to a tool.
                 let handoff: Vec<crate::hierarchy::SceneElement> = self
                     .tool_pickers
                     .first()
@@ -14931,6 +14934,14 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::SweepPath
         // The Joint tool's members: its focus is the chain's, not a stored flag.
         | P::JointMembers => {}
+        // The Move tool's point pickers arm through the focus chain's override, which the
+        // pane sets directly — the chain, not a flag on the tool state (#954).
+        P::MoveStartA
+        | P::MoveEndA
+        | P::MoveStartB
+        | P::MoveEndB
+        | P::MoveStartC
+        | P::MoveEndC => {}
     }
 }
 

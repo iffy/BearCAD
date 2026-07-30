@@ -13560,6 +13560,14 @@ impl eframe::App for App {
                             }
                         }
                     }
+                    // The Move tool's point pickers (#958): the pane's own rows drive
+                    // focus and clearing through `MoveEdit`, so nothing routes here.
+                    context::PickerTarget::MoveStartA
+                    | context::PickerTarget::MoveEndA
+                    | context::PickerTarget::MoveStartB
+                    | context::PickerTarget::MoveEndB
+                    | context::PickerTarget::MoveStartC
+                    | context::PickerTarget::MoveEndC => {}
                     // The Joint tool's parts (#894/#955): removal drops the member.
                     context::PickerTarget::JointMembers => {
                         if edit != context::ToolPickerAction::Focus {
