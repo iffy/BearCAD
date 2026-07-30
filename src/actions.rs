@@ -15048,19 +15048,26 @@ fn toggle(set: &mut Vec<usize>, value: usize) {
     }
 }
 
+/// Whether the focused picker is gathering whole bodies (#963).
+///
+/// This used to hardcode five tools plus two `body_choice` checks, which then had to be kept in
+/// step with the tools that actually have a body picker — Revolve and Sweep only gather bodies
+/// in Cut mode, and that condition was written here as well as in the pane. Asking the picker
+/// makes it one fact: a tool gathers bodies exactly when its focused picker says it takes them.
 pub fn body_gathering_tool_active(state: &AppState) -> bool {
-    match state.tool {
-        Tool::Move | Tool::Repeat | Tool::Slice | Tool::Combine | Tool::Joint => true,
-        Tool::Revolve => state
-            .creating_revolve
-            .as_ref()
-            .is_some_and(|cr| cr.body_choice == RevolveBodyChoice::Cut),
-        Tool::Sweep => state
-            .creating_sweep
-            .as_ref()
-            .is_some_and(|cf| cf.body_choice == RevolveBodyChoice::Cut),
-        _ => false,
-    }
+    state
+        .tool_pickers
+        .iter()
+        .find(|view| view.picker.is_focused())
+        .is_some_and(|view| {
+            view.picker
+                .filter()
+                .accepted_kinds()
+                .contains(&crate::element_picker::ElementKind::Body)
+                // The Select tool's picker takes everything, but it isn't *gathering* — its
+                // picks are the selection, which is where a body click should land anyway.
+                && !view.picker.has_sticky_focus()
+        })
 }
 
 pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
