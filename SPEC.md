@@ -2449,7 +2449,13 @@ modeled on SolveSpace (https://solvespace.com).
   whenever any of the thing's own segments or points lands in the disc, and only ever traded for
   a wider view, never a tighter one. The faint centre mark still shows where the cursor falls in
   the framing, or is dropped when that lands outside. Faces are **shaded** (translucent fill clipped to the disc via
-  `clip_convex_to_disc`), not just outlined. Only the **highlighted** vertex shows a dot; a
+  `clip_convex_to_disc`), not just outlined. A **whole body** likewise draws as its **shaded
+  solid** (#972, `body_loupe_faces`): its mesh triangles painted far-to-near from the camera,
+  flat-shaded by the same two-sided Lambert term the viewport uses, with no outline — so the
+  loupe reads the way the body reads in the 3D view rather than as a see-through wireframe box.
+  Both are for the **highlighted** thing only; a *context* body or face stays outline-only, since
+  filling one would blanket the disc and bury the loupe's own subject.
+  Only the **highlighted** vertex shows a dot; a
   line-endpoint vertex also gets a short **stub** of its line — a *fixed on-screen length* relative
   to the loupe, not a fraction of the line — so coincident endpoints of different lines are told
   apart by the direction their line leaves the vertex. Colours: the in-loupe element and its ring

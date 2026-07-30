@@ -1781,6 +1781,38 @@ fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<e
     out
 }
 
+/// A whole body's mesh triangles ready for a Selection Exploder loupe (#972), each paired with
+/// its flat-shading factor as a 0–255 byte.
+///
+/// Sorted **far-to-near** from `eye`, so painting them in order is a painter's algorithm and the
+/// loupe reads as a solid object rather than a see-through jumble. The shade is the same
+/// two-sided Lambert term the viewport's `push_solid` uses, so a body looks in the loupe the way
+/// it looks in the scene.
+fn body_loupe_faces(
+    doc: &model::Document,
+    body: usize,
+    eye: Vec3,
+) -> Option<Vec<([Vec3; 3], u8)>> {
+    let solid = extrude::body_solid_mesh(doc, body)?;
+    let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+    let mut faces: Vec<([Vec3; 3], u8)> = solid
+        .triangles
+        .iter()
+        .map(|tri| {
+            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+            let shade = 0.4 + 0.6 * normal.dot(light).abs();
+            (*tri, (shade.clamp(0.0, 1.0) * 255.0) as u8)
+        })
+        .collect();
+    // Far-to-near. `sort_by` is stable, so coplanar triangles keep mesh order and the result is
+    // deterministic.
+    faces.sort_by(|(a, _), (b, _)| {
+        let d = |t: &[Vec3; 3]| ((t[0] + t[1] + t[2]) / 3.0 - eye).length();
+        d(b).total_cmp(&d(a))
+    });
+    Some(faces)
+}
+
 /// The world-space wireframe a Selection Exploder loupe magnifies for one pick target: the
 /// segments and standalone points that make it recognisable. Used to decide whether a loupe's
 /// content lands inside its disc at all, and to frame it when it doesn't (#944/#945) — a whole
@@ -1931,6 +1963,8 @@ fn draw_pick_target_loupe(
     color: egui::Color32,
     width: f32,
     is_highlight: bool,
+    // Camera position, for depth-sorting a whole body's shaded faces (#972).
+    eye: Vec3,
 ) {
     use construction::PickTargetKind as PK;
     let lp = |w: Vec3| project(w).map(loupe);
@@ -2072,10 +2106,37 @@ fn draw_pick_target_loupe(
                 dot(anchor, width + 1.0);
             }
         }
-        // A whole body (#902): its feature edges, so the loupe reads as the entire shape.
+        // A whole body (#902/#972): the loupe should read the way the body reads in the 3D
+        // view — a solid-faced shape. Feature edges alone made it a see-through wireframe box:
+        // all strong lines and no substance, which is exactly what a body doesn't look like.
+        //
+        // Same split as `BodyFace` above. A **highlighted** body is its shaded solid, painted
+        // far-to-near, with no outline — so nothing in it reads as an edge being highlighted
+        // too. A **context** body stays outline-only: filling it would blanket the disc in flat
+        // grey and bury the loupe's own subject.
         PK::Body(bi) => {
-            for (a, b) in construction::body_feature_edges(doc, *bi) {
-                seg(a, b);
+            if !is_highlight {
+                for (a, b) in construction::body_feature_edges(doc, *bi) {
+                    seg(a, b);
+                }
+                return;
+            }
+            let Some(faces) = body_loupe_faces(doc, *bi, eye) else {
+                return;
+            };
+            for (tri, shade) in faces {
+                let f = shade as f32 / 255.0;
+                let fill = egui::Color32::from_rgb(
+                    (color.r() as f32 * f) as u8,
+                    (color.g() as f32 * f) as u8,
+                    (color.b() as f32 * f) as u8,
+                );
+                if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
+                    let poly = clip_convex_to_disc(&[a, b, c], center, radius);
+                    if poly.len() >= 3 {
+                        painter.add(egui::Shape::convex_polygon(poly, fill, egui::Stroke::NONE));
+                    }
+                }
             }
         }
         // An analytic face (#625): its boundary loop, outline-only (matching a context
@@ -20627,6 +20688,8 @@ impl App {
         }
         let idle_blue = egui::Color32::from_rgb(96, 165, 250);
         let dark_bg = egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236);
+        // Depth-sorts a whole body's shaded faces inside its loupe (#972).
+        let eye = self.state.cam.eye();
         for (i, it) in items.iter().enumerate() {
             let hot = ex.hovered == Some(i);
             // While the drill animation runs, this loupe slides out from its recorded start spot.
@@ -20667,7 +20730,7 @@ impl App {
                     }
                     draw_pick_target_loupe(
                         painter, project, &loupe, center, r_loupe, &self.state.doc,
-                        &member.target, member.anchor, context_color, 1.2, false,
+                        &member.target, member.anchor, context_color, 1.2, false, eye,
                     );
                 }
             }
@@ -20684,7 +20747,7 @@ impl App {
                 let member = &ex.items[li];
                 draw_pick_target_loupe(
                     painter, project, &loupe, center, r_loupe, &self.state.doc,
-                    &member.target, member.anchor, highlight, 2.4, true,
+                    &member.target, member.anchor, highlight, 2.4, true, eye,
                 );
             }
             // A faint centre mark = the cursor's hitbox centre, for orientation. A loupe of
@@ -20798,6 +20861,7 @@ impl App {
                                 draw_pick_target_loupe(
                                     painter, project, &mini_loupe, mc, r_mini, &self.state.doc,
                                     &ex.items[li].target, ex.items[li].anchor, idle_blue, 1.0, true,
+                                    eye,
                                 );
                             }
                             painter.circle_stroke(
@@ -20862,7 +20926,7 @@ impl App {
                     draw_pick_target_loupe(
                         painter, project, &gloupe, gc, gr, &self.state.doc,
                         &ex.items[li].target, ex.items[li].anchor,
-                        ghost_col(idle_blue, 255.0), 1.6, true,
+                        ghost_col(idle_blue, 255.0), 1.6, true, eye,
                     );
                 }
                 let ring = if g.is_group {
@@ -28086,6 +28150,58 @@ mod tests {
     /// #944/#945: a loupe whose own thing has no wireframe near the cursor's hitbox — a whole
     /// body, a big face — would magnify an empty or flat disc, so it zooms out to frame that
     /// thing instead. A thing whose geometry does cross the disc keeps the magnifier.
+    #[test]
+    fn a_body_loupe_shades_its_faces_back_to_front() {
+        // #972: a whole-body loupe should read like the body does in the 3D view — a
+        // solid-faced shape — not as a wireframe box of its feature edges.
+        let mut doc = model::Document::default();
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let lines =
+            construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 100.0, 100.0, [false; 4]);
+        doc.extrusions.push(model::Extrusion {
+            sketch,
+            faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 50.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.push(model::Body {
+            source: model::BodySource::Extrusion(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // Looking down -Z from high above, so the top cap is nearest the eye.
+        let eye = Vec3::new(50.0, 50.0, 500.0);
+        let faces = body_loupe_faces(&doc, 0, eye).expect("the body meshes");
+        assert!(faces.len() > 4, "a box has more than four triangles");
+
+        // Painter's algorithm: every triangle is at least as far from the eye as the one
+        // drawn after it, so nearer faces paint over farther ones.
+        let depth = |tri: &[Vec3; 3]| {
+            let c = (tri[0] + tri[1] + tri[2]) / 3.0;
+            (c - eye).length()
+        };
+        for pair in faces.windows(2) {
+            assert!(
+                depth(&pair[0].0) >= depth(&pair[1].0) - 1e-3,
+                "triangles must be ordered far-to-near"
+            );
+        }
+
+        // Shading varies with the face normal, so the shape reads as solid rather than as a
+        // flat wash of one colour.
+        let shades: Vec<u8> = faces.iter().map(|(_, shade)| *shade).collect();
+        let lo = shades.iter().copied().min().unwrap();
+        let hi = shades.iter().copied().max().unwrap();
+        assert!(hi > lo, "faces at different angles should shade differently");
+    }
+
     #[test]
     fn a_loupe_frames_content_the_magnifier_would_miss() {
         use construction::PickTargetKind as PK;

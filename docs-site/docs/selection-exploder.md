@@ -14,8 +14,9 @@ handles.
 Each handle is a round **loupe**: a magnified view of the pick spot with its one element
 highlighted in blue and the rest dimmed behind it, joined by a thin line back to where it
 really is. Coincident line ends are told apart by a short stub along each line; faces are
-shaded. Something too big to show at that magnification — a whole body, a face far wider than
-the pick spot — is framed whole in its loupe instead, so there's always something to recognise.
+shaded, and a whole body draws as the shaded solid it looks like in the 3D view. Something too
+big to show at that magnification — a whole body, a face far wider than the pick spot — is framed
+whole in its loupe instead, so there's always something to recognise.
 
 A loupe sits on the side its element runs off to — the line heading up-left gets a loupe
 up-left, and a vertex follows the little leg drawn in its loupe — so you can aim at the one
