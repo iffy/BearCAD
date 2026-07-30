@@ -1003,8 +1003,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     circles }` / `bearcad.edit_sketch_mirror{ index, … }`.
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
-  an **element picker** of one edge/axis (a global X/Y/Z axis, a straight sketch line, or a
-  **feature edge of a body**; the ✕ clears it) (#257/#643) — the picker is the only way in, the
+  a single-pick **element picker** (#955) taking one straight reference — a world X/Y/Z axis, a
+  sketch line, or a **feature edge of a body** — or a **circle** to ride round (#840); the ✕
+  clears it (#257/#643). Whether the copies follow the path or turn about it is the **Repeat**
+  toggle directly below, so the picker row names the path rather than repeating "Along"/"Around"
+ — the picker is the only way in, the
   X/Y/Z quick buttons having been dropped as a second, inconsistent path. While the axis picker
   is the focused one, the viewport hover switches from whole bodies to those straight
   references, so every pickable axis lights up under the cursor; once an axis is set, a click on

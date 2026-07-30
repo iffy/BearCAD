@@ -268,6 +268,17 @@ impl SceneElement {
         }
     }
 
+    /// The element for a joint member (#955): a body, a component, or a unit instance — each
+    /// of which already has one.
+    pub fn from_joint_ref(member: crate::model::JointRef) -> SceneElement {
+        use crate::model::JointRef;
+        match member {
+            JointRef::Body(index) => SceneElement::Body(index),
+            JointRef::Component(index) => SceneElement::Component(index),
+            JointRef::UnitInstance(index) => SceneElement::UnitInstance(index),
+        }
+    }
+
     /// The element for a straight reference axis (#952/#955): a sketch line, a body's feature
     /// edge, or one of the world axes. What the Revolve axis and Repeat path pickers hold.
     pub fn from_revolve_axis(axis: crate::model::RevolveAxis) -> SceneElement {

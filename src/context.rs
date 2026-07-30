@@ -352,8 +352,8 @@ pub enum ShapeEdit {
 /// dropdown, the mating-point pickers, and the position expressions the kind offers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointControl {
-    /// Labels of the picked parts, in pick order.
-    pub members_rows: Vec<String>,
+    /// The picked parts, in pick order (#955).
+    pub members: Vec<crate::model::JointRef>,
     pub members_focused: bool,
     pub kind: crate::model::JointKind,
     /// The held side's label, shown on the Base row; clicking swaps sides.
@@ -474,8 +474,8 @@ pub struct RepeatControl {
     pub sketch_targets: Vec<usize>,
     /// Picked cut/add extrusions whose effect is replayed at each offset (#220/#235).
     pub extrusion_targets: Vec<usize>,
-    /// Picked path label; `None` until a path is picked (#439).
-    pub axis_label: Option<String>,
+    /// The picked path (#439/#955): a straight reference, or a circle to ride round (#840).
+    pub path: Option<crate::hierarchy::SceneElement>,
     /// Repeat **around** the path instead of along it (#839). While set, Distance becomes an
     /// Angle and the distance-target picker stands down.
     pub around_axis: bool,
@@ -1986,7 +1986,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             || !r.plane_targets.is_empty()
             || !r.sketch_targets.is_empty()
             || !r.extrusion_targets.is_empty();
-        let axis_is_next = r.axis_label.is_none() && has_targets;
+        let axis_is_next = r.path.is_none() && has_targets;
         tool_pickers.push(body_tool_picker(
             input.doc,
             "Bodies",
@@ -4614,16 +4614,27 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         let mut pending: Option<JointEdit> = None;
-        // The two parts, in pick order (#894).
+        // The two parts, in pick order (#894/#955): whole bodies, components, or unit
+        // instances — a joint ties parts together, not their faces or edges.
+        let mut members = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Body,
+                ElementKind::Component,
+                ElementKind::Joint,
+            ])
+            .rule(PickRule::LiveBody),
+            PickLimit::Finite(2),
+        );
+        members.set_focused(control.members_focused);
+        members.set_picked(
+            doc,
+            control
+                .members
+                .iter()
+                .map(|m| SceneElement::from_joint_ref(*m)),
+        );
         labeled_row_top(ui, "Parts", |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                "joint_members",
-                control.members_focused,
-                false,
-                crate::icons::IconId::Body,
-                &control.members_rows,
-            ) {
+            if let Some(event) = crate::element_picker::show(ui, &members, doc, "joint_members") {
                 pending = Some(match event {
                     crate::element_picker::PickerEvent::Focus => JointEdit::MembersFocus,
                     crate::element_picker::PickerEvent::Remove(i) => JointEdit::RemoveMember(i),
@@ -4701,7 +4712,7 @@ pub fn show_pane(
             });
         }
         // Which side is held (#894): the base. Clicking swaps it.
-        if control.members_rows.len() >= 2 {
+        if control.members.len() >= 2 {
             labeled_row(ui, "Base", |ui| {
                 if ui
                     .button(&control.base_label)
@@ -5044,32 +5055,28 @@ pub fn show_pane(
         // the next thing to pick. The X/Y/Z shortcut buttons are gone (#643): the origin axes
         // are pickable in the viewport like everything else, so the buttons were a second,
         // inconsistent way in.
-        let axis_rows: Vec<String> = control
-            .axis_label
-            .iter()
-            .map(|l| {
-                if control.around_axis {
-                    format!("Around {l}")
-                } else {
-                    format!("Along {l}")
-                }
-            })
-            .collect();
         let has_targets = !control.targets.is_empty()
             || !control.plane_targets.is_empty()
             || !control.sketch_targets.is_empty()
             || !control.extrusion_targets.is_empty();
         let axis_focused =
-            control.axis_label.is_none() && has_targets && !control.value_field_focused;
+            control.path.is_none() && has_targets && !control.value_field_focused;
+        // A straight reference to travel along, or a **circle** to ride round (#840). Whether
+        // the copies follow the path or turn about it is the Repeat toggle right below, so the
+        // row names the path itself rather than repeating "Along"/"Around" (#955).
+        let mut path = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Line,
+                ElementKind::Edge,
+                ElementKind::Axis,
+                ElementKind::Circle,
+            ]),
+            PickLimit::Finite(1),
+        );
+        path.set_focused(axis_focused);
+        path.set_picked(doc, control.path.clone());
         labeled_row_top(ui, "Path", |ui| {
-        if let Some(event) = crate::element_picker::show_labeled(
-            ui,
-            "repeat_axis",
-            axis_focused,
-            true,
-            crate::icons::IconId::Line,
-            &axis_rows,
-        ) {
+        if let Some(event) = crate::element_picker::show(ui, &path, doc, "repeat_axis") {
             if matches!(
                 event,
                 crate::element_picker::PickerEvent::Remove(_) | crate::element_picker::PickerEvent::Clear
@@ -7406,7 +7413,9 @@ mod tests {
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
                 extrusion_targets: Vec::new(),
-                axis_label: Some("the X axis".to_string()),
+                path: Some(crate::hierarchy::SceneElement::GlobalAxis(
+                    crate::construction::GlobalAxis::X,
+                )),
                 value_field_focused: false,
                 length_target_rows: Vec::new(),
                 length_target_focused: false,
@@ -7436,14 +7445,17 @@ mod tests {
     fn repeat_value_field_focus_blurs_the_pickers() {
         let doc = Document::default();
         let selection = SceneSelection::default();
-        let control = |value_field_focused, axis_label: Option<&str>| RepeatControl {
+        let control = |value_field_focused,
+                       path: Option<crate::hierarchy::SceneElement>|
+         -> RepeatControl {
+            RepeatControl {
             around_axis: false,
             can_turn_about_path: true,
             targets: vec![7],
             plane_targets: Vec::new(),
             sketch_targets: Vec::new(),
             extrusion_targets: Vec::new(),
-            axis_label: axis_label.map(str::to_string),
+            path,
             value_field_focused,
             length_target_rows: Vec::new(),
             length_target_focused: false,
@@ -7458,6 +7470,12 @@ mod tests {
             computed_value: None,
             editing: false,
             can_commit: true,
+            }
+        };
+        let x_axis = || {
+            Some(crate::hierarchy::SceneElement::GlobalAxis(
+                crate::construction::GlobalAxis::X,
+            ))
         };
         let pane = |c: RepeatControl| {
             context_pane_content(&ContextInput {
@@ -7468,9 +7486,9 @@ mod tests {
             })
         };
         // Axis already picked: the Bodies picker normally reads as focused…
-        assert!(pane(control(false, Some("the X axis"))).tool_pickers[0].picker.is_focused());
+        assert!(pane(control(false, x_axis())).tool_pickers[0].picker.is_focused());
         // …but not while a value field has the keyboard.
-        assert!(!pane(control(true, Some("the X axis"))).tool_pickers[0].picker.is_focused());
+        assert!(!pane(control(true, x_axis())).tool_pickers[0].picker.is_focused());
         // With no axis yet, the Bodies picker defers to the Axis picker either way.
         assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
         assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());

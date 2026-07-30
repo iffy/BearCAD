@@ -11828,10 +11828,7 @@ impl eframe::App for App {
                         cj.map(|c| c.members.clone()).unwrap_or_default();
                     let base = cj.map(|c| c.base).filter(|&b| b < members.len()).unwrap_or(0);
                     context::JointControl {
-                        members_rows: members
-                            .iter()
-                            .map(|m| self.joint_member_label(*m))
-                            .collect(),
+                        members: members.clone(),
                         members_focused: joint_focus == JointFocus::Members,
                         // Which bodies each side of the joint owns (#953): start points mate
                         // on the driven part, end points on the base.
@@ -11976,17 +11973,10 @@ impl eframe::App for App {
                                 self.state.doc.default_length_unit,
                             ))
                         }),
-                        // A circle path names itself (#840); otherwise the axis does.
-                        axis_label: cr.and_then(|c| match c.path_circle {
-                            Some(ci) => Some(
-                                names::element_name(
-                                    &self.state.doc,
-                                    hierarchy::SceneElement::Circle(ci),
-                                )
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| format!("circle {ci}")),
-                            ),
-                            None => c.axis.map(|a| names::revolve_axis_label(&self.state.doc, a)),
+                        // A picked circle is the path while it's set (#840); otherwise the axis.
+                        path: cr.and_then(|c| match c.path_circle {
+                            Some(ci) => Some(hierarchy::SceneElement::Circle(ci)),
+                            None => c.axis.map(hierarchy::SceneElement::from_revolve_axis),
                         }),
                         mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
                         count: cr.map(|c| c.count.clone()).unwrap_or_default(),
