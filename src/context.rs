@@ -1781,7 +1781,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             ElementFilter::kind(ElementKind::Face),
             PickLimit::Infinite,
         );
-        profile.set_focused(!r.axis_focused);
+        profile.set_focused(!r.axis_focused && !(!r.faces.is_empty() && r.axis.is_some()));
         profile.set_picked(
             input.doc,
             r.faces
@@ -1815,13 +1815,16 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             render: PickerRender::Shared,
         });
         if r.body_choice == crate::actions::RevolveBodyChoice::Cut {
+            // Only once the profile and axis are settled — until then one of those wears the
+            // ring, and two rings claim two places for the next click (#962).
+            let ready = !r.faces.is_empty() && r.axis.is_some();
             let mut cut = body_tool_picker(
                 input.doc,
                 "Cut bodies",
                 PickerTarget::RevolveCut,
                 &r.cut_bodies,
                 Some(crate::theme::CUT_ACCENT),
-                true,
+                ready,
             );
             cut.separator_above = false;
             tool_pickers.push(cut);
@@ -1849,9 +1852,13 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     if let Some(sections) = input.loft_sections.as_ref() {
         // A loft section is a closed profile, so it needs no element of its own (#952): the
         // analytic face already names it.
+        let cutting = input
+            .loft_body
+            .as_ref()
+            .is_some_and(|l| l.body_choice == crate::actions::RevolveBodyChoice::Cut);
         let mut picker =
             ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
-        picker.set_focused(true);
+        picker.set_focused(!(cutting && sections.len() >= 2));
         picker.set_picked(
             input.doc,
             sections
@@ -1917,7 +1924,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         // travel. Exactly one shows the focus ring.
         let mut profile =
             ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
-        profile.set_focused(!f.path_focused);
+        profile.set_focused(!f.path_focused && !(!f.faces.is_empty() && !f.path.is_empty()));
         profile.set_picked(
             input.doc,
             f.faces
@@ -1943,13 +1950,15 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             render: PickerRender::Shared,
         });
         if f.body_choice == crate::actions::RevolveBodyChoice::Cut {
+            // As for Revolve: not until the profile and path are settled (#962).
+            let ready = !f.faces.is_empty() && !f.path.is_empty();
             let mut cut = body_tool_picker(
                 input.doc,
                 "Cut bodies",
                 PickerTarget::SweepCut,
                 &f.cut_bodies,
                 Some(crate::theme::CUT_ACCENT),
-                true,
+                ready,
             );
             cut.separator_above = false;
             tool_pickers.push(cut);
@@ -1957,14 +1966,19 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     if let Some(l) = input.loft_body.as_ref() {
         if l.body_choice == crate::actions::RevolveBodyChoice::Cut {
-            tool_pickers.push(body_tool_picker(
+            // Not until there are enough sections to loft — the Sections picker wears the ring
+            // until then, and two rings claim two places for the next click (#962).
+            let ready = input.loft_sections.as_ref().is_some_and(|s| s.len() >= 2);
+            let mut cut = body_tool_picker(
                 input.doc,
                 "Cut bodies",
                 PickerTarget::LoftCut,
                 &l.cut_bodies,
                 Some(crate::theme::CUT_ACCENT),
-                true,
-            ));
+                ready,
+            );
+            cut.separator_above = false;
+            tool_pickers.push(cut);
         }
     }
     if let Some(m) = input.move_op.as_ref() {
@@ -7585,6 +7599,87 @@ mod tests {
         // With no axis yet, the Bodies picker defers to the Axis picker either way.
         assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
         assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());
+    }
+
+    #[test]
+    fn no_tool_ever_shows_two_focused_pickers() {
+        // #954: "only one EP can have focus at a time". The pickers are rebuilt each frame from
+        // tool state, so the invariant is maintained by construction rather than by a stored
+        // registry — which only holds if every tool's focus rules stay mutually exclusive.
+        // Walk every tool and assert it.
+        let doc = doc_with_bodies(4);
+        let selection = SceneSelection::default();
+        let mut seen = 0usize;
+        for tool in Tool::ALL {
+            for in_sketch in [false, true] {
+                // Populate the active tool's control — a tool with no control contributes no
+                // pickers, which would make this assert nothing. Gated by tool because that is
+                // how the app builds them: `context_pane_content` trusts its caller to pass
+                // only the active tool's controls, so the invariant is a property of the pair.
+                let input = ContextInput {
+                    tool,
+                    in_sketch,
+                    open_sketch: in_sketch.then_some(0),
+                    slice_op: (tool == Tool::Slice).then_some(SliceControl {
+                        targets: vec![1],
+                        cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
+                        picking_cutter: false,
+                        extend_infinite: true,
+                        editing: false,
+                        can_commit: true,
+                    }),
+                    revolve: (tool == Tool::Revolve).then_some(RevolveControl {
+                        faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                        axis: None,
+                        axis_focused: true,
+                        symmetric: false,
+                        body_choice: crate::actions::RevolveBodyChoice::Cut,
+                        cut_bodies: vec![2],
+                    }),
+                    sweep: (tool == Tool::Sweep).then_some(SweepControl {
+                        faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                        path: Vec::new(),
+                        path_focused: true,
+                        body_choice: crate::actions::RevolveBodyChoice::Cut,
+                        cut_bodies: vec![2],
+                    }),
+                    extrude_faces: (tool == Tool::Extrude)
+                        .then_some(vec![crate::model::ExtrudeFace::Circle(0)]),
+                    loft_sections: (tool == Tool::Loft).then_some(vec![
+                        crate::model::LoftSection {
+                            sketch: 0,
+                            face: crate::model::ExtrudeFace::Circle(0),
+                        },
+                        crate::model::LoftSection {
+                            sketch: 0,
+                            face: crate::model::ExtrudeFace::Circle(1),
+                        },
+                    ]),
+                    loft_body: (tool == Tool::Loft).then_some(LoftBodyControl {
+                        body_choice: crate::actions::RevolveBodyChoice::Cut,
+                        cut_bodies: vec![2],
+                        can_commit: true,
+                    }),
+                    ..input(&doc, &selection)
+                };
+                let focused: Vec<&'static str> = context_pane_content(&input)
+                    .tool_pickers
+                    .iter()
+                    .filter(|v| v.picker.is_focused())
+                    .map(|v| v.heading)
+                    .collect();
+                assert!(
+                    focused.len() <= 1,
+                    "{tool:?} (in_sketch={in_sketch}) focuses {focused:?}"
+                );
+                seen += context_pane_content(&input).tool_pickers.len();
+            }
+        }
+        assert!(
+            seen > 0,
+            "the walk saw no pickers at all — the tool controls below must be populated for \
+             this to be asserting anything"
+        );
     }
 
     #[test]
