@@ -197,6 +197,9 @@ pub struct PlaneToolControl {
     /// Anchor row labels; empty while nothing is picked yet. One row for face/edge/vertex;
     /// two rows when the set is line+point (#483).
     pub anchor_labels: Vec<String>,
+    /// What each anchor row was picked from, in row order (#955). Empty while re-opening a
+    /// committed plane, whose stored definition keeps only the derived frame.
+    pub anchor_elements: Vec<SceneElement>,
     /// One label per normal candidate at a picked vertex (empty or 1 when unambiguous).
     pub normal_labels: Vec<String>,
     pub normal_choice: usize,
@@ -228,6 +231,9 @@ pub struct LoftBodyControl {
 pub enum PlaneToolEdit {
     /// Clear the picked anchor (start over).
     ClearAnchor,
+    /// Drop the `i`-th anchor row (#955). With one row that is the whole anchor, so it starts
+    /// over; with a line+point set the surviving half becomes the anchor on its own.
+    RemoveAnchor(usize),
     /// Anchor the plane on the `i`-th normal candidate at the picked vertex.
     NormalChoice(usize),
     /// Set the offset expression (mirrors the 3D field, #613/#614).
@@ -1278,6 +1284,9 @@ pub enum PickerTarget {
     CombineA,
     /// The Combine tool's side-B bodies (`CreatingBoolean::b`).
     CombineB,
+    /// The Construction Plane tool's anchor set (`CreatingConstructionPlane::anchor_elements`,
+    /// #474/#483/#955): a face, a straight edge or axis, a vertex, or a line **and** a point.
+    PlaneAnchor,
 }
 
 /// An interaction with a [`ToolPickerView`] to apply to its backing tool set (#213).
@@ -2186,6 +2195,33 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             picker: length_target,
             target: PickerTarget::RepeatDistanceTo,
             separator_above: false,
+            render: PickerRender::Inline,
+        });
+    }
+    if let Some(p) = input.plane_tool.as_ref() {
+        // The plane's anchor (#474/#483/#955). One row for a face, straight edge, axis or
+        // vertex; two when a line and a point together fix the frame — hence a limit of two
+        // rather than one. Focused whenever the tool is up: the anchor is the only thing this
+        // tool picks, so every viewport click either sets it or complements it.
+        let mut anchor = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Face,
+                ElementKind::Plane,
+                ElementKind::Line,
+                ElementKind::Edge,
+                ElementKind::Axis,
+                ElementKind::Circle,
+                ElementKind::Vertex,
+            ]),
+            PickLimit::Finite(2),
+        );
+        anchor.set_focused(true);
+        anchor.set_picked(input.doc, p.anchor_elements.iter().cloned());
+        tool_pickers.push(ToolPickerView {
+            heading: "Anchor",
+            picker: anchor,
+            target: PickerTarget::PlaneAnchor,
+            separator_above: true,
             render: PickerRender::Inline,
         });
     }
@@ -4473,20 +4509,45 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
 
-        // The picked anchor set — face, edge, vertex, or line+point — with ✕ to clear (#474/#483).
+        // The picked anchor set — face, edge, vertex, or line+point (#474/#483). Backed by a
+        // real picker (#955) but drawn from the tool's rows, which name each half of a
+        // line+point set the way the plane reads it ("Vertex ⊥ Edge") rather than by the
+        // element's own name.
+        let anchor = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::PlaneAnchor);
         labeled_row_top(ui, "Anchor", |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
+            let rows: Vec<(crate::icons::IconId, String)> = control
+                .anchor_labels
+                .iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    let icon = control
+                        .anchor_elements
+                        .get(i)
+                        .map(|e| crate::element_picker::ElementKind::of(e).icon())
+                        .unwrap_or(crate::icons::IconId::Plane);
+                    (icon, label.clone())
+                })
+                .collect();
+            let pickable = anchor
+                .map(|v| v.picker.filter().pickable_icons())
+                .unwrap_or_else(|| vec![crate::icons::IconId::Plane]);
+            if let Some(event) = crate::element_picker::show_rows(
                 ui,
                 "plane_anchor",
-                control.anchor_labels.is_empty(),
-                true,
-                crate::icons::IconId::Plane,
-                &control.anchor_labels,
+                anchor.is_some_and(|v| v.picker.is_focused()),
+                &pickable,
+                false,
+                &rows,
             ) {
                 match event {
                     crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(_)
-                    | crate::element_picker::PickerEvent::Clear => {
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        on_plane_tool_edit(PlaneToolEdit::RemoveAnchor(i))
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
                         on_plane_tool_edit(PlaneToolEdit::ClearAnchor)
                     }
                 }
@@ -7849,6 +7910,49 @@ mod tests {
                 .map(|v| v.heading),
             Some("Up to")
         );
+    }
+
+    #[test]
+    fn the_plane_tools_anchor_is_a_real_picker() {
+        // #955: the Anchor input was the last label-only one. The plane's `reference` is a
+        // derived frame, so the tool now keeps what was clicked and the picker holds it.
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_a_sketch();
+        let selection = SceneSelection::default();
+        let point = SceneElement::Origin;
+        let line = SceneElement::Line(0);
+        let plane_input = ContextInput {
+            tool: Tool::ConstructionPlane,
+            plane_tool: Some(PlaneToolControl {
+                anchor_labels: vec!["Origin".to_string(), "Line 0".to_string()],
+                anchor_elements: vec![point.clone(), line.clone()],
+                normal_labels: Vec::new(),
+                normal_choice: 0,
+                has_anchor: true,
+                show_angle: false,
+                offset_text: String::new(),
+                angle_text: String::new(),
+                offset_focused: false,
+                angle_focused: false,
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&plane_input).tool_pickers;
+        let anchor = pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::PlaneAnchor)
+            .expect("the plane tool registers its Anchor picker");
+        assert_eq!(anchor.heading, "Anchor");
+        assert!(anchor.picker.is_focused(), "the anchor is what the tool picks");
+        assert_eq!(anchor.picker.picked(), &[point, line]);
+        // Two, because a line and a point together fix one frame (#483).
+        assert_eq!(anchor.picker.limit(), PickLimit::Finite(2));
+        // It takes what a plane can be anchored on, and nothing else.
+        let accepts = anchor.picker.filter().accepted_kinds();
+        assert!(accepts.contains(&ElementKind::Face));
+        assert!(accepts.contains(&ElementKind::Vertex));
+        assert!(accepts.contains(&ElementKind::Edge));
+        assert!(!accepts.contains(&ElementKind::Body));
     }
 
     #[test]

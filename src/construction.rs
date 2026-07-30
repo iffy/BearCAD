@@ -220,6 +220,31 @@ pub fn line_and_point_plane_reference(
     )
 }
 
+/// Reorder the Anchor input's elements after a line+point complement (#483/#955).
+///
+/// The rows [`line_and_point_plane_reference`] produces are `[point, line]`, so the newly
+/// clicked half replaces its own slot and the other half carries over from what was already
+/// held. `current` is the anchor's rows before the complement — generic so the elements and
+/// their per-row frames stay in step under one rule.
+pub fn complemented_anchor_elements<T: Clone>(
+    source: PlaneAnchorSource,
+    current: &[T],
+    next: Option<T>,
+    next_is_point: bool,
+) -> Vec<T> {
+    let (point, line) = match source {
+        PlaneAnchorSource::LineAndPoint => (current.first().cloned(), current.get(1).cloned()),
+        PlaneAnchorSource::Axis => (None, current.first().cloned()),
+        _ => (current.first().cloned(), None),
+    };
+    let (point, line) = if next_is_point {
+        (next, line)
+    } else {
+        (point, next)
+    };
+    [point, line].into_iter().flatten().collect()
+}
+
 /// If `next` complements the current anchor into a line+point set (#483), return the
 /// upgraded face-mode reference, new source, and Anchor row labels. Otherwise `None`
 /// (caller may treat the click as a commit).
@@ -3597,6 +3622,54 @@ mod tests {
             &line_ref,
         )
         .is_none());
+    }
+
+    #[test]
+    fn complemented_anchor_rows_stay_point_then_line() {
+        let point = SceneElement::Origin;
+        let line = SceneElement::Line(3);
+        let other_point = SceneElement::Point(crate::model::ConstraintPoint::CircleCenter(1));
+        let other_line = SceneElement::Line(9);
+
+        // A line held alone, completed by a point: the point leads.
+        assert_eq!(
+            complemented_anchor_elements(
+                PlaneAnchorSource::Axis,
+                &[line.clone()],
+                Some(point.clone()),
+                true,
+            ),
+            vec![point.clone(), line.clone()],
+        );
+        // A point held alone, completed by a line: same order.
+        assert_eq!(
+            complemented_anchor_elements(
+                PlaneAnchorSource::Point,
+                &[point.clone()],
+                Some(line.clone()),
+                false,
+            ),
+            vec![point.clone(), line.clone()],
+        );
+        // Re-picking one half of a settled set replaces only that half.
+        assert_eq!(
+            complemented_anchor_elements(
+                PlaneAnchorSource::LineAndPoint,
+                &[point.clone(), line.clone()],
+                Some(other_point.clone()),
+                true,
+            ),
+            vec![other_point, line.clone()],
+        );
+        assert_eq!(
+            complemented_anchor_elements(
+                PlaneAnchorSource::LineAndPoint,
+                &[point.clone(), line],
+                Some(other_line.clone()),
+                false,
+            ),
+            vec![point, other_line],
+        );
     }
 
     #[test]

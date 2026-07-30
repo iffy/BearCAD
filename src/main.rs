@@ -12349,6 +12349,12 @@ impl eframe::App for App {
                         })
                         .or_else(|| pending.map(|p| vec![p.label.clone()]))
                         .unwrap_or_default(),
+                    anchor_elements: cp
+                        .map(|c| c.anchor_elements.clone())
+                        .or_else(|| {
+                            pending.map(|p| p.element.iter().cloned().collect())
+                        })
+                        .unwrap_or_default(),
                     normal_labels: cp
                         .map(|c| {
                             c.normal_candidates
@@ -12620,6 +12626,47 @@ impl eframe::App for App {
                         self.state.status =
                             "Plane tool — click a face, edge, or point (+ line/curve for normal)"
                                 .to_string();
+                    }
+                    context::PlaneToolEdit::RemoveAnchor(i) => {
+                        // Dropping one half of a line+point set (#483/#955) leaves the other
+                        // half a complete anchor on its own; dropping the only row starts over.
+                        let survivor = self.state.creating_plane.as_ref().and_then(|cp| {
+                            (cp.anchor_refs.len() > 1 && cp.anchor_elements.len() > 1)
+                                .then(|| {
+                                    let keep = if i == 0 { 1 } else { 0 };
+                                    Some((
+                                        cp.anchor_refs.get(keep)?.clone(),
+                                        cp.anchor_elements.get(keep)?.clone(),
+                                        cp.parent,
+                                    ))
+                                })
+                                .flatten()
+                        });
+                        self.state.creating_plane = None;
+                        self.state.pending_plane_line = None;
+                        match survivor {
+                            Some((reference, element, parent)) => {
+                                self.state.apply(Action::BeginConstructionPlane {
+                                    reference,
+                                    parent,
+                                });
+                                if let Some(cp) = self.state.creating_plane.as_mut() {
+                                    cp.anchor_source = if cp.reference.is_axis() {
+                                        construction::PlaneAnchorSource::Axis
+                                    } else {
+                                        construction::PlaneAnchorSource::Face
+                                    };
+                                    cp.anchor_labels = vec![cp.reference.label().to_string()];
+                                    cp.anchor_refs = vec![cp.reference.clone()];
+                                    cp.anchor_elements = vec![element];
+                                }
+                            }
+                            None => {
+                                self.state.status =
+                                    "Plane tool — click a face, edge, or point (+ line/curve for normal)"
+                                        .to_string();
+                            }
+                        }
                     }
                     context::PlaneToolEdit::NormalChoice(i) => {
                         if let Some(cp) = self.state.creating_plane.as_mut() {
@@ -13629,6 +13676,10 @@ impl eframe::App for App {
                             }
                         }
                     }
+                    // The plane anchor's rows are drawn by the Plane tool's own block, whose
+                    // removals rebuild the frame from the surviving half — they arrive as a
+                    // `PlaneToolEdit`, not here (#955).
+                    context::PickerTarget::PlaneAnchor => {}
                     // The in-sketch Slice tool's two sides (#238/#955). A target row index
                     // unpacks back into the three sets in the order the pane listed them:
                     // lines, then circles, then faces.
@@ -22650,10 +22701,19 @@ impl App {
                                 reference,
                                 parent,
                             });
+                            let point_element = scene_element_from_pick(&target.kind);
+                            let point_reference = target.reference.clone();
                             if let Some(cp) = self.state.creating_plane.as_mut() {
                                 cp.anchor_source =
                                     construction::PlaneAnchorSource::LineAndPoint;
                                 cp.anchor_labels = labels;
+                                // Rows are [point, line] (#955).
+                                cp.anchor_elements = [point_element, pending.element]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect();
+                                cp.anchor_refs =
+                                    vec![point_reference, pending.reference.clone()];
                                 cp.anchor_line = pending.line_index;
                                 cp.anchor_point = pt;
                                 cp.normal_candidates.clear();
@@ -22690,6 +22750,7 @@ impl App {
                                     reference: target.reference.clone(),
                                     parent,
                                     label: label.clone(),
+                                    element: scene_element_from_pick(&target.kind),
                                 });
                             self.state.status = format!(
                                 "Plane — curve “{label}” picked • click a point (endpoint for end-normal) • Esc: cancel"
@@ -22720,11 +22781,15 @@ impl App {
                                 reference: target.reference.clone(),
                                 parent,
                             });
+                            let element = scene_element_from_pick(&target.kind);
+                            let reference = target.reference.clone();
                             if let Some(cp) = self.state.creating_plane.as_mut() {
                                 cp.normal_candidates = candidates;
                                 cp.normal_choice = 0;
                                 cp.anchor_source = anchor_source;
                                 cp.anchor_labels = vec![cp.reference.label().to_string()];
+                                cp.anchor_elements = element.into_iter().collect();
+                                cp.anchor_refs = vec![reference.clone()];
                                 cp.anchor_line = anchor_line;
                                 cp.anchor_point = anchor_point;
                             }
@@ -22770,6 +22835,7 @@ impl App {
                                         reference: target.reference.clone(),
                                         parent,
                                         label: label.clone(),
+                                        element: scene_element_from_pick(&target.kind),
                                     });
                                 self.state.status = format!(
                                     "Plane — curve “{label}” picked • click a point • Esc: cancel"
@@ -22798,12 +22864,16 @@ impl App {
                                     reference: target.reference.clone(),
                                     parent,
                                 });
+                                let element = scene_element_from_pick(&target.kind);
+                                let reference = target.reference.clone();
                                 if let Some(cp) = self.state.creating_plane.as_mut() {
                                     cp.normal_candidates = candidates;
                                     cp.normal_choice = 0;
                                     cp.anchor_source = anchor_source;
                                     cp.anchor_labels =
                                         vec![cp.reference.label().to_string()];
+                                    cp.anchor_elements = element.into_iter().collect();
+                                    cp.anchor_refs = vec![reference.clone()];
                                     cp.anchor_line = anchor_line;
                                     cp.anchor_point = None;
                                 }
@@ -22833,6 +22903,23 @@ impl App {
                                     &target.reference,
                                 )
                             {
+                                let next_is_point = matches!(
+                                    target.kind,
+                                    construction::PickTargetKind::Point(_)
+                                        | construction::PickTargetKind::BodyVertex { .. }
+                                );
+                                cp.anchor_elements = construction::complemented_anchor_elements(
+                                    cp.anchor_source,
+                                    &cp.anchor_elements,
+                                    scene_element_from_pick(&target.kind),
+                                    next_is_point,
+                                );
+                                cp.anchor_refs = construction::complemented_anchor_elements(
+                                    cp.anchor_source,
+                                    &cp.anchor_refs,
+                                    Some(target.reference.clone()),
+                                    next_is_point,
+                                );
                                 cp.reference = new_ref;
                                 cp.anchor_source = new_source;
                                 cp.anchor_labels = labels;

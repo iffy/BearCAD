@@ -1416,6 +1416,16 @@ pub struct CreatingConstructionPlane {
     pub anchor_source: crate::construction::PlaneAnchorSource,
     /// Context-pane Anchor rows (one or two labels for line+point).
     pub anchor_labels: Vec<String>,
+    /// The elements those rows came from, in the same order (#955). The plane's
+    /// [`reference`](Self::reference) is a *derived* frame — an origin and a direction — so
+    /// without this the identity of what was clicked is lost the moment it is picked, and the
+    /// Anchor input has nothing to hold. Empty when re-opening a committed plane, whose
+    /// definition keeps only the frame.
+    pub anchor_elements: Vec<SceneElement>,
+    /// Each anchor row's own frame, parallel to [`anchor_elements`](Self::anchor_elements).
+    /// `reference` is the *combined* frame once the set is line+point, so dropping one row
+    /// needs the surviving half's frame to fall back to.
+    pub anchor_refs: Vec<PlaneReference>,
     /// Sketch line index when the line half of a line/edge anchor is known (#483).
     pub anchor_line: Option<usize>,
     /// Point half of a line+point (or vertex) anchor, for endpoint-tangent normals.
@@ -1432,6 +1442,8 @@ pub struct PendingPlaneLine {
     pub reference: PlaneReference,
     pub parent: ConstructionPlaneParent,
     pub label: String,
+    /// What was clicked, so the completed line+point set can list both halves (#955).
+    pub element: Option<SceneElement>,
 }
 
 impl CreatingConstructionPlane {
@@ -7778,6 +7790,8 @@ impl AppState {
                     normal_choice: 0,
                     anchor_source,
                     anchor_labels,
+                    anchor_elements: Vec::new(),
+                    anchor_refs: Vec::new(),
                     anchor_line: None,
                     anchor_point: None,
                 });
@@ -7821,6 +7835,8 @@ impl AppState {
                     normal_choice: 0,
                     anchor_source,
                     anchor_labels,
+                    anchor_elements: Vec::new(),
+                    anchor_refs: Vec::new(),
                     anchor_line: None,
                     anchor_point: None,
                 });
@@ -14958,7 +14974,10 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::SweepProfile
         | P::SweepPath
         // The Joint tool's members: its focus is the chain's, not a stored flag.
-        | P::JointMembers => {}
+        | P::JointMembers
+        // The plane's anchor is the only thing that tool picks, so it is always the focused
+        // one; there is nothing to arm (#955).
+        | P::PlaneAnchor => {}
         // The Move tool's point pickers arm through the focus chain's override, which the
         // pane sets directly — the chain, not a flag on the tool state (#954).
         P::MoveStartA
