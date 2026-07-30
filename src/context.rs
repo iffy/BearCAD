@@ -1838,10 +1838,12 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     if let Some(faces) = input.extrude_faces.as_ref() {
         // The Extrude tool's profile faces (#268/#955). Always shown while the tool is active,
-        // empty or not, and always the focused picker — Extrude has only the one.
+        // empty or not, and focused unless the "Up to" picker is armed — exactly one picker
+        // wears the focus ring (#962).
+        let target_armed = input.extrude.as_ref().is_some_and(|e| e.target_focused);
         let mut profile =
             ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
-        profile.set_focused(true);
+        profile.set_focused(!target_armed);
         profile.set_picked(
             input.doc,
             faces.iter().map(crate::extrude::extrude_face_scene_element),
@@ -2023,7 +2025,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             PickerTarget::RepeatTargets,
             &r.targets,
             None,
-            !axis_is_next && !r.value_field_focused,
+            !axis_is_next && !r.value_field_focused && !r.length_target_focused,
         ));
     }
     if let Some(b) = input.boolean_op.as_ref() {
@@ -7498,6 +7500,39 @@ mod tests {
         // With no axis yet, the Bodies picker defers to the Axis picker either way.
         assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
         assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());
+    }
+
+    #[test]
+    fn exactly_one_picker_wears_the_focus_ring() {
+        // #962: arming a single-pick input must blur the tool's other picker — two focus rings
+        // at once says two places will take the next click, and only one will.
+        let doc = doc_with_a_sketch();
+        let selection = SceneSelection::default();
+        let extrude = |target_focused| ContextInput {
+            tool: Tool::Extrude,
+            extrude_faces: Some(vec![crate::model::ExtrudeFace::Circle(0)]),
+            extrude: Some(ExtrudeControl {
+                distance: "10".to_string(),
+                target: None,
+                target_focused,
+                can_commit: true,
+                has_extrusion: true,
+            }),
+            ..input(&doc, &selection)
+        };
+        let focused = |input: &ContextInput<'_>| {
+            context_pane_content(input)
+                .tool_pickers
+                .iter()
+                .filter(|v| v.picker.is_focused())
+                .count()
+        };
+        assert_eq!(focused(&extrude(false)), 1, "the Faces picker alone");
+        assert_eq!(
+            focused(&extrude(true)),
+            0,
+            "arming \"Up to\" blurs Faces; the armed picker is the Extrude control's own row"
+        );
     }
 
     #[test]
