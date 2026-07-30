@@ -3054,6 +3054,21 @@ pub struct AppState {
     /// Only elements report: a hovered face region or curve with no element of its own is
     /// `None`, which is itself worth being able to assert.
     pub hover_element: Option<crate::hierarchy::SceneElement>,
+    /// Focus and pick-mode flags the tools' pickers read (#963/#970). They live here rather
+    /// than on `App` so the picker set can be built from `AppState` alone — the click routing
+    /// and the viewport need it, and reading a per-frame cache instead means a pick arriving
+    /// before that frame finds nothing.
+    ///
+    /// Armed by the context pane's extrude-to target picker (#584): while true, the next
+    /// viewport click on a plane/face sets the extrusion's target instead of a profile face.
+    pub extrude_target_pick: bool,
+    /// The same for the Repeat tool's "Distance to" picker (#645).
+    pub repeat_target_pick: bool,
+    /// A Move picker the user focused **by hand** (#656/#658), overriding the automatic
+    /// step-through. Cleared once that picker is satisfied, handing the chain back.
+    pub move_focus_override: Option<crate::MoveFocus>,
+    /// A hand-picked Joint-tool focus (#894), released once satisfied.
+    pub joint_focus_override: Option<crate::JointFocus>,
     /// The active tool's element pickers as of the last frame (#968). Derived, not authoritative
     /// — the pane rebuilds them every frame — but parked here so a script can read what each
     /// picker accepts and holds, which is otherwise invisible from outside the UI.
@@ -3190,6 +3205,10 @@ impl Default for AppState {
             element_visibility: ElementVisibility::default(),
             scene_selection: SceneSelection::default(),
             context_pane: crate::context::ContextPaneState::default(),
+            extrude_target_pick: false,
+            repeat_target_pick: false,
+            move_focus_override: None,
+            joint_focus_override: None,
             hover_element: None,
             tool_pickers: Vec::new(),
             editing_committed_dim: None,

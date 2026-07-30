@@ -555,7 +555,7 @@ struct AngleGizmoDrag {
 /// active at a time — it's what the pane draws a focus ring around and what the viewport
 /// hover-highlights, so what lights up is always what a click takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MoveFocus {
+pub enum MoveFocus {
     /// The bodies being moved.
     Bodies,
     /// **Start point A**: a point on one of the **moving** bodies (#649/#668).
@@ -576,7 +576,7 @@ enum MoveFocus {
 /// one-focused-picker rule the Move tool follows (#656). The pairs mean "these features
 /// mate": start points sit on the driven part, end points on the base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum JointFocus {
+pub enum JointFocus {
     /// The two parts being joined.
     Members,
     /// **Start point A**: the mating origin on the **driven** part.
@@ -2748,25 +2748,13 @@ struct App {
     repeat_gizmo_drag: Option<ExtrudeGizmoDrag>,
     /// Object the extrude gizmo is currently snapped to (applied on release).
     pending_extrude_target: Option<model::ExtrudeTarget>,
-    /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
-    /// click on a plane/face sets the extrusion's target instead of toggling a profile face.
-    extrude_target_pick: bool,
     /// The end-point-B candidate under the cursor (#670), so the click path takes exactly the
     /// spot the viewport is highlighting.
     move_b_hover: Option<(usize, Vec3)>,
-    /// A Move picker the user focused **by hand** (#656/#658), overriding the automatic
-    /// step-through. Cleared once that picker is satisfied, handing the chain back.
-    move_focus_override: Option<MoveFocus>,
-    /// A hand-picked Joint-tool focus (#894), released once satisfied — the Joint twin of
-    /// [`Self::move_focus_override`].
-    joint_focus_override: Option<JointFocus>,
     /// A Select-tool drag moving a part through its joint (#897).
     joint_select_drag: Option<JointSelectDrag>,
     /// A press on a jointed part, waiting to become one (#903).
     joint_select_grab: Option<JointSelectGrab>,
-    /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
-    /// click on a plane/face/vertex sets the repeat's length target.
-    repeat_target_pick: bool,
     /// Armed by focusing the in-sketch Repeat pane's "Direction" picker (#835): the next
     /// viewport click on a sketch line sets the repeat direction.
     sketch_repeat_direction_pick: bool,
@@ -3893,11 +3881,7 @@ impl App {
             extrude_gizmo_drag: None,
             repeat_gizmo_drag: None,
             pending_extrude_target: None,
-            extrude_target_pick: false,
-            repeat_target_pick: false,
             sketch_repeat_direction_pick: false,
-            move_focus_override: None,
-            joint_focus_override: None,
             joint_select_drag: None,
             joint_select_grab: None,
             move_b_hover: None,
@@ -5512,7 +5496,7 @@ impl App {
         if self.state.creating_extrusion.is_none() {
             self.extrude_gizmo_drag = None;
             self.pending_extrude_target = None;
-            self.extrude_target_pick = false;
+            self.state.extrude_target_pick = false;
         }
 
         // Snapshot the pending extrusion so we can mutate state without holding a borrow.
@@ -5615,7 +5599,7 @@ impl App {
 
         // Target-pick mode (#584): armed by focusing the context "Up to" picker — the next click on
         // a plane/face sets the extrude-to target instead of toggling a profile face.
-        if primary_pressed && self.extrude_target_pick {
+        if primary_pressed && self.state.extrude_target_pick {
             if let Some(pp) = pointer_screen {
                 if let Some((faces, _)) = &pending {
                     if let Some((origin, normal)) =
@@ -5638,7 +5622,7 @@ impl App {
                     }
                 }
             }
-            self.extrude_target_pick = false;
+            self.state.extrude_target_pick = false;
             return;
         }
 
@@ -8580,8 +8564,8 @@ impl App {
         // Distance-target pick mode (#645), armed by focusing the pane's "Distance to" picker:
         // this click takes a plane/face/vertex as what the pattern runs out to, and Distance
         // becomes one of the two set variables so the fill actually reads it.
-        if self.repeat_target_pick {
-            self.repeat_target_pick = false;
+        if self.state.repeat_target_pick {
+            self.state.repeat_target_pick = false;
             let anchor = self.state.creating_repeat.as_ref().and_then(|cr| {
                 extrude::repeat_gizmo_anchor(&self.state.doc, &cr.targets, cr.axis?)
             });
@@ -8666,39 +8650,39 @@ impl App {
     /// start point A, then end point A when snapping — so picking one thing arms the next
     /// without a trip to the pane.
     fn move_focus(&self) -> MoveFocus {
-        move_focus_for(self.state.creating_move.as_ref(), self.move_focus_override)
+        move_focus_for(self.state.creating_move.as_ref(), self.state.move_focus_override)
     }
 
     fn joint_focus(&self) -> JointFocus {
-        joint_focus_for(self.state.creating_joint.as_ref(), self.joint_focus_override)
+        joint_focus_for(self.state.creating_joint.as_ref(), self.state.joint_focus_override)
     }
 
     /// Drop a hand-picked Joint focus once that picker has what it needs (#894).
     fn release_satisfied_joint_focus(&mut self) {
-        let Some(focus) = self.joint_focus_override else {
+        let Some(focus) = self.state.joint_focus_override else {
             return;
         };
         let Some(cj) = self.state.creating_joint.as_ref() else {
-            self.joint_focus_override = None;
+            self.state.joint_focus_override = None;
             return;
         };
         if joint_focus_satisfied(cj, focus) {
-            self.joint_focus_override = None;
+            self.state.joint_focus_override = None;
         }
     }
 
     /// Drop a hand-picked Move focus once that picker has what it needs (#656), so the
     /// automatic step-through takes over again.
     fn release_satisfied_move_focus(&mut self) {
-        let Some(focus) = self.move_focus_override else {
+        let Some(focus) = self.state.move_focus_override else {
             return;
         };
         let Some(cm) = self.state.creating_move.as_ref() else {
-            self.move_focus_override = None;
+            self.state.move_focus_override = None;
             return;
         };
         if move_focus_satisfied(cm, focus) {
-            self.move_focus_override = None;
+            self.state.move_focus_override = None;
         }
     }
 
@@ -11714,7 +11698,7 @@ impl eframe::App for App {
                     target: ce
                         .and_then(|ce| ce.target.as_ref())
                         .map(hierarchy::SceneElement::from_extrude_target),
-                    target_focused: self.extrude_target_pick,
+                    target_focused: self.state.extrude_target_pick,
                     can_commit: ce.is_some_and(|ce| !ce.faces.is_empty()),
                     has_extrusion: ce.is_some_and(|ce| !ce.faces.is_empty()),
                 }
@@ -12022,7 +12006,7 @@ impl eframe::App for App {
                     length_target: cr
                         .and_then(|c| c.length_target.as_ref())
                         .map(hierarchy::SceneElement::from_extrude_target),
-                    length_target_focused: self.repeat_target_pick,
+                    length_target_focused: self.state.repeat_target_pick,
                     length_target_value: cr.and_then(|c| {
                         let d = self.repeat_length_target_distance(c)?;
                         Some(crate::value::format_length_display_in(
@@ -12703,16 +12687,16 @@ impl eframe::App for App {
                     }
                     context::ExtrudeEdit::TargetFocus => {
                         // Arm target-pick mode: the next viewport click on a plane/face sets it.
-                        self.extrude_target_pick = true;
+                        self.state.extrude_target_pick = true;
                     }
                     context::ExtrudeEdit::ClearTarget => {
-                        self.extrude_target_pick = false;
+                        self.state.extrude_target_pick = false;
                         self.pending_extrude_target = None;
                         self.state.apply(Action::SetExtrudeTarget { target: None });
                     }
                     context::ExtrudeEdit::Commit => {
                         self.state.apply(Action::CommitExtrusion);
-                        self.extrude_target_pick = false;
+                        self.state.extrude_target_pick = false;
                         self.extrude_gizmo_drag = None;
                         self.pending_extrude_target = None;
                     }
@@ -12741,22 +12725,22 @@ impl eframe::App for App {
                 // or committing hands the chain back.
                 match edit {
                     context::MoveEdit::StartAFocus => {
-                        self.move_focus_override = Some(MoveFocus::StartPointA)
+                        self.state.move_focus_override = Some(MoveFocus::StartPointA)
                     }
                     context::MoveEdit::EndAFocus => {
-                        self.move_focus_override = Some(MoveFocus::EndPointA)
+                        self.state.move_focus_override = Some(MoveFocus::EndPointA)
                     }
                     context::MoveEdit::StartBFocus => {
-                        self.move_focus_override = Some(MoveFocus::StartPointB)
+                        self.state.move_focus_override = Some(MoveFocus::StartPointB)
                     }
                     context::MoveEdit::EndBFocus => {
-                        self.move_focus_override = Some(MoveFocus::EndPointB)
+                        self.state.move_focus_override = Some(MoveFocus::EndPointB)
                     }
                     context::MoveEdit::StartCFocus => {
-                        self.move_focus_override = Some(MoveFocus::StartPointC)
+                        self.state.move_focus_override = Some(MoveFocus::StartPointC)
                     }
                     context::MoveEdit::EndCFocus => {
-                        self.move_focus_override = Some(MoveFocus::EndPointC)
+                        self.state.move_focus_override = Some(MoveFocus::EndPointC)
                     }
                     context::MoveEdit::ClearStartA
                     | context::MoveEdit::ClearEndA
@@ -12764,7 +12748,7 @@ impl eframe::App for App {
                     | context::MoveEdit::ClearEndB
                     | context::MoveEdit::ClearStartC
                     | context::MoveEdit::ClearEndC
-                    | context::MoveEdit::Commit => self.move_focus_override = None,
+                    | context::MoveEdit::Commit => self.state.move_focus_override = None,
                     _ => {}
                 }
                 match edit {
@@ -12832,31 +12816,31 @@ impl eframe::App for App {
                 // Clicking a picker overrides the automatic step-through, like Move (#656).
                 match &edit {
                     context::JointEdit::MembersFocus => {
-                        self.joint_focus_override = Some(JointFocus::Members)
+                        self.state.joint_focus_override = Some(JointFocus::Members)
                     }
                     context::JointEdit::StartAFocus => {
-                        self.joint_focus_override = Some(JointFocus::StartPointA)
+                        self.state.joint_focus_override = Some(JointFocus::StartPointA)
                     }
                     context::JointEdit::EndAFocus => {
-                        self.joint_focus_override = Some(JointFocus::EndPointA)
+                        self.state.joint_focus_override = Some(JointFocus::EndPointA)
                     }
                     context::JointEdit::StartBFocus => {
-                        self.joint_focus_override = Some(JointFocus::StartPointB)
+                        self.state.joint_focus_override = Some(JointFocus::StartPointB)
                     }
                     context::JointEdit::EndBFocus => {
-                        self.joint_focus_override = Some(JointFocus::EndPointB)
+                        self.state.joint_focus_override = Some(JointFocus::EndPointB)
                     }
                     context::JointEdit::StartCFocus => {
-                        self.joint_focus_override = Some(JointFocus::StartPointC)
+                        self.state.joint_focus_override = Some(JointFocus::StartPointC)
                     }
                     context::JointEdit::EndCFocus => {
-                        self.joint_focus_override = Some(JointFocus::EndPointC)
+                        self.state.joint_focus_override = Some(JointFocus::EndPointC)
                     }
                     context::JointEdit::SlideMinStopFocus => {
-                        self.joint_focus_override = Some(JointFocus::SlideMinStop)
+                        self.state.joint_focus_override = Some(JointFocus::SlideMinStop)
                     }
                     context::JointEdit::SlideMaxStopFocus => {
-                        self.joint_focus_override = Some(JointFocus::SlideMaxStop)
+                        self.state.joint_focus_override = Some(JointFocus::SlideMaxStop)
                     }
                     context::JointEdit::ClearStartA
                     | context::JointEdit::ClearEndA
@@ -12866,7 +12850,7 @@ impl eframe::App for App {
                     | context::JointEdit::ClearEndC
                     | context::JointEdit::ClearSlideMinStop
                     | context::JointEdit::ClearSlideMaxStop
-                    | context::JointEdit::Commit => self.joint_focus_override = None,
+                    | context::JointEdit::Commit => self.state.joint_focus_override = None,
                     _ => {}
                 }
                 match edit {
@@ -13002,9 +12986,9 @@ impl eframe::App for App {
                 // Arming/disarming the distance-target picker is App state, not repeat state
                 // (#645); committing or clearing the target disarms it.
                 match edit {
-                    context::RepeatEdit::LengthTargetFocus => self.repeat_target_pick = true,
+                    context::RepeatEdit::LengthTargetFocus => self.state.repeat_target_pick = true,
                     context::RepeatEdit::ClearLengthTarget | context::RepeatEdit::Commit => {
-                        self.repeat_target_pick = false
+                        self.state.repeat_target_pick = false
                     }
                     _ => {}
                 }
@@ -13530,7 +13514,7 @@ impl eframe::App for App {
                     context::PickerTarget::MoveTargets => {
                         // Clicking the Bodies picker takes focus back off whichever picker the
                         // step-through had armed (#656/#658).
-                        self.move_focus_override = Some(MoveFocus::Bodies);
+                        self.state.move_focus_override = Some(MoveFocus::Bodies);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
                         }
