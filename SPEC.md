@@ -773,7 +773,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     End-C circle one every that many degrees around it (`SpinCircle::spots`, starting at the
     no-spin position). They're offered alongside the geometry-derived spots, through the same
     blue/gold marks and dashed pivot guides. **Hovering one draws the sweep that reaches it**
-    (#919), in the candidate gold with the angle in degrees at each arc's middle: for end
+    (#919), in the candidate gold with the angle in degrees at each arc's middle (painted after
+    the viewport's GPU callback, #947, or the scene buries the label): for end
     point B the **azimuth** turned in the ground plane and the **elevation** lifted out of it
     (`move_direction_sweeps`), for end point C the signed **spin** about the A→B axis
     (`SpinCircle::sweep_to`). Once the snap is fine enough that the dots would be a cloud the grid

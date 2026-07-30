@@ -23116,7 +23116,8 @@ impl App {
         }
         // The sweep that reaches the hovered candidate (#919): for end point B the azimuth
         // and elevation arcs about the pivot, for end point C the spin about the A→B axis,
-        // each labelled with its angle.
+        // each labelled with its angle (#947, drawn on top of the scene below).
+        let mut move_sweep_labels: Vec<(egui::Pos2, String)> = Vec::new();
         if let Some((_, hovered)) = move_b_hover {
             let cm = self.state.creating_move.as_ref();
             let sweeps: Vec<(Vec<Vec3>, f32)> = match self.move_focus() {
@@ -23149,16 +23150,10 @@ impl App {
                         false,
                     ));
                 }
-                // The angle reads at the arc's middle.
+                // The angle reads at the arc's middle. Painted *after* the scene (#947) — this
+                // runs before the viewport's GPU callback, which buried the label.
                 if let Some(mid) = points.get(points.len() / 2).and_then(|p| project(*p)) {
-                    paint_bold_text(
-                        &painter,
-                        mid + egui::vec2(0.0, -10.0),
-                        egui::Align2::CENTER_CENTER,
-                        &format!("{:.0}°", degrees),
-                        egui::FontId::proportional(13.0),
-                        theme::MOVE_CANDIDATE_HOVER,
-                    );
+                    move_sweep_labels.push((mid, format!("{degrees:.0}°")));
                 }
             }
         }
@@ -23832,6 +23827,19 @@ impl App {
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
             self.gpu_viewport && gpu_viewport::paint(render_state, &painter, viewport, scene);
+
+        // The hovered sweep's angle (#919/#947), on top of the scene so the number is readable
+        // over the ghost solid and the arcs it labels.
+        for (at, text) in &move_sweep_labels {
+            paint_bold_text(
+                &painter,
+                *at + egui::vec2(0.0, -10.0),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(13.0),
+                theme::MOVE_CANDIDATE_HOVER,
+            );
+        }
 
         // Corner grips for every selected construction plane (#833), on top of the scene so
         // they stay grabbable wherever the plane sits.
