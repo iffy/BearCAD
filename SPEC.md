@@ -3561,7 +3561,8 @@ The model in one place:
   **that picker's** colour (#961/#965).
 - **One pick priority** decides among things crowding the cursor, overridable per picker (#959).
 - **A face click fills an edges picker** with that face's edges when the picker takes edges and
-  not faces (#960).
+  not faces (#960) — but never a **single-pick** one, which has one slot and nowhere to put a
+  face's worth of edges.
 - **Everything the focused picker can take highlights on hover**, and the Selection Exploder
   fans only what it can take. *Partly true in the code*: the hover path
   (`resolve_viewport_hover_highlight`) is still a per-tool match, but its catch-all no longer
@@ -3570,8 +3571,10 @@ The model in one place:
   **focused picker** can make of each (`expand_pick`), and lights the best by that picker's own
   ranking (#958/#959). So a tool with no hand-written arm has hover feedback instead of none,
   and it hovers what its picker *wants* rather than whatever happens to outrank it globally — a
-  datum plane no longer wins over the body a Joint takes. The remaining arms are the cases still
-  written by hand. The Exploder's crowd filter
+  datum plane no longer wins over the body a Joint takes. That path is also what gives a tool's
+  **secondary** pickers hover of their own: the body-set arm and Repeat's axis arm are gone, so
+  Slice's Cutters and Combine's B side hover what they take rather than what their tools' body
+  sets take. The remaining arms are the cases still written by hand. The Exploder's crowd filter
   (`exploder_tool_accepts`) still matches on the tool (#957).
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that

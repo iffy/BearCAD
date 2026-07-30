@@ -410,6 +410,12 @@ pub fn expand_pick(
     if ElementKind::of(element) != ElementKind::Face {
         return Vec::new();
     }
+    // Not into a single-pick input, though: "all of this face's edges" has nowhere to go in a
+    // picker with one slot, and offering it means a Revolve axis or a Repeat path lights up
+    // every edge of the face under the cursor instead of the one edge it can take (#955).
+    if picker.limit() == PickLimit::Finite(1) {
+        return Vec::new();
+    }
     face_boundary_elements(doc, element)
         .into_iter()
         .filter(|e| picker.accepts(doc, e))

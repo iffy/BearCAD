@@ -15134,7 +15134,6 @@ fn resolve_viewport_hover_highlight(
     tool: Tool,
     sketch_session: Option<SketchSession>,
     move_pick: MovePickHover,
-    repeat_axis_pick: bool,
     creating_plane: bool,
     editing_committed_dim: bool,
     over_committed_dim_label: bool,
@@ -15417,37 +15416,16 @@ fn resolve_viewport_hover_highlight(
         // their own; the generic corner/edge/face hover would light up unpickable
         // geometry, so it stands down entirely.
         Tool::Move if move_pick == MovePickHover::EndB && sketch_session.is_none() => None,
-        // Repeat tool with the **axis** picker focused (#643): the click is for the axis, so
-        // hover the straight reference under the cursor — a sketch line, a body's feature
-        // edge, or an origin axis — instead of the whole body.
-        Tool::Repeat if repeat_axis_pick && sketch_session.is_none() => {
-            let gp = cam.ground_point(pp, viewport, vp);
-            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
-            repeat_axis_from_pick(&target.kind, true)
-                .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
-        }
-        // Body-set tools (#227): while one is active its picker accepts whole bodies, so the
-        // body under the cursor styles as selectable — hover-highlight it via the same
-        // whole-body resolution the click path uses (edge/vertex/face → owning body).
-        Tool::Combine | Tool::Move | Tool::Repeat | Tool::Slice => {
-            let gp = cam.ground_point(pp, viewport, vp);
-            let body = resolve_pick_target(pp, project, gp, doc, occlusion)
-                .as_ref()
-                .and_then(|t| body_index_from_pick(&t.kind))
-                .or_else(|| {
-                    crate::face::pick_body_face(pp, project, doc, cam.eye())
-                        .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
-                        .as_ref()
-                        .and_then(body_index_from_pick)
-                });
-            body.map(|bi| {
-                gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(bi))
-            })
-        }
+        // The body-set tools (#227) and Repeat's axis (#643) used to be two hand-written arms
+        // here, and between them they got the *secondary* pickers wrong: Slice's cutters, and
+        // Combine's B side, hovered exactly like their tools' body sets because the match only
+        // ever knew the tool. The fallback below reads the focused picker, so each of those
+        // now hovers what it actually takes (#958).
+        //
         // No arm above claimed this tool. Rather than nothing — which is what a dozen tools
-        // used to get, so a pick that worked lit up nothing (#958) — ask the **focused
-        // picker** what a click here would take, and light that. This is the rule the whole
-        // match is converging on; the arms above are the cases still written by hand.
+        // used to get, so a pick that worked lit up nothing — ask the **focused picker**
+        // what a click here would take, and light that. This is the rule the whole match is
+        // converging on; the arms above are the cases still written by hand.
         _ => {
             let focused = tool_pickers.iter().find(|view| view.picker.is_focused())?;
             // Everything under the cursor, nearest first — not just the single best by the
@@ -23112,7 +23090,6 @@ impl App {
                 // unpickable geometry.
                 MoveFocus::EndPointB => MovePickHover::EndB,
             },
-            repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
             self.state.creating_plane.is_some(),
             self.state.editing_committed_dim.is_some(),
             over_committed_dim_label,
@@ -27993,7 +27970,6 @@ mod tests {
                 false,
                 false,
                 false,
-                false,
                 Some(egui::Pos2::ZERO),
                 &cam,
                 viewport,
@@ -28050,7 +28026,6 @@ mod tests {
             false,
             false,
             false,
-            false,
             Some(cursor),
             &cam,
             viewport,
@@ -28058,7 +28033,13 @@ mod tests {
             &doc,
             &project,
             None,
-            &[],
+            &test_pickers(
+                crate::element_picker::ElementFilter::kind(
+                    crate::element_picker::ElementKind::Body,
+                ),
+                context::PickerTarget::CombineA,
+                crate::element_picker::PickLimit::Infinite,
+            ),
         );
         assert!(
             matches!(
@@ -28067,6 +28048,25 @@ mod tests {
             ),
             "combine tool should hover-highlight the whole body, got {hover:?}"
         );
+    }
+
+    /// One focused picker, the way a tool registers it. The hover path reads exactly this to
+    /// decide what a click would take (#958), so a test that used to pass `&[]` was asserting
+    /// the behaviour of a tool with no pickers at all.
+    fn test_pickers(
+        filter: crate::element_picker::ElementFilter,
+        target: context::PickerTarget,
+        limit: crate::element_picker::PickLimit,
+    ) -> Vec<context::ToolPickerView> {
+        let mut picker = crate::element_picker::ElementPicker::new(filter, limit);
+        picker.set_focused(true);
+        vec![context::ToolPickerView {
+            heading: "Picker",
+            picker,
+            target,
+            separator_above: true,
+            render: context::PickerRender::Shared,
+        }]
     }
 
     /// #643: with the Repeat tool's axis picker focused, a body's feature **edge** under the
@@ -28103,13 +28103,35 @@ mod tests {
         let edge_mid = glam::Vec3::new(0.0, -20.0, 0.0);
         let cursor = project(edge_mid).expect("edge midpoint projects into the viewport");
 
-        let hover = |axis_pick| {
+        // Which picker is armed is the whole difference now (#958): the Path picker takes a
+        // straight reference, the Bodies picker takes whole bodies, and the hover follows
+        // whichever is focused rather than a flag the match reads off the tool.
+        let hover = |axis_pick: bool| {
+            let pickers = if axis_pick {
+                test_pickers(
+                    crate::element_picker::ElementFilter::kinds(&[
+                        crate::element_picker::ElementKind::Line,
+                        crate::element_picker::ElementKind::Edge,
+                        crate::element_picker::ElementKind::Axis,
+                        crate::element_picker::ElementKind::Circle,
+                    ]),
+                    context::PickerTarget::RepeatPath,
+                    crate::element_picker::PickLimit::Finite(1),
+                )
+            } else {
+                test_pickers(
+                    crate::element_picker::ElementFilter::kind(
+                        crate::element_picker::ElementKind::Body,
+                    ),
+                    context::PickerTarget::RepeatTargets,
+                    crate::element_picker::PickLimit::Infinite,
+                )
+            };
             resolve_viewport_hover_highlight(
                 false,
                 crate::actions::Tool::Repeat,
                 None,
                 MovePickHover::Bodies,
-                axis_pick,
                 false,
                 false,
                 false,
@@ -28121,15 +28143,15 @@ mod tests {
                 &doc,
                 &project,
                 None,
-                &[],
+                &pickers,
             )
         };
         let picking_axis = hover(true);
         assert!(
             matches!(
                 picking_axis,
-                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    crate::construction::PickTargetKind::BodyEdge { body: 0, .. }
+                Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    SceneElement::BodyEdge { body: 0, .. }
                 ))
             ),
             "the axis pick should hover the body edge, got {picking_axis:?}"
@@ -28179,7 +28201,6 @@ mod tests {
                 crate::actions::Tool::Dimension,
                 None,
                 MovePickHover::Bodies,
-                false,
                 false,
                 false,
                 false,
@@ -28609,12 +28630,20 @@ mod tests {
         let vp = cam.view_proj(viewport);
         let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
         let hover = |cursor: egui::Pos2, pick: MovePickHover| {
+            // With the Bodies picker armed the hover comes from the picker itself (#958), so
+            // the walk needs the tool's picker rather than an empty list.
+            let pickers = test_pickers(
+                crate::element_picker::ElementFilter::kind(
+                    crate::element_picker::ElementKind::Body,
+                ),
+                context::PickerTarget::MoveTargets,
+                crate::element_picker::PickLimit::Infinite,
+            );
             resolve_viewport_hover_highlight(
                 false,
                 crate::actions::Tool::Move,
                 None,
                 pick,
-                false,
                 false,
                 false,
                 false,
@@ -28626,7 +28655,7 @@ mod tests {
                 &doc,
                 &project,
                 None,
-                &[],
+                &pickers,
             )
         };
 
@@ -28725,7 +28754,6 @@ mod tests {
                 false,
                 false,
                 false,
-                false,
                 Some(cursor),
                 &cam,
                 viewport,
@@ -28789,7 +28817,6 @@ mod tests {
             false,
             false,
             false,
-            false,
             Some(mid),
             &cam,
             viewport,
@@ -28817,7 +28844,6 @@ mod tests {
             crate::actions::Tool::Dimension,
             Some(SketchSession { sketch }),
             MovePickHover::Bodies,
-            false,
             false,
             false,
             false,
@@ -28867,7 +28893,6 @@ mod tests {
             crate::actions::Tool::Mirror,
             Some(SketchSession { sketch }),
             MovePickHover::Bodies,
-            false,
             false,
             false,
             false,
