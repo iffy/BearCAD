@@ -23876,6 +23876,19 @@ impl App {
             // The sweep is an animation: keep frames coming while it plays.
             ui.ctx().request_repaint();
         }
+        // Publish what the viewport is hovering (#968) so a script can assert that the
+        // right thing lights up — "all valid targets highlight" is otherwise unobservable
+        // from outside the renderer.
+        self.state.hover_element = hover_highlight.as_ref().and_then(|h| match h {
+            gpu_viewport::ViewportHoverHighlight::Element(element) => Some(element.clone()),
+            gpu_viewport::ViewportHoverHighlight::PickTarget(kind) => {
+                construction::scene_element_from_pick(kind)
+            }
+            gpu_viewport::ViewportHoverHighlight::SketchFace(face) => {
+                Some(hierarchy::SceneElement::from_face_id(face.clone()))
+            }
+            _ => None,
+        });
         let mut scene_input = build_viewport_scene_input(
             doc,
             &cam,

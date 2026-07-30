@@ -3049,6 +3049,11 @@ pub struct AppState {
     pub element_visibility: ElementVisibility,
     pub scene_selection: SceneSelection,
     pub context_pane: crate::context::ContextPaneState,
+    /// What the viewport is hover-highlighting, as a script-readable `(kind, index)` (#968) —
+    /// the pick a click would take. Derived per frame; `None` when nothing is hovered.
+    /// Only elements report: a hovered face region or curve with no element of its own is
+    /// `None`, which is itself worth being able to assert.
+    pub hover_element: Option<crate::hierarchy::SceneElement>,
     /// The active tool's element pickers as of the last frame (#968). Derived, not authoritative
     /// — the pane rebuilds them every frame — but parked here so a script can read what each
     /// picker accepts and holds, which is otherwise invisible from outside the UI.
@@ -3185,6 +3190,7 @@ impl Default for AppState {
             element_visibility: ElementVisibility::default(),
             scene_selection: SceneSelection::default(),
             context_pane: crate::context::ContextPaneState::default(),
+            hover_element: None,
             tool_pickers: Vec::new(),
             editing_committed_dim: None,
             placing_dimension: None,

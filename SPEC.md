@@ -3048,7 +3048,11 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   (absent when unlimited), the element-kind names it `accepts`, and the `items` it holds. This
   is the only way to tell an **accepted** pick from a **rejected** one: a body-set tool consumes
   the click either way, so `selection()` reads the same whether or not the pick landed. A test
-  asserting a `PickRule` (#953) needs it.
+  asserting a `PickRule` (#953) needs it. **`bearcad.hovered()`** (#968) reports what the
+  viewport is hover-highlighting as `{ kind, index }` — the pick a click would take — or nil;
+  a hovered region or curve with no element of its own reports nil, which is itself assertable.
+  Write side: **`bearcad.ui.picker_focus(name)`** arms a picker, the scripted equivalent of
+  clicking it in the pane.
 - **Absolute camera control (#108):** `bearcad.ui.camera{}` reads the pose
   (yaw/pitch/distance/target/projection); `bearcad.ui.camera{ … }` sets any subset instantly
   (no transition animation — deterministic screenshots); `bearcad.ui.zoom_fit()` frames the

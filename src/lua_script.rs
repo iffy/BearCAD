@@ -2421,6 +2421,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // what kinds and how many it accepts, and what it currently holds. Without this a script
     // can't tell an accepted pick from a rejected one — a body-set tool consumes the click
     // either way, so `selection()` looks identical.
+    // What the viewport is hover-highlighting (#968) — the pick a click would take, as
+    // `{ kind, index }`, or nil when nothing is. Lets a script assert that the right thing
+    // lights up, which is otherwise unobservable from outside the renderer.
+    api.set(
+        "hovered",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let Some(element) = state.hover_element.clone() else {
+                return Ok(Value::Nil);
+            };
+            let entry = lua.create_table()?;
+            entry.set("kind", element_kind_name(element.clone()))?;
+            entry.set("index", element_index(element))?;
+            Ok(Value::Table(entry))
+        })?,
+    )?;
+
     // Arm a picker by name (#963/#968), the scripted equivalent of clicking it in the pane.
     api.set(
         "picker_focus",
