@@ -2526,7 +2526,12 @@ modeled on SolveSpace (https://solvespace.com).
   **analytic sketchable faces** (`PickTargetKind::SketchFace`, exploder-only like `Constraint`,
   #625): every `face::pick_sketch_face` candidate near the cursor — sketch profiles,
   extrusion caps/side walls, revolve flat faces, construction planes — via
-  `face::sketch_faces_near`. These are `ElementKind::Profile`, a different kind from the mesh
+  `face::sketch_faces_near`. And the **world axes** and the **datum planes** in their own right
+  (#975): each is pickable — a Revolve axis, a Repeat path, a plane anchor, a Slice cutter all
+  take one — so each belongs in the crowd, or the fan can't offer what the armed picker is
+  asking for. An axis is anchored at the point on it nearest the cursor, so its loupe's leader
+  line points at the bit being picked rather than at the world origin. **Everything a picker can
+  take must reach the crowd**; the filter that prunes it is the picker's, not the enumerator's. These are `ElementKind::Profile`, a different kind from the mesh
   `Face` over the same surface (§11.4a), which is what lets a picker say which representation it
   wants. The Extrude tool fans **exactly these** (minus construction
   planes, which its Profile picker doesn't take) instead of raw mesh facet groups, so its fan

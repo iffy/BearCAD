@@ -2869,6 +2869,53 @@ pub fn collect_pick_candidates(
         }
     }
 
+    // The world axes (#975). They are pickable — a Revolve axis, a Repeat path, a plane anchor
+    // all take one — so they belong in the crowd like everything else pickable: an axis running
+    // under a body or through a busy corner is exactly what the fan is for. All three, not the
+    // nearest, since the crowd is the whole stack.
+    for axis in [GlobalAxis::X, GlobalAxis::Y, GlobalAxis::Z] {
+        let (a, b) = global_axis_segment(axis);
+        let Some(dist) = segment_pick_distance(screen, project, a, b) else {
+            continue;
+        };
+        let kind = PickTargetKind::GlobalAxis(axis);
+        if pickable(&kind) {
+            // Anchored at the point on the axis nearest the cursor, so the loupe's leader line
+            // points at the bit of it under the pointer rather than at the world origin.
+            let anchor = match (project(a), project(b)) {
+                (Some(pa), Some(pb)) if (pb - pa).length_sq() > 1e-4 => {
+                    let t = ((screen - pa).dot(pb - pa) / (pb - pa).length_sq()).clamp(0.0, 1.0);
+                    a.lerp(b, t)
+                }
+                _ => a,
+            };
+            raw.push((kind, anchor, dist));
+        }
+    }
+
+    // Every construction plane near the cursor (#975). One reaches the crowd as an analytic
+    // face too, and `crowd_key` collapses the pair — but only when `sketch_faces_near` offers
+    // that plane, which it does not for one seen edge-on or one the pointer is merely near.
+    for (index, plane) in doc.construction_planes.iter().enumerate() {
+        if plane.deleted {
+            continue;
+        }
+        let corners = plane_corners(plane);
+        let Some(pts) = corners.iter().map(|&c| project(c)).collect::<Option<Vec<_>>>() else {
+            continue;
+        };
+        let quad = [pts[0], pts[1], pts[2], pts[3]];
+        let dist = if point_in_screen_quad(screen, quad) {
+            0.0
+        } else {
+            dist_point_to_quad_edges(screen, quad)
+        };
+        let kind = PickTargetKind::ConstructionPlane(index);
+        if dist <= FACE_PICK_MARGIN_PX && pickable(&kind) {
+            raw.push((kind, project_point_on_plane(plane.origin, plane), dist));
+        }
+    }
+
     // Every body face near the cursor (#555/#556): not just the nearest ray-hit face, but every
     // face — front and back — whose projected area is within the pick radius, so a narrow face
     // seen edge-on (a thin sliver between its two edges) and buried back faces both get loupes.
@@ -3387,6 +3434,42 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(target.kind, PickTargetKind::GlobalAxis(_)));
+    }
+
+    /// #975: the world axes and the datum planes are pickable — a Revolve axis, a Repeat path,
+    /// a plane anchor and a Slice cutter all take one — so they belong in the crowd. They were
+    /// missing from it, which meant the Exploder could not offer what the armed picker was
+    /// asking for: with a Revolve's Axis picker armed, the fan over the X axis was empty.
+    #[test]
+    fn the_crowd_offers_the_world_axes_and_the_datum_planes() {
+        let (doc, _) = doc_with_plane_sketch();
+        // XY-plane sketch → world (x, y, 0); project drops z. The cursor sits on the +X axis,
+        // 20mm out from the origin, well clear of the origin's own pick radius.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cands = collect_pick_candidates(Pos2::new(20.0, 0.0), &project, &doc, Vec3::ZERO, None);
+        let kinds: Vec<&PickTargetKind> = cands.iter().map(|c| &c.kind).collect();
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, PickTargetKind::GlobalAxis(GlobalAxis::X))),
+            "the X axis runs under the cursor: {kinds:?}"
+        );
+        // And it is anchored on the axis near the cursor, not back at the world origin, so its
+        // loupe's leader line points at the bit of it being picked.
+        let axis = cands
+            .iter()
+            .find(|c| matches!(c.kind, PickTargetKind::GlobalAxis(GlobalAxis::X)))
+            .expect("the X axis");
+        assert!((axis.anchor.x - 20.0).abs() < 1.0, "anchored at {:?}", axis.anchor);
+
+        // A datum plane the cursor is over reaches the crowd as itself. The default document's
+        // XY plane contains the point.
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, PickTargetKind::ConstructionPlane(_))),
+            "the datum plane under the cursor: {kinds:?}"
+        );
     }
 
     /// #551: unlike `resolve_pick_target` (which keeps only the nearest), `collect_pick_candidates`
