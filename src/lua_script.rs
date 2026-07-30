@@ -2441,6 +2441,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // The Selection Exploder's fan (#968): one `{ kind, index }` per leaf, or an empty table
+    // when it's closed. The crowd should offer exactly what the focused picker can take.
+    api.set(
+        "exploder",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let out = lua.create_table()?;
+            for (i, element) in state.exploder_leaves.iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("kind", element_kind_name(element.clone()))?;
+                entry.set("index", element_index(element.clone()))?;
+                out.set(i + 1, entry)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     // Arm a picker by name (#963/#968), the scripted equivalent of clicking it in the pane.
     api.set(
         "picker_focus",

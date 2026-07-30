@@ -23942,6 +23942,18 @@ impl App {
             // The sweep is an animation: keep frames coming while it plays.
             ui.ctx().request_repaint();
         }
+        // Publish the Exploder's fan (#968): the element each leaf stands for, so a script can
+        // check the crowd is offering what the focused picker can take.
+        self.state.exploder_leaves = self
+            .exploder
+            .as_ref()
+            .map(|ex| {
+                ex.items
+                    .iter()
+                    .filter_map(|item| construction::scene_element_from_pick(&item.target))
+                    .collect()
+            })
+            .unwrap_or_default();
         // Publish what the viewport is hovering (#968) so a script can assert that the
         // right thing lights up — "all valid targets highlight" is otherwise unobservable
         // from outside the renderer.

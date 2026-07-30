@@ -3051,6 +3051,9 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   asserting a `PickRule` (#953) needs it. **`bearcad.hovered()`** (#968) reports what the
   viewport is hover-highlighting as `{ kind, index }` — the pick a click would take — or nil;
   a hovered region or curve with no element of its own reports nil, which is itself assertable.
+  **`bearcad.exploder()`** (#968) reports the Selection Exploder's fanned leaves as
+  `{ kind, index }`, empty when it's closed — the crowd it is offering, which nothing else
+  exposes.
   Write side: **`bearcad.ui.picker_focus(name)`** arms a picker, the scripted equivalent of
   clicking it in the pane.
 - **Absolute camera control (#108):** `bearcad.ui.camera{}` reads the pose

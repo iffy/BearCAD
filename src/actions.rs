@@ -3069,6 +3069,11 @@ pub struct AppState {
     pub move_focus_override: Option<crate::MoveFocus>,
     /// A hand-picked Joint-tool focus (#894), released once satisfied.
     pub joint_focus_override: Option<crate::JointFocus>,
+    /// The Selection Exploder's fanned leaves as of the last frame (#968), each as the element
+    /// it stands for — what the crowd is offering. Empty when the exploder is closed. Lets a
+    /// script assert that the fan matches what the focused picker can take (#957), which is
+    /// otherwise invisible from outside the renderer.
+    pub exploder_leaves: Vec<crate::hierarchy::SceneElement>,
     /// The active tool's element pickers as of the last frame (#968). Derived, not authoritative
     /// — the pane rebuilds them every frame — but parked here so a script can read what each
     /// picker accepts and holds, which is otherwise invisible from outside the UI.
@@ -3209,6 +3214,7 @@ impl Default for AppState {
             repeat_target_pick: false,
             move_focus_override: None,
             joint_focus_override: None,
+            exploder_leaves: Vec::new(),
             hover_element: None,
             tool_pickers: Vec::new(),
             editing_committed_dim: None,
