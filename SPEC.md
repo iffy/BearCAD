@@ -3630,7 +3630,13 @@ The model in one place:
   reads `1/1`). Clicking it opens a popup
   listing each picked element (kind icon + name) with a per-row remove button and a clear-all.
   The Select tool's instance is configured to accept **every** element kind and is
-  **always shown and always focused** (it never blurs). Suppressed only while a draw
+  **always shown and always focused** — not by a flag on the control, but because it is that
+  tool's only picker, so "exactly one picker has focus" already puts the focus there (#966).
+  **It *is* the selection** (`SceneSelection` holds it), rather than a view rebuilt from one
+  each frame: that is what gives its popup rows a stable order — they used to be sorted by each
+  element's debug string purely so index→element agreed between the frame that draws a row and
+  the frame that handles its ✕ — and what makes any rule it carries real rather than applied
+  after the fact. Suppressed only while a draw
   construction owns the pane. Each picker instance is configured with: the subset of element
   kinds it accepts — the full set (`ElementKind::ORDER`, #952) is planes, images, sketches,
   lines, circles, **axes**, vertices, edges, faces, **profiles**, constraints, bodies,

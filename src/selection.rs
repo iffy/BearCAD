@@ -1,85 +1,110 @@
 //! Scene element selection from the elements pane and viewport.
 
+use crate::element_picker::ElementPicker;
 use crate::hierarchy::SceneElement;
 use eframe::egui;
-use std::collections::HashSet;
 
 /// Shift+click or ⌘/Ctrl+click adds to the current selection instead of replacing it.
 pub fn additive_click_modifiers(modifiers: &egui::Modifiers) -> bool {
     modifiers.command || modifiers.shift
 }
 
-/// Objects selected in the elements pane.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The scene selection — **the Select tool's element picker** (#966).
+///
+/// The picker is canonical, not a view of a separate set. A tool can have several pickers, each
+/// with its own set, so no document-wide selection can own them; what the Select tool holds is
+/// simply the one picker whose set every other consumer reads. This type is the name those ~200
+/// read sites use for it (`is_selected`, `iter`, `single`, …) — a projection in the sense that
+/// it exposes a flat set, not in the sense that it stores one.
+///
+/// Two things fall out of the picker being the store. Its `Vec` has a **stable order**, which is
+/// what the popup's rows needed — they used to be sorted by each element's debug string purely
+/// so that index→element agreed across the frame that draws a row and the frame that handles
+/// its ✕. And its filter and limit are real: whatever rules the Select picker is given are
+/// enforced on the way in rather than after the fact.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneSelection {
-    elements: HashSet<SceneElement>,
+    picker: ElementPicker,
+}
+
+impl Default for SceneSelection {
+    fn default() -> Self {
+        SceneSelection {
+            picker: ElementPicker::select_everything(),
+        }
+    }
 }
 
 impl SceneSelection {
+    /// The picker itself, for the context pane to render and for the pick paths to consult.
+    pub fn picker(&self) -> &ElementPicker {
+        &self.picker
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.elements.is_empty()
+        self.picker.is_empty()
     }
 
     pub fn is_selected(&self, element: SceneElement) -> bool {
-        self.elements.contains(&element)
+        self.picker.contains(&element)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = SceneElement> + '_ {
-        self.elements.iter().cloned()
+        self.picker.picked().iter().cloned()
     }
 
     pub fn clear(&mut self) {
-        self.elements.clear();
+        self.picker.clear();
     }
 
     /// Drop selected elements that no longer satisfy `keep` (e.g. tombstoned after a delete).
-    pub fn retain(&mut self, mut keep: impl FnMut(&SceneElement) -> bool) {
-        self.elements.retain(|e| keep(e));
+    pub fn retain(&mut self, keep: impl FnMut(&SceneElement) -> bool) {
+        self.picker.retain(keep);
     }
 
     /// Add an element to the selection (idempotent). Used to fold a tool's in-progress picked
     /// set (e.g. Loft cross sections, #202) into the selection the viewport renders, so picked
     /// elements show their selection highlight without touching the persistent selection.
     pub fn insert(&mut self, element: SceneElement) {
-        self.elements.insert(element);
+        if !self.picker.contains(&element) {
+            self.picker.push(element);
+        }
     }
 
-    /// The selection as a deterministically ordered list (#202). The Select tool's selection
-    /// picker needs a stable row order, and — because the remove button is handled a frame
-    /// after the rows are built — index→element must agree across both. Sorting by each
-    /// element's debug form is a cheap total order that stays fixed while the set is unchanged.
+    /// The selection in pick order (#202/#966). The Select tool's picker needs a stable row
+    /// order, and — because the remove button is handled a frame after the rows are built —
+    /// index→element must agree across both. A `Vec` gives that for free.
     pub fn ordered(&self) -> Vec<SceneElement> {
-        let mut elements: Vec<SceneElement> = self.elements.iter().cloned().collect();
-        elements.sort_by_key(|element| format!("{element:?}"));
-        elements
+        self.picker.picked().to_vec()
     }
 
     /// The sole selected element, if exactly one is selected.
     pub fn single(&self) -> Option<SceneElement> {
-        let mut iter = self.iter();
-        let first = iter.next()?;
-        if iter.next().is_some() {
-            None
-        } else {
-            Some(first)
+        match self.picker.picked() {
+            [only] => Some(only.clone()),
+            _ => None,
         }
     }
 }
 
 /// Click an elements row: deselect when already selected; replace selection unless additive.
+///
+/// This is the Select picker's pick behaviour (#966): additive toggles, plain replaces — so a
+/// plain click on something already selected still removes it, which is what
+/// [`PickOutcome::Removed`] means.
 pub fn click_scene_selection(
     selection: &mut SceneSelection,
     element: SceneElement,
     additive: bool,
 ) {
     if selection.is_selected(element.clone()) {
-        selection.elements.remove(&element);
+        selection.picker.retain(|e| *e != element);
         return;
     }
     if !additive {
-        selection.clear();
+        selection.picker.clear();
     }
-    selection.elements.insert(element);
+    selection.picker.push(element);
 }
 
 #[cfg(test)]

@@ -638,16 +638,13 @@ pub enum PickOutcome {
 }
 
 /// A configurable, focusable element-selection control. Holds both the configuration (filter,
-/// limit, highlight color, focus stickiness) and the live picked set + focus state.
+/// limit, highlight color) and the live picked set + focus state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ElementPicker {
     filter: ElementFilter,
     limit: PickLimit,
     /// Overrides the theme selection color for this picker's highlights (e.g. Slice cutters red).
     selected_color: Option<Color32>,
-    /// The Select tool's picker is always focused and cannot lose focus; `set_focused(false)` is
-    /// a no-op for it.
-    sticky_focus: bool,
     /// Kinds this picker prefers among a crowd at the cursor, most-wanted first (#959).
     /// Empty means the global [`DEFAULT_PICK_PRIORITY`].
     priority: Vec<ElementKind>,
@@ -664,17 +661,22 @@ impl ElementPicker {
             filter,
             limit,
             selected_color: None,
-            sticky_focus: false,
             priority: Vec::new(),
             picked: Vec::new(),
             focused: false,
         }
     }
 
-    /// The Select tool's picker: accepts everything, unbounded, and permanently focused.
+    /// The scene selection's picker (#966): accepts everything, unbounded, focused.
+    ///
+    /// It used to carry a `sticky_focus` flag meaning "never blurs". That is the focus model's
+    /// job, not a property of the control: the selection picker is the Select tool's **only**
+    /// picker, so it is focused whenever no other one is — which is what "exactly one picker
+    /// has focus" already says. What made the flag look necessary was that it also stood in for
+    /// "this picker is the selection, not a tool's gathered set"; `PickerTarget::Selection`
+    /// says that directly.
     pub fn select_everything() -> ElementPicker {
         let mut picker = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
-        picker.sticky_focus = true;
         picker.focused = true;
         picker
     }
@@ -732,17 +734,8 @@ impl ElementPicker {
         self.focused
     }
 
-    /// Focus or blur the picker. A sticky (Select-tool) picker ignores blur requests.
     pub fn set_focused(&mut self, focused: bool) {
-        if self.sticky_focus {
-            self.focused = true;
-        } else {
-            self.focused = focused;
-        }
-    }
-
-    pub fn has_sticky_focus(&self) -> bool {
-        self.sticky_focus
+        self.focused = focused;
     }
 
     // ---- picked set -----------------------------------------------------------------------
@@ -811,6 +804,21 @@ impl ElementPicker {
 
     pub fn clear(&mut self) {
         self.picked.clear();
+    }
+
+    /// Add an element with no filter or limit check, keeping pick order.
+    ///
+    /// The unchecked door, for the two callers that have already decided: the scene selection
+    /// (#966), whose picker takes everything anyway, and folding a tool's in-progress set into
+    /// what the viewport highlights. Everything a *user* picks goes through
+    /// [`pick`](Self::pick) or [`set_picked`](Self::set_picked), which do check.
+    pub fn push(&mut self, element: SceneElement) {
+        self.picked.push(element);
+    }
+
+    /// Drop picked elements that no longer satisfy `keep` — e.g. tombstoned by a delete.
+    pub fn retain(&mut self, mut keep: impl FnMut(&SceneElement) -> bool) {
+        self.picked.retain(|e| keep(e));
     }
 
     /// Replace the whole picked set (e.g. re-syncing an edit session from a committed operation).
@@ -1619,12 +1627,15 @@ mod tests {
     }
 
     #[test]
-    fn select_everything_picker_is_stuck_focused() {
-        let mut p = ElementPicker::select_everything();
+    fn the_selection_picker_takes_everything_and_starts_focused() {
+        // #966: it used to carry a `sticky_focus` flag that made `set_focused(false)` a no-op.
+        // That was the focus model leaking into the control — the selection picker is the
+        // Select tool's only picker, so it is focused whenever no other one is, which is what
+        // "exactly one picker has focus" already says.
+        let p = ElementPicker::select_everything();
         assert!(p.is_focused());
-        p.set_focused(false);
-        assert!(p.is_focused(), "select-tool picker must not lose focus");
         assert!(p.accepts(&Document::default(), &SceneElement::Sketch(0)));
+        assert!(p.accepts(&Document::default(), &SceneElement::Body(0)));
     }
 
     #[test]

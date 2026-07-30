@@ -15196,7 +15196,9 @@ pub fn body_gathering_tool_active(state: &AppState) -> bool {
                 .contains(&crate::element_picker::ElementKind::Body)
                 // The Select tool's picker takes everything, but it isn't *gathering* — its
                 // picks are the selection, which is where a body click should land anyway.
-                && !view.picker.has_sticky_focus()
+                // The selection picker takes everything, but it isn't *gathering* — its picks
+                // are the selection, which is where a body click should land anyway (#966).
+                && view.target != crate::context::PickerTarget::Selection
         })
 }
 

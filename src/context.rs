@@ -1409,8 +1409,11 @@ fn selection_picker_for(
         None => filter,
     };
     let mut picker = match tool {
-        // Select: accepts everything, always shown, never loses focus.
-        Tool::Select => ElementPicker::select_everything(),
+        // Select: the selection **is** this picker (#966), so it's handed back rather than
+        // rebuilt — that's what gives the popup's rows a stable order without sorting by each
+        // element's debug string, and what makes any rule it carries real rather than applied
+        // after the fact.
+        Tool::Select => return Some(selection.picker().clone()),
         // Constraint / Dimension: sketch geometry only (points, lines, circles, body/face
         // edges). Dimension's picker mirrors the live selection so a pre-selected line or
         // pair shows up and the tool can proceed as if those were just picked (#486).
@@ -7634,12 +7637,14 @@ mod tests {
         let picker = context_pane_content(&input)
             .selection_picker
             .expect("selection picker");
-        // Picked set follows `SceneSelection::ordered` (debug-string order): Circle before Line.
+        // The picker *is* the selection (#966), so its rows are in pick order — Line first,
+        // because that's what was clicked first. That order is stable across frames, which is
+        // what the ✕ needed and what the debug-string sort used to fake.
         assert_eq!(
             picker.picked(),
-            &[SceneElement::Circle(1), SceneElement::Line(0)]
+            &[SceneElement::Line(0), SceneElement::Circle(1)]
         );
-        assert!(picker.has_sticky_focus(), "Select picker never loses focus");
+        assert!(picker.is_focused(), "the selection picker is the Select tool's only one");
         assert!(picker.accepts(&doc, &SceneElement::Body(0)), "Select accepts everything");
 
         // Empty selection: the picker is still shown (an always-present input), just empty.
@@ -7671,7 +7676,6 @@ mod tests {
             .selection_picker
             .expect("constraint picker");
         assert_eq!(picker.picked(), &[SceneElement::Line(0)], "body filtered out");
-        assert!(!picker.has_sticky_focus());
         assert!(picker.is_focused(), "active tool's picker is focused");
         assert!(!picker.accepts(&doc, &SceneElement::Body(0)));
     }
