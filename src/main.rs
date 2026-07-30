@@ -1805,21 +1805,39 @@ fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<e
 /// loupe reads as a solid object rather than a see-through jumble. The shade is the same
 /// two-sided Lambert term the viewport's `push_solid` uses, so a body looks in the loupe the way
 /// it looks in the scene.
+fn loupe_face_shade(tri: &[Vec3; 3]) -> f32 {
+    let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+    let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+    (0.4 + 0.6 * normal.dot(light).abs()).clamp(0.0, 1.0)
+}
+
+/// A loupe magnifies the scene, so a solid in it wears the colour it wears out there (#976):
+/// its **material**, shaded per triangle — not the loupe's accent, which used to paint every
+/// body the same blue whatever it was made of. Which loupe is hot is the ring's job (accent
+/// yellow and thicker), so the fill is free to be the thing's own colour.
+fn loupe_solid_fill(doc: &model::Document, body: usize, shade: f32) -> egui::Color32 {
+    let base = doc
+        .bodies
+        .get(body)
+        .map(|b| gpu_viewport::body_material_fill(doc, b))
+        .unwrap_or(gpu_viewport::SOLID_FILL);
+    egui::Color32::from_rgb(
+        (base.r() as f32 * shade) as u8,
+        (base.g() as f32 * shade) as u8,
+        (base.b() as f32 * shade) as u8,
+    )
+}
+
 fn body_loupe_faces(
     doc: &model::Document,
     body: usize,
     eye: Vec3,
 ) -> Option<Vec<([Vec3; 3], u8)>> {
     let solid = extrude::body_solid_mesh(doc, body)?;
-    let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
     let mut faces: Vec<([Vec3; 3], u8)> = solid
         .triangles
         .iter()
-        .map(|tri| {
-            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
-            let shade = 0.4 + 0.6 * normal.dot(light).abs();
-            (*tri, (shade.clamp(0.0, 1.0) * 255.0) as u8)
-        })
+        .map(|tri| (*tri, (loupe_face_shade(tri) * 255.0) as u8))
         .collect();
     // Far-to-near. `sort_by` is stable, so coplanar triangles keep mesh order and the result is
     // deterministic.
@@ -2090,13 +2108,13 @@ fn draw_pick_target_loupe(
                 dot(*position, width + 1.5);
             }
         }
-        PK::BodyFace { triangles, .. } => {
+        PK::BodyFace { body, triangles, .. } => {
             // A **highlighted** face reads as a shaded fill alone — no boundary edges, so it doesn't
             // look like its edges are also highlighted (#564). A **context** face is outline-only so
             // it doesn't muddy the loupe.
             if is_highlight {
-                let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 92);
                 for tri in triangles {
+                    let fill = loupe_solid_fill(doc, *body, loupe_face_shade(tri));
                     if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
                         let poly = clip_convex_to_disc(&[a, b, c], center, radius);
                         if poly.len() >= 3 {
@@ -2142,12 +2160,7 @@ fn draw_pick_target_loupe(
                 return;
             };
             for (tri, shade) in faces {
-                let f = shade as f32 / 255.0;
-                let fill = egui::Color32::from_rgb(
-                    (color.r() as f32 * f) as u8,
-                    (color.g() as f32 * f) as u8,
-                    (color.b() as f32 * f) as u8,
-                );
+                let fill = loupe_solid_fill(doc, *bi, shade as f32 / 255.0);
                 if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
                     let poly = clip_convex_to_disc(&[a, b, c], center, radius);
                     if poly.len() >= 3 {
@@ -28477,6 +28490,43 @@ mod tests {
         let lo = shades.iter().copied().min().unwrap();
         let hi = shades.iter().copied().max().unwrap();
         assert!(hi > lo, "faces at different angles should shade differently");
+    }
+
+    /// #976: a loupe magnifies the scene, so what's in it should wear the colour it wears out
+    /// there. Every body's faces were painted in the loupe's own accent instead, so a pink body
+    /// showed up blue — the fill was carrying "which loupe is hot", which is the ring's job.
+    #[test]
+    fn a_loupe_paints_a_body_in_its_own_material() {
+        let mut doc = model::Document::default();
+        let pink = doc.materials.len();
+        doc.materials.push(model::Material {
+            name: "Pink".to_string(),
+            color: [230, 120, 170],
+            deleted: false,
+        });
+        doc.bodies.push(model::Body {
+            source: model::BodySource::Extrusion(0),
+            material: Some(pink),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // Unshaded, the fill is the material itself.
+        let full = loupe_solid_fill(&doc, 0, 1.0);
+        assert_eq!((full.r(), full.g(), full.b()), (230, 120, 170));
+        // Shading dims it without tinting it — the hue is still the body's.
+        let dim = loupe_solid_fill(&doc, 0, 0.5);
+        assert!(dim.r() > dim.b() && dim.b() > dim.g(), "still pink: {dim:?}");
+        assert!(dim.r() < full.r(), "and darker");
+        // A body with no material of its own keeps the document's default look, not the accent.
+        doc.bodies.push(model::Body {
+            source: model::BodySource::Extrusion(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        assert_ne!(loupe_solid_fill(&doc, 1, 1.0), full);
     }
 
     #[test]

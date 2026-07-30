@@ -2583,6 +2583,10 @@ modeled on SolveSpace (https://solvespace.com).
   the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
   be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
   the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.
+  A loupe's solids wear **their own material colour**, shaded per triangle (#976) — the loupe
+  magnifies the scene, so a pink body reads pink in it. Which loupe is hot is the **ring's** job
+  (accent yellow, and thicker), which is what frees the fill to be the thing's own colour; the
+  fill used to be the loupe's accent, so every body in every loupe was the same blue.
   A hovered leaf also draws a thin grey **leader line** from the element back to the **edge** of its
   loupe (not its centre, #572). Clicking **outside** every loupe just dismisses the fan and **leaves
   the selection untouched** (#575) — the dismiss frame redirects the pointer to nothing so the normal
