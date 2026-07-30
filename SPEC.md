@@ -3567,6 +3567,13 @@ The model in one place:
   one's, keeping what it accepts (#956).
 - **What a picker holds is styled as selected** in the viewport and in the Elements pane, in
   **that picker's** colour (#961/#965).
+- **The panes say what the armed picker can take** (#965): a hovered row the picker accepts
+  wears a wash of the pick-hover yellow, the same signal the viewport gives. A row it refuses
+  gets the ordinary hover — it is not inert, because a refused pick still falls through to the
+  selection (see pane clicks above); it simply doesn't claim to be a pick. Both panes show the
+  elements the **hierarchy** names — bodies, sketches, operations, components, planes, images,
+  constraints. A body's faces, edges and corners have no row and no node in either: they are
+  picked in the viewport, where they exist, and reached in a crowd through the Exploder.
 - **One pick priority** decides among things crowding the cursor, overridable per picker (#959).
 - **A face click fills an edges picker** with that face's edges when the picker takes edges and
   not faces (#960) — but never a **single-pick** one, which has one slot and nowhere to put a

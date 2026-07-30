@@ -11415,6 +11415,14 @@ impl eframe::App for App {
                         self.state.editing_drawing,
                         &mut queue_add_to_drawing,
                         &highlight_elements,
+                        // The armed picker (#965), so a row it can take reads as pickable.
+                        // A frame behind — the pane draws before the context pane rebuilds
+                        // them — which is invisible on a hover tint.
+                        self.state
+                            .tool_pickers
+                            .iter()
+                            .find(|v| v.picker.is_focused())
+                            .map(|v| &v.picker),
                         &rolled_back,
                         self.rollback_marker.as_ref(),
                         &mut queue_set_rollback,

@@ -3110,6 +3110,33 @@ fn row_style(
     }
 }
 
+/// A translucent wash of the pick-hover yellow over a hovered row the **armed picker can take**
+/// (#965). The pane then says the same thing the viewport does: this is what the next click
+/// feeds. A row the picker refuses gets egui's ordinary hover instead — it still selects (#963),
+/// it just doesn't claim to be a pick.
+fn paint_pick_affordance(
+    ui: &egui::Ui,
+    doc: &Document,
+    armed: Option<&crate::element_picker::ElementPicker>,
+    element: &SceneElement,
+    hovered: bool,
+    rect: egui::Rect,
+) {
+    if !hovered {
+        return;
+    }
+    let takes = armed
+        .is_some_and(|p| !crate::element_picker::expand_pick(doc, p, element).is_empty());
+    if !takes {
+        return;
+    }
+    ui.painter().rect_filled(
+        rect,
+        3.0,
+        crate::construction::PICK_HOVER_RGBA.gamma_multiply(0.22),
+    );
+}
+
 /// Whether the row should paint the egui selected background — independent of health tint (#511).
 fn row_shows_selection(
     element: &SceneElement,
@@ -3661,6 +3688,10 @@ pub fn show_pane(
     active_drawing: Option<usize>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    // The armed element picker (#965), if any: a row it can take wears the pick affordance on
+    // hover, so the pane says what the next click would feed. A row it refuses still hovers
+    // and still selects (#963) — it just doesn't claim to be a pick.
+    armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
     // The current timeline rollback marker (#524), if any, and a setter (None clears it).
     rollback_marker: Option<&RollbackMarker>,
@@ -3871,6 +3902,7 @@ pub fn show_pane(
                         active_drawing,
                         on_add_to_drawing,
                         highlight_elements,
+                        armed,
                         rolled_back,
                         on_move_to_component,
                         active_component,
@@ -3902,6 +3934,7 @@ pub fn show_pane(
                 on_hover_element,
                 on_delete_element,
                 highlight_elements,
+                armed,
                 rolled_back,
                 active_drawing,
                 on_edit_sketch,
@@ -4081,6 +4114,7 @@ fn show_graph_view(
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
     // The full row context menus work on graph nodes too (#623).
     active_drawing: Option<usize>,
@@ -4371,6 +4405,14 @@ fn show_graph_view(
                     }
                 }
                 if let Some(element) = element {
+                    paint_pick_affordance(
+                        ui,
+                        doc,
+                        armed,
+                        &element,
+                        response.hovered(),
+                        node_rect,
+                    );
                     let response = response.on_hover_text(node_label(doc, position.node));
                     if response.clicked() {
                         let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
@@ -4721,6 +4763,7 @@ fn show_row(
     active_drawing: Option<usize>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
     active_component: Option<usize>,
@@ -4999,6 +5042,17 @@ fn show_row(
         if row.hovered {
             on_hover_element(element.clone());
         }
+        paint_pick_affordance(
+            ui,
+            doc,
+            armed,
+            &element,
+            row.hovered,
+            match icon_response.as_ref() {
+                Some(icon) => icon.rect.union(response.rect),
+                None => response.rect,
+            },
+        );
         // With a drawing open, body and sketch rows drag onto the page (#290): the drop
         // places a projection at the pointer. Both the name label and the type icon are
         // grab handles (#368). Re-sensed for drag so the payload arms; plain clicks still
