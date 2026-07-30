@@ -3602,7 +3602,8 @@ The model in one place:
   `PickRule` is data, not a closure, because a picker lives inside the diffed
   `ContextPaneContent` and must stay `Clone + Debug + PartialEq`. The rules:
   `InSketch(sketch)` (what the open sketch owns, #742 — the same `element_in_sketch` the hover
-  and click paths use, so there is one definition and not three), `LiveBody` (not deleted, not
+  and click paths use, so there is one definition and not three; the in-sketch Mirror, Offset
+  and Repeat pickers carry it, which is what let the Mirror tool's hover arm go), `LiveBody` (not deleted, not
   consumed by another operation), `OnBodies` / `OffBodies` (the Move tool's start points land on
   a **moving** body, its end points on stationary geometry, #649/#650), `Straight` (a
   Revolve axis or Repeat path takes no curve), `Construction(bool)`, and `NotIn(…)` (Combine's B

@@ -15213,17 +15213,6 @@ fn resolve_viewport_hover_highlight(
                 holes: Vec::new(),
             })
         }
-        // Mirror tool in a sketch (#541): glow the line/circle a click would pick — whether the
-        // mirror axis or a shape to reflect, both are line/circle picks.
-        Tool::Mirror if sketch_session.is_some() => {
-            let gp = cam.ground_point(pp, viewport, vp);
-            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
-            matches!(
-                target.kind,
-                construction::PickTargetKind::Line(_) | construction::PickTargetKind::Circle(_)
-            )
-            .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
-        }
         Tool::ConstructionPlane if !creating_plane => {
             // Body faces are pickable plane anchors too (#465), so they glow on hover.
             // Also active while a curve is pending a point (#483).
@@ -28875,7 +28864,6 @@ mod tests {
         use super::gpu_viewport;
         use super::resolve_viewport_hover_highlight;
         use crate::actions::SketchSession;
-        use crate::construction::PickTargetKind;
 
         let mut doc = crate::model::Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
@@ -28888,6 +28876,14 @@ mod tests {
         let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
         let mid = project(glam::Vec3::ZERO).expect("origin projects into the viewport");
 
+        // The tool's own picker decides now (#958): the mirror line takes a line, scoped to
+        // the open sketch by a rule rather than by an arm that repeats `element_in_sketch`.
+        let pickers = test_pickers(
+            crate::element_picker::ElementFilter::kind(crate::element_picker::ElementKind::Line)
+                .rule(crate::element_picker::PickRule::InSketch(sketch)),
+            context::PickerTarget::SketchMirrorLine,
+            crate::element_picker::PickLimit::Finite(1),
+        );
         let hover = resolve_viewport_hover_highlight(
             false,
             crate::actions::Tool::Mirror,
@@ -28904,13 +28900,13 @@ mod tests {
             &doc,
             &project,
             None,
-            &[],
+            &pickers,
         );
         assert!(
             matches!(
                 hover,
-                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    PickTargetKind::Line(0)
+                Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    crate::hierarchy::SceneElement::Line(0)
                 ))
             ),
             "hovering a line with the Mirror tool should highlight it, got {hover:?}"

@@ -1716,6 +1716,16 @@ fn axis_constraint_button(
 /// arriving before such a frame (right after a tool switch, or in a headless test) would
 /// otherwise find no pickers and silently do nothing. The context pane renders from this; so
 /// does the click routing, the viewport highlight, the hover fallback and `bearcad.pickers()`.
+/// Scope a filter to the open sketch (#742): an in-sketch tool picks that sketch's own
+/// geometry and nothing else. One rule rather than the same `element_in_sketch` check written
+/// out again in each of the hover and click paths (#958).
+fn in_sketch(filter: ElementFilter, sketch: Option<crate::model::SketchId>) -> ElementFilter {
+    match sketch {
+        Some(sketch) => filter.rule(PickRule::InSketch(sketch)),
+        None => filter,
+    }
+}
+
 pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
     let mut tool_pickers = Vec::new();
     if let Some(r) = input.revolve.as_ref() {
@@ -2234,7 +2244,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The in-sketch Repeat tool (#232/#835): the entities being copied, and the line whose
         // direction they march along — empty meaning the sketch's own U axis.
         let mut entities = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            in_sketch(
+                ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+                input.open_sketch,
+            ),
             PickLimit::Infinite,
         );
         entities.set_focused(!r.direction_focused && !r.value_field_focused);
@@ -2247,7 +2260,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             render: PickerRender::Inline,
         });
         let mut direction = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line]),
+            in_sketch(ElementFilter::kinds(&[ElementKind::Line]), input.open_sketch),
             PickLimit::Finite(1),
         );
         direction.set_focused(r.direction_focused);
@@ -2280,7 +2293,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The in-sketch Mirror tool (#534): the mirror line comes first, then the shapes — so
         // exactly one of the two is armed, whichever the next click should feed.
         let mut line = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line]),
+            in_sketch(ElementFilter::kinds(&[ElementKind::Line]), input.open_sketch),
             PickLimit::Finite(1),
         );
         line.set_focused(m.line.is_none());
@@ -2293,7 +2306,10 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             render: PickerRender::Inline,
         });
         let mut shapes = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            in_sketch(
+                ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+                input.open_sketch,
+            ),
             PickLimit::Infinite,
         );
         shapes.set_focused(m.line.is_some());
