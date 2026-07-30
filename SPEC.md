@@ -1680,8 +1680,9 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   end-to-end and cross the profile plane (an in-plane line is refused with a status hint).
   Pick order doesn't matter: segments are chained tip-to-tail at evaluation and the chain
   is oriented to start at the end nearer the profile plane. Clicking a picked face or line
-  removes it again. The context pane shows the picked faces and path lines as element
-  pickers (each row has a ✕; faces/lines are still added by clicking in the viewport).
+  removes it again. The context pane shows the picked faces and path lines as real element
+  pickers (#955; each row has a ✕; faces/lines are still added by clicking in the viewport) —
+  Profile over analytic faces, Path over sketch lines, with exactly one focused.
   A translucent ghost of the swept solid previews after every pick. The result lands as a
   **new body**, **fused into touching bodies** (resolved at commit by mesh-bounds
   intersection), or **cut from picked bodies** — the same segmented icon group as Revolve;

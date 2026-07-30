@@ -12397,38 +12397,8 @@ impl eframe::App for App {
                 sweep: (self.state.tool == Tool::Sweep).then(|| {
                     let cf = self.state.creating_sweep.as_ref();
                     context::SweepControl {
-                        face_rows: cf
-                            .map(|c| {
-                                c.faces
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(n, f)| {
-                                        let kind = match f {
-                                            model::ExtrudeFace::Circle(_) => "Circle",
-                                            model::ExtrudeFace::Polygon(_) => "Loop",
-                                            model::ExtrudeFace::Boolean { .. } => "Region",
-                                            model::ExtrudeFace::TextGlyph { .. } => "Glyph",
-                                        };
-                                        format!("{kind} {}", n + 1)
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        path_rows: cf
-                            .map(|c| {
-                                c.path
-                                    .iter()
-                                    .map(|&li| {
-                                        names::element_name(
-                                            &self.state.doc,
-                                            SceneElement::Line(li),
-                                        )
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| format!("line {li}"))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
+                        faces: cf.map(|c| c.faces.clone()).unwrap_or_default(),
+                        path: cf.map(|c| c.path.clone()).unwrap_or_default(),
                         // Exactly one picker shows the focus ring: Path once a profile is
                         // picked but no path line yet, Profile otherwise.
                         path_focused: cf
@@ -12723,24 +12693,6 @@ impl eframe::App for App {
                             .get_or_insert_with(actions::CreatingSweep::default);
                         match other {
                             context::SweepEdit::BodyChoice(choice) => cf.body_choice = choice,
-                            context::SweepEdit::RemoveFace(Some(i)) => {
-                                if i < cf.faces.len() {
-                                    cf.faces.remove(i);
-                                }
-                                if cf.faces.is_empty() {
-                                    cf.sketch = None;
-                                }
-                            }
-                            context::SweepEdit::RemoveFace(None) => {
-                                cf.faces.clear();
-                                cf.sketch = None;
-                            }
-                            context::SweepEdit::RemovePath(Some(i)) => {
-                                if i < cf.path.len() {
-                                    cf.path.remove(i);
-                                }
-                            }
-                            context::SweepEdit::RemovePath(None) => cf.path.clear(),
                             context::SweepEdit::Commit => unreachable!(),
                         }
                     }
@@ -13627,6 +13579,20 @@ impl eframe::App for App {
                         self.move_focus_override = Some(MoveFocus::Bodies);
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    // Sweep's profile and path (#955).
+                    context::PickerTarget::SweepProfile => {
+                        if let Some(cf) = self.state.creating_sweep.as_mut() {
+                            remove_or_clear(&mut cf.faces, edit);
+                            if cf.faces.is_empty() {
+                                cf.sketch = None;
+                            }
+                        }
+                    }
+                    context::PickerTarget::SweepPath => {
+                        if let Some(cf) = self.state.creating_sweep.as_mut() {
+                            remove_or_clear(&mut cf.path, edit);
                         }
                     }
                     // Revolve's profile and axis (#955). Both are fed by viewport clicks; the

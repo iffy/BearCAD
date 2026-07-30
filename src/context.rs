@@ -177,10 +177,10 @@ pub struct RevolveControl {
 /// faces, the picked path lines, the body mode, and — in Cut mode — the picked bodies.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SweepControl {
-    /// One label per picked profile face, shown in the face element picker.
-    pub face_rows: Vec<String>,
-    /// One label per picked path line, shown in the path element picker.
-    pub path_rows: Vec<String>,
+    /// The picked profile faces and the path lines they sweep along (#955), rendered through
+    /// real [`ElementPicker`]s rather than as label rows.
+    pub faces: Vec<crate::model::ExtrudeFace>,
+    pub path: Vec<usize>,
     /// Which picker shows the focus ring: Profile until a face is picked, then Path
     /// until a line is picked, then back to Profile.
     pub path_focused: bool,
@@ -830,10 +830,6 @@ pub enum RevolveEdit {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SweepEdit {
     BodyChoice(crate::actions::RevolveBodyChoice),
-    /// Remove profile face row `i` from the face picker (`None` clears them all).
-    RemoveFace(Option<usize>),
-    /// Remove path line row `i` from the path picker (`None` clears them all).
-    RemovePath(Option<usize>),
     /// The blue primary button / Enter — commit the sweep (#586).
     Commit,
 }
@@ -1250,6 +1246,10 @@ pub enum PickerTarget {
     LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
+    /// The Sweep tool's profile faces (`CreatingSweep::faces`, #955).
+    SweepProfile,
+    /// The Sweep tool's path lines (`CreatingSweep::path`, #955), chained tip-to-tail at commit.
+    SweepPath,
     /// The Revolve tool's profile faces (`CreatingRevolve::faces`, #955).
     RevolveProfile,
     /// The Revolve tool's sweep axis (`CreatingRevolve::axis`, #955): a straight reference —
@@ -1852,15 +1852,44 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }
     }
     if let Some(f) = input.sweep.as_ref() {
+        // Sweep's two inputs (#955), the Revolve pair's twin: the profiles, and the path they
+        // travel. Exactly one shows the focus ring.
+        let mut profile =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Face), PickLimit::Infinite);
+        profile.set_focused(!f.path_focused);
+        profile.set_picked(
+            input.doc,
+            f.faces
+                .iter()
+                .map(crate::extrude::extrude_face_scene_element),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Profile",
+            picker: profile,
+            target: PickerTarget::SweepProfile,
+            separator_above: true,
+        });
+        let mut path =
+            ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite);
+        path.set_focused(f.path_focused);
+        path.set_picked(input.doc, f.path.iter().map(|&li| SceneElement::Line(li)));
+        tool_pickers.push(ToolPickerView {
+            heading: "Path",
+            picker: path,
+            target: PickerTarget::SweepPath,
+            separator_above: false,
+        });
         if f.body_choice == crate::actions::RevolveBodyChoice::Cut {
-            tool_pickers.push(body_tool_picker(
+            let mut cut = body_tool_picker(
                 input.doc,
                 "Cut bodies",
                 PickerTarget::SweepCut,
                 &f.cut_bodies,
                 Some(crate::theme::CUT_ACCENT),
                 true,
-            ));
+            );
+            cut.separator_above = false;
+            tool_pickers.push(cut);
         }
     }
     if let Some(l) = input.loft_body.as_ref() {
@@ -4101,54 +4130,8 @@ pub fn show_pane(
 
     if let Some(control) = &content.sweep {
         any_control = true;
-        ui.separator();
-
-        // Face element picker: the picked profile faces, click one's ✕ to drop it. Faces
-        // are still added by clicking them in the viewport.
-        labeled_row_top(ui, "Profile", |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                "sweep_faces",
-                !control.path_focused,
-                false,
-                crate::icons::IconId::Sketch,
-                &control.face_rows,
-            ) {
-                match event {
-                    crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(i) => {
-                        on_sweep_edit(SweepEdit::RemoveFace(Some(i)))
-                    }
-                    crate::element_picker::PickerEvent::Clear => {
-                        on_sweep_edit(SweepEdit::RemoveFace(None))
-                    }
-                }
-            }
-        });
-
-        // Path element picker: the picked path lines, click a row's ✕ to drop it. Lines
-        // are added by clicking them in the viewport.
-        labeled_row_top(ui, "Path", |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                "sweep_path",
-                control.path_focused,
-                false,
-                crate::icons::IconId::Line,
-                &control.path_rows,
-            ) {
-                match event {
-                    crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(i) => {
-                        on_sweep_edit(SweepEdit::RemovePath(Some(i)))
-                    }
-                    crate::element_picker::PickerEvent::Clear => {
-                        on_sweep_edit(SweepEdit::RemovePath(None))
-                    }
-                }
-            }
-        });
-
+        // Profile and Path are real `ToolPickerView`s now (#955), rendered with every other
+        // tool picker above; only the output choice and the commit button live here.
         // New body / Add to touching / Cut — the same segmented icon group as Revolve.
         // A cut needs the kernel, so it's only offered on an `occt` build.
         let choice = control.body_choice;
@@ -4179,7 +4162,7 @@ pub fn show_pane(
             }
         });
         // Ready once a profile face and a path are picked (#586).
-        let ready = !control.face_rows.is_empty() && !control.path_rows.is_empty();
+        let ready = !control.faces.is_empty() && !control.path.is_empty();
         if primary_button(ui, ready && controls_enabled, "Sweep") {
             on_sweep_edit(SweepEdit::Commit);
         }
