@@ -3548,10 +3548,16 @@ The model in one place:
 - **A face click fills an edges picker** with that face's edges when the picker takes edges and
   not faces (#960).
 - **Everything the focused picker can take highlights on hover**, and the Selection Exploder
-  fans only what it can take. *Not yet true in the code*: the hover path
-  (`resolve_viewport_hover_highlight`) and the Exploder's crowd filter
-  (`exploder_tool_accepts`) still match on the **tool** rather than asking the focused picker,
-  so both have per-tool gaps — #958 and #957 close them. The rule above is what they converge on.
+  fans only what it can take. *Partly true in the code*: the hover path
+  (`resolve_viewport_hover_highlight`) is still a per-tool match, but its catch-all no longer
+  returns nothing — it collects **everything under the cursor**
+  (`construction::collect_pick_candidates`, the same crowd the Exploder fans), keeps what the
+  **focused picker** can make of each (`expand_pick`), and lights the best by that picker's own
+  ranking (#958/#959). So a tool with no hand-written arm has hover feedback instead of none,
+  and it hovers what its picker *wants* rather than whatever happens to outrank it globally — a
+  datum plane no longer wins over the body a Joint takes. The remaining arms are the cases still
+  written by hand. The Exploder's crowd filter
+  (`exploder_tool_accepts`) still matches on the tool (#957).
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it

@@ -1185,6 +1185,21 @@ pub struct ToolPickerView {
     /// Whether to draw a divider above this picker. Tools whose pickers form one contiguous
     /// block with the following controls (e.g. Mirror, #602) suppress the inner dividers.
     pub separator_above: bool,
+    /// Where this picker draws. **Every** picker belongs in `tool_pickers` regardless (#958):
+    /// focus, hover, the tool-switch handoff, the Exploder's fan and `bearcad.pickers()` all
+    /// read that list, and a picker missing from it is invisible to every one of them.
+    pub render: PickerRender,
+}
+
+/// Where a [`ToolPickerView`] draws (#958).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerRender {
+    /// In the shared picker block at the top of the tool's section — the default.
+    Shared,
+    /// By the tool's own pane block, in place among its other controls: the Move tool's point
+    /// rows sit between the Rotation heading and the Angle-snap slider, so they can't be
+    /// hoisted to the top. The shared block skips these.
+    Inline,
 }
 
 /// Which tool-owned set a [`ToolPickerView`]'s removals apply to. Grows as tools migrate onto
@@ -1206,6 +1221,8 @@ pub enum PickerTarget {
     TreatmentEdges,
     /// The Loft tool's cross sections (`CreatingLoft::sections`, #955).
     LoftSections,
+    /// The Joint tool's member parts (`CreatingJoint::members`, #894/#955).
+    JointMembers,
     /// The Sweep tool's profile faces (`CreatingSweep::faces`, #955).
     SweepProfile,
     /// The Sweep tool's path lines (`CreatingSweep::path`, #955), chained tip-to-tail at commit.
@@ -1440,6 +1457,7 @@ fn body_tool_picker(
         picker,
         target,
         separator_above: true,
+        render: PickerRender::Shared,
     }
 }
 
@@ -1767,6 +1785,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: profile,
             target: PickerTarget::RevolveProfile,
             separator_above: true,
+            render: PickerRender::Shared,
         });
         // A straight reference only (#953): a sketch line with no curve to it, a body's feature
         // edge, or a world axis — never a circle.
@@ -1785,6 +1804,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: axis,
             target: PickerTarget::RevolveAxis,
             separator_above: false,
+            render: PickerRender::Shared,
         });
         if r.body_choice == crate::actions::RevolveBodyChoice::Cut {
             let mut cut = body_tool_picker(
@@ -1815,6 +1835,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker,
             target: PickerTarget::TreatmentEdges,
             separator_above: true,
+            render: PickerRender::Shared,
         });
     }
     if let Some(sections) = input.loft_sections.as_ref() {
@@ -1834,6 +1855,33 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker,
             target: PickerTarget::LoftSections,
             separator_above: true,
+            render: PickerRender::Shared,
+        });
+    }
+    if let Some(j) = input.joint.as_ref() {
+        // The Joint tool's two parts (#894/#955). It renders in the Joint block (between the
+        // Base row and the kind dropdown), but it belongs here so focus, hover, the handoff
+        // and `bearcad.pickers()` can see it (#958).
+        let mut members = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Body,
+                ElementKind::Component,
+                ElementKind::Joint,
+            ])
+            .rule(PickRule::LiveBody),
+            PickLimit::Finite(2),
+        );
+        members.set_focused(j.members_focused);
+        members.set_picked(
+            input.doc,
+            j.members.iter().map(|m| SceneElement::from_joint_ref(*m)),
+        );
+        tool_pickers.push(ToolPickerView {
+            heading: "Parts",
+            picker: members,
+            target: PickerTarget::JointMembers,
+            separator_above: true,
+            render: PickerRender::Inline,
         });
     }
     if let Some(faces) = input.extrude_faces.as_ref() {
@@ -1853,6 +1901,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: profile,
             target: PickerTarget::ExtrudeProfile,
             separator_above: true,
+            render: PickerRender::Shared,
         });
     }
     if let Some(f) = input.sweep.as_ref() {
@@ -1872,6 +1921,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: profile,
             target: PickerTarget::SweepProfile,
             separator_above: true,
+            render: PickerRender::Shared,
         });
         let mut path =
             ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite);
@@ -1882,6 +1932,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: path,
             target: PickerTarget::SweepPath,
             separator_above: false,
+            render: PickerRender::Shared,
         });
         if f.body_choice == crate::actions::RevolveBodyChoice::Cut {
             let mut cut = body_tool_picker(
@@ -1934,6 +1985,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: targets,
             target: PickerTarget::SketchSliceTargets,
             separator_above: true,
+            render: PickerRender::Shared,
         });
         let mut cutters =
             ElementPicker::new(ElementFilter::kind(ElementKind::Line), PickLimit::Infinite)
@@ -1945,6 +1997,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: cutters,
             target: PickerTarget::SketchSliceCutters,
             separator_above: false,
+            render: PickerRender::Shared,
         });
     }
     if let Some(sl) = input.slice_op.as_ref() {
@@ -1976,6 +2029,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             target: PickerTarget::SliceCutters,
             // No divider between the two pickers and the toggle below — one Slice block (#602).
             separator_above: false,
+            render: PickerRender::Shared,
         });
     }
     if let Some(m) = input.mirror_op.as_ref() {
@@ -1994,6 +2048,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             picker: plane_picker,
             target: PickerTarget::MirrorPlane,
             separator_above: true,
+            render: PickerRender::Shared,
         });
         // Secondary picker: the bodies picker reads as focused only once a mirror plane is
         // chosen — the plane is the first pick (#523). No divider between the plane picker,
@@ -4052,7 +4107,11 @@ pub fn show_pane(
 
     // Tool-owned element pickers (#213) render at the top of the active tool's section, above
     // its parameter controls — the picked set is the tool's primary input.
-    for view in &content.tool_pickers {
+    for view in content
+        .tool_pickers
+        .iter()
+        .filter(|v| v.render == PickerRender::Shared)
+    {
         any_control = true;
         if view.separator_above {
             ui.separator();
@@ -4646,27 +4705,17 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         let mut pending: Option<JointEdit> = None;
-        // The two parts, in pick order (#894/#955): whole bodies, components, or unit
-        // instances — a joint ties parts together, not their faces or edges.
-        let mut members = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Body,
-                ElementKind::Component,
-                ElementKind::Joint,
-            ])
-            .rule(PickRule::LiveBody),
-            PickLimit::Finite(2),
-        );
-        members.set_focused(control.members_focused);
-        members.set_picked(
-            doc,
-            control
-                .members
-                .iter()
-                .map(|m| SceneElement::from_joint_ref(*m)),
-        );
+        // The two parts, in pick order (#894/#955). Built with the other tool pickers so the
+        // rest of the app can see it (#958); drawn here, where it belongs in the Joint block.
+        let members = content
+            .tool_pickers
+            .iter()
+            .find(|v| v.target == PickerTarget::JointMembers);
+        if let Some(members) = members {
         labeled_row_top(ui, "Parts", |ui| {
-            if let Some(event) = crate::element_picker::show(ui, &members, doc, "joint_members") {
+            if let Some(event) =
+                crate::element_picker::show(ui, &members.picker, doc, "joint_members")
+            {
                 pending = Some(match event {
                     crate::element_picker::PickerEvent::Focus => JointEdit::MembersFocus,
                     crate::element_picker::PickerEvent::Remove(i) => JointEdit::RemoveMember(i),
@@ -4674,6 +4723,7 @@ pub fn show_pane(
                 });
             }
         });
+        }
         // The joint-type dropdown (#894).
         {
             use crate::model::JointKind as K;

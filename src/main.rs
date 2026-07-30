@@ -13560,6 +13560,17 @@ impl eframe::App for App {
                             }
                         }
                     }
+                    // The Joint tool's parts (#894/#955): removal drops the member.
+                    context::PickerTarget::JointMembers => {
+                        if edit != context::ToolPickerAction::Focus {
+                            if let Some(cj) = self.state.creating_joint.as_mut() {
+                                remove_or_clear(&mut cj.members, edit);
+                                if cj.base >= cj.members.len() {
+                                    cj.base = 0;
+                                }
+                            }
+                        }
+                    }
                     // The Extrude tool's profile faces (#268/#955). Removal goes through
                     // `ToggleExtrudeFace` rather than a raw `Vec` edit — the action also does
                     // the sketch bookkeeping and lands as one undo step.
@@ -15073,6 +15084,9 @@ fn resolve_viewport_hover_highlight(
     doc: &model::Document,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     occlusion: Option<&construction::PickOcclusion>,
+    // The active tool's pickers (#958): the fallback arm asks the focused one what a click
+    // here would take, so a tool with no hand-written arm still shows what it can pick.
+    tool_pickers: &[context::ToolPickerView],
 ) -> Option<gpu_viewport::ViewportHoverHighlight> {
     if suppress_hover {
         return None;
@@ -15368,7 +15382,61 @@ fn resolve_viewport_hover_highlight(
                 gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(bi))
             })
         }
-        _ => None,
+        // No arm above claimed this tool. Rather than nothing — which is what a dozen tools
+        // used to get, so a pick that worked lit up nothing (#958) — ask the **focused
+        // picker** what a click here would take, and light that. This is the rule the whole
+        // match is converging on; the arms above are the cases still written by hand.
+        _ => {
+            let focused = tool_pickers.iter().find(|view| view.picker.is_focused())?;
+            // Everything under the cursor, nearest first — not just the single best by the
+            // global priority, which would hand back whatever happens to outrank the thing
+            // this picker actually wants (a datum plane over the body a Joint takes). Then
+            // the first candidate the picker can make something of wins, ties going to the
+            // picker's own ranking (#959).
+            let mut candidates: Vec<(usize, Vec<SceneElement>)> =
+                construction::collect_pick_candidates(pp, project, doc, cam.eye(), occlusion)
+                    .into_iter()
+                    .filter_map(|c| {
+                        let element = scene_element_from_pick(&c.kind)?;
+                        // A face over an edges picker means that face's edges (#960), so the
+                        // hover shows every edge a click would take.
+                        let taken =
+                            crate::element_picker::expand_pick(doc, &focused.picker, &element);
+                        let rank = focused.picker.rank(crate::element_picker::ElementKind::of(
+                            taken.first()?,
+                        ));
+                        Some((rank, taken))
+                    })
+                    .collect();
+            candidates.sort_by_key(|(rank, _)| *rank);
+            let taken = candidates.into_iter().next().map(|(_, t)| t)?;
+            match taken.len() {
+                0 => None,
+                1 => Some(gpu_viewport::ViewportHoverHighlight::Element(
+                    taken.into_iter().next()?,
+                )),
+                _ => {
+                    let segments: Vec<(Vec3, Vec3)> = taken
+                        .iter()
+                        .filter_map(|e| match e {
+                            SceneElement::BodyEdge { a, b, .. } => Some((
+                                hierarchy::dequantize_body_point(*a),
+                                hierarchy::dequantize_body_point(*b),
+                            )),
+                            SceneElement::Line(li) => doc
+                                .lines
+                                .get(*li)
+                                .filter(|l| !l.deleted)
+                                .and_then(|l| crate::face::line_world_polyline(doc, l))
+                                .and_then(|p| Some((*p.first()?, *p.last()?))),
+                            _ => None,
+                        })
+                        .collect();
+                    (!segments.is_empty())
+                        .then_some(gpu_viewport::ViewportHoverHighlight::Curve { segments })
+                }
+            }
+        }
     }
 }
 
@@ -22966,6 +23034,7 @@ impl App {
             doc,
             &project,
             pick_occlusion,
+            tool_pickers,
         );
         // Elements-pane hover wins (#161): the mouse is over the pane, so no viewport pick
         // is active anyway; show the hovered row's element instead.
@@ -27830,6 +27899,7 @@ mod tests {
                 &doc,
                 &project,
                 None,
+                &[],
             )
             .is_none()
         );
@@ -27886,6 +27956,7 @@ mod tests {
             &doc,
             &project,
             None,
+            &[],
         );
         assert!(
             matches!(
@@ -27948,6 +28019,7 @@ mod tests {
                 &doc,
                 &project,
                 None,
+                &[],
             )
         };
         let picking_axis = hover(true);
@@ -28017,6 +28089,7 @@ mod tests {
                 &doc,
                 &project,
                 None,
+                &[],
             )
         };
 
@@ -28068,6 +28141,7 @@ mod tests {
                 picker: p,
                 target: PickerTarget::SliceTargets,
                 separator_above: true,
+                render: context::PickerRender::Shared,
             }
         };
         let kept = body_picker(None, &[1, 2]);
@@ -28105,6 +28179,7 @@ mod tests {
             picker: cutters,
             target: PickerTarget::SliceCutters,
             separator_above: true,
+            render: context::PickerRender::Shared,
         };
         let (folded, cut_bodies, coloured) = picker_highlights(&[view]);
         assert!(folded.is_empty(), "a cutter is not part of the blue selection");
@@ -28449,6 +28524,7 @@ mod tests {
                 &doc,
                 &project,
                 None,
+                &[],
             )
         };
 
@@ -28555,6 +28631,7 @@ mod tests {
                 &doc,
                 &project,
                 None,
+                &[],
             )
         };
 
@@ -28618,6 +28695,7 @@ mod tests {
             &doc,
             &project,
             None,
+            &[],
         );
         assert!(
             matches!(
@@ -28649,6 +28727,7 @@ mod tests {
             &doc,
             &project,
             None,
+            &[],
         );
         assert!(
             matches!(
@@ -28698,6 +28777,7 @@ mod tests {
             &doc,
             &project,
             None,
+            &[],
         );
         assert!(
             matches!(

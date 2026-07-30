@@ -14928,7 +14928,9 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::RevolveProfile
         | P::RevolveAxis
         | P::SweepProfile
-        | P::SweepPath => {}
+        | P::SweepPath
+        // The Joint tool's members: its focus is the chain's, not a stored flag.
+        | P::JointMembers => {}
     }
 }
 
@@ -15036,6 +15038,9 @@ fn apply_pick(
             }
             true
         }
+        // A joint member is a whole part, which the body routing below handles (it maps a
+        // unit's materialized body to its instance and enforces the two-part cap).
+        (P::JointMembers, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
         // Everything else the pane can route is a whole body, which the existing per-tool
         // routing already handles — including the unit-instance remapping and the Joint tool's
         // two-part cap.

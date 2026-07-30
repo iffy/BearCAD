@@ -381,7 +381,18 @@ pub fn expand_pick(
     if picker.accepts(doc, element) {
         return vec![element.clone()];
     }
-    // Only expand a face, and only into kinds this picker takes but can't reach directly.
+    // A picker that takes whole **bodies** takes a click anywhere on one (#218): its faces,
+    // edges and corners all resolve to the body they belong to. Checked before the face
+    // expansion, so a body picker gets the body rather than the face's edges.
+    if picker.filter().accepts_kind(ElementKind::Body) {
+        if let Some(body) = element_body(doc, element) {
+            let whole = SceneElement::Body(body);
+            if picker.accepts(doc, &whole) {
+                return vec![whole];
+            }
+        }
+    }
+    // Otherwise expand a face, and only into kinds this picker takes but can't reach directly.
     if ElementKind::of(element) != ElementKind::Face {
         return Vec::new();
     }
