@@ -211,9 +211,6 @@ pub enum SceneElement {
     /// cases normalize to [`SceneElement::BodyVertex`] / [`SceneElement::Origin`], which already
     /// name those points.
     ///
-    /// Constructed once the Move/Joint point pickers become real `ElementPicker`s (#955); the
-    /// identity, its round trip, and its highlight are in place ahead of that.
-    #[allow(dead_code)]
     MovePoint(crate::model::MovePointRef),
     /// One **analytic** edge of an extrusion's solid (#952) — what the 3D Chamfer/Fillet tool
     /// treats. Distinct from [`SceneElement::BodyEdge`], the quantized *mesh* edge: this one is
@@ -262,7 +259,6 @@ impl SceneElement {
     /// The element for a Move/Joint snap point (#952), normalizing the two cases that name
     /// something with an element already: a body corner is that corner, and the origin point is
     /// the origin.
-    #[allow(dead_code)]
     pub fn from_move_point(point: crate::model::MovePointRef) -> SceneElement {
         use crate::model::MovePointRef;
         match point {

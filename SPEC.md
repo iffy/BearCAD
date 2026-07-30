@@ -790,6 +790,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the exact candidate **point** (#739) — the corner, the edge's midpoint, or the face's
   middle (#738) — never the whole edge or face it sits on.
 
+  **The point pickers are real element pickers (#955).** Each takes a single point — a body
+  corner, an edge midpoint, or a planar face's middle (`SceneElement::MovePoint`) — and carries
+  the side rule as a `PickRule` (#953): a Move **start** point must land on one of the *moving*
+  bodies and an **end** point on anything else (`OnBodies` / `OffBodies`); a Joint **start**
+  point must land on the *driven* part and an **end** point on the *base*. The rule lives in the
+  picker, so the pane, the viewport hover, and the click path can't disagree about what a valid
+  pick is.
+
   **The chain is generic (#954/#962).** A tool declares its pickers in order with whether each
   is filled (`FocusChain`); focus is the first unfilled one (`focus_chain_step`), which is how a
   single-pick picker hands focus to the next input the moment it's filled. A hand-picked focus

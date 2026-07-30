@@ -267,24 +267,26 @@ pub struct MoveControl {
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
     /// other pickers is armed.
     pub bodies_focused: bool,
-    /// **Start point A** (#668): the picked point's label, if any, and whether its picker is armed.
-    pub start_a_rows: Vec<String>,
+    /// **Start point A** (#668): the picked point, if any, and whether its picker is armed.
+    /// Start points sit on a **moving** body, end points on stationary geometry (#953) — each
+    /// picker enforces that itself.
+    pub start_a: Option<crate::model::MovePointRef>,
     pub start_a_focused: bool,
-    /// **End point A** (#668): the picked point's label, if any, and whether its picker is armed.
-    pub end_a_rows: Vec<String>,
+    /// **End point A** (#668): the picked point, if any, and whether its picker is armed.
+    pub end_a: Option<crate::model::MovePointRef>,
     pub end_a_focused: bool,
     /// Angle snap (#917): how far apart the rotation's candidate dots sit, in degrees
     /// (0–90). The row shows a slider and a value field side by side.
     pub angle_snap_deg: f32,
     /// The optional **B pair** (#669), which adds the rotation.
-    pub start_b_rows: Vec<String>,
+    pub start_b: Option<crate::model::MovePointRef>,
     pub start_b_focused: bool,
-    pub end_b_rows: Vec<String>,
+    pub end_b: Option<crate::model::MovePointRef>,
     pub end_b_focused: bool,
     /// The optional **C pair**, which pins the spin B leaves free.
-    pub start_c_rows: Vec<String>,
+    pub start_c: Option<crate::model::MovePointRef>,
     pub start_c_focused: bool,
-    pub end_c_rows: Vec<String>,
+    pub end_c: Option<crate::model::MovePointRef>,
     pub end_c_focused: bool,
     pub tx: String,
     pub ty: String,
@@ -357,18 +359,21 @@ pub struct JointControl {
     /// The held side's label, shown on the Base row; clicking swaps sides.
     pub base_label: String,
     /// The A pair sets the mating origins, B aims the axis, C pins the spin — start
-    /// points on the driven part, end points on the base.
-    pub start_a_rows: Vec<String>,
+    /// points on the **driven** part, end points on the **base** (#953): each picker holds
+    /// that rule, so a click on the wrong part is simply not a pick.
+    pub driven_bodies: Vec<usize>,
+    pub base_bodies: Vec<usize>,
+    pub start_a: Option<crate::model::MovePointRef>,
     pub start_a_focused: bool,
-    pub end_a_rows: Vec<String>,
+    pub end_a: Option<crate::model::MovePointRef>,
     pub end_a_focused: bool,
-    pub start_b_rows: Vec<String>,
+    pub start_b: Option<crate::model::MovePointRef>,
     pub start_b_focused: bool,
-    pub end_b_rows: Vec<String>,
+    pub end_b: Option<crate::model::MovePointRef>,
     pub end_b_focused: bool,
-    pub start_c_rows: Vec<String>,
+    pub start_c: Option<crate::model::MovePointRef>,
     pub start_c_focused: bool,
-    pub end_c_rows: Vec<String>,
+    pub end_c: Option<crate::model::MovePointRef>,
     pub end_c_focused: bool,
     pub position: String,
     pub position2: String,
@@ -4408,22 +4413,31 @@ pub fn show_pane(
         }
         // Start point A is picked in both modes (#649/#668): it's the handle a snap moves
         // *from*.
+        // Each point picker takes a corner, an edge midpoint, or a face middle — a **start**
+        // point on one of the moving bodies, an **end** point on anything else (#953). The rule
+        // lives in the picker, so the pane, the viewport hover, and the click path agree.
+        let moving = control.targets.clone();
         let mut picker_row = |ui: &mut egui::Ui,
-                              label: &str,
+                              label: &'static str,
                               id: &'static str,
-                              rows: &[String],
+                              point: Option<crate::model::MovePointRef>,
+                              on_moving: bool,
                               focused: bool,
                               on_focus: MoveEdit,
                               on_clear: MoveEdit| {
+            let rule = if on_moving {
+                PickRule::OnBodies(moving.clone())
+            } else {
+                PickRule::OffBodies(moving.clone())
+            };
+            let mut picker = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Vertex).rule(rule),
+                PickLimit::Finite(1),
+            );
+            picker.set_focused(focused);
+            picker.set_picked(doc, point.map(SceneElement::from_move_point));
             labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show_labeled(
-                    ui,
-                    id,
-                    focused,
-                    true,
-                    crate::icons::IconId::Coincident,
-                    rows,
-                ) {
+                if let Some(event) = crate::element_picker::show(ui, &picker, doc, id) {
                     pending = Some(match event {
                         crate::element_picker::PickerEvent::Focus => on_focus,
                         crate::element_picker::PickerEvent::Remove(_)
@@ -4436,7 +4450,8 @@ pub fn show_pane(
             ui,
             "Start point A",
             "move_start_point_a",
-            &control.start_a_rows,
+            control.start_a,
+            true,
             control.start_a_focused,
             MoveEdit::StartAFocus,
             MoveEdit::ClearStartA,
@@ -4449,7 +4464,8 @@ pub fn show_pane(
                 ui,
                 "End point A",
                 "move_end_point_a",
-                &control.end_a_rows,
+                control.end_a,
+            false,
                 control.end_a_focused,
                 MoveEdit::EndAFocus,
                 MoveEdit::ClearEndA,
@@ -4491,7 +4507,8 @@ pub fn show_pane(
                 ui,
                 "Start point B",
                 "move_start_point_b",
-                &control.start_b_rows,
+                control.start_b,
+            true,
                 control.start_b_focused,
                 MoveEdit::StartBFocus,
                 MoveEdit::ClearStartB,
@@ -4500,7 +4517,8 @@ pub fn show_pane(
                 ui,
                 "End point B",
                 "move_end_point_b",
-                &control.end_b_rows,
+                control.end_b,
+            false,
                 control.end_b_focused,
                 MoveEdit::EndBFocus,
                 MoveEdit::ClearEndB,
@@ -4509,7 +4527,8 @@ pub fn show_pane(
                 ui,
                 "Start point C",
                 "move_start_point_c",
-                &control.start_c_rows,
+                control.start_c,
+            true,
                 control.start_c_focused,
                 MoveEdit::StartCFocus,
                 MoveEdit::ClearStartC,
@@ -4518,7 +4537,8 @@ pub fn show_pane(
                 ui,
                 "End point C",
                 "move_end_point_c",
-                &control.end_c_rows,
+                control.end_c,
+            false,
                 control.end_c_focused,
                 MoveEdit::EndCFocus,
                 MoveEdit::ClearEndC,
@@ -4746,22 +4766,27 @@ pub fn show_pane(
                 }
             });
         }
+        // Start points mate on the driven part, end points on the base (#953) — the picker
+        // refuses a point on the other side rather than letting a wrong pick land.
+        let driven = control.driven_bodies.clone();
+        let base_bodies = control.base_bodies.clone();
         let mut picker_row = |ui: &mut egui::Ui,
-                              label: &str,
+                              label: &'static str,
                               id: &'static str,
-                              rows: &[String],
+                              point: Option<crate::model::MovePointRef>,
+                              on_driven: bool,
                               focused: bool,
                               on_focus: JointEdit,
                               on_clear: JointEdit| {
+            let side = if on_driven { driven.clone() } else { base_bodies.clone() };
+            let mut picker = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OnBodies(side)),
+                PickLimit::Finite(1),
+            );
+            picker.set_focused(focused);
+            picker.set_picked(doc, point.map(SceneElement::from_move_point));
             labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show_labeled(
-                    ui,
-                    id,
-                    focused,
-                    true,
-                    crate::icons::IconId::Coincident,
-                    rows,
-                ) {
+                if let Some(event) = crate::element_picker::show(ui, &picker, doc, id) {
                     pending = Some(match event {
                         crate::element_picker::PickerEvent::Focus => on_focus,
                         crate::element_picker::PickerEvent::Remove(_)
@@ -4774,7 +4799,8 @@ pub fn show_pane(
             ui,
             "Start point A",
             "joint_start_point_a",
-            &control.start_a_rows,
+            control.start_a,
+            true,
             control.start_a_focused,
             JointEdit::StartAFocus,
             JointEdit::ClearStartA,
@@ -4783,7 +4809,8 @@ pub fn show_pane(
             ui,
             "End point A",
             "joint_end_point_a",
-            &control.end_a_rows,
+            control.end_a,
+            false,
             control.end_a_focused,
             JointEdit::EndAFocus,
             JointEdit::ClearEndA,
@@ -4792,7 +4819,8 @@ pub fn show_pane(
             ui,
             "Start point B",
             "joint_start_point_b",
-            &control.start_b_rows,
+            control.start_b,
+            true,
             control.start_b_focused,
             JointEdit::StartBFocus,
             JointEdit::ClearStartB,
@@ -4801,7 +4829,8 @@ pub fn show_pane(
             ui,
             "End point B",
             "joint_end_point_b",
-            &control.end_b_rows,
+            control.end_b,
+            false,
             control.end_b_focused,
             JointEdit::EndBFocus,
             JointEdit::ClearEndB,
@@ -4810,7 +4839,8 @@ pub fn show_pane(
             ui,
             "Start point C",
             "joint_start_point_c",
-            &control.start_c_rows,
+            control.start_c,
+            true,
             control.start_c_focused,
             JointEdit::StartCFocus,
             JointEdit::ClearStartC,
@@ -4819,7 +4849,8 @@ pub fn show_pane(
             ui,
             "End point C",
             "joint_end_point_c",
-            &control.end_c_rows,
+            control.end_c,
+            false,
             control.end_c_focused,
             JointEdit::EndCFocus,
             JointEdit::ClearEndC,
@@ -7436,17 +7467,17 @@ mod tests {
                 angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
                 translate_mode: crate::model::MoveTranslateMode::Free,
                 bodies_focused: true,
-                start_a_rows: Vec::new(),
+                start_a: None,
                 start_a_focused: false,
-                end_a_rows: Vec::new(),
+                end_a: None,
                 end_a_focused: false,
-                start_b_rows: Vec::new(),
+                start_b: None,
                 start_b_focused: false,
-                end_b_rows: Vec::new(),
+                end_b: None,
                 end_b_focused: false,
-                start_c_rows: Vec::new(),
+                start_c: None,
                 start_c_focused: false,
-                end_c_rows: Vec::new(),
+                end_c: None,
                 end_c_focused: false,
                 targets: vec![1, 4],
                 tx: String::new(),

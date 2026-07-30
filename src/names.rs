@@ -663,6 +663,14 @@ fn sketch_vertex_treatment_label(doc: &Document, index: usize) -> &'static str {
     }
 }
 
+/// A body's user-visible name, or `Body N` when it hasn't been renamed. Sub-element labels
+/// ("Corner of …", "Edge midpoint of …") read better against the name the user chose.
+fn body_label(doc: &Document, body: usize) -> String {
+    element_name(doc, SceneElement::Body(body))
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| format!("Body {body}"))
+}
+
 pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
     if let Some(name) = element_name(doc, element.clone()) {
         return name.to_string();
@@ -687,14 +695,31 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),
         SceneElement::Body(i) => format!("Body {i}"),
         SceneElement::FaceEdge(_) => "Edge".to_string(),
-        SceneElement::BodyEdge { .. } => "Body edge".to_string(),
-        SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
+        SceneElement::BodyEdge { body, .. } => format!("Edge of {}", body_label(doc, *body)),
+        SceneElement::BodyVertex { body, .. } => {
+            format!("Corner of {}", body_label(doc, *body))
+        }
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
         SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
         SceneElement::ExtrusionEdge { extrusion, .. } => format!("Edge of Extrusion {extrusion}"),
+        // A snap point reads by which feature of the body it sits on (#955), the wording the
+        // Move tool's own picker rows used before they became real pickers.
         SceneElement::MovePoint(point) => match point.body() {
-            Some(body) => format!("Point on Body {body}"),
-            None => "Origin point".to_string(),
+            Some(body) => {
+                let body = body_label(doc, body);
+                match point {
+                    crate::model::MovePointRef::Vertex { .. } => format!("Corner of {body}"),
+                    crate::model::MovePointRef::EdgeMidpoint { .. } => {
+                        format!("Edge midpoint of {body}")
+                    }
+                    crate::model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
+                    crate::model::MovePointRef::FaceCenter { .. } => {
+                        format!("Middle of a face of {body}")
+                    }
+                    crate::model::MovePointRef::Origin => "Origin".to_string(),
+                }
+            }
+            None => "Origin".to_string(),
         },
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean {i}"),

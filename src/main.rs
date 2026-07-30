@@ -8797,22 +8797,13 @@ impl App {
         Some((spots.into_iter().map(|p| (body, p)).collect(), guides))
     }
 
-    /// How a picked Move point reads in its element picker (#649/#650): the body's name plus
-    /// which feature of it was taken.
+    /// How a picked Move/Joint point reads in a status line (#649/#650) — the same wording its
+    /// picker row shows, since both go through `names::scene_element_label` now (#955).
     fn move_point_label(&self, point: &model::MovePointRef) -> String {
-        let Some(bi) = point.body() else {
-            return "Origin".to_string();
-        };
-        let body = names::element_name(&self.state.doc, SceneElement::Body(bi))
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| format!("Body {bi}"));
-        match point {
-            model::MovePointRef::Vertex { .. } => format!("Corner of {body}"),
-            model::MovePointRef::EdgeMidpoint { .. } => format!("Edge midpoint of {body}"),
-            model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
-            model::MovePointRef::FaceCenter { .. } => format!("Middle of a face of {body}"),
-            model::MovePointRef::Origin => "Origin".to_string(),
-        }
+        names::scene_element_label(
+            &self.state.doc,
+            &SceneElement::from_move_point(*point),
+        )
     }
 
     /// Drag a jointed part with the Select tool (#897): grabbing an already-selected
@@ -11795,35 +11786,17 @@ impl eframe::App for App {
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
                         bodies_focused: move_focus == MoveFocus::Bodies,
-                        start_a_rows: cm
-                            .and_then(|c| c.start_point_a)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        start_a: cm.and_then(|c| c.start_point_a),
                         start_a_focused: move_focus == MoveFocus::StartPointA,
-                        end_a_rows: cm
-                            .and_then(|c| c.end_point_a)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        end_a: cm.and_then(|c| c.end_point_a),
                         end_a_focused: move_focus == MoveFocus::EndPointA,
-                        start_b_rows: cm
-                            .and_then(|c| c.start_point_b)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        start_b: cm.and_then(|c| c.start_point_b),
                         start_b_focused: move_focus == MoveFocus::StartPointB,
-                        end_b_rows: cm
-                            .and_then(|c| c.end_point_b)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        end_b: cm.and_then(|c| c.end_point_b),
                         end_b_focused: move_focus == MoveFocus::EndPointB,
-                        start_c_rows: cm
-                            .and_then(|c| c.start_point_c)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        start_c: cm.and_then(|c| c.start_point_c),
                         start_c_focused: move_focus == MoveFocus::StartPointC,
-                        end_c_rows: cm
-                            .and_then(|c| c.end_point_c)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        end_c: cm.and_then(|c| c.end_point_c),
                         end_c_focused: move_focus == MoveFocus::EndPointC,
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
@@ -11872,40 +11845,34 @@ impl eframe::App for App {
                             .map(|m| self.joint_member_label(*m))
                             .collect(),
                         members_focused: joint_focus == JointFocus::Members,
+                        // Which bodies each side of the joint owns (#953): start points mate
+                        // on the driven part, end points on the base.
+                        driven_bodies: members
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| *i != base)
+                            .flat_map(|(_, m)| joints::member_bodies(&self.state.doc, *m))
+                            .collect(),
+                        base_bodies: members
+                            .get(base)
+                            .map(|m| joints::member_bodies(&self.state.doc, *m))
+                            .unwrap_or_default(),
                         kind: cj.map(|c| c.kind.clone()).unwrap_or_default(),
                         base_label: members
                             .get(base)
                             .map(|m| self.joint_member_label(*m))
                             .unwrap_or_default(),
-                        start_a_rows: cj
-                            .and_then(|c| c.start_point_a)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        start_a: cj.and_then(|c| c.start_point_a),
                         start_a_focused: joint_focus == JointFocus::StartPointA,
-                        end_a_rows: cj
-                            .and_then(|c| c.end_point_a)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        end_a: cj.and_then(|c| c.end_point_a),
                         end_a_focused: joint_focus == JointFocus::EndPointA,
-                        start_b_rows: cj
-                            .and_then(|c| c.start_point_b)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        start_b: cj.and_then(|c| c.start_point_b),
                         start_b_focused: joint_focus == JointFocus::StartPointB,
-                        end_b_rows: cj
-                            .and_then(|c| c.end_point_b)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        end_b: cj.and_then(|c| c.end_point_b),
                         end_b_focused: joint_focus == JointFocus::EndPointB,
-                        start_c_rows: cj
-                            .and_then(|c| c.start_point_c)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        start_c: cj.and_then(|c| c.start_point_c),
                         start_c_focused: joint_focus == JointFocus::StartPointC,
-                        end_c_rows: cj
-                            .and_then(|c| c.end_point_c)
-                            .map(|p| vec![self.move_point_label(&p)])
-                            .unwrap_or_default(),
+                        end_c: cj.and_then(|c| c.end_point_c),
                         end_c_focused: joint_focus == JointFocus::EndPointC,
                         position: cj.map(|c| c.position.clone()).unwrap_or_default(),
                         position2: cj.map(|c| c.position2.clone()).unwrap_or_default(),
