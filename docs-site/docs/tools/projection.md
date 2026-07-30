@@ -10,12 +10,18 @@ as reference lines you can snap, dimension, and constrain against.
 
 - Click an outside **body edge** to project that edge; click a **face** or **corner** to
   project the whole body's feature edges.
-- Or select edges (or a body) with the Select tool before opening the sketch, then press
-  **Y** inside it.
+- Click a **construction plane** to project the line where it crosses the sketch plane.
+- Click a **projected line** to remove it from the sketch.
+- Or select edges, a body, or a plane with the Select tool before opening the sketch, then
+  press **Y** inside it.
 - Projected lines draw dashed in their own teal, and behave like construction geometry.
 
-Projections are **associative**: when the source body changes, the projected lines follow
-it. Imported units project too — a [unit's face outline](/docs/files#importing-bearcad-files)
+The tool picks outside geometry only; the sketch's own drawn geometry belongs to the other
+sketch tools.
+
+Projections are **associative**: when the source body changes — or the source plane moves
+or is resized — the projected lines follow it. Imported units project too — a
+[unit's face outline](/docs/files#importing-bearcad-files)
 lands in a sketch opened on it automatically.
 
 ## Help

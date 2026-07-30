@@ -10922,7 +10922,7 @@ impl eframe::App for App {
                         ui,
                         icons::IconId::Project,
                         self.state.tool == Tool::Project,
-                        "Projection — click an outside edge or body to reference it in this sketch (or select edges and press Y)",
+                        "Projection — click an outside edge, body, or plane to reference it in this sketch (or select edges and press Y)",
                         TOOLBAR_ICON_SIZE,
                     )
                     .clicked()
@@ -15338,14 +15338,37 @@ fn resolve_viewport_hover_highlight(
         }
         // Project tool (#140): glow the outside edge or body face a click would project.
         Tool::Project if sketch_session.is_some() => {
+            let session = sketch_session?;
+            // A body corner projects its whole body, exactly as the click takes it.
+            if let Some(kind) = pickable_body_vertex(pp, project, doc, occlusion) {
+                return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+            }
             let gp = cam.ground_point(pp, viewport, vp);
             let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
-            matches!(
-                target.kind,
-                construction::PickTargetKind::BodyEdge { .. }
-                    | construction::PickTargetKind::BodyFace { .. }
-            )
-            .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+            // What glows is what a click takes (#983): the same rule the picker and the
+            // Exploder's fan enforce — outside bodies/edges and crossing planes, plus this
+            // sketch's projected lines (a click un-projects one), never its own geometry.
+            let rule = crate::element_picker::PickRule::ProjectableInto(session.sketch);
+            let element = match &target.kind {
+                construction::PickTargetKind::BodyEdge { body, a, b } => {
+                    Some(SceneElement::BodyEdge {
+                        body: *body,
+                        a: hierarchy::quantize_body_point(*a),
+                        b: hierarchy::quantize_body_point(*b),
+                    })
+                }
+                construction::PickTargetKind::BodyFace { body, .. } => {
+                    Some(SceneElement::Body(*body))
+                }
+                construction::PickTargetKind::ConstructionPlane(index) => {
+                    Some(SceneElement::ConstructionPlane(*index))
+                }
+                construction::PickTargetKind::Line(index) => Some(SceneElement::Line(*index)),
+                _ => None,
+            };
+            element
+                .is_some_and(|e| rule.allows(doc, &e))
+                .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
         }
         // Dimension tool (#190): glow the dimensionable segment under the cursor — the same
         // thing a click would dimension — so hover has feedback like every other pick tool.
@@ -22522,8 +22545,8 @@ impl App {
 
         // Project tool (#140): click an outside body edge to project it into the open
         // sketch; a body face or vertex projects the whole body's edges.
-        if self.state.tool == Tool::Project && self.state.sketch_session.is_some() {
-            if let Some(pp) = pointer_screen {
+        if self.state.tool == Tool::Project {
+            if let (Some(session), Some(pp)) = (self.state.sketch_session, pointer_screen) {
                 if ui.input(|i| i.pointer.primary_pressed()) {
                     let body_vertex =
                         construction::nearest_body_vertex(pp, &project, &self.state.doc)
@@ -22547,16 +22570,33 @@ impl App {
                                 construction::PickTargetKind::BodyFace { body, .. } => {
                                     Some(SceneElement::Body(body))
                                 }
+                                construction::PickTargetKind::ConstructionPlane(index) => {
+                                    Some(SceneElement::ConstructionPlane(index))
+                                }
+                                construction::PickTargetKind::Line(index) => {
+                                    Some(SceneElement::Line(index))
+                                }
                                 _ => None,
                             })
                     });
-                    match picked {
+                    // One definition of what the tool takes (#983): the same rule the
+                    // picker and the Exploder's fan are pruned by, so a click can never
+                    // land on something they didn't offer (and vice versa).
+                    let rule =
+                        crate::element_picker::PickRule::ProjectableInto(session.sketch);
+                    match picked.filter(|element| rule.allows(&self.state.doc, element)) {
+                        // A projected line is re-picked to un-project it (#983): the
+                        // reference is removed from the sketch.
+                        Some(element @ SceneElement::Line(_)) => {
+                            self.state.apply(Action::DeleteElement { element });
+                            self.state.status = "Removed the projected reference".to_string();
+                        }
                         Some(element) => {
                             self.state.apply(Action::ProjectElement { element });
                         }
                         None => {
                             self.state.status =
-                                "Project: click an outside body edge, face, or vertex"
+                                "Project: click an outside body edge, face, vertex, or plane — or a projected line to remove it"
                                     .to_string();
                         }
                     }
@@ -25580,7 +25620,7 @@ impl App {
                 "Shape — b cycles cuboid/cylinder/sphere • type the sizes • Enter: create • Esc: cancel"
             }
             Tool::Project => {
-                "Projection — click an outside edge or body to bring it in as a dashed reference • Esc: done"
+                "Projection — click an outside edge, body, or plane to bring it in as a dashed reference; click a projected line to remove it • Esc: done"
             }
             Tool::Loft => {
                 if self
@@ -29618,6 +29658,55 @@ mod tests {
         exploder_keep_for_picker(&doc, &select, &mut candidates);
         let kept: Vec<K> = candidates.into_iter().map(|c| c.kind).collect();
         assert_eq!(kept, vec![line, endpoint]);
+    }
+
+    /// #983: the Projection tool's fan is pruned by the same rule its click obeys — outside
+    /// sources (body edges, planes that cross the sketch) plus this sketch's projected lines
+    /// (offered to un-project them) — never the sketch's own drawn geometry or parallel planes.
+    #[test]
+    fn exploder_project_fan_offers_outside_sources_and_projected_lines() {
+        use crate::element_picker::{
+            ElementFilter, ElementKind, ElementPicker, PickLimit, PickRule,
+        };
+        use construction::PickTargetKind as K;
+
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
+        projected.projection = Some(crate::model::ProjectionSource::Plane { plane: 2 });
+        doc.lines.push(projected);
+
+        let own_line = K::Line(0);
+        let projected_line = K::Line(1);
+        let crossing_plane = K::ConstructionPlane(2);
+        let host_plane = K::ConstructionPlane(0);
+        let body_edge = K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X };
+        let all = [
+            own_line,
+            projected_line.clone(),
+            crossing_plane.clone(),
+            host_plane,
+            body_edge.clone(),
+        ];
+
+        // The picker the context pane builds for Project-in-a-sketch.
+        let project = ElementPicker::new(
+            ElementFilter::kinds(&[
+                ElementKind::Plane,
+                ElementKind::Vertex,
+                ElementKind::Line,
+                ElementKind::Edge,
+                ElementKind::Body,
+            ])
+            .rule(PickRule::ProjectableInto(sketch)),
+            PickLimit::Infinite,
+        );
+        let mut candidates = crowd(&all);
+        exploder_keep_for_picker(&doc, &project, &mut candidates);
+        let kept: Vec<K> = candidates.into_iter().map(|c| c.kind).collect();
+        assert_eq!(kept, vec![projected_line, crossing_plane, body_edge]);
     }
 
     #[test]

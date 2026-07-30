@@ -257,6 +257,10 @@ pub enum ProjectionSource {
         face: FaceId,
         edge: usize,
     },
+    /// A construction plane (#983): the projected line runs along the two planes'
+    /// intersection, spanning the source plane's drawn extent. Identified by index — stable,
+    /// unlike a mesh edge — so the reference follows the plane through moves and resizes.
+    Plane { plane: usize },
 }
 
 /// Number of straight sub-segments used to approximate a curved [`Line`] for rendering,

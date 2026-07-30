@@ -1484,15 +1484,21 @@ fn selection_picker_for(
             p.set_focused(true);
             p
         }
-        // Project in a sketch: points, lines, edges (#498).
+        // Project in a sketch (#498/#983): only what a projection can source — outside body
+        // corners/edges/bodies and planes that cross the sketch — plus this sketch's already-
+        // projected lines, picked to un-project them. The rule is what keeps the sketch's own
+        // drawn geometry out of the fan and the hover.
         Tool::Project if in_sketch => {
+            let sketch = open_sketch.expect("in_sketch guard");
             let mut p = ElementPicker::new(
                 ElementFilter::kinds(&[
+                    ElementKind::Plane,
                     ElementKind::Vertex,
                     ElementKind::Line,
                     ElementKind::Edge,
                     ElementKind::Body,
-                ]),
+                ])
+                .rule(PickRule::ProjectableInto(sketch)),
                 PickLimit::Infinite,
             );
             p.set_focused(true);
@@ -3693,7 +3699,8 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
         ),
         (Some(Tool::Project), "Selection") => Some(
             "The outside geometry to pull onto this sketch plane — click a body edge to \
-             project it, or a face or corner to take the whole body's edges.",
+             project it, a face or corner to take the whole body's edges, or a plane for \
+             its crossing line. Clicking a projected line removes it.",
         ),
         (Some(Tool::Sketch), "Selection") => Some(
             "The face the new sketch opens on — a construction plane, a flat body face, \

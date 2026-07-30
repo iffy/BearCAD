@@ -14,8 +14,13 @@ use glam::Vec3;
 
 /// Resolve a projection source to its current world-space segment, or `None` when the
 /// source geometry no longer exists (deleted body, or the keyed edge no longer matches
-/// after a rebuild).
-pub fn resolve_projection_source(doc: &Document, source: &ProjectionSource) -> Option<(Vec3, Vec3)> {
+/// after a rebuild). `sketch` is the projection's target: a plane source's segment lies
+/// where the plane crosses that sketch's plane (#983), so the target is part of the answer.
+pub fn resolve_projection_source(
+    doc: &Document,
+    sketch: SketchId,
+    source: &ProjectionSource,
+) -> Option<(Vec3, Vec3)> {
     match source {
         ProjectionSource::BodyEdge { body, a, b } => {
             let mesh = crate::extrude::body_solid_mesh(doc, *body)?;
@@ -33,7 +38,43 @@ pub fn resolve_projection_source(doc: &Document, source: &ProjectionSource) -> O
         ProjectionSource::UnitEdge { instance, face, edge } => {
             crate::units::unit_edge_world_segment(doc, *instance, face, *edge)
         }
+        ProjectionSource::Plane { plane } => plane_sketch_intersection(doc, sketch, *plane),
     }
+}
+
+/// Where a construction plane crosses `sketch`'s plane (#983): a world segment along the two
+/// infinite planes' intersection line, spanning the source plane's drawn rectangle (its
+/// corners' shadow on the line) — so the reference line sits where the user sees the planes
+/// meet, even when the drawn rectangle itself floats clear of the sketch plane (the datum
+/// planes' quadrant gap). `None` for a deleted plane, parallel/coincident planes, or a
+/// degenerate span.
+pub fn plane_sketch_intersection(
+    doc: &Document,
+    sketch: SketchId,
+    plane: usize,
+) -> Option<(Vec3, Vec3)> {
+    let source = doc.construction_planes.get(plane).filter(|p| !p.deleted)?;
+    let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
+    let d = source.normal.cross(frame.normal);
+    if d.length_squared() < 1e-8 {
+        return None;
+    }
+    // A point on both planes: for planes n1·p=k1, n2·p=k2 with d = n1×n2,
+    // p0 = ((k1·n2 − k2·n1) × d) / |d|².
+    let (k1, k2) = (
+        source.normal.dot(source.origin),
+        frame.normal.dot(frame.origin),
+    );
+    let p0 = (frame.normal * k1 - source.normal * k2).cross(d) / d.length_squared();
+    let dir = d.normalize();
+    let mut t_min = f32::MAX;
+    let mut t_max = f32::MIN;
+    for corner in crate::construction::plane_corners(source) {
+        let t = (corner - p0).dot(dir);
+        t_min = t_min.min(t);
+        t_max = t_max.max(t);
+    }
+    (t_max - t_min > 1e-3).then(|| (p0 + dir * t_min, p0 + dir * t_max))
 }
 
 /// Project a world-space point onto `sketch`'s plane (along the plane normal) and return it
@@ -60,7 +101,7 @@ pub fn refresh_projections(doc: &mut Document) {
         .filter(|(_, line)| !line.deleted)
         .filter_map(|(li, line)| {
             let source = line.projection.as_ref()?;
-            let (wa, wb) = resolve_projection_source(doc, source)?;
+            let (wa, wb) = resolve_projection_source(doc, line.sketch, source)?;
             let a = project_world_point_into_sketch(doc, line.sketch, wa)?;
             let b = project_world_point_into_sketch(doc, line.sketch, wb)?;
             Some((li, a, b))
@@ -116,8 +157,34 @@ pub fn projection_sources_from_selection(
                     }
                 }
             }
+            // A construction plane (#983) projects as the line where it crosses the sketch.
+            SceneElement::ConstructionPlane(plane) => {
+                push(ProjectionSource::Plane { plane });
+            }
             _ => {}
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #983: a datum plane's projection into a sketch runs along the two planes'
+    /// intersection — every point on both planes — spanning the source's drawn extent even
+    /// though the drawn rectangle floats a gap clear of the sketch plane.
+    #[test]
+    fn plane_intersection_spans_the_source_extent_on_the_sketch_plane() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // YZ (index 2, normal X) crosses the ground sketch along the world Y axis.
+        let (a, b) = plane_sketch_intersection(&doc, sketch, 2).expect("YZ crosses the ground");
+        for p in [a, b] {
+            assert!(p.x.abs() < 1e-4 && p.z.abs() < 1e-4, "on both planes: {p:?}");
+        }
+        assert!((a - b).length() > 1.0, "a real span, not a degenerate point");
+        // The sketch's own plane is parallel to itself: nothing to intersect.
+        assert!(plane_sketch_intersection(&doc, sketch, 0).is_none());
+    }
 }

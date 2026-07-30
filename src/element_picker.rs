@@ -302,6 +302,11 @@ pub enum PickRule {
     /// Only geometry belonging to this sketch (#742): while a sketch is open, Select and
     /// Constraint touch only its own geometry.
     InSketch(crate::model::SketchId),
+    /// What the Projection tool can source for this sketch (#983): **outside** geometry a
+    /// projection resolves — a body, its edges/corners, a construction plane that actually
+    /// crosses the sketch plane — plus a line already projected *into* this sketch, picked
+    /// to un-project it. Never the sketch's own drawn geometry.
+    ProjectableInto(crate::model::SketchId),
     /// Only bodies that exist, aren't deleted, and aren't shadow (already consumed by another
     /// operation). Non-body elements pass — combine with a body-only kind filter.
     LiveBody,
@@ -326,6 +331,23 @@ impl PickRule {
     pub fn allows(&self, doc: &Document, element: &SceneElement) -> bool {
         match self {
             PickRule::InSketch(sketch) => element_in_sketch(doc, *sketch, element),
+            PickRule::ProjectableInto(sketch) => match element {
+                // A projected line of this sketch is re-picked to un-project it; every other
+                // sketch line — this sketch's own geometry, or another sketch's, which no
+                // projection source can track — is refused.
+                SceneElement::Line(li) => doc.lines.get(*li).is_some_and(|l| {
+                    !l.deleted && l.sketch == *sketch && l.projection.is_some()
+                }),
+                SceneElement::Body(_)
+                | SceneElement::BodyEdge { .. }
+                | SceneElement::BodyVertex { .. } => true,
+                // Only a plane the projection can actually resolve — one that crosses the
+                // sketch plane — so the fan never offers a parallel plane a click would refuse.
+                SceneElement::ConstructionPlane(plane) => {
+                    crate::projection::plane_sketch_intersection(doc, *sketch, *plane).is_some()
+                }
+                _ => false,
+            },
             PickRule::LiveBody => match element {
                 SceneElement::Body(index) => {
                     doc.bodies.get(*index).is_some_and(|b| !b.deleted && !b.shadow)
@@ -1447,6 +1469,38 @@ mod tests {
             &doc,
             &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
         ));
+    }
+
+    /// #983: the Projection tool's rule — outside sources (bodies, their edges/corners,
+    /// planes that cross the sketch) plus this sketch's already-projected lines (picked to
+    /// un-project them), never the sketch's own drawn geometry.
+    #[test]
+    fn projectable_into_takes_outside_sources_and_projected_lines_only() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
+        projected.projection = Some(crate::model::ProjectionSource::Plane { plane: 2 });
+        doc.lines.push(projected);
+
+        let rule = PickRule::ProjectableInto(sketch);
+        assert!(!rule.allows(&doc, &line(0)), "the sketch's own drawn line is refused");
+        assert!(rule.allows(&doc, &line(1)), "a projected line is taken, to un-project it");
+        assert!(rule.allows(&doc, &body(0)));
+        assert!(rule.allows(
+            &doc,
+            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+        ));
+        assert!(
+            rule.allows(&doc, &SceneElement::ConstructionPlane(2)),
+            "YZ crosses the ground sketch"
+        );
+        assert!(
+            !rule.allows(&doc, &SceneElement::ConstructionPlane(0)),
+            "the sketch's own plane is parallel — no line to project"
+        );
+        assert!(!rule.allows(&doc, &SceneElement::Origin));
     }
 
     #[test]

@@ -7140,9 +7140,9 @@ impl AppState {
                             face: (**inner).clone(),
                             edge,
                         };
-                        let Some((wa, wb)) =
-                            crate::projection::resolve_projection_source(&self.doc, &source)
-                        else {
+                        let Some((wa, wb)) = crate::projection::resolve_projection_source(
+                            &self.doc, sketch, &source,
+                        ) else {
                             continue;
                         };
                         let (Some(a), Some(b)) = (
@@ -8053,14 +8053,16 @@ impl AppState {
                 };
                 if sources.is_empty() {
                     return ActionResult::Err(
-                        "Select body edges (or a body) to project".to_string(),
+                        "Select body edges, a body, or a plane to project".to_string(),
                     );
                 }
                 let mut created = 0usize;
                 for source in sources {
-                    let Some((wa, wb)) =
-                        crate::projection::resolve_projection_source(&self.doc, &source)
-                    else {
+                    let Some((wa, wb)) = crate::projection::resolve_projection_source(
+                        &self.doc,
+                        session.sketch,
+                        &source,
+                    ) else {
                         continue;
                     };
                     let (Some(a), Some(b)) = (
@@ -8092,7 +8094,7 @@ impl AppState {
                         "Nothing projectable (edges vanish edge-on to the sketch plane)".to_string(),
                     );
                 }
-                self.status = format!("Projected {created} edge(s) into the sketch");
+                self.status = format!("Projected {created} reference(s) into the sketch");
                 self.refresh_document_health();
                 ActionResult::Ok
             }
@@ -21975,6 +21977,44 @@ mod tests {
         // The Project tool is a sketch-edit tool with a lua name.
         assert!(Tool::Project.is_sketch_edit_tool());
         assert_eq!(Tool::from_name("project"), Some(Tool::Project));
+    }
+
+    /// #983: projecting a construction plane creates a dashed reference line along the two
+    /// planes' intersection; the sketch's own (parallel) plane is refused; deleting the line
+    /// (the Project tool's un-project click) removes the reference.
+    #[test]
+    fn project_element_projects_a_plane_and_unprojects_on_delete() {
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+
+        let before = state.doc.lines.len();
+        let result =
+            state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(2) });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.lines.len(), before + 1);
+        let li = state.doc.lines.len() - 1;
+        let line = &state.doc.lines[li];
+        assert!(matches!(
+            line.projection,
+            Some(crate::model::ProjectionSource::Plane { plane: 2 })
+        ));
+        assert!(line.construction);
+        // YZ (normal X) meets the ground sketch along the world Y axis: local u stays 0.
+        assert!(line.x0.abs() < 1e-3 && line.x1.abs() < 1e-3, "{line:?}");
+        assert!((line.y0 - line.y1).abs() > 1.0, "a real span");
+
+        // The sketch's own plane is parallel — nothing to project.
+        let result =
+            state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(0) });
+        assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
+
+        // Un-project: deleting the projected line removes the reference.
+        state.apply(Action::DeleteElement { element: SceneElement::Line(li) });
+        assert!(state.doc.lines[li].deleted);
     }
 
     #[test]

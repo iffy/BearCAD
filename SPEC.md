@@ -269,6 +269,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   are fixed (not draggable). Edges edge-on to the sketch plane (zero projected length) are
   skipped. Standalone vertex projection is not yet supported (a projected edge's endpoints
   already serve as snap targets).
+  **Construction planes project too (#983)** (`ProjectionSource::Plane`, identified by
+  index — stable, unlike a mesh edge): the projected line runs along the two planes'
+  intersection, spanning the source plane's drawn rectangle's shadow on that line
+  (`plane_sketch_intersection`) — so the reference sits where the planes visibly cross even
+  though the datum planes' quadrant rectangles float a gap clear of the origin — and
+  follows the plane through moves and resizes. A plane parallel to the sketch resolves to
+  nothing and is refused up front.
+  **The tool picks outside geometry only (#983)**: its picker carries
+  `PickRule::ProjectableInto(sketch)` — bodies, their edges/corners, crossing planes, and
+  this sketch's **already-projected lines**, which a click **un-projects** (removes) —
+  never the sketch's own drawn geometry. The hover path, the click path, and the Selection
+  Exploder's fan all consult that one rule, so none can offer what another would refuse.
 - Sketch entities: line, arc, circle, ellipse, spline, point, and construction-geometry
   variants. Convenience primitives (e.g. **rectangle**, drawn as four constrained lines)
   may be offered as tools that emit the underlying entities.
@@ -3742,7 +3754,10 @@ The model in one place:
   `ContextPaneContent` and must stay `Clone + Debug + PartialEq`. The rules:
   `InSketch(sketch)` (what the open sketch owns, #742 — the same `element_in_sketch` the hover
   and click paths use, so there is one definition and not three; the in-sketch Mirror, Offset
-  and Repeat pickers carry it, which is what let the Mirror tool's hover arm go), `LiveBody` (not deleted, not
+  and Repeat pickers carry it, which is what let the Mirror tool's hover arm go),
+  `ProjectableInto(sketch)` (the Projection tool's sources, #983: outside bodies/edges/corners,
+  planes that cross the sketch, and the sketch's own projected lines — picked to un-project
+  them), `LiveBody` (not deleted, not
   consumed by another operation), `OnBodies` / `OffBodies` (the Move tool's start points land on
   a **moving** body, its end points on stationary geometry, #649/#650), `Straight` (a
   Revolve axis or Repeat path takes no curve), `Construction(bool)`, and `NotIn(…)` (Combine's B
