@@ -1781,6 +1781,139 @@ fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<e
     out
 }
 
+/// The world-space wireframe a Selection Exploder loupe magnifies for one pick target: the
+/// segments and standalone points that make it recognisable. Used to decide whether a loupe's
+/// content lands inside its disc at all, and to frame it when it doesn't (#944/#945) — a whole
+/// body's edges and a big face's boundary both sit far outside the hitbox the loupe magnifies.
+///
+/// A constraint badge has no world wireframe: its glyph is drawn at the loupe's centre, so it
+/// is always visible and never needs framing.
+fn pick_target_loupe_wireframe(
+    doc: &model::Document,
+    kind: &construction::PickTargetKind,
+    anchor: Vec3,
+) -> (Vec<(Vec3, Vec3)>, Vec<Vec3>) {
+    use construction::PickTargetKind as PK;
+    let polyline = |pts: Vec<Vec3>| -> Vec<(Vec3, Vec3)> {
+        pts.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    match kind {
+        PK::Point(cp) => (
+            Vec::new(),
+            construction::point_world_position(doc, cp.clone())
+                .into_iter()
+                .collect(),
+        ),
+        PK::Line(i) => (
+            doc.lines
+                .get(*i)
+                .and_then(|l| crate::face::line_world_polyline(doc, l))
+                .map(polyline)
+                .unwrap_or_default(),
+            Vec::new(),
+        ),
+        PK::Circle(i) => (
+            doc.circles
+                .get(*i)
+                .and_then(|c| crate::face::circle_world_perimeter(doc, c, 48))
+                .map(polyline)
+                .unwrap_or_default(),
+            Vec::new(),
+        ),
+        PK::BodyEdge { body, a, b } => (
+            extrude::body_solid_mesh(doc, *body)
+                .map(|s| gpu_viewport::body_edge_curve_chain(&s, *a, *b))
+                .unwrap_or_else(|| vec![(*a, *b)]),
+            Vec::new(),
+        ),
+        PK::BodyVertex { position, .. } => (Vec::new(), vec![*position]),
+        PK::BodyFace { triangles, .. } => {
+            (construction::coplanar_face_boundary(triangles), Vec::new())
+        }
+        PK::GlobalAxis(axis) => (
+            vec![construction::global_axis_segment(*axis)],
+            Vec::new(),
+        ),
+        PK::Body(bi) => (construction::body_feature_edges(doc, *bi), Vec::new()),
+        PK::SketchFace(face) => (
+            construction::sketch_face_boundary_world(doc, face)
+                .map(|pts| {
+                    (0..pts.len())
+                        .map(|i| (pts[i], pts[(i + 1) % pts.len()]))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Vec::new(),
+        ),
+        PK::ConstructionPlane(_) | PK::Ground(_) | PK::Constraint(_) => {
+            (Vec::new(), vec![anchor])
+        }
+    }
+}
+
+/// The transform one loupe draws its content through: `(pivot, zoom)`, applied as
+/// `center + (screen - pivot) * zoom`.
+///
+/// Normally that's the **magnifier** — the pick hitbox around the cursor, blown up so the loupe
+/// shows exactly what the cursor covers. But a big thing (a whole body, a large face) has no
+/// wireframe anywhere near the hitbox, so magnifying it yields an empty disc or a flat wash of
+/// colour with nothing to recognise (#944/#945). When none of the loupe's own geometry lands
+/// inside the disc, the view **zooms out** to frame that geometry instead, so there is always
+/// something identifying in it. It only ever zooms out, never further in than the magnifier.
+fn loupe_view<'a>(
+    doc: &model::Document,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    members: impl IntoIterator<Item = (&'a construction::PickTargetKind, Vec3)> + Clone,
+    origin: egui::Pos2,
+    center: egui::Pos2,
+    radius: f32,
+    content_zoom: f32,
+) -> (egui::Pos2, f32) {
+    let magnifier = (origin, content_zoom);
+    if members
+        .clone()
+        .into_iter()
+        .any(|(kind, _)| matches!(kind, construction::PickTargetKind::Constraint(_)))
+    {
+        return magnifier;
+    }
+    let mut bounds: Option<egui::Rect> = None;
+    let mut lands = false;
+    for (kind, anchor) in members {
+        let (segments, points) = pick_target_loupe_wireframe(doc, kind, anchor);
+        let mut note = |p: egui::Pos2| {
+            bounds = Some(match bounds {
+                Some(r) => r.union(egui::Rect::from_min_max(p, p)),
+                None => egui::Rect::from_min_max(p, p),
+            });
+        };
+        let mag = |s: egui::Pos2| center + (s - origin) * content_zoom;
+        for (a, b) in segments {
+            let (Some(pa), Some(pb)) = (project(a), project(b)) else { continue };
+            note(pa);
+            note(pb);
+            lands |= clip_segment_to_disc(mag(pa), mag(pb), center, radius).is_some();
+        }
+        for p in points {
+            let Some(sp) = project(p) else { continue };
+            note(sp);
+            lands |= (mag(sp) - center).length() <= radius;
+        }
+    }
+    if lands {
+        return magnifier;
+    }
+    // Nothing recognisable inside the disc: frame the content instead, with a margin so it
+    // doesn't touch the rim.
+    let Some(bb) = bounds else { return magnifier };
+    let span = bb.width().max(bb.height());
+    if span <= 1e-3 {
+        return magnifier;
+    }
+    let zoom = (radius * 1.6 / span).min(content_zoom);
+    (bb.center(), zoom)
+}
+
 /// Draw one pick target's geometry inside a Selection Exploder loupe (#551): world geometry is
 /// projected, magnified by the loupe transform, clipped to the loupe disc, and stroked in `color`.
 /// Lines/circles/edges draw as clipped segments; a face as its boundary; only the highlighted
@@ -20542,11 +20675,27 @@ impl App {
                 let from = a.from.get(i).copied().unwrap_or(centers[i]);
                 from + (centers[i] - from) * e
             });
-            // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
-            // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
-            let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
             let is_group = it.kind == DisplayKind::Group;
             let is_back = it.kind == DisplayKind::Back;
+            // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
+            // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
+            // A loupe whose own thing has no wireframe near the hitbox — a whole body, a big
+            // face — zooms out to frame it instead (#944/#945), so there's always something to
+            // recognise in the disc rather than an empty or flat one.
+            let (pivot, zoom) = if is_back {
+                (ex.origin, content_zoom)
+            } else {
+                loupe_view(
+                    &self.state.doc,
+                    project,
+                    it.leaves.iter().map(|&li| (&ex.items[li].target, ex.items[li].anchor)),
+                    ex.origin,
+                    center,
+                    r_loupe,
+                    content_zoom,
+                )
+            };
+            let loupe = move |s: egui::Pos2| center + (s - pivot) * zoom;
             // Every geometry loupe shows the WHOLE crowd dimmed grey for context; only its own things
             // are highlighted (#559). The Back loupe isn't geometry — it's a mini-cluster (below).
             let context_color = egui::Color32::from_gray(115);
@@ -20590,7 +20739,12 @@ impl App {
                     )
                 });
             if !dots_only {
-                painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+                // Under the magnifier this is the loupe's centre; under a framed view (#944/#945)
+                // it's wherever the cursor falls in the framing, and is skipped if that's outside.
+                let mark = loupe(ex.origin);
+                if (mark - center).length() <= r_loupe {
+                    painter.circle_filled(mark, 1.0, egui::Color32::from_gray(90));
+                }
             }
             // Leader line back to the real thing — only for the hovered LEAF loupe, grey, no dot.
             // It stops at the loupe's **edge**, not its centre (#572), so it reads as pointing at
@@ -27967,6 +28121,67 @@ mod tests {
             move_focus_for(Some(&partial), None),
             MoveFocus::StartPointB,
             "the chain resumes at start B once the held picker is satisfied (#741)"
+        );
+    }
+
+    /// #944/#945: a loupe whose own thing has no wireframe near the cursor's hitbox — a whole
+    /// body, a big face — would magnify an empty or flat disc, so it zooms out to frame that
+    /// thing instead. A thing whose geometry does cross the disc keeps the magnifier.
+    #[test]
+    fn a_loupe_frames_content_the_magnifier_would_miss() {
+        use construction::PickTargetKind as PK;
+        let mut doc = model::Document::default();
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let lines = construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 100.0, 100.0, [false; 4]);
+        doc.extrusions.push(model::Extrusion {
+            sketch,
+            faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 50.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.push(model::Body {
+            source: model::BodySource::Extrusion(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // A flattening projection: world (x, y) straight to screen pixels.
+        let project = |w: Vec3| Some(egui::pos2(w.x, w.y));
+        let origin = egui::pos2(50.0, 50.0); // mid-face, far from every edge
+        let center = egui::pos2(400.0, 300.0);
+        let radius = 20.0;
+        let zoom = 6.0;
+        let view = |members: &[(PK, Vec3)]| {
+            loupe_view(
+                &doc,
+                &project,
+                members.iter().map(|(k, a)| (k, *a)),
+                origin,
+                center,
+                radius,
+                zoom,
+            )
+        };
+
+        // The whole body: its edges are ~50 px from the cursor, which the 6× magnifier throws
+        // 300 px clear of a 20 px disc — nothing to see, so the loupe frames the body.
+        let (pivot, z) = view(&[(PK::Body(0), Vec3::new(0.0, 0.0, 0.0))]);
+        assert!(z < zoom, "the body loupe must zoom out, got {z}");
+        assert!(
+            (pivot - egui::pos2(50.0, 50.0)).length() < 1.0,
+            "framed on the body's own centre, got {pivot:?}"
+        );
+
+        // A corner right under the cursor still lands in the disc, so the magnifier stands.
+        assert_eq!(
+            view(&[(PK::BodyVertex { body: 0, position: Vec3::new(50.0, 50.0, 0.0) }, Vec3::ZERO)]),
+            (origin, zoom)
         );
     }
 

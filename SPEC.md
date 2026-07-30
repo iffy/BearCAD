@@ -2417,7 +2417,13 @@ modeled on SolveSpace (https://solvespace.com).
   **magnified `ZOOM`×** with the one element that handle stands for drawn on top and the rest of the
   crowd dimmed grey behind it, joined by a 1-px leader line back to where it really is; geometry is
   painter-drawn and clipped to the loupe disc (`draw_pick_target_loupe` / `clip_segment_to_disc`),
-  so overlapping things read clearly. Faces are **shaded** (translucent fill clipped to the disc via
+  so overlapping things read clearly. A loupe whose own thing has **no wireframe inside the disc**
+  at that magnification — a **whole body**, a face far bigger than the hitbox — would show an
+  empty or flat-coloured disc with nothing to recognise, so it **zooms out to frame that thing**
+  instead (#944/#945, `loupe_view` / `pick_target_loupe_wireframe`): the magnifier is kept
+  whenever any of the thing's own segments or points lands in the disc, and only ever traded for
+  a wider view, never a tighter one. The faint centre mark still shows where the cursor falls in
+  the framing, or is dropped when that lands outside. Faces are **shaded** (translucent fill clipped to the disc via
   `clip_convex_to_disc`), not just outlined. Only the **highlighted** vertex shows a dot; a
   line-endpoint vertex also gets a short **stub** of its line — a *fixed on-screen length* relative
   to the loupe, not a fraction of the line — so coincident endpoints of different lines are told
