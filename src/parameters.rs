@@ -324,10 +324,17 @@ impl ParametersPaneState {
     }
 }
 
+/// The **live** parameter with this name, if any (#995).
+///
+/// Deleted parameters are tombstoned rather than removed, to keep every other parameter's index
+/// stable. That is bookkeeping, not a claim on the name: a tombstone is invisible in the pane and
+/// already ignored when expressions are evaluated (`parameter_value_by_name`), so having it still
+/// answer to its name only ever produced "Parameter 'x' already exists" about a parameter that
+/// isn't there. Deleting one frees its name.
 pub fn parameter_index_by_name(doc: &Document, name: &str) -> Option<usize> {
     doc.parameters
         .iter()
-        .position(|p| p.name == name)
+        .position(|p| !p.deleted && p.name == name)
 }
 
 pub fn duplicate_parameter_name(doc: &Document, name: &str, except: Option<usize>) -> bool {
@@ -1177,26 +1184,22 @@ pub fn try_commit_inline_parameter_definition(
     if let Some(name) = text.trim().strip_suffix('=') {
         let name = name.trim().to_string();
         if crate::value::is_valid_parameter_name(&name) {
-            if let Some(index) = parameter_index_by_name(doc, &name) {
-                if !doc.parameters[index].deleted {
-                    *text = name.clone();
-                    return Ok(Some(InlineParameterCommit::Reused(name)));
-                }
+            if parameter_index_by_name(doc, &name).is_some() {
+                *text = name.clone();
+                return Ok(Some(InlineParameterCommit::Reused(name)));
             }
         }
     }
     let Some((name, value)) = parse_inline_parameter_definition(text) else {
         return Ok(None);
     };
-    // `name=value` on an existing (live) name redefines that parameter's expression; a
-    // deleted parameter still reserves its name, so it falls through to `add_parameter`'s
-    // duplicate-name error rather than silently editing an invisible row.
+    // `name=value` on an existing name redefines that parameter's expression. A deleted one is
+    // not an existing name (#995) — the lookup skips tombstones — so it falls through and makes
+    // a fresh parameter rather than silently reviving an invisible row.
     if let Some(index) = parameter_index_by_name(doc, &name) {
-        if !doc.parameters[index].deleted {
-            set_parameter_expression(doc, index, value)?;
-            *text = name.clone();
-            return Ok(Some(InlineParameterCommit::Redefined(name)));
-        }
+        set_parameter_expression(doc, index, value)?;
+        *text = name.clone();
+        return Ok(Some(InlineParameterCommit::Redefined(name)));
     }
     add_parameter(doc, name.clone(), value)?;
     *text = name.clone();
@@ -1984,6 +1987,35 @@ mod tests {
         add_parameter(&mut doc, "width".to_string(), "2 * B".to_string()).unwrap();
         assert_eq!(doc.parameters.len(), 3);
         assert_eq!(doc.parameters[2].expression, "2 * B");
+    }
+
+    /// #995: deleting a parameter frees its name. Deleted parameters are tombstoned so every
+    /// other parameter's index stays put, but a tombstone is invisible in the pane and already
+    /// ignored when expressions evaluate — so having it still answer to its name only ever
+    /// produced "already exists" about a parameter that isn't there.
+    #[test]
+    fn a_deleted_parameters_name_can_be_used_again() {
+        let mut doc = Document::default();
+        let i = add_parameter(&mut doc, "slotwidth".into(), "12".into()).expect("created");
+        assert!(
+            add_parameter(&mut doc, "slotwidth".into(), "5".into()).is_err(),
+            "a live parameter still owns its name"
+        );
+
+        delete_parameter(&mut doc, i).expect("deleted");
+        let j = add_parameter(&mut doc, "slotwidth".into(), "5".into())
+            .expect("the name is free once the parameter is gone");
+        assert_ne!(i, j, "the tombstone stays put so other indices don't shift");
+        assert!(doc.parameters[i].deleted);
+        assert!(!doc.parameters[j].deleted);
+
+        // The name now resolves to the new one, and nothing sees the tombstone.
+        assert_eq!(parameter_index_by_name(&doc, "slotwidth"), Some(j));
+        assert_eq!(
+            crate::value::eval_length_mm_in_doc("slotwidth", &doc),
+            Some(5.0),
+            "expressions read the live parameter"
+        );
     }
 
     #[test]

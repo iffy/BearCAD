@@ -589,6 +589,25 @@ pub fn paint_icon(painter: &Painter, ctx: &Context, id: IconId, rect: Rect, tint
     );
 }
 
+/// A selectable menu/combo row with its icon **before** the label (#999).
+///
+/// Laid out as one widget rather than painting the glyph over a space-indented string: two
+/// spaces are about seven pixels and the icon is fourteen, so the glyph landed on the first
+/// letter of every entry — and any font or scale change would have moved the collision around.
+pub fn selectable_icon_label(
+    ui: &mut Ui,
+    id: IconId,
+    selected: bool,
+    label: impl Into<WidgetText>,
+) -> egui::Response {
+    let image = egui::Image::new(sized_texture_at(ui.ctx(), id, 14.0));
+    ui.add(
+        egui::Button::image_and_text(image, label)
+            .frame(false)
+            .selected(selected),
+    )
+}
+
 pub fn selectable_icon_button(
     ui: &mut Ui,
     id: IconId,

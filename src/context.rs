@@ -2625,6 +2625,9 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             | Tool::Slice
             | Tool::Dimension
             | Tool::Constraint
+            // The Joint tool has a busy section of its own (#998), and a joint's units are
+            // whatever its parts' already are — nothing about a joint is the document's default.
+            | Tool::Joint
     );
     let units = (!units_suppressed)
         .then(|| units_control_from_selection(input.doc, input.selection))
@@ -5291,26 +5294,15 @@ pub fn show_pane(
                             let selected =
                                 std::mem::discriminant(&kind) == std::mem::discriminant(&value);
                             // Each kind reads by its icon as well as its name (#921), the
-                            // same glyph the pane row and the 3D badge use.
-                            let icon = crate::icons::sized_texture(
-                                ui.ctx(),
+                            // same glyph the pane row and the 3D badge use — laid out beside
+                            // the label rather than painted over it (#999).
+                            let row = crate::icons::selectable_icon_label(
+                                ui,
                                 crate::icons::icon_for_joint_kind(&value),
-                            );
-                            let row = ui
-                                .selectable_label(
-                                    selected,
-                                    egui::RichText::new(format!("  {label}")),
-                                )
-                                .on_hover_text(label);
-                            ui.painter().image(
-                                icon.id,
-                                egui::Rect::from_min_size(
-                                    row.rect.left_top() + egui::vec2(3.0, 1.0),
-                                    egui::vec2(14.0, 14.0),
-                                ),
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                ui.visuals().text_color(),
-                            );
+                                selected,
+                                label,
+                            )
+                            .on_hover_text(label);
                             if row.clicked() && !selected {
                                 kind = value.clone();
                             }
@@ -7623,6 +7615,13 @@ mod tests {
         });
         assert!(text.drawing_view.is_none(), "Text tool hides the projection editor (#329)");
         assert!(text.units.is_none(), "Text tool hides the Default-units section (#330)");
+        // Joint tool: a joint has a busy section of its own, and its units are whatever its
+        // parts' already are — nothing about it is the document's default (#998).
+        let joint = context_pane_content(&ContextInput {
+            tool: Tool::Joint,
+            ..input(&doc, &selection)
+        });
+        assert!(joint.units.is_none(), "Joint tool hides the Default-units section (#998)");
     }
 
     /// #486: the Dimension tool shows the same sketch-geometry element picker as Constraint.

@@ -1409,7 +1409,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   singly or all at once from the pane's Rest row, the row's right-click menu, or
   scripting.
   **Presentation (#899/#921):** a hand-drawn icon per kind (`icons::icon_for_joint_kind`), on
-  the pane row, beside the **Type** dropdown and on every one of its entries, and drawn
+  the pane row, beside the **Type** dropdown and on every one of its entries — laid out as one
+  widget (`icons::selectable_icon_label`) rather than painted over a space-indented label, which
+  put the glyph on the first letter of every entry and would have moved the collision around with
+  any font or scale change (#999) — and drawn
   selectable in the 3D view at the joint's posed frame
   (`joint_viewport`); clicking the badge selects the joint, hovering it glows the joined
   parts.
@@ -1956,7 +1959,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   (#330). The view editor reappears under the Select/Dimension tools. The **Default units** section
   is now shown only for the selection/sketch-editing tools — it is suppressed under the modeling,
   transform, dimension, and constraint tools (Extrude, Sweep, Loft, Revolve, Combine, Move, Mirror,
-  Slice, Repeat, Text, Dimension, Constraint), whose own context sections don't need it (#585).
+  Slice, Repeat, Text, Dimension, Constraint), whose own context sections don't need it (#585) —
+  and under **Joint** (#998), whose section is busier than any of them and whose units are
+  whatever its parts' already are.
 - **Variable interpolation in text (#338):** both drawing annotations and sketch text may embed
   `{expression}` fields that resolve against the document's parameters
   (`value::interpolate_text`). A field evaluates any length/angle expression — a bare parameter
@@ -2332,6 +2337,11 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   that parameter — the UI must make which one is happening unambiguous (e.g. reuse on
   bare `name=`, redefine on `name=value`, with a clear indicator). Reject names that
   collide with reserved words or that would create an expression cycle (§4.1).
+- **A deleted parameter's name is free (#995).** Parameters are tombstoned rather than removed,
+  so every other parameter's index stays put — that is bookkeeping, not a claim on the name.
+  `parameters::parameter_index_by_name` skips tombstones, matching evaluation, which has always
+  ignored them: otherwise deleting `slotwidth` and typing it again answered "Parameter
+  'slotwidth' already exists" about a parameter that is not there and cannot be seen.
 
 #### 5.1.2 Derived parameters (#432)
 - A parameter may be **driven by a measurement** (`Parameter::source`,
