@@ -8275,6 +8275,35 @@ impl App {
 
     /// Construction planes whose corner grips are live right now (#833): every selected,
     /// visible plane, under the Select tool with nothing else in progress.
+    /// The Joint tool's two sides while it previews (#992): the mobile part's bodies in green
+    /// and the fixed part's in blue, so which one moves is visible in the 3D view rather than
+    /// only readable off the pane. Empty unless a **two-sided** joint is being made or edited —
+    /// a Rigid group has no moving side to tell apart, and a committed joint's parts are
+    /// ordinary bodies again.
+    fn joint_preview_sides(&self) -> Vec<(usize, egui::Color32)> {
+        if self.state.tool != Tool::Joint || self.state.sketch_session.is_some() {
+            return Vec::new();
+        }
+        let Some(cj) = self
+            .state
+            .creating_joint
+            .as_ref()
+            .filter(|cj| !matches!(cj.kind, model::JointKind::Rigid))
+        else {
+            return Vec::new();
+        };
+        let side = |member: Option<model::JointRef>, color: egui::Color32| {
+            member
+                .map(|m| joints::member_bodies(&self.state.doc, m))
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |bi| (bi, color))
+        };
+        side(cj.mobile_member(), gpu_viewport::SOLID_FILL_JOINT_MOBILE)
+            .chain(side(cj.fixed_member(), gpu_viewport::SOLID_FILL_JOINT_FIXED))
+            .collect()
+    }
+
     fn plane_resize_targets(&self) -> Vec<usize> {
         if self.state.tool != Tool::Select || self.state.sketch_session.is_some() {
             return Vec::new();
@@ -15810,6 +15839,8 @@ fn build_viewport_scene_input<'a>(
     colored_segments: Vec<(Vec3, Vec3, egui::Color32, bool)>,
     parameter_highlight_elements: Vec<SceneElement>,
     colored_element_highlights: Vec<(SceneElement, egui::Color32)>,
+    // Bodies whose fill a tool overrides while it previews (#992) — the Joint tool's two sides.
+    tinted_bodies: Vec<(usize, egui::Color32)>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
@@ -16311,6 +16342,7 @@ fn build_viewport_scene_input<'a>(
         extra_pick_highlights,
         colored_pick_highlights,
         colored_element_highlights,
+        tinted_bodies,
         colored_segments,
         parameter_highlight_elements,
         hover_color: construction::PICK_HOVER_RGBA,
@@ -24235,8 +24267,13 @@ impl App {
                 folded.extend(co.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
             }
         }
-        // The Joint tool's members are parts, so the whole body of each lights up.
-        if self.state.tool == Tool::Joint {
+        // The Joint tool's members are parts, so the whole body of each lights up. A two-sided
+        // joint instead tints its sides apart while it previews (#992) — see `tinted_bodies`
+        // below — so folding them into the selection here would paint both the same blue and
+        // hide the one thing the tool is asking about. Rigid has no moving side, so its whole
+        // group keeps the plain selection highlight.
+        let joint_sides = self.joint_preview_sides();
+        if self.state.tool == Tool::Joint && joint_sides.is_empty() {
             if let Some(cj) = self.state.creating_joint.as_ref() {
                 for member in &cj.members {
                     folded.extend(
@@ -24607,6 +24644,8 @@ impl App {
                 highlights
             },
             colored_element_highlights,
+            // The Joint tool's two sides, told apart by fill while it previews (#992).
+            joint_sides,
             &gpu_dim_labels,
             planar_label_view,
             Some(&constraint_graphics),
@@ -27481,6 +27520,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -27572,6 +27612,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -27627,6 +27668,7 @@ mod tests {
             Vec::new(),
             None, None, None, None,
             Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+            Vec::new(),
             &[],
             None, None,
             Vec::new(), Vec::new(), Vec::new(), Vec::new(),
@@ -27701,6 +27743,7 @@ mod tests {
                 None,
                 None,
                 None,
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -27906,6 +27949,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 &[],
                 None,
                 None,
@@ -28005,6 +28049,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),

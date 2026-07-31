@@ -149,6 +149,13 @@ pub const SOLID_FILL_HOVERED: Color32 = Color32::from_rgb(196, 180, 132);
 /// Fill for a body picked into a destructive (cut) element picker (#213) — the red highlight
 /// override, e.g. Revolve's cut bodies or a Combine **Cut**'s B side.
 pub const SOLID_FILL_CUT: Color32 = Color32::from_rgb(210, 120, 120);
+/// Fill for the **mobile** side of a joint being made or edited (#992) — green. A joint's two
+/// sides do different things, and while the tool is up telling them apart is the whole question;
+/// lighting both in the selection blue answered it with "these two", which is what you already
+/// knew. Only while the tool is previewing: a committed joint's parts are ordinary bodies again.
+pub const SOLID_FILL_JOINT_MOBILE: Color32 = Color32::from_rgb(104, 200, 128);
+/// Fill for the **fixed** (held) side of a joint being made or edited (#992) — blue.
+pub const SOLID_FILL_JOINT_FIXED: Color32 = Color32::from_rgb(96, 150, 226);
 /// Highlighted fill for the in-progress extrusion preview.
 pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 /// Opacity of the in-progress extrusion preview body (before it is committed).
@@ -607,6 +614,11 @@ pub struct ViewportSceneInput<'a> {
     /// style. Bodies go through `cut_highlight_bodies` instead, since a solid takes a fill
     /// rather than an outline.
     pub colored_element_highlights: Vec<(SceneElement, Color32)>,
+    /// Bodies whose **fill** a tool is overriding while it previews (#992): the Joint tool's
+    /// two sides, green for the one that moves and blue for the one holding it. A fill, not an
+    /// aura, because for a solid the fill *is* the visual — and it outranks the selection blue,
+    /// which would otherwise paint both sides the same and answer the wrong question.
+    pub tinted_bodies: Vec<(usize, Color32)>,
     /// Pick targets to highlight in a colour of their own rather than the shared hover colour
     /// (#660): the Move tool marks start point A green and end point A red.
     pub colored_pick_highlights: Vec<(crate::construction::PickTargetKind, Color32)>,
@@ -880,7 +892,14 @@ impl ViewportScene {
             let selected = input.selection.is_selected(SceneElement::Body(bi))
                 || unit_instance
                     .is_some_and(|i| input.selection.is_selected(SceneElement::UnitInstance(i)));
-            let fill = if selected {
+            let tint = input
+                .tinted_bodies
+                .iter()
+                .find(|(t, _)| *t == bi)
+                .map(|(_, c)| *c);
+            let fill = if let Some(tint) = tint {
+                tint
+            } else if selected {
                 SOLID_FILL_SELECTED
             } else if hovered {
                 SOLID_FILL_HOVERED
@@ -4808,6 +4827,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -5329,6 +5349,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -5379,6 +5400,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -5469,6 +5491,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -5742,6 +5765,7 @@ mod tests {
                 extra_pick_highlights: Vec::new(),
                 colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -5832,6 +5856,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -5889,6 +5914,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -5945,6 +5971,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -6032,6 +6059,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -6098,6 +6126,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -6274,6 +6303,7 @@ mod tests {
                 extra_pick_highlights: Vec::new(),
                 colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
@@ -6463,6 +6493,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -6602,6 +6633,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -6721,6 +6753,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -6788,6 +6821,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -6964,6 +6998,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7009,6 +7044,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7098,6 +7134,7 @@ mod tests {
                 extra_pick_highlights: Vec::new(),
                 colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -7177,6 +7214,7 @@ mod tests {
                 extra_pick_highlights: extra,
                 colored_pick_highlights: Vec::new(),
                 colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -7220,6 +7258,102 @@ mod tests {
     /// #174: a selected body's fill shifts to the saturated selection blue — some base-layer
     /// vertex carries the selected hue (flat shading preserves channel ratios), and none does
     /// when unselected.
+    /// #992: while a two-sided joint is being made, its two parts wear **different** fills —
+    /// green for the one that moves, blue for the one holding it — so which is which is visible
+    /// in the 3D view rather than only readable off the pane. The tint outranks the selection
+    /// blue, which would otherwise paint both the same and answer the wrong question.
+    #[test]
+    fn a_joints_two_sides_wear_different_fills() {
+        let state = state_with_one_body();
+        // Selected as well, to prove the tint wins over the selection fill.
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selected,
+            crate::hierarchy::SceneElement::Body(0),
+            false,
+        );
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |tint: Vec<(usize, Color32)>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: &selected,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: tint,
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        // Flat shading scales every channel by one factor, so a fill's channel ratios survive.
+        let ratios_of = |scene: &ViewportScene, c: Color32| {
+            scene.vertices.iter().any(|v| {
+                let [r, g, b, a] = v.color;
+                let (cr, cg, cb) = (c.r() as f32, c.g() as f32, c.b() as f32);
+                a > 0.0
+                    && b > 0.05
+                    && (r / b - cr / cb).abs() < 0.02
+                    && (g / b - cg / cb).abs() < 0.02
+            })
+        };
+        let mobile = build(vec![(0, SOLID_FILL_JOINT_MOBILE)]);
+        assert!(
+            ratios_of(&mobile, SOLID_FILL_JOINT_MOBILE),
+            "the mobile side takes the joint green even though it is selected"
+        );
+        assert!(
+            !ratios_of(&mobile, SOLID_FILL_SELECTED),
+            "and not the selection blue underneath it"
+        );
+        let fixed = build(vec![(0, SOLID_FILL_JOINT_FIXED)]);
+        assert!(ratios_of(&fixed, SOLID_FILL_JOINT_FIXED), "the fixed side takes the joint blue");
+        // The two really are distinguishable, which is the whole point.
+        assert!(
+            !ratios_of(&fixed, SOLID_FILL_JOINT_MOBILE)
+                && !ratios_of(&mobile, SOLID_FILL_JOINT_FIXED),
+            "the two sides must not read as the same colour"
+        );
+        // With no tint the body is back to the ordinary selection fill.
+        assert!(ratios_of(&build(Vec::new()), SOLID_FILL_SELECTED));
+    }
+
     #[test]
     fn selected_body_fill_uses_saturated_blue() {
         let state = state_with_one_body();
@@ -7280,6 +7414,7 @@ mod tests {
                 extra_pick_highlights: Vec::new(),
                 colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
@@ -7355,6 +7490,7 @@ mod tests {
                 extra_pick_highlights: Vec::new(),
                 colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
@@ -7449,6 +7585,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7494,6 +7631,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7684,6 +7822,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7733,6 +7872,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7847,6 +7987,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7894,6 +8035,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -7939,6 +8081,7 @@ mod tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
@@ -8038,6 +8181,7 @@ mod perf_probe {
                 extra_pick_highlights: Vec::new(),
                 colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
                 colored_segments: Vec::new(),
                 parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
@@ -8130,6 +8274,7 @@ mod cut_preview_tests {
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
             colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
             colored_segments: Vec::new(),
             parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,

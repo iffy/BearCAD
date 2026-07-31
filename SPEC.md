@@ -1340,6 +1340,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   end reads as "mobile picked, nothing holding it yet". The empty slot is what the next click
   fills (`CreatingJoint::set_mobile`/`set_fixed`), so the parts step still runs mobile → fixed
   off one `JointFocus::Members`.
+  **Telling the sides apart in 3D (#992):** while a two-sided joint is being made or edited, its
+  parts take **different fills** — `SOLID_FILL_JOINT_MOBILE` (green) for the side that moves,
+  `SOLID_FILL_JOINT_FIXED` (blue) for the side holding it — through the scene's `tinted_bodies`
+  channel. A fill rather than an aura, because for a solid the fill *is* the visual; and it
+  **outranks the selection blue**, which is why those members stop folding into the render
+  selection while the tint is on — lighting both sides the same answered "these two", which was
+  never the question. Only while previewing, and only for a two-sided kind: a Rigid group has no
+  moving side to tell apart, and a committed joint's parts are ordinary bodies again.
   **Frames (#892/#894, `model::JointFrame`):** each side carries a mating frame — an
   origin, an axis point, and a spin-pinning point — picked with the Move tool's snap
   pairs (start points on the driven part, end points on the base;

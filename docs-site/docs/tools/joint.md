@@ -30,9 +30,12 @@ poses the moving part; it never changes any shape.
 Skip the points to join parts right where they sit — the joint records the existing
 relationship and nothing moves.
 
-While the joint is being created or edited, the moving part sweeps back and forth
-through its range, showing the motion before you commit. **Animate** turns that sweep
-off — one switch for every joint.
+While the joint is being created or edited, the two parts are coloured by their role —
+**green** for the one that moves, **blue** for the one holding it — so you can see which is
+which without reading the pane. They go back to their own colours once it's committed.
+
+The moving part also sweeps back and forth through its range, showing the motion before you
+commit. **Animate** turns that sweep off — one switch for every joint.
 
 ## The kinds
 
