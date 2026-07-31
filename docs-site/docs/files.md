@@ -28,6 +28,10 @@ saved state). Quitting with unsaved changes asks whether to **Save**, **Don't Sa
   tessellated into a body.
 - **File → Import → Image…** — a PNG/JPEG to trace over; see
   [Tracing images](/docs/tools/tracing) for scale calibration.
+- **File → Import → McMaster-Carr…** — the catalog in a window; see
+  [McMaster-Carr parts](#mcmaster-carr-parts).
+
+The **Import** button on the toolbar offers the same entries.
 
 ## Export
 
@@ -38,6 +42,18 @@ saved state). Quitting with unsaved changes asks whether to **Save**, **Don't Sa
   Right-click a body or a component row to export just that body or the whole component.
 - **Technical drawings** export as vector **PDF** or **SVG** from the drawing workbench —
   see [Drawings](/docs/tools/drawing#exporting).
+
+## McMaster-Carr parts
+
+**File → Import → McMaster-Carr…** opens mcmaster.com in a window. Find a part the way you
+normally would, download its **STEP**, and it lands in the document as a body — not in your
+Downloads folder.
+
+Type a part number in the box to jump straight to that page. **Catalog** goes back to their
+search.
+
+Their site does the searching, the sizes and the drawings, so the window is their site.
+Links that lead off it open in your normal browser.
 
 ## Importing BearCAD files
 

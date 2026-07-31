@@ -3408,6 +3408,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1022: drive the McMaster-Carr catalog window, with an optional part number to open
+    // it at — docs captures need it open, and a script needs to be able to say which part.
+    api.set(
+        "mcmaster",
+        lua.create_function(|lua, (verb, part): (Option<String>, Option<String>)| {
+            let open = match verb.as_deref() {
+                Some("show") | Some("open") => Some(true),
+                Some("hide") | Some("close") => Some(false),
+                None | Some("toggle") => None,
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "mcmaster expects \"show\"/\"hide\"/\"toggle\", got {other:?}"
+                    )))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetMcMasterWindow { open, part }) }
+        })?,
+    )?;
+
     api.set(
         "palette",
         lua.create_function(|lua, args: MultiValue| {
@@ -5330,6 +5350,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
+            "mcmaster",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "picker_focus", "angle_snap",

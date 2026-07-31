@@ -726,6 +726,8 @@ pub enum Instruction {
     AddUnitInstance { unit: usize, name: Option<String> },
     /// Show/hide/toggle the Settings window (#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Open/close the McMaster-Carr catalog window (#1022).
+    SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1678,6 +1680,17 @@ impl Instruction {
                 };
                 format!("bearcad.ui.settings({verb:?})")
             }
+            Instruction::SetMcMasterWindow { open, part } => {
+                let verb = match open {
+                    Some(true) => "show",
+                    Some(false) => "hide",
+                    None => "toggle",
+                };
+                match part {
+                    Some(part) => format!("bearcad.ui.mcmaster({verb:?}, {part:?})"),
+                    None => format!("bearcad.ui.mcmaster({verb:?})"),
+                }
+            }
             Instruction::RunPaletteCommand { query } => {
                 format!("bearcad.ui.palette(\"run\", {query:?})")
             }
@@ -2413,6 +2426,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             Some(Instruction::AddUnitInstance { unit: *unit, name: name.clone() })
         }
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
+        Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
+            open: *open,
+            part: part.clone(),
+        }),
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
             name: name.clone(),
@@ -5743,6 +5760,10 @@ impl ScriptRunner {
             Instruction::AddUnitInstance { unit, name } => {
                 let r = state.apply(Action::AddUnitInstance { unit, name });
                 self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SetMcMasterWindow { open, part } => {
+                state.apply(Action::SetMcMasterWindow { open, part });
                 StepResult::Continue
             }
             Instruction::SetSettingsWindow { open } => {

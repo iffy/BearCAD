@@ -79,6 +79,8 @@ pub enum PaletteCommandId {
     ShowSettings,
     /// Import another BearCAD document as a unit (#721). Native only (path-based).
     ImportUnit,
+    /// Open the McMaster-Carr catalog window (#1022). Native only: it needs a webview.
+    ImportMcMaster,
     ShowHelpMode,
     HideHelpMode,
 }
@@ -197,6 +199,9 @@ impl PaletteCommand {
             PaletteCommandId::ShowShortcuts => PaletteOutcome::ShowShortcuts,
             PaletteCommandId::ShowSettings => PaletteOutcome::ShowSettings,
             PaletteCommandId::ImportUnit => PaletteOutcome::ImportUnit,
+            PaletteCommandId::ImportMcMaster => {
+                PaletteOutcome::Action(Action::SetMcMasterWindow { open: Some(true), part: None })
+            }
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
                 visible: true,
@@ -630,6 +635,12 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ImportUnit,
         "Import BearCAD File",
         "import bearcad file unit part assembly library",
+    ),
+    #[cfg(not(target_arch = "wasm32"))]
+    PaletteCommand::new(
+        PaletteCommandId::ImportMcMaster,
+        "Import from McMaster-Carr",
+        "import mcmaster carr catalog part screw fastener bearing hardware step",
     ),
 ];
 

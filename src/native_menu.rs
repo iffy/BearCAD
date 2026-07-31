@@ -27,6 +27,8 @@ pub struct MenuIds {
     pub import_stl: MenuId,
     /// File → Import → BearCAD File… (#721).
     pub import_unit: MenuId,
+    /// File → Import → McMaster-Carr… (#1022).
+    pub import_mcmaster: MenuId,
     pub load_script: MenuId,
     pub import_image: MenuId,
     pub import_step: MenuId,
@@ -110,6 +112,9 @@ pub fn command_for_id(
     }
     if ids.import_unit == id {
         return Some(MenuCommand::ImportUnit);
+    }
+    if ids.import_mcmaster == id {
+        return Some(MenuCommand::ImportMcMaster);
     }
     if ids.load_script == id {
         return Some(MenuCommand::LoadScript);
@@ -276,6 +281,8 @@ impl NativeMenu {
         let export_step = MenuItem::with_id("export_step", "STEP…", true, None);
         let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
         let import_unit = MenuItem::with_id("import_unit", "BearCAD File…", true, None);
+        let import_mcmaster =
+            MenuItem::with_id("import_mcmaster", "McMaster-Carr…", true, None);
         let import_stl = MenuItem::with_id("import_stl", "STL…", true, None);
         let import_image = MenuItem::with_id("import_image", "Image…", true, None);
         let import_step = MenuItem::with_id("import_step", "STEP…", true, None);
@@ -349,6 +356,7 @@ impl NativeMenu {
         file_menu.append(&PredefinedMenuItem::separator())?;
         let import_menu = Submenu::new("Import", true);
         import_menu.append(&import_unit)?;
+        import_menu.append(&import_mcmaster)?;
         import_menu.append(&import_stl)?;
         import_menu.append(&import_step)?;
         import_menu.append(&import_image)?;
@@ -419,6 +427,7 @@ impl NativeMenu {
             load_script: load_script.id().clone(),
             import_stl: import_stl.id().clone(),
             import_unit: import_unit.id().clone(),
+            import_mcmaster: import_mcmaster.id().clone(),
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
             document_json: document_json.id().clone(),
@@ -535,6 +544,7 @@ mod tests {
             load_script: MenuId::new("load_script"),
             import_stl: MenuId::new("import_stl"),
             import_unit: MenuId::new("import_unit"),
+            import_mcmaster: MenuId::new("import_mcmaster"),
             import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),
             document_json: MenuId::new("document_json"),

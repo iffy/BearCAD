@@ -18,6 +18,8 @@ pub enum MenuCommand {
     ImportStep,
     /// Import another BearCAD document as a unit (#721).
     ImportUnit,
+    /// Open the McMaster-Carr catalog window and import a part from it (#1022).
+    ImportMcMaster,
     ExportSessionCommands,
     /// Open the Document JSON dialog: the whole document as pasteable JSON text, for
     /// copying into (and loading back out of) bug reports.
@@ -63,6 +65,7 @@ impl MenuCommand {
             | MenuCommand::ImportImage
             | MenuCommand::ImportStep
             | MenuCommand::ImportUnit
+            | MenuCommand::ImportMcMaster
             | MenuCommand::ExportSessionCommands
             | MenuCommand::DocumentJson
             | MenuCommand::LoadScript => None,

@@ -48,6 +48,8 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                         picked = Some(MenuCommand::ImportImage);
                         ui.close();
                     }
+                    // The catalog window needs a native webview, which the web build
+                    // hasn't got — the browser is already the browser there (#1022).
                 });
                 ui.menu_button("Export", |ui| {
                     if ui.button("STL…").clicked() {

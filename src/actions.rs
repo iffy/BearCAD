@@ -1725,6 +1725,8 @@ pub enum Action {
     SetHelpMode(Option<bool>),
     /// Show/hide/toggle the Settings window (#720/#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Open/close the McMaster-Carr catalog window (#1022), optionally at a part number.
+    SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     AddParameter { name: String, expression: String },
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
     /// knobs an importing file is offered first; advisory only.
@@ -2992,6 +2994,12 @@ pub struct AppState {
     /// The Settings window (#720) is open. Lives here (not on `App`) so scripts can
     /// drive it for docs captures (#737): `bearcad.ui.settings(...)`.
     pub settings_open: bool,
+    /// The McMaster-Carr catalog window (#1022) is open. Here rather than on `App` for the
+    /// same reason: scripts drive it for docs captures.
+    pub mcmaster_open: bool,
+    /// The part number typed in that window's box, if any — it opens straight at that
+    /// part's page instead of the catalog's front.
+    pub mcmaster_part: String,
     /// Name typed for the next 3D-derived parameter (Dimension tool, #618); cleared on commit.
     pub dimension_param_name: String,
     /// The last auto-prefilled derived-parameter name (#629): while the field still holds
@@ -3218,6 +3226,8 @@ impl Default for AppState {
             move_angle_snap_deg: MAX_ANGLE_SNAP_DEG,
             help_mode: false,
             settings_open: false,
+            mcmaster_open: false,
+            mcmaster_part: String::new(),
             dimension_param_name: String::new(),
             dimension_param_auto: String::new(),
             active_component: None,
@@ -8166,6 +8176,18 @@ impl AppState {
                     }
                     None => ActionResult::Err("Nothing to zoom to".to_string()),
                 }
+            }
+            Action::SetMcMasterWindow { open, part } => {
+                if let Some(part) = part {
+                    self.mcmaster_part = part;
+                }
+                self.mcmaster_open = open.unwrap_or(!self.mcmaster_open);
+                self.status = if self.mcmaster_open {
+                    "McMaster-Carr catalog opened".to_string()
+                } else {
+                    "McMaster-Carr catalog closed".to_string()
+                };
+                ActionResult::Ok
             }
             Action::SetSettingsWindow { open } => {
                 self.settings_open = open.unwrap_or(!self.settings_open);

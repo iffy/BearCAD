@@ -60,6 +60,7 @@ by the permissive MIT / Apache-2.0 / BSD family.)
 | mlua | Lua scripting bindings | MIT |
 | Lua 5.4 (vendored by mlua) | scripting language | MIT |
 | muda | native menu bar | Apache-2.0 OR MIT |
+| wry | embedded web view (McMaster-Carr catalog window) | Apache-2.0 OR MIT |
 | ico / winres | Windows icon/resource embedding (build) | MIT |
 | cc | C++ shim compilation (build, `occt` feature) | MIT OR Apache-2.0 |
 
