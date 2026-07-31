@@ -2510,6 +2510,11 @@ impl Action {
     /// is pointless. Everything else defaults to `true` — a snapshot that turns out unused
     /// (the document didn't change) is discarded — so a new *mutating* action is undoable by
     /// default without having to remember to opt in.
+    ///
+    /// Live tool-preview actions (gizmo drags, typed distance while extruding, …) only touch
+    /// in-progress UI state, not `doc`. Snapshotting them every pointer frame clones the
+    /// whole model — multi-megabyte with an imported part — which is what made the extrude
+    /// gizmo lag (#1030).
     fn snapshots_for_undo(&self) -> bool {
         !self.resets_undo_history()
             && !matches!(
@@ -2524,7 +2529,30 @@ impl Action {
                     | Action::ToggleFpsMode
                     | Action::EditDrawing { .. }
                     | Action::MoveDrawingView { .. }
+                    // Live extrude/plane preview — `creating_*` only (#1030).
+                    | Action::SetExtrudeDistance { .. }
+                    | Action::SetExtrudeTarget { .. }
+                    | Action::SetExtrudeBodyMode { .. }
+                    | Action::SetExtrudeSymmetric { .. }
+                    | Action::SetPlaneOffset { .. }
+                    | Action::SetPlaneAngle { .. }
+                    | Action::FocusPlaneDim { .. }
+                    | Action::OrbitCamera { .. }
+                    | Action::SetCommandPaletteOpen { .. }
+                    | Action::SetPaneVisible { .. }
+                    | Action::SetMcMasterWindow { .. }
+                    | Action::SetSettingsWindow { .. }
+                    | Action::SetElementsViewMode { .. }
+                    | Action::SetHomeView
             )
+    }
+
+    /// Whether this action can change `doc` (or the dirty baseline). Used to skip the
+    /// full-document equality walk that made large files lag on pure UI updates (#1030).
+    fn may_change_document(&self) -> bool {
+        self.snapshots_for_undo()
+            || self.resets_undo_history()
+            || matches!(self, Action::UndoLast | Action::RedoLast)
     }
 
     /// Actions that replace or wipe the whole document, after which the previous edit
@@ -6147,7 +6175,9 @@ impl AppState {
         // Cloning is skipped for the actions that never mutate the document (and for
         // undo/redo themselves); if a snapshotted action turns out to leave the document
         // unchanged, the snapshot is discarded, so no empty undo steps accumulate.
-        let snapshot = (outermost && action.snapshots_for_undo()).then(|| self.doc.clone());
+        let may_change_doc = action.may_change_document();
+        let snapshot =
+            (outermost && action.snapshots_for_undo()).then(|| self.doc.clone());
         let resets_history = outermost && action.resets_undo_history();
         if outermost {
             self.reconcile_undo_groups_to(before);
@@ -6182,9 +6212,11 @@ impl AppState {
                 self.reconcile_undo_groups_to(after);
             }
         }
+        let mut doc_changed = false;
         if resets_history {
             self.undo_stack.clear();
             self.redo_stack.clear();
+            doc_changed = true;
         } else if let Some(snap) = snapshot {
             if self.doc != snap {
                 self.undo_stack.push(snap);
@@ -6195,17 +6227,22 @@ impl AppState {
                 // Geometry changed — mesh caches key on this, not a JSON hash (#1027).
                 // Compared *before* the bump so PartialEq still sees only geometry.
                 self.doc.bump_mesh_rev();
+                doc_changed = true;
             }
+        } else if may_change_doc {
+            // Undo/redo (and any future no-snapshot mutators): the document may have
+            // changed without a before/after snap to compare.
+            doc_changed = true;
         }
         // Unsaved-changes flag (#522): the document is dirty whenever it differs from the
         // last-saved baseline. Recomputing here (rather than a monotonic "touched" flag)
         // means undoing back to the saved state correctly reads as clean again. Only the
         // outermost apply recomputes, so a delegating gesture compares once. Save/open/new
         // set the baseline via `mark_saved`, which this then confirms as clean.
-        if outermost {
-            // mesh_rev is skipped for dirty comparison: it is a cache key, not content.
-            // Equality still works because a dirty document differs in geometry first;
-            // undoing restores the snapshotted rev as well.
+        //
+        // Skip the full-document equality walk for pure UI actions (#1030): with a large
+        // imported mesh that walk alone is multi-millisecond every gizmo frame.
+        if outermost && doc_changed {
             self.dirty = self.doc != self.saved_snapshot;
         }
         result
@@ -16876,11 +16913,56 @@ mod tests {
         assert!(!set_gizmo(&mut state, "nonesuch", 1.0));
     }
 
+    /// #1030: dragging the extrude gizmo applies SetExtrudeDistance every frame. That must
+    /// not checkpoint the document (cloning a multi-megabyte import freezes the UI).
+    #[test]
+    fn live_extrude_distance_is_not_checkpointed_every_frame() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 5.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+        });
+        // CreateExtrusion commits; re-open for live distance edits.
+        state.apply(Action::EditExtrusion { index: 0 });
+        assert!(state.creating_extrusion.is_some());
+        let undo_before = state.undo_stack.len();
+        let start = std::time::Instant::now();
+        for i in 0..200 {
+            assert!(matches!(
+                state.apply(Action::SetExtrudeDistance { distance: 5.0 + i as f32 * 0.1 }),
+                ActionResult::Ok
+            ));
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(
+            state.undo_stack.len(),
+            undo_before,
+            "live distance must not push undo snapshots"
+        );
+        // 200 applies should be well under 100ms once we stop cloning the document.
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "200 live distance updates took {elapsed:?} — still too heavy"
+        );
+        assert!(
+            (state.creating_extrusion.as_ref().unwrap().distance - 24.9).abs() < 0.05,
+            "last distance should stick"
+        );
+    }
+
     /// #214: the revolve angle (rotate, radians) and construction-plane offset (mm) gizmos are
     /// enumerated and driven the same way.
     #[test]
     fn gizmos_cover_revolve_angle_and_plane_offset() {
-
         use std::f32::consts::PI;
         let mut state = AppState::default();
         state.creating_revolve = Some(CreatingRevolve {
