@@ -185,13 +185,17 @@ pub fn install_panic_hook() {
 pub fn frame(size: (f32, f32), gpu_viewport: bool) {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     if n < TRACED_FRAMES {
-        log(format!(
+        let line = format!(
             "frame {} — {:.0}×{:.0}, 3D viewport {}",
             n + 1,
             size.0,
             size.1,
             if gpu_viewport { "on" } else { "OFF (CPU fallback)" }
-        ));
+        );
+        // The **first** frame is a milestone worth seeing without asking: a terminal that
+        // stops before it says the window never painted, which is the whole question a grey
+        // window asks (#1023). The rest are trace.
+        if n == 0 { info(line) } else { log(line) }
     }
 }
 
@@ -232,18 +236,27 @@ pub fn watch_first_frame() {
             0 => warn(format!(
                 "no frame drawn {FIRST_FRAME_GRACE_SECS}s after launch — the window will look \
                  blank. The app is running but never asked to paint, or is wedged before its \
-                 first frame. Re-run with BEARCAD_LOG=1 for the startup trace."
+                 first frame.{}",
+                where_to_look()
             )),
             // The launch sequence itself accounts for a handful. Stopping there means the app
             // drew, then stopped being asked to — the window shows whatever the surface held.
             n if n <= LAUNCH_FRAMES_EXPECTED => warn(format!(
                 "only {n} frame(s) drawn in {FIRST_FRAME_GRACE_SECS}s — the window may look \
-                 blank or stale. Drawing stopped after launch. Re-run with BEARCAD_LOG=1 for \
-                 the startup trace."
+                 blank or stale. Drawing stopped after launch.{}",
+                where_to_look()
             )),
             _ => log("watchdog: frames are being drawn"),
         }
     });
+}
+
+/// Where the whole story is, for a message that has only told part of it.
+fn where_to_look() -> String {
+    match log_path() {
+        Some(path) => format!(" The full trace for this run is in {}.", path.display()),
+        None => " Re-run with BEARCAD_LOG=1 for the startup trace.".to_string(),
+    }
 }
 
 /// Frames a quiet launch is expected to draw: the opening frames plus the ones the deferred

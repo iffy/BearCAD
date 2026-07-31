@@ -476,7 +476,7 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
         e.to_string(),
     ))))?;
 
-    diag::log(format!(
+    diag::info(format!(
         "launch: {}×{} window, maximize {}",
         options.viewport.inner_size.map(|s| s.x).unwrap_or(0.0),
         options.viewport.inner_size.map(|s| s.y).unwrap_or(0.0),

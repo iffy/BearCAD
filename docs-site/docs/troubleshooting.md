@@ -55,6 +55,12 @@ The lines to look for:
 - **`did not finish`** — it started and failed part way.
 - **`nothing recorded where it went`** — it finished, but the destination was lost. The file
   is probably in `/tmp/bearcad-mcmaster/`; **File → Import → STEP…** will take it from there.
+- **`sent a … web page instead of a model`** — the download completed but carried a
+  placeholder rather than CAD, which happens when their model isn't ready yet. Downloading it
+  again usually works.
+
+A part takes a moment to arrive: a few megabytes of BREP is a couple of seconds of reading
+and tessellating, and the window waits while it happens. The log gives the time it took.
 
 ## A blank window
 

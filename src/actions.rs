@@ -4042,6 +4042,54 @@ impl AppState {
         }
     }
 
+    /// Read a STEP **file** into a new body under `name` (#71).
+    ///
+    /// The kernel reader first — real BREP, curved and NURBS surfaces included — falling back
+    /// to the hand-rolled faceted-subset parser only when the kernel can't read it at all.
+    ///
+    /// One function because there are two callers and they must not drift: File → Import →
+    /// STEP… went through the kernel while the catalog's import (#1022) went through
+    /// [`Self::import_step_bytes`], whose kernel arm is **wasm-only** — so a catalog part
+    /// exported by SolidWorks, as McMaster's are, met the faceted parser and was rejected with
+    /// "no FACE_SURFACE entities found" (#1023). Anything holding a path uses this.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_step_file(&mut self, name: &str, path: &std::path::Path) -> ActionResult {
+        if let Some(shape) = crate::kernel::Shape::read_step(path) {
+            let tris = shape.tessellate(crate::extrude::OCCT_DEFLECTION as f64);
+            if !tris.is_empty() {
+                crate::diag::log(format!(
+                    "step: kernel read {} — {} triangles",
+                    path.display(),
+                    tris.len()
+                ));
+                return self.import_mesh_body(name, tris);
+            }
+            crate::diag::log(format!(
+                "step: the kernel read {} but tessellated to nothing — trying the faceted parser",
+                path.display()
+            ));
+        } else {
+            crate::diag::log(format!(
+                "step: the kernel could not read {} — trying the faceted parser",
+                path.display()
+            ));
+        }
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("Import failed: {e}");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        match crate::step::parse_step_mesh(&text) {
+            Ok(triangles) => self.import_mesh_body(name, triangles),
+            Err(e) => {
+                self.status = format!("Import failed: {e}");
+                ActionResult::Err(self.status.clone())
+            }
+        }
+    }
+
     /// Import a CAD file the McMaster-Carr catalog window caught (#1022), through the same
     /// paths a File → Import goes through — so a catalog part is an **ordinary body**
     /// afterwards, with nothing special about it.
@@ -4074,18 +4122,53 @@ impl AppState {
             );
             return ActionResult::Err(self.status.clone());
         };
-        let bytes = match std::fs::read(&caught.path) {
-            Ok(bytes) => bytes,
+        // A download can complete and still not be a model: their servers answer a CAD
+        // request that isn't ready with a short HTML fragment under the `.STEP` name the URL
+        // promised (#1023). Blaming the STEP parser for that sends the user looking in
+        // entirely the wrong place.
+        match std::fs::read(&caught.path).map(|b| (crate::mcmaster::caught_content(&b), b.len())) {
+            Ok((crate::mcmaster::CaughtContent::WebPage, n)) => {
+                cleanup();
+                self.status = format!(
+                    "McMaster-Carr sent a {n}-byte web page instead of a model for {name} — \
+                     their CAD may not be ready yet, or may need you signed in. Try the \
+                     download again."
+                );
+                crate::diag::warn(format!("catalog part was not a model: {}", self.status));
+                return ActionResult::Err(self.status.clone());
+            }
+            Ok(_) => {}
             Err(err) => {
                 cleanup();
                 self.status = format!("Could not read the downloaded part: {err}");
                 return ActionResult::Err(self.status.clone());
             }
-        };
+        }
+        // Timed, because this runs on the UI thread: a multi-megabyte part takes long enough
+        // to read and tessellate that the window stops responding while it happens, and a
+        // frozen window is indistinguishable from a broken one without a number (#1023).
+        let started = std::time::Instant::now();
         let result = match format {
-            crate::mcmaster::CadFormat::Step => self.import_step_bytes(&name, &bytes),
-            crate::mcmaster::CadFormat::Stl => self.import_stl_bytes(&name, &bytes),
+            // Through the file reader, not the byte one: only the file reader goes via the
+            // kernel on native, and McMaster's CAD is SolidWorks BREP (#1023).
+            crate::mcmaster::CadFormat::Step => {
+                self.import_step_file(&name, &caught.path.clone())
+            }
+            crate::mcmaster::CadFormat::Stl => match std::fs::read(&caught.path) {
+                Ok(bytes) => self.import_stl_bytes(&name, &bytes),
+                Err(err) => {
+                    self.status = format!("Could not read the downloaded part: {err}");
+                    ActionResult::Err(self.status.clone())
+                }
+            },
         };
+        let took = started.elapsed().as_secs_f32();
+        match &result {
+            ActionResult::Err(reason) => crate::diag::warn(format!(
+                "catalog part failed to import after {took:.1}s: {reason}"
+            )),
+            _ => crate::diag::info(format!("catalog part imported as {name} in {took:.1}s")),
+        }
         cleanup();
         result
     }
@@ -6591,33 +6674,8 @@ impl AppState {
                 }
             }
             Action::ImportStep { path } => {
-                // In `occt` builds, read real BREP (curved surfaces included) via
-                // STEPControl_Reader and tessellate it (#71). Falls back to the hand-rolled
-                // faceted-subset parser when the kernel isn't compiled in or can't read the
-                // file (e.g. missing/empty/not-a-solid).
-                {
-                    if let Some(shape) = crate::kernel::Shape::read_step(std::path::Path::new(&path))
-                    {
-                        let tris = shape.tessellate(crate::extrude::OCCT_DEFLECTION as f64);
-                        if !tris.is_empty() {
-                            return self.import_mesh_body(&path, tris);
-                        }
-                    }
-                }
-                let text = match std::fs::read_to_string(&path) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.status = format!("Import failed: {e}");
-                        return ActionResult::Err(self.status.clone());
-                    }
-                };
-                match crate::step::parse_step_mesh(&text) {
-                    Ok(triangles) => self.import_mesh_body(&path, triangles),
-                    Err(e) => {
-                        self.status = format!("Import failed: {e}");
-                        ActionResult::Err(self.status.clone())
-                    }
-                }
+                let file = std::path::PathBuf::from(&path);
+                self.import_step_file(&path, &file)
             }
             Action::ImportUnit { path, link, name } => self.import_unit(&path, link, name),
             Action::Clear => {
@@ -18070,6 +18128,67 @@ mod tests {
         assert_eq!(state.doc.units.len(), 1, "the embedded copy stays");
 
         let _ = std::fs::remove_file(&unit_path);
+    }
+
+    /// #1023: a catalog part with **curved** geometry imports.
+    ///
+    /// This is the bug from the field: McMaster's CAD is SolidWorks BREP — `ADVANCED_FACE`
+    /// with NURBS, no `FACE_SURFACE` anywhere — and the catalog import went through
+    /// `import_step_bytes`, whose kernel arm is wasm-only, so on native it met the
+    /// faceted-subset parser and was rejected with "no FACE_SURFACE entities found". The
+    /// fixture is generated rather than checked in: a cylinder exported through the kernel
+    /// has exactly the shape that fails, and needs no 2 MB file in the repo.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_curved_catalog_part_imports_through_the_kernel() {
+        let dir = std::env::temp_dir().join("bearcad-curved-catalog-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A cylinder, exported the way the app exports: real BREP.
+        let mut source = AppState::default();
+        let sketch = begin_default_sketch(&mut source);
+        source.apply(Action::CreateCircle { cx: 0.0, cy: 0.0, r: 8.0, diameter_expr: None });
+        source.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Circle(0)],
+            distance: 20.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+        });
+        let path = dir.join("3201T26_Black-Oxide_Steel_U-Bolt.STEP");
+        assert!(matches!(
+            source.apply(Action::ExportStep { path: path.to_string_lossy().to_string(), body: None }),
+            ActionResult::Ok
+        ));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("ADVANCED_FACE") && !text.contains("FACE_SURFACE"),
+            "the fixture must be the shape that used to fail: curved BREP, no FACE_SURFACE"
+        );
+
+        // Now bring it in the way a caught download does.
+        let mut state = AppState::default();
+        let caught = crate::mcmaster::CaughtDownload {
+            path: path.clone(),
+            url: "https://www.mcmaster.com/mvC/Library/CAD2/3201T26_Black-Oxide%20Steel%20U-Bolt.STEP"
+                .to_string(),
+        };
+        let result = state.import_catalog_part(&caught);
+        assert!(
+            matches!(result, ActionResult::Ok),
+            "a curved catalog part must import, got {result:?} — status: {}",
+            state.status
+        );
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert_eq!(
+            state.doc.bodies[0].name.as_deref(),
+            Some("Black-Oxide Steel U-Bolt (3201T26)"),
+            "and reads as the part it is"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #1022: a part the catalog window caught lands as an ordinary body, named after its

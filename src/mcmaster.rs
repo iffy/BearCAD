@@ -175,6 +175,36 @@ impl CadFormat {
     }
 }
 
+/// What a caught file actually turned out to be, whatever its extension claimed (#1023).
+///
+/// A download can complete perfectly and still not be a model: their servers answer a CAD
+/// request that isn't ready — or isn't allowed — with a short HTML fragment, saved under the
+/// `.STEP` name the URL promised. Reporting that as "not a STEP file" blames the wrong thing;
+/// what happened is that no model was sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaughtContent {
+    /// Plausibly the CAD it claims to be — the format's own parser judges the rest.
+    Model,
+    /// A web page or fragment — a placeholder, an error, or a sign-in wall.
+    WebPage,
+}
+
+/// Judge a caught file by its first bytes rather than by its name.
+///
+/// Only the web-page case is called out. Judging by *size* was tried and is wrong: a
+/// legitimate STL can be a few hundred bytes, and rejecting one for being small trades a
+/// confusing message for a broken import. Anything that isn't a web page goes to the format's
+/// own parser, which is better placed to say what is wrong with it.
+pub fn caught_content(bytes: &[u8]) -> CaughtContent {
+    let head = &bytes[..bytes.len().min(256)];
+    let trimmed = String::from_utf8_lossy(head).trim_start().to_string();
+    if trimmed.starts_with('<') {
+        CaughtContent::WebPage
+    } else {
+        CaughtContent::Model
+    }
+}
+
 /// Whether a string reads as a McMaster part number: their catalog numbers are five or more
 /// characters of digits and letters, and always carry a digit.
 fn looks_like_part_number(s: &str) -> bool {
@@ -672,6 +702,25 @@ mod tests {
             CaughtDownload::from_line("part\t/tmp/x.step"),
             Some(CaughtDownload { path: PathBuf::from("/tmp/x.step"), url: String::new() })
         );
+    }
+
+    /// #1023: a download can complete and still not be a model. Their servers answered two
+    /// of the CAD requests in the field report with a 329-byte HTML comment saved under the
+    /// `.STEP` name the URL promised — so what a file *is* has to be judged by its bytes.
+    #[test]
+    fn a_web_page_saved_as_a_model_is_recognised() {
+        // The actual shape of the placeholder that prompted this.
+        let placeholder = format!("<!-- {} -->", "v8rD4psGZgdyDFgMSPfSpE825MCKHmp8wxErRawf".repeat(7));
+        assert_eq!(caught_content(placeholder.as_bytes()), CaughtContent::WebPage);
+        assert_eq!(caught_content(b"<!DOCTYPE html><html>"), CaughtContent::WebPage);
+        assert_eq!(caught_content(b"  \n <html>"), CaughtContent::WebPage);
+        // Real CAD reads as a model, whatever its size — a small STL is perfectly legitimate,
+        // so judging by length would break an import to improve a message.
+        assert_eq!(caught_content(b"ISO-10303-21;\nHEADER;\n"), CaughtContent::Model);
+        assert_eq!(caught_content(b"solid s\nfacet normal 0 0 1\n"), CaughtContent::Model);
+        // A binary STL has no text header at all.
+        assert_eq!(caught_content(&vec![0u8; 128]), CaughtContent::Model);
+        assert_eq!(caught_content(b""), CaughtContent::Model);
     }
 
     /// #1022: a caught file is imported by what it is — the two CAD formats the app reads —
