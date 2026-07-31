@@ -246,7 +246,13 @@ pub fn watch_first_frame() {
                  blank or stale. Drawing stopped after launch.{}",
                 where_to_look()
             )),
-            _ => log("watchdog: frames are being drawn"),
+            // A verdict either way, on stderr: at this point the interesting question is
+            // whether the app is drawing at all, and only one of the two answers being
+            // visible leaves the other looking like silence (#1023).
+            n => info(format!(
+                "watchdog: {n} frames drawn — the app is painting. A window that still looks \
+                 blank is a presentation fault, not a scheduling one."
+            )),
         }
     });
 }

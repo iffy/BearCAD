@@ -197,13 +197,44 @@ fn window_pos_override() -> Option<[f32; 2]> {
     Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
 }
 
-fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
+/// How long after launch to keep asking for frames (#1023).
+///
+/// The launch countdown alone isn't enough. On a cold start — the first run of a
+/// freshly-built binary, which is exactly when this is reported — the GPU spends its first
+/// moments compiling pipelines, and the handful of frames the sequence draws can be built
+/// without ever being *presented*. egui is reactive, so once the countdown ends nothing asks
+/// for another, and the window keeps showing whatever it had: grey. Repainting for a couple
+/// of seconds costs a few dozen idle frames once, and guarantees at least one lands after the
+/// GPU is warm.
+const LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether the launch should still be asking for frames: the countdown is running, or the
+/// settle window hasn't closed. Pure, because it is the whole decision and the rest is egui.
+fn launch_still_settling(frames_remaining: u8, since_launch: std::time::Duration) -> bool {
+    frames_remaining > 0 || since_launch < LAUNCH_SETTLE
+}
+
+fn tick_launch_maximize(
+    frames_remaining: &mut u8,
+    since_launch: std::time::Duration,
+    ctx: &egui::Context,
+) {
+    if !launch_still_settling(*frames_remaining, since_launch) {
+        return;
+    }
+    // Keep painting through the settle window even after the countdown is done.
     if *frames_remaining == 0 {
+        ctx.request_repaint();
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
         return;
     }
     *frames_remaining -= 1;
     if *frames_remaining == 0 {
-        diag::log("launch: maximizing");
+        // The end of the launch sequence, said out loud (#1023): a terminal that reaches this
+        // has an app that started properly, so a window still looking blank after it is a
+        // presentation fault rather than a startup one. Without a line here the last thing
+        // stderr says is "frame 1", which reads like a stall whether or not it was.
+        diag::info("launch: ready");
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
     }
     // Keep painting until the sequence is done, and for a moment after it (#978). egui is
@@ -2978,6 +3009,8 @@ struct App {
     /// In-flight in-sketch selection move on the Move tool's gizmo (#306).
     sketch_move_drag: Option<SketchMoveDrag>,
     launch_maximize_frames_remaining: u8,
+    /// When the app started, for the launch settle window (#1023).
+    launched_at: std::time::Instant,
     /// One-shot: the compact layout has hidden the default panes.
     compact_layout_initialized: bool,
     /// When the last touch-mode primary press landed (`Input::time`), to recognise a
@@ -4107,6 +4140,7 @@ impl App {
             selected_bezier_handle: None,
             viewport_context_menu: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
+            launched_at: std::time::Instant::now(),
             compact_layout_initialized: false,
             last_touch_press_time: f64::NEG_INFINITY,
             was_multi_touch: false,
@@ -11117,7 +11151,11 @@ impl eframe::App for App {
                 self.state.apply(Action::SetPaneVisible { pane, visible: false });
             }
         }
-        tick_launch_maximize(&mut self.launch_maximize_frames_remaining, ctx);
+        tick_launch_maximize(
+            &mut self.launch_maximize_frames_remaining,
+            self.launched_at.elapsed(),
+            ctx,
+        );
         theme::apply(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -28556,13 +28594,35 @@ mod tests {
     #[test]
     fn tick_launch_maximize_counts_down_to_zero() {
         let ctx = egui::Context::default();
+        let fresh = std::time::Duration::ZERO;
         let mut frames = 2;
-        tick_launch_maximize(&mut frames, &ctx);
+        tick_launch_maximize(&mut frames, fresh, &ctx);
         assert_eq!(frames, 1);
-        tick_launch_maximize(&mut frames, &ctx);
+        tick_launch_maximize(&mut frames, fresh, &ctx);
         assert_eq!(frames, 0);
-        tick_launch_maximize(&mut frames, &ctx);
-        assert_eq!(frames, 0);
+        tick_launch_maximize(&mut frames, fresh, &ctx);
+        assert_eq!(frames, 0, "the countdown never goes below zero");
+    }
+
+    /// #1023: the launch keeps asking for frames for a moment after the countdown ends.
+    ///
+    /// On a cold start — the first run of a freshly built binary, which is when this is
+    /// reported — the GPU is still compiling pipelines while the first frames are built, so
+    /// those frames can be drawn and never presented. egui is reactive, so without this
+    /// nothing asks for another and the window keeps showing grey. The settle window
+    /// guarantees at least one frame lands after the GPU is warm — and then ends, because an
+    /// app that repaints forever is a different bug.
+    #[test]
+    fn the_launch_keeps_painting_until_it_has_settled() {
+        use std::time::Duration;
+        // The countdown alone keeps it going, however long ago launch was.
+        assert!(launch_still_settling(2, Duration::from_secs(60)));
+        // With the countdown done, the settle window carries it.
+        assert!(launch_still_settling(0, Duration::ZERO));
+        assert!(launch_still_settling(0, LAUNCH_SETTLE - Duration::from_millis(1)));
+        // And then stops.
+        assert!(!launch_still_settling(0, LAUNCH_SETTLE));
+        assert!(!launch_still_settling(0, LAUNCH_SETTLE + Duration::from_secs(10)));
     }
 
     #[test]

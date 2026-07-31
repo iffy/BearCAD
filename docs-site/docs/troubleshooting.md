@@ -64,6 +64,12 @@ and tessellating, and the window waits while it happens. The log gives the time 
 
 ## A blank window
 
-If the window comes up grey and empty, the log distinguishes the two causes: no frames drawn
-at all (the app never painted) versus a handful and then nothing (it painted, then stopped
-being asked to). Either way the log says which, a few seconds after launch.
+The terminal tells you where it got to. A launch that reaches
+
+```text
+bearcad: launch: ready
+```
+
+started properly. Eight seconds in, the watchdog gives a verdict either way — how many frames
+were drawn, or a warning that too few were. Frames being drawn and a window still grey is a
+*presentation* fault; no frames is a *scheduling* one.
