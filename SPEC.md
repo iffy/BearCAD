@@ -1368,6 +1368,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   selection while the tint is on — lighting both sides the same answered "these two", which was
   never the question. Only while previewing, and only for a two-sided kind: a Rigid group has no
   moving side to tell apart, and a committed joint's parts are ordinary bodies again.
+  **Pane layout (#997):** the section is in two named parts. **Mate** holds the six snap-pair
+  pickers — how the parts line up — and previews exactly as the Move tool does: with any of them
+  focused, the A→A translation draws as a connector and the B (and C) pair's arc as its swept
+  path, off one shared `SnapPreviewPoints` so the two tools cannot drift apart. Below it, a
+  section named for the **kind** (*Slider*, *Revolute*, …) holds that kind's own freedoms and the
+  limits on them; Rigid has neither, so it gets no second section. Point-to-point is what mates
+  today; face-to-face and edge-to-edge are the natural next step for the kinds that want them.
   **Frames (#892/#894, `model::JointFrame`):** each side carries a mating frame — an
   origin, an axis point, and a spin-pinning point — picked with the Move tool's snap
   pairs (start points on the driven part, end points on the base;

@@ -5428,6 +5428,11 @@ pub fn show_pane(
                 }
             });
         };
+        // The **mate** — how the two parts line up (#997). Point-to-point, exactly as the Move
+        // tool mates, and previewed the same way: focus any of these and the translation and
+        // turn draw in the 3D view. (Face-to-face and edge-to-edge mates are the natural next
+        // step for the kinds that want them.)
+        section_label(ui, "Mate");
         picker_row(
             ui,
             "Start point A",
@@ -5477,6 +5482,11 @@ pub fn show_pane(
             JointEdit::ClearEndC,
         );
         drop(picker_row);
+        // What this kind of joint can do, under its own name (#997): the freedoms it has and
+        // the limits on them. Rigid has neither, so it gets no section at all.
+        if !matches!(control.kind, crate::model::JointKind::Rigid) {
+            section_label(ui, crate::names::joint_kind_label(&control.kind));
+        }
         // Position fields per kind (#894): what each freedom is called and measures.
         {
             use crate::expression_input::ValueKind;

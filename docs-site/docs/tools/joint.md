@@ -23,8 +23,10 @@ poses the moving part; it never changes any shape.
 3. Click the part that **moves**, then the part that **holds** it. They fill the **Mobile**
    and **Fixed** slots in that order. (Rigid takes any number of parts in one list instead —
    nothing moves.)
-4. Snap the mating points: **Start point A** on the moving part, **End point A** on the
-   held one. The **B** pair aims the axis, the **C** pair pins the spin.
+4. Under **Mate**, snap the mating points: **Start point A** on the moving part, **End point
+   A** on the held one. The **B** pair aims the axis, the **C** pair pins the spin. While you
+   are picking them the viewport draws the move they describe, the way the Move tool does.
+   Below that, a section named for the joint type holds its own values and travel limits.
 5. **Enter** (or the blue button) commits.
 
 Skip the points to join parts right where they sit — the joint records the existing
@@ -64,11 +66,12 @@ commit. **Animate** turns that sweep off — one switch for every joint.
 | <img src={useBaseUrl("/img/icons/joint_pin_slot.svg")} width="22" /> | Pin-slot | Slides along one axis while turning about another. |
 | <img src={useBaseUrl("/img/icons/joint_screw.svg")} width="22" /> | Screw | Turns, advancing by the lead per full turn. |
 
-## Base and driven
+## Mobile and fixed
 
-One side is the **base** — it stays put; the other moves through the joint. The Base row
-swaps sides. Joints chain: a part driven by one joint can be the base of the next, and a
-rigid joint with three or more parts ties them into one group that moves together.
+The **Fixed** part stays put; the **Mobile** one moves through the joint. Rigid instead takes
+any number of parts in one list, with a **Base** row to say which of them holds still. Joints
+chain: a part driven by one joint can be the fixed side of the next, and a rigid joint with
+three or more parts ties them into one group that moves together.
 
 ## Positions and limits
 

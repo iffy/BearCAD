@@ -8280,6 +8280,34 @@ impl App {
     /// only readable off the pane. Empty unless a **two-sided** joint is being made or edited —
     /// a Rigid group has no moving side to tell apart, and a committed joint's parts are
     /// ordinary bodies again.
+    /// The snap pairs the active tool is previewing (#997) — the Move tool's, or the Joint
+    /// tool's Mate section, which mates the very same way. `None` outside both, and inside a
+    /// sketch, where neither previews anything.
+    fn snap_preview_points(&self) -> Option<SnapPreviewPoints> {
+        if self.state.sketch_session.is_some() {
+            return None;
+        }
+        match self.state.tool {
+            Tool::Move => self.state.creating_move.as_ref().map(|cm| SnapPreviewPoints {
+                start_a: cm.start_point_a,
+                end_a: cm.end_point_a,
+                start_b: cm.start_point_b,
+                end_b: cm.end_point_b,
+                start_c: cm.start_point_c,
+                end_c: cm.end_point_c,
+            }),
+            Tool::Joint => self.state.creating_joint.as_ref().map(|cj| SnapPreviewPoints {
+                start_a: cj.start_point_a,
+                end_a: cj.end_point_a,
+                start_b: cj.start_point_b,
+                end_b: cj.end_point_b,
+                start_c: cj.start_point_c,
+                end_c: cj.end_point_c,
+            }),
+            _ => None,
+        }
+    }
+
     fn joint_preview_sides(&self) -> Vec<(usize, egui::Color32)> {
         if self.state.tool != Tool::Joint || self.state.sketch_session.is_some() {
             return Vec::new();
@@ -15111,14 +15139,55 @@ fn sketch_repeat_probe_op(
 
 /// The Move tool's start-A → end-A connector (#668): the world segment the translation spans,
 /// once both points are picked and both still resolve against their bodies' live meshes.
-fn move_snap_connector(
-    doc: &model::Document,
-    cm: &actions::CreatingMove,
-) -> Option<(Vec3, Vec3)> {
-    Some((
-        extrude::move_point_world(doc, &cm.start_point_a?)?,
-        extrude::move_point_world(doc, &cm.end_point_a?)?,
-    ))
+/// The snap pairs a tool is previewing (#997): the Move tool's, or — since a joint mates the
+/// same way — the Joint tool's Mate section.
+///
+/// Both draw the same thing from them: a connector along the A→A translation, and the arc the
+/// B (and C) pair sweeps as the slide and turn advance together. Sharing the shape is what lets
+/// the Joint tool's Mate pickers preview a mate exactly as the Move tool's do, rather than
+/// leaving a joint's points as bare dots with nothing between them.
+#[derive(Clone, Copy, Default)]
+struct SnapPreviewPoints {
+    start_a: Option<model::MovePointRef>,
+    end_a: Option<model::MovePointRef>,
+    start_b: Option<model::MovePointRef>,
+    end_b: Option<model::MovePointRef>,
+    start_c: Option<model::MovePointRef>,
+    end_c: Option<model::MovePointRef>,
+}
+
+impl SnapPreviewPoints {
+    /// A throwaway `MoveOperation` over just these points, for the translation/rotation maths
+    /// (`move_op_translation`, `move_snap_rotation_axis_angle`) both tools share.
+    fn probe(&self) -> model::MoveOperation {
+        model::MoveOperation {
+            targets: Vec::new(),
+            translate_mode: model::MoveTranslateMode::default(),
+            start_point_a: self.start_a,
+            end_point_a: self.end_a,
+            start_point_b: self.start_b,
+            end_point_b: self.end_b,
+            start_point_c: self.start_c,
+            end_point_c: self.end_c,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        }
+    }
+
+    /// The A→A line: the translation the pair asks for. `None` until both ends resolve.
+    fn connector(&self, doc: &model::Document) -> Option<(Vec3, Vec3)> {
+        Some((
+            extrude::move_point_world(doc, &self.start_a?)?,
+            extrude::move_point_world(doc, &self.end_a?)?,
+        ))
+    }
 }
 
 /// The Move picker a viewport click feeds (#656): the hand-picked `override` when there is
@@ -23923,12 +23992,13 @@ impl App {
 
         // The start-A → end-A connector (#668): the translation drawn as a vector, in
         // yellow (#740) so the line reads apart from both endpoint marks.
-        let mut move_connector: Vec<(Vec3, Vec3, egui::Color32, bool)> = self
-            .state
-            .creating_move
+        // The A→A connector: the translation the snap pair asks for, drawn as a line between
+        // the two points. The Joint tool mates the same way (#997), so its Mate pickers preview
+        // the motion exactly as the Move tool's do.
+        let snap_points = self.snap_preview_points();
+        let mut move_connector: Vec<(Vec3, Vec3, egui::Color32, bool)> = snap_points
             .as_ref()
-            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
-            .and_then(|cm| move_snap_connector(&self.state.doc, cm))
+            .and_then(|p| p.connector(&self.state.doc))
             .map(|(a, b)| vec![(a, b, theme::MOVE_CONNECTOR, false)])
             .unwrap_or_default();
         // The rotation surface itself (#920): the sphere translucent, the circle as an
@@ -24089,31 +24159,10 @@ impl App {
         // candidate blue as its endpoint marks — tracing where the point travels with the
         // slide and the turn advancing together: half way through the translation it is
         // half way through its rotation.
-        if let Some(paths) = self
-            .state
-            .creating_move
+        if let Some(paths) = snap_points
             .as_ref()
-            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
-            .and_then(|cm| {
-                let probe = model::MoveOperation {
-                    targets: cm.targets.clone(),
-                    translate_mode: cm.translate_mode,
-                    start_point_a: cm.start_point_a,
-                    end_point_a: cm.end_point_a,
-                    start_point_b: cm.start_point_b,
-                    end_point_b: cm.end_point_b,
-                    start_point_c: cm.start_point_c,
-                    end_point_c: cm.end_point_c,
-                    plane_targets: Vec::new(),
-                    image_targets: Vec::new(),
-                    instance_targets: Vec::new(),
-                    tx: cm.tx.clone(),
-                    ty: cm.ty.clone(),
-                    tz: cm.tz.clone(),
-                    outputs: Vec::new(),
-                    name: None,
-                    deleted: false,
-                };
+            .and_then(|points| {
+                let probe = points.probe();
                 let translation = extrude::move_op_translation(&self.state.doc, &probe)?;
                 let (axis, angle) =
                     extrude::move_snap_rotation_axis_angle(&self.state.doc, &probe)?;
@@ -27815,11 +27864,84 @@ mod tests {
         );
     }
 
+    /// #997: the Joint tool mates the same way the Move tool does, so its Mate pickers preview
+    /// the motion the same way — the A→A translation and the arc the B pair sweeps. Before, a
+    /// joint's points were bare dots with nothing drawn between them.
+    #[test]
+    fn a_joints_mate_points_preview_like_a_moves() {
+        use crate::actions::{AppState, CreatingJoint, CreatingMove, Tool};
+        use crate::model::MovePointRef;
+        let q = crate::hierarchy::quantize_body_point;
+        let corner = glam::Vec3::new(10.0, 0.0, 0.0);
+        let mut state = AppState::default();
+        state.doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[glam::Vec3::ZERO, corner, glam::Vec3::new(0.0, 10.0, 0.0)]],
+            source_name: "tri".to_string(),
+        });
+        state.doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let start = MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) };
+        let end = MovePointRef::Vertex { body: 0, p: q(corner) };
+
+        // The Joint tool reports the same pair the Move tool would, so everything drawn from
+        // it follows.
+        state.tool = Tool::Joint;
+        state.creating_joint = Some(CreatingJoint {
+            start_point_a: Some(start),
+            end_point_a: Some(end),
+            ..Default::default()
+        });
+        let app_points = |state: &AppState| -> Option<super::SnapPreviewPoints> {
+            match state.tool {
+                Tool::Move => state.creating_move.as_ref().map(|cm| super::SnapPreviewPoints {
+                    start_a: cm.start_point_a,
+                    end_a: cm.end_point_a,
+                    start_b: cm.start_point_b,
+                    end_b: cm.end_point_b,
+                    start_c: cm.start_point_c,
+                    end_c: cm.end_point_c,
+                }),
+                Tool::Joint => state.creating_joint.as_ref().map(|cj| super::SnapPreviewPoints {
+                    start_a: cj.start_point_a,
+                    end_a: cj.end_point_a,
+                    start_b: cj.start_point_b,
+                    end_b: cj.end_point_b,
+                    start_c: cj.start_point_c,
+                    end_c: cj.end_point_c,
+                }),
+                _ => None,
+            }
+        };
+        let joint = app_points(&state).expect("the Joint tool previews its mate");
+        let (a, b) = joint.connector(&state.doc).expect("both mate points resolve");
+        assert!((a - glam::Vec3::ZERO).length() < 1e-3);
+        assert!((b - corner).length() < 1e-3);
+
+        // And it is the *same* preview: the Move tool with the same pair gives the same line.
+        let mut moving = AppState { tool: Tool::Move, ..AppState::default() };
+        moving.doc = state.doc.clone();
+        moving.creating_move = Some(CreatingMove {
+            start_point_a: Some(start),
+            end_point_a: Some(end),
+            ..Default::default()
+        });
+        assert_eq!(
+            app_points(&moving).and_then(|p| p.connector(&moving.doc)),
+            Some((a, b)),
+            "a joint's mate and a move's snap preview the same translation"
+        );
+    }
+
     /// #668: once both A points are picked, a connector spans them — the translation drawn as
     /// a vector. Either point missing (or no longer resolving) draws nothing.
     #[test]
     fn move_snap_connector_spans_the_a_points() {
-        use super::move_snap_connector;
+        use super::SnapPreviewPoints;
         use crate::model::MovePointRef;
         let q = crate::hierarchy::quantize_body_point;
         let corner = glam::Vec3::new(10.0, 0.0, 0.0);
@@ -27839,24 +27961,20 @@ mod tests {
 
         let start = MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) };
         let end = MovePointRef::Vertex { body: 0, p: q(corner) };
-        let half = actions::CreatingMove { start_point_a: Some(start), ..Default::default() };
-        assert_eq!(move_snap_connector(&doc, &half), None, "one point isn't a vector");
+        let half = SnapPreviewPoints { start_a: Some(start), ..Default::default() };
+        assert_eq!(half.connector(&doc), None, "one point isn't a vector");
 
-        let both = actions::CreatingMove { end_point_a: Some(end), ..half };
-        let (a, b) = move_snap_connector(&doc, &both).expect("both points resolve");
+        let both = SnapPreviewPoints { end_a: Some(end), ..half };
+        let (a, b) = both.connector(&doc).expect("both points resolve");
         assert!((a - glam::Vec3::ZERO).length() < 1e-3, "starts at start A, got {a:?}");
         assert!((b - corner).length() < 1e-3, "ends at end A, got {b:?}");
 
         // A point that no longer resolves draws nothing rather than a wrong line.
-        let gone = actions::CreatingMove {
-            end_point_a: Some(MovePointRef::Vertex { body: 0, p: [9999; 3] }),
-            start_point_b: None,
-            end_point_b: None,
-            start_point_c: None,
-            end_point_c: None,
+        let gone = SnapPreviewPoints {
+            end_a: Some(MovePointRef::Vertex { body: 0, p: [9999; 3] }),
             ..both
         };
-        assert_eq!(move_snap_connector(&doc, &gone), None);
+        assert_eq!(gone.connector(&doc), None);
 
         // The two marks are visibly different colours — go and stop.
         assert_ne!(crate::theme::MOVE_START_POINT, crate::theme::MOVE_END_POINT);
