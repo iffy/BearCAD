@@ -696,6 +696,57 @@ pub struct CreatingBoolean {
     pub editing: Option<usize>,
 }
 
+/// A boolean commit running off the UI thread so a heavy cut does not freeze the window
+/// (#1031). The main loop polls [`BooleanJob::try_take`] and finishes the commit.
+pub struct BooleanJob {
+    pub kind: crate::model::BooleanOpKind,
+    pub a: Vec<usize>,
+    pub b: Vec<usize>,
+    pub keep_b: bool,
+    /// Result: tessellated solids, or an error message.
+    receiver: std::sync::mpsc::Receiver<Result<Vec<crate::extrude::SolidMesh>, String>>,
+}
+
+impl BooleanJob {
+    /// Start computing the boolean on a background thread.
+    pub fn start(
+        doc: &Document,
+        kind: crate::model::BooleanOpKind,
+        a: Vec<usize>,
+        b: Vec<usize>,
+        keep_b: bool,
+    ) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let doc = doc.clone();
+        let kind_bg = kind;
+        let a_bg = a.clone();
+        let b_bg = b.clone();
+        std::thread::spawn(move || {
+            let result =
+                crate::extrude::precompute_boolean(&doc, kind_bg, &a_bg, &b_bg, keep_b);
+            let _ = tx.send(result);
+        });
+        Self {
+            kind,
+            a,
+            b,
+            keep_b,
+            receiver: rx,
+        }
+    }
+
+    /// `None` while still working; `Some` when the kernel finished (or failed).
+    pub fn try_take(&self) -> Option<Result<Vec<crate::extrude::SolidMesh>, String>> {
+        match self.receiver.try_recv() {
+            Ok(r) => Some(r),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("Boolean job stopped unexpectedly".into()))
+            }
+        }
+    }
+}
+
 impl Default for CreatingBoolean {
     fn default() -> Self {
         Self {
@@ -2195,6 +2246,9 @@ pub enum Action {
         a: Vec<usize>,
         b: Vec<usize>,
         keep_b: bool,
+        /// When set, skip the kernel solid-count call — already precomputed off-thread
+        /// so the UI stays live (#1031). Scripts leave this `None`.
+        solid_count: Option<usize>,
     },
     /// Re-point an existing boolean operation at new inputs / kind / keep-B. Outputs are
     /// preserved (their meshes recompute; the last output absorbs extra result solids).
@@ -3086,6 +3140,8 @@ pub struct AppState {
     pub creating_sweep: Option<CreatingSweep>,
     /// In-progress boolean operation (Combine tool).
     pub creating_boolean: Option<CreatingBoolean>,
+    /// Background combine/cut job while the kernel works (#1031). UI shows progress.
+    pub boolean_job: Option<BooleanJob>,
     /// In-progress move operation (Move tool).
     pub creating_move: Option<CreatingMove>,
     /// In-progress joint (Joint tool, #894).
@@ -3302,6 +3358,7 @@ impl Default for AppState {
             creating_revolve: None,
             creating_sweep: None,
             creating_boolean: None,
+            boolean_job: None,
             creating_move: None,
             creating_joint: None,
             creating_mirror: None,
@@ -6246,6 +6303,46 @@ impl AppState {
             self.dirty = self.doc != self.saved_snapshot;
         }
         result
+    }
+
+    /// Poll a background boolean job and finish the commit when the kernel is done (#1031).
+    /// Returns true when the job completed this call (success or failure).
+    pub fn poll_boolean_job(&mut self) -> bool {
+        let Some(job) = self.boolean_job.as_ref() else {
+            return false;
+        };
+        let Some(result) = job.try_take() else {
+            return false; // still working
+        };
+        let job = self.boolean_job.take().unwrap();
+        match result {
+            Ok(meshes) => {
+                let solid_count = meshes.len().max(1);
+                let applied = self.apply(Action::CreateBooleanOperation {
+                    kind: job.kind,
+                    a: job.a,
+                    b: job.b,
+                    keep_b: job.keep_b,
+                    solid_count: Some(solid_count),
+                });
+                if matches!(applied, ActionResult::Ok) {
+                    // Warm the mesh cache so the first paint does not re-run the kernel.
+                    if let Some(op) = self.doc.boolean_ops.last() {
+                        for (mesh, &bi) in meshes.into_iter().zip(op.outputs.iter()) {
+                            crate::extrude::warm_body_mesh_cache(&self.doc, bi, mesh);
+                        }
+                    }
+                    self.creating_boolean = Some(CreatingBoolean::default());
+                } else if let ActionResult::Err(e) = applied {
+                    self.status = e;
+                }
+            }
+            Err(e) => {
+                self.status = e;
+                // Leave creating_boolean as-is so the user can retry.
+            }
+        }
+        true
     }
 
     /// Adopt the current document as the saved baseline (#522): after this the document
@@ -11866,29 +11963,53 @@ label_hidden: false,
                 let Some(cb) = self.creating_boolean.take() else {
                     return ActionResult::Err("No boolean operation in progress".to_string());
                 };
-                let result = match cb.editing {
-                    Some(op) => self.apply(Action::EditBooleanOperation {
-                        op,
-                        kind: cb.kind,
-                        a: cb.a.clone(),
-                        b: cb.b.clone(),
-                        keep_b: cb.keep_b,
-                    }),
-                    None => self.apply(Action::CreateBooleanOperation {
-                        kind: cb.kind,
-                        a: cb.a.clone(),
-                        b: cb.b.clone(),
-                        keep_b: cb.keep_b,
-                    }),
-                };
-                if matches!(result, ActionResult::Err(_)) {
+                if self.boolean_job.is_some() {
                     self.creating_boolean = Some(cb);
-                } else {
-                    self.creating_boolean = Some(CreatingBoolean::default());
+                    return ActionResult::Err("A boolean is already running".to_string());
                 }
-                result
+                if let Err(e) =
+                    validate_boolean_inputs(&self.doc, cb.kind, &cb.a, &cb.b, cb.editing)
+                {
+                    self.creating_boolean = Some(cb);
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Editing reuses the sync path (rarer, smaller usually). New ops with heavy
+                // solids (imported STEP cuts) run off-thread so the window keeps painting (#1031).
+                if cb.editing.is_some() {
+                    let result = self.apply(Action::EditBooleanOperation {
+                        op: cb.editing.unwrap(),
+                        kind: cb.kind,
+                        a: cb.a.clone(),
+                        b: cb.b.clone(),
+                        keep_b: cb.keep_b,
+                    });
+                    if matches!(result, ActionResult::Err(_)) {
+                        self.creating_boolean = Some(cb);
+                    } else {
+                        self.creating_boolean = Some(CreatingBoolean::default());
+                    }
+                    return result;
+                }
+                self.status = format!("{}…", cb.kind.label());
+                self.boolean_job = Some(BooleanJob::start(
+                    &self.doc,
+                    cb.kind,
+                    cb.a.clone(),
+                    cb.b.clone(),
+                    cb.keep_b,
+                ));
+                // Keep the tool state so the pane can show progress in place of Create.
+                self.creating_boolean = Some(cb);
+                ActionResult::Ok
             }
-            Action::CreateBooleanOperation { kind, a, b, keep_b } => {
+            Action::CreateBooleanOperation {
+                kind,
+                a,
+                b,
+                keep_b,
+                solid_count,
+            } => {
                 if let Err(e) = validate_boolean_inputs(&self.doc, kind, &a, &b, None) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -11906,7 +12027,9 @@ label_hidden: false,
                 // Output body count = solids the kernel finds in the result right now
                 // (at least one). A later rebuild that produces more solids folds the
                 // extras into the last output body; fewer leaves trailing outputs empty.
-                let solids = crate::extrude::boolean_result_solid_count(&self.doc, op_index)
+                // Prefer a precomputed count from the background job (#1031).
+                let solids = solid_count
+                    .or_else(|| crate::extrude::boolean_result_solid_count(&self.doc, op_index))
                     .unwrap_or(1)
                     .max(1);
                 self.doc.shape_order.push(ShapeKind::BooleanOperation);
@@ -16959,6 +17082,41 @@ mod tests {
         );
     }
 
+    /// #1031: precomputing a boolean off the hot path returns meshes so create can skip
+    /// the kernel solid-count call.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn precompute_boolean_gives_meshes_for_two_boxes() {
+        let state = two_box_state(true);
+        let meshes = crate::extrude::precompute_boolean(
+            &state.doc,
+            crate::model::BooleanOpKind::Combine,
+            &[0, 1],
+            &[],
+            false,
+        )
+        .expect("combine of two boxes should precompute");
+        assert!(!meshes.is_empty());
+        assert!(
+            meshes.iter().any(|m| !m.triangles.is_empty()),
+            "at least one solid should have triangles"
+        );
+        // Create with the precomputed count must not re-fail.
+        let mut state = state;
+        let n = meshes.len();
+        assert!(matches!(
+            state.apply(Action::CreateBooleanOperation {
+                kind: crate::model::BooleanOpKind::Combine,
+                a: vec![0, 1],
+                b: Vec::new(),
+                keep_b: false,
+                solid_count: Some(n),
+            }),
+            ActionResult::Ok
+        ));
+        assert_eq!(state.doc.boolean_ops[0].outputs.len(), n.max(1));
+    }
+
     /// #214: the revolve angle (rotate, radians) and construction-plane offset (mm) gizmos are
     /// enumerated and driven the same way.
     #[test]
@@ -17707,6 +17865,7 @@ mod tests {
             a: vec![own_body],
             b: vec![unit_body],
             keep_b: false,
+            solid_count: None,
         });
         assert_eq!(rb, ActionResult::Ok, "status: {}", state.status);
         assert!(
@@ -18457,6 +18616,7 @@ mod tests {
                 a: vec![0, 1],
                 b: Vec::new(),
                 keep_b: false,
+                solid_count: None,
             }),
             ActionResult::Ok
         ));
@@ -20638,6 +20798,7 @@ mod tests {
             a: vec![0, 1],
             b: Vec::new(),
             keep_b: false,
+            solid_count: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.boolean_ops.len(), 1);
@@ -20669,6 +20830,7 @@ mod tests {
             a: vec![0],
             b: vec![1],
             keep_b: true,
+            solid_count: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!(state.doc.bodies[0].shadow);
@@ -20686,6 +20848,7 @@ mod tests {
                 a: vec![0],
                 b: Vec::new(),
                 keep_b: false,
+                solid_count: None,
             }),
             ActionResult::Err(_)
         ));
@@ -20695,6 +20858,7 @@ mod tests {
                 a: vec![0],
                 b: Vec::new(),
                 keep_b: false,
+                solid_count: None,
             }),
             ActionResult::Err(_)
         ));
@@ -20704,6 +20868,7 @@ mod tests {
             a: vec![0, 1],
             b: Vec::new(),
             keep_b: false,
+            solid_count: None,
         });
         let out = state.doc.boolean_ops[0].outputs[0];
         assert!(matches!(
@@ -20712,6 +20877,7 @@ mod tests {
                 a: vec![out],
                 b: vec![0],
                 keep_b: false,
+                solid_count: None,
             }),
             ActionResult::Err(_)
         ));
@@ -20726,6 +20892,7 @@ mod tests {
             a: vec![0],
             b: vec![1],
             keep_b: false,
+            solid_count: None,
         });
         assert!(state.doc.bodies[1].shadow);
         let result = state.apply(Action::EditBooleanOperation {
@@ -20750,6 +20917,7 @@ mod tests {
             a: vec![0],
             b: vec![1],
             keep_b: false,
+            solid_count: None,
         });
         let out = state.doc.boolean_ops[0].outputs[0];
         assert!(crate::document_lifecycle::tombstone_element(
@@ -22295,6 +22463,7 @@ mod tests {
             a: vec![0, 1],
             b: Vec::new(),
             keep_b: false,
+            solid_count: None,
         });
         let op = &state.doc.boolean_ops[0];
         assert_eq!(op.outputs.len(), 2, "disjoint union should split into two bodies");
@@ -22315,6 +22484,7 @@ mod tests {
             a: vec![0],
             b: vec![1],
             keep_b: false,
+            solid_count: None,
         });
         let op = &state.doc.boolean_ops[0];
         assert_eq!(op.outputs.len(), 1);

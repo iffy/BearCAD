@@ -11163,6 +11163,15 @@ impl eframe::App for App {
         }
         // Everything below still works off the context, so clone it out once.
         let ctx = &ui.ctx().clone();
+        // Finish a background combine/cut when the kernel is done (#1031).
+        if self.state.boolean_job.is_some() {
+            if self.state.poll_boolean_job() {
+                ctx.request_repaint();
+            } else {
+                // Keep painting so the progress spinner turns and we poll again.
+                ctx.request_repaint();
+            }
+        }
         // Tutorial anchors are re-recorded as this frame's UI renders.
         self.state.tutorial_anchor_rects.clear();
         touch::detect(ctx);
@@ -12265,6 +12274,7 @@ impl eframe::App for App {
                         model::BooleanOpKind::Combine => a_len >= 2,
                         _ => a_len >= 1 && b_len >= 1,
                     },
+                    working: self.state.boolean_job.is_some(),
                 }
             }),
             boolean_edit_start: None,

@@ -2193,6 +2193,63 @@ pub fn boolean_result_solid_count(doc: &Document, op_index: usize) -> Option<usi
     Some(occt_boolean_result_shape(doc, op_index)?.solids().len())
 }
 
+/// Kernel solids of a boolean, tessellated — for off-thread precompute so the UI does not
+/// freeze while a heavy cut/fuse runs (#1031). `op` must already be in `doc.boolean_ops`.
+/// Returns one mesh per solid (at least one empty mesh if the kernel produced nothing).
+pub fn boolean_result_meshes(doc: &Document, op_index: usize) -> Option<Vec<SolidMesh>> {
+    let result = occt_boolean_result_shape(doc, op_index)?;
+    let solids = result.solids();
+    if solids.is_empty() {
+        return Some(vec![SolidMesh::default()]);
+    }
+    let meshes = solids
+        .into_iter()
+        .map(|s| SolidMesh {
+            triangles: s.tessellate(OCCT_DEFLECTION as f64),
+        })
+        .collect();
+    Some(meshes)
+}
+
+/// Probe a would-be boolean without committing it: clone is the caller's, the op is pushed
+/// temporarily, and the kernel result is tessellated. Used by the background combine job
+/// (#1031).
+pub fn precompute_boolean(
+    doc: &Document,
+    kind: crate::model::BooleanOpKind,
+    a: &[usize],
+    b: &[usize],
+    keep_b: bool,
+) -> Result<Vec<SolidMesh>, String> {
+    let mut probe = doc.clone();
+    let op_index = probe.boolean_ops.len();
+    probe.boolean_ops.push(crate::model::BooleanOperation {
+        kind,
+        a: a.to_vec(),
+        b: b.to_vec(),
+        keep_b,
+        outputs: Vec::new(),
+        name: None,
+        deleted: false,
+    });
+    boolean_result_meshes(&probe, op_index)
+        .ok_or_else(|| "Boolean failed — one of the bodies may not be kernel-representable".into())
+}
+
+/// Seed the per-thread mesh cache with a precomputed body mesh so the first paint after a
+/// background boolean does not re-run the kernel (#1031).
+pub fn warm_body_mesh_cache(doc: &Document, body_index: usize, mesh: SolidMesh) {
+    let fingerprint = document_mesh_fingerprint(doc);
+    BODY_MESH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        cache.1.insert(body_index, Some(mesh));
+    });
+}
+
 
 /// Commit-time kernel feasibility trial for a 3D edge treatment (#103). `candidate` is the
 /// would-be extrusion (built by [`extrusion_with_edge_treatment`], the treatment already

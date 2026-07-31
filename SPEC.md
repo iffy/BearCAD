@@ -761,7 +761,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (`BodySource::Boolean { op, solid }`) — a cut or difference that severs a body into
     pieces yields one body per piece. The output count is fixed at commit; a parametric
     rebuild that produces *more* solids folds the extras into the last output body, fewer
-    leaves trailing outputs empty, so the Elements pane stays stable.
+    leaves trailing outputs empty, so the Elements pane stays stable. **New** commits run
+    the kernel **off the UI thread** (#1031): the Create checkmark becomes a spinner until
+    the solids are ready, then the op is written and the first paint uses pre-warmed meshes.
+    (Re-editing an existing op stays synchronous.)
   - The input bodies become **shadow bodies** (`Body::shadow`): still listed in the pane
     with their own dashed-cube icon, but hidden in the viewport (and excluded from picking
     and occlusion) except while hovered or selected in the pane, where they render as a

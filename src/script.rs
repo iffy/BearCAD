@@ -2076,7 +2076,7 @@ fn geometric_constraint_script_name(
 pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) -> Option<Instruction> {
     use crate::actions::dim_label_axis_for_target;
     match action {
-        Action::CreateBooleanOperation { kind, a, b, keep_b } => {
+        Action::CreateBooleanOperation { kind, a, b, keep_b, solid_count: _ } => {
             Some(Instruction::CreateBooleanOp {
                 kind: *kind,
                 a: a.clone(),
@@ -5023,7 +5023,13 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
-                let result = state.apply(Action::CreateBooleanOperation { kind, a, b, keep_b });
+                let result = state.apply(Action::CreateBooleanOperation {
+                    kind,
+                    a,
+                    b,
+                    keep_b,
+                    solid_count: None,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

@@ -262,6 +262,8 @@ pub struct BooleanControl {
     /// `true` while re-editing a committed operation (changes the commit label).
     pub editing: bool,
     pub can_commit: bool,
+    /// Kernel is running the boolean off-thread — show progress instead of Create (#1031).
+    pub working: bool,
 }
 
 /// What the Move tool's context section shows: the picked bodies, the translation
@@ -5054,7 +5056,19 @@ pub fn show_pane(
             }
         }
         ui.add_space(2.0);
-        if primary_button(
+        if control.working {
+            // Progress in place of the checkmark while the kernel works (#1031).
+            labeled_row(ui, "", |ui| {
+                let w = ui.available_width().max(56.0);
+                ui.add_sized(
+                    egui::vec2(w, 24.0),
+                    egui::Spinner::new().size(16.0),
+                )
+                .on_hover_text(format!("{}…", control.kind.label()));
+            });
+            // Keep the pane repainting so the spinner turns and the job is polled.
+            ui.ctx().request_repaint();
+        } else if primary_button(
             ui,
             control.can_commit && controls_enabled,
             if control.editing { "Apply changes" } else { "Create" },
@@ -8669,6 +8683,7 @@ mod tests {
                 keep_b: false,
                 editing: false,
                 can_commit: false,
+                working: false,
             }),
             ..input(&doc, &selection)
         };
