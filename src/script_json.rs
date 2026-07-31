@@ -709,6 +709,8 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             None | Some("toggle") => Ok(Instruction::SetCommandPalette { open: None }),
             Some("run") => Ok(Instruction::RunPaletteCommand {
                 query: req_str(o, "query", "palette run")?,
+                // What a command that prompts for an argument (#1022) would have been given.
+                argument: opt_str(o, "argument")?,
             }),
             Some("show") | Some("open") => {
                 Ok(Instruction::SetCommandPalette { open: Some(true) })
@@ -2825,7 +2827,7 @@ mod tests {
         );
         assert_eq!(
             instruction_from_json("palette", &json!({ "action": "run", "query": "extrude" })),
-            Ok(Instruction::RunPaletteCommand { query: "extrude".into() })
+            Ok(Instruction::RunPaletteCommand { query: "extrude".into(), argument: None })
         );
         assert_eq!(
             instruction_from_json("palette", &json!({ "action": "show" })),

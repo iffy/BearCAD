@@ -3442,7 +3442,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         Some(Value::String(s)) => s.to_str()?.to_string(),
                         _ => return Err(mlua::Error::external("palette run requires query")),
                     };
-                    unsafe { tick.exec(Instruction::RunPaletteCommand { query }) }
+                    // A command that asks for an argument (#1022) takes it as the third
+                    // value: `bearcad.ui.palette("run", "mcmaster", "socket head screw")`.
+                    let argument = match args.get(2) {
+                        Some(Value::String(s)) => Some(s.to_str()?.to_string()),
+                        _ => None,
+                    };
+                    unsafe { tick.exec(Instruction::RunPaletteCommand { query, argument }) }
                 }
                 Some(Value::String(s)) => {
                     let verb = s.to_str()?.to_ascii_lowercase();

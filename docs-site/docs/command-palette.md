@@ -21,9 +21,21 @@ button is reachable here.
 - **Explode Selection Under Cursor** opens the [Selection Exploder](/docs/selection-exploder)
   right where your pointer is, the same as pressing **Space**.
 
+## Commands that ask for something
+
+A few commands need a word from you. Choosing one turns the palette into a prompt for it —
+type, **Enter** runs it, **Esc** goes back to the list with your search still there.
+
+**Search McMaster-Carr** works this way: type what you're after — `socket head screw`, or a
+part number — and the [catalog window](/docs/files#mcmaster-carr-parts) opens with that
+search already run.
+
 ## Scripting
 
 ```lua
 bearcad.ui.palette("show")            -- show / hide / toggle
 bearcad.ui.palette("run", "view top") -- run the best-matching entry for a query
+
+-- A command that asks for something takes it as a third value.
+bearcad.ui.palette("run", "mcmaster", "socket head screw")
 ```

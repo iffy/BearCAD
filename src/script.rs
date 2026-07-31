@@ -732,8 +732,9 @@ pub enum Instruction {
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
     SetCommandPalette { open: Option<bool> },
-    /// Run the best-matching palette command for a query.
-    RunPaletteCommand { query: String },
+    /// Run the best-matching palette command for a query, with the argument a command that
+    /// asks for one would have prompted for (#1022).
+    RunPaletteCommand { query: String, argument: Option<String> },
     // Synthetic input (viewport-local pixel coordinates)
     Move { x: f32, y: f32 },
     Click { x: f32, y: f32, mods: ClickMods },
@@ -1691,9 +1692,12 @@ impl Instruction {
                     None => format!("bearcad.ui.mcmaster({verb:?})"),
                 }
             }
-            Instruction::RunPaletteCommand { query } => {
-                format!("bearcad.ui.palette(\"run\", {query:?})")
-            }
+            Instruction::RunPaletteCommand { query, argument } => match argument {
+                Some(argument) => {
+                    format!("bearcad.ui.palette(\"run\", {query:?}, {argument:?})")
+                }
+                None => format!("bearcad.ui.palette(\"run\", {query:?})"),
+            },
             Instruction::Move { x, y } => format!("bearcad.ui.move({x}, {y})"),
             Instruction::Click { x, y, mods } => {
                 format!("bearcad.ui.click({x}, {y}{})", mods.lua_opts())
@@ -5786,10 +5790,10 @@ impl ScriptRunner {
                 };
                 StepResult::Continue
             }
-            Instruction::RunPaletteCommand { query } => {
+            Instruction::RunPaletteCommand { query, argument } => {
                 let commands = commands_for_state(state);
                 if let Some(cmd) = best_match(&query, &commands) {
-                    match cmd.outcome() {
+                    match cmd.outcome(argument.as_deref().unwrap_or_default()) {
                         PaletteOutcome::Action(action) => {
                             state.apply(action);
                         }
@@ -6857,6 +6861,7 @@ mod tests {
     fn script_palette_run_sets_top_view() {
         let mut runner = ScriptRunner::from_instructions(vec![Instruction::RunPaletteCommand {
             query: "view top".into(),
+            argument: None,
         }]);
         runner.verbose = false;
         let mut state = AppState::default();

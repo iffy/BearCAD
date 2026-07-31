@@ -41,6 +41,9 @@ pub const SUBCOMMAND: &str = "mcmaster";
 /// decides to print on stdout — which it does.
 pub const CAUGHT_PREFIX: &str = "part";
 
+/// Where a text search lands on their site.
+pub const SEARCH_URL: &str = "https://www.mcmaster.com/products/?q=";
+
 /// The product page for a part number — what the window opens at when one was given, so a
 /// known number skips the search.
 pub fn part_url(part_number: &str) -> String {
@@ -50,6 +53,42 @@ pub fn part_url(part_number: &str) -> String {
     } else {
         format!("https://www.mcmaster.com/{part}/")
     }
+}
+
+/// Where the window should open for whatever the user typed (#1022): their **search results**
+/// for a phrase, the **product page** for something already shaped like a part number, and
+/// the catalog's front page for nothing at all.
+///
+/// One function because the box takes one thing — what you're after — and a part number is
+/// just a very specific way of saying it. Typing `91290A115` and typing `socket head screw`
+/// both mean "show me this".
+pub fn catalog_url_for(query: &str) -> String {
+    let query = query.trim();
+    if query.is_empty() {
+        return CATALOG_URL.to_string();
+    }
+    // A pasted product link, or a bare part number, goes straight to the part.
+    let compact = normalize_part_number(query);
+    if !query.contains(char::is_whitespace) && looks_like_part_number(&compact) {
+        return part_url(&compact);
+    }
+    format!("{SEARCH_URL}{}", url_query_encode(query))
+}
+
+/// Percent-encode a search phrase for a query string. Spaces become `+`, every byte outside
+/// the unreserved set is escaped — so a search for `1/4"-20` reaches them intact.
+fn url_query_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.as_bytes() {
+        match byte {
+            b' ' => out.push('+'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// Normalize a typed part number: McMaster prints them with spaces and dashes their URLs
@@ -206,7 +245,7 @@ pub fn download_dir() -> PathBuf {
 ///
 /// Reports each caught file on stdout as [`CaughtDownload::to_line`]; the app reads them.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn run_catalog_process(part_number: Option<&str>) -> Result<(), String> {
+pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
     use std::io::Write as _;
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoop};
@@ -233,7 +272,7 @@ pub fn run_catalog_process(part_number: Option<&str>) -> Result<(), String> {
 
     let started_dir = dir.clone();
     let webview = wry::WebViewBuilder::new()
-        .with_url(part_number.map(part_url).unwrap_or_else(|| CATALOG_URL.to_string()))
+        .with_url(catalog_url_for(query.unwrap_or_default()))
         .with_download_started_handler(move |url, path| {
             *path = started_dir.join(download_file_name(&url));
             true
@@ -279,17 +318,20 @@ pub struct CatalogSession {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl CatalogSession {
-    /// Start the catalog window as a child of this process, at `part_number` if given.
+    /// Start the catalog window as a child of this process, showing `query` — a search
+    /// phrase, a part number, or nothing for the catalog's front page.
     ///
     /// The executable is our own ([`std::env::current_exe`]) under the `mcmaster`
     /// subcommand, so there is no second binary to build, sign or package.
-    pub fn open(part_number: Option<&str>, repaint: egui::Context) -> Result<Self, String> {
+    pub fn open(query: Option<&str>, repaint: egui::Context) -> Result<Self, String> {
         use std::io::{BufRead as _, BufReader};
         let exe = std::env::current_exe().map_err(|e| format!("cannot find myself: {e}"))?;
         let mut command = std::process::Command::new(exe);
         command.arg(SUBCOMMAND);
-        if let Some(part) = part_number.map(normalize_part_number).filter(|p| !p.is_empty()) {
-            command.arg(part);
+        // The query goes through verbatim — a search phrase has to survive as one argument,
+        // and it is `catalog_url_for` on the other side that decides what it means.
+        if let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) {
+            command.arg(query);
         }
         let mut child = command
             .stdout(std::process::Stdio::piped())
@@ -371,6 +413,45 @@ mod tests {
         assert_eq!(part_url("91290A115"), "https://www.mcmaster.com/91290A115/");
         assert_eq!(part_url("  91290-a115"), "https://www.mcmaster.com/91290A115/");
         assert_eq!(part_url(""), CATALOG_URL);
+    }
+
+    /// #1022: what you type decides where the window opens — their search results for a
+    /// phrase, the product page for something already shaped like a part number, and their
+    /// front page for nothing at all. One box, because a part number is just a very specific
+    /// way of saying what you're after.
+    #[test]
+    fn a_query_opens_the_search_and_a_part_number_the_part() {
+        assert_eq!(
+            catalog_url_for("socket head screw"),
+            "https://www.mcmaster.com/products/?q=socket+head+screw"
+        );
+        assert_eq!(catalog_url_for("91290A115"), "https://www.mcmaster.com/91290A115/");
+        assert_eq!(
+            catalog_url_for("https://www.mcmaster.com/91290A115/"),
+            "https://www.mcmaster.com/91290A115/"
+        );
+        assert_eq!(catalog_url_for("   "), CATALOG_URL);
+        assert_eq!(catalog_url_for(""), CATALOG_URL);
+        // A single word that isn't a part number is still a search, not a bogus part page.
+        assert_eq!(
+            catalog_url_for("bearings"),
+            "https://www.mcmaster.com/products/?q=bearings"
+        );
+        // A phrase that happens to contain a part number searches for the phrase.
+        assert!(catalog_url_for("91290A115 washer").starts_with(SEARCH_URL));
+    }
+
+    /// #1022: a search phrase reaches them intact — the sizes people actually type are full
+    /// of characters a query string can't carry raw.
+    #[test]
+    fn a_search_phrase_is_encoded_for_the_url() {
+        assert_eq!(url_query_encode("socket head"), "socket+head");
+        // The thread callout for a quarter-inch screw: slash, quote and hash all escape.
+        assert_eq!(url_query_encode("1/4\"-20"), "1%2F4%22-20");
+        assert_eq!(url_query_encode("m3×0.5"), "m3%C3%970.5");
+        assert_eq!(url_query_encode("a&b=c"), "a%26b%3Dc");
+        // Unreserved characters are left alone rather than needlessly escaped.
+        assert_eq!(url_query_encode("a-b_c.d~e9"), "a-b_c.d~e9");
     }
 
     /// #1022: the window is McMaster's catalog and stays that way — a link that leads off

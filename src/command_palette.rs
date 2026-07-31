@@ -110,6 +110,10 @@ pub struct PaletteCommand {
     pub id: PaletteCommandId,
     pub label: &'static str,
     pub search_text: &'static str,
+    /// What this command wants typed after it is chosen (#1022), as the prompt's hint text.
+    /// `None` — the usual case — runs on Enter as commands always have; `Some` turns the
+    /// palette into a prompt for that argument, **in the pane**, and runs on the next Enter.
+    pub argument: Option<&'static str>,
 }
 
 impl PaletteCommand {
@@ -118,10 +122,28 @@ impl PaletteCommand {
             id,
             label,
             search_text,
+            argument: None,
         }
     }
 
-    pub fn outcome(self) -> PaletteOutcome {
+    /// A command that asks for something before it runs, `hint` being what to type.
+    const fn with_argument(
+        id: PaletteCommandId,
+        label: &'static str,
+        search_text: &'static str,
+        hint: &'static str,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            search_text,
+            argument: Some(hint),
+        }
+    }
+
+    /// What running this command does. `argument` is what was typed at the prompt — empty
+    /// for every command that doesn't ask for one.
+    pub fn outcome(self, argument: &str) -> PaletteOutcome {
         match self.id {
             PaletteCommandId::NewDocument => PaletteOutcome::Action(Action::NewDocument),
             PaletteCommandId::Open => PaletteOutcome::OpenFile,
@@ -199,8 +221,13 @@ impl PaletteCommand {
             PaletteCommandId::ShowShortcuts => PaletteOutcome::ShowShortcuts,
             PaletteCommandId::ShowSettings => PaletteOutcome::ShowSettings,
             PaletteCommandId::ImportUnit => PaletteOutcome::ImportUnit,
+            // The catalog opens with the search already done for whatever was typed (#1022);
+            // nothing typed opens their front page.
             PaletteCommandId::ImportMcMaster => {
-                PaletteOutcome::Action(Action::SetMcMasterWindow { open: Some(true), part: None })
+                PaletteOutcome::Action(Action::SetMcMasterWindow {
+                    open: Some(true),
+                    part: Some(argument.to_string()),
+                })
             }
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
@@ -637,10 +664,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         "import bearcad file unit part assembly library",
     ),
     #[cfg(not(target_arch = "wasm32"))]
-    PaletteCommand::new(
+    PaletteCommand::with_argument(
         PaletteCommandId::ImportMcMaster,
-        "Import from McMaster-Carr",
-        "import mcmaster carr catalog part screw fastener bearing hardware step",
+        "Search McMaster-Carr",
+        "import mcmaster carr catalog search part screw fastener bearing hardware step",
+        "What are you after? (or a part number)",
     ),
 ];
 
@@ -678,13 +706,20 @@ pub fn show_palette(
     state: &mut CommandPaletteState,
     matches: &[(&PaletteCommand, i32)],
 ) -> Option<PaletteOutcome> {
+    let enter = ui.input(|i| i.key_pressed(Key::Enter));
+    let escape = ui.input(|i| i.key_pressed(Key::Escape));
+
+    // A command that asks for an argument (#1022) takes over the pane: the list of commands
+    // is behind you now, and what you type is the argument rather than the filter.
+    if let Some(pending) = state.pending {
+        return show_argument_prompt(ui, state, pending, enter, escape);
+    }
+
     if state.query != state.prior_query {
         state.selected = 0;
         state.prior_query = state.query.clone();
     }
 
-    let enter = ui.input(|i| i.key_pressed(Key::Enter));
-    let escape = ui.input(|i| i.key_pressed(Key::Escape));
     let up = ui.input(|i| i.key_pressed(Key::ArrowUp));
     let down = ui.input(|i| i.key_pressed(Key::ArrowDown));
 
@@ -761,18 +796,77 @@ pub fn show_palette(
                 response.request_focus();
                 state.request_focus = false;
             }
-            if enter && !matches.is_empty() {
-                return;
-            }
         });
     });
 
     if enter {
-        return matches
-            .get(state.selected)
-            .map(|(cmd, _)| cmd.outcome());
+        let Some((cmd, _)) = matches.get(state.selected).copied() else {
+            return None;
+        };
+        // A command that wants an argument doesn't run yet — it asks, and the palette stays
+        // open to take the answer.
+        if cmd.argument.is_some() {
+            state.ask_for_argument(cmd.id);
+            return None;
+        }
+        return Some(cmd.outcome(""));
     }
 
+    None
+}
+
+/// The argument prompt (#1022): the chosen command's name above its own input, drawn in the
+/// palette pane where the command list was. Enter runs it with what's typed; Escape goes back
+/// to the command list rather than closing, so a wrong turn costs one keystroke.
+fn show_argument_prompt(
+    ui: &mut egui::Ui,
+    state: &mut CommandPaletteState,
+    pending: PaletteCommandId,
+    enter: bool,
+    escape: bool,
+) -> Option<PaletteOutcome> {
+    let Some(command) = BASE_COMMANDS.iter().find(|c| c.id == pending).copied() else {
+        state.clear_pending();
+        return None;
+    };
+    if escape {
+        // Back to the commands, not out of the palette.
+        state.clear_pending();
+        state.request_focus = true;
+        return None;
+    }
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(command.label).strong());
+            ui.label(
+                egui::RichText::new("Esc to go back")
+                    .weak()
+                    .size(11.0),
+            );
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(">").monospace().strong());
+            let response = ui.add(
+                TextEdit::singleline(&mut state.argument)
+                    .id(egui::Id::new("command_palette_argument"))
+                    .hint_text(command.argument.unwrap_or_default())
+                    .desired_width(f32::INFINITY)
+                    .font(egui::FontId::monospace(14.0)),
+            );
+            if state.request_focus {
+                response.request_focus();
+                state.request_focus = false;
+            }
+        });
+    });
+    if enter {
+        let argument = state.argument.clone();
+        state.close_palette();
+        return Some(command.outcome(&argument));
+    }
     None
 }
 
@@ -780,6 +874,73 @@ pub fn show_palette(
 mod tests {
     use super::*;
     use crate::actions::SketchSession;
+
+    /// #1022: the first palette command that takes an argument. Choosing it doesn't run it —
+    /// it asks, in the palette pane, and runs on the next Enter with what was typed. Every
+    /// other command still runs on the first Enter, which is the property that would break
+    /// if the argument path leaked into them.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_command_that_takes_an_argument_asks_before_it_runs() {
+        let asks = BASE_COMMANDS
+            .iter()
+            .find(|c| c.id == PaletteCommandId::ImportMcMaster)
+            .expect("the catalog command");
+        assert_eq!(asks.argument, Some("What are you after? (or a part number)"));
+        // The argument is what reaches the action, verbatim — the URL builder, not the
+        // palette, decides whether it reads as a search or a part number.
+        assert_eq!(
+            asks.outcome("socket head screw"),
+            PaletteOutcome::Action(Action::SetMcMasterWindow {
+                open: Some(true),
+                part: Some("socket head screw".to_string()),
+            })
+        );
+        // Nothing typed still opens the catalog, at their front page.
+        assert_eq!(
+            asks.outcome(""),
+            PaletteOutcome::Action(Action::SetMcMasterWindow {
+                open: Some(true),
+                part: Some(String::new()),
+            })
+        );
+        // Everything else runs straight away, and ignores an argument it never asked for.
+        let plain = BASE_COMMANDS
+            .iter()
+            .find(|c| c.id == PaletteCommandId::ZoomToFit)
+            .expect("a command that takes nothing");
+        assert_eq!(plain.argument, None);
+        assert_eq!(plain.outcome("ignored"), plain.outcome(""));
+    }
+
+    /// #1022: the prompt's state machine — asking sets the pending command and clears any
+    /// previous answer; backing out returns to the command list with the palette still open;
+    /// closing forgets everything.
+    #[test]
+    fn the_argument_prompt_opens_and_backs_out() {
+        let mut state = CommandPaletteState::default();
+        state.open_palette();
+        assert!(state.pending.is_none(), "a fresh palette asks for nothing");
+
+        state.argument = "stale".to_string();
+        state.ask_for_argument(PaletteCommandId::ZoomToFit);
+        assert_eq!(state.pending, Some(PaletteCommandId::ZoomToFit));
+        assert!(state.argument.is_empty(), "a new prompt starts empty");
+        assert!(state.request_focus, "and takes the keyboard");
+
+        // Escape backs out to the commands rather than out of the palette.
+        state.argument = "half typed".to_string();
+        state.clear_pending();
+        assert!(state.pending.is_none() && state.argument.is_empty());
+        assert!(state.open, "backing out leaves the palette open");
+
+        // Closing forgets the prompt, so re-opening never resumes a stale one.
+        state.ask_for_argument(PaletteCommandId::ZoomToFit);
+        state.close_palette();
+        assert!(!state.open && state.pending.is_none() && state.argument.is_empty());
+        state.open_palette();
+        assert!(state.pending.is_none(), "re-opening starts at the command list");
+    }
 
     #[test]
     fn fuzzy_score_matches_subsequence() {
@@ -829,7 +990,7 @@ mod tests {
                 "Delete Selection",
                 "delete selection remove backspace del",
             )
-            .outcome(),
+            .outcome(""),
             PaletteOutcome::Action(Action::DeleteSelection)
         );
     }
@@ -892,7 +1053,7 @@ mod tests {
             "view top",
         );
         assert_eq!(
-            cmd.outcome(),
+            cmd.outcome(""),
             PaletteOutcome::Action(Action::SetStandardView(StandardView::Top))
         );
     }
@@ -913,10 +1074,10 @@ mod tests {
         ] {
             let cmd = best_match(query, &cmds)
                 .unwrap_or_else(|| panic!("palette should list a command matching {query:?}"));
-            assert_eq!(cmd.outcome(), PaletteOutcome::Action(Action::SetTool(tool)));
+            assert_eq!(cmd.outcome(""), PaletteOutcome::Action(Action::SetTool(tool)));
         }
         let exploder = best_match("explode", &cmds).expect("palette lists the exploder");
         assert_eq!(exploder.id, PaletteCommandId::OpenExploder);
-        assert_eq!(exploder.outcome(), PaletteOutcome::OpenExploder);
+        assert_eq!(exploder.outcome(""), PaletteOutcome::OpenExploder);
     }
 }

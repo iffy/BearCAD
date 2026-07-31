@@ -49,8 +49,8 @@ The **Import** button on the toolbar offers the same entries.
 normally would, download its **STEP**, and it lands in the document as a body — not in your
 Downloads folder.
 
-Type a part number in the box to jump straight to that page. **Catalog** goes back to their
-search.
+**Search McMaster-Carr** in the [command palette](/docs/command-palette) opens it with the
+search already run — type `socket head screw`, or a part number to go straight to that page.
 
 Their site does the searching, the sizes and the drawings, so the window is their site.
 Links that lead off it open in your normal browser.

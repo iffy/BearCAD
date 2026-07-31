@@ -2853,6 +2853,14 @@ pub struct CommandPaletteState {
     pub request_focus: bool,
     /// Previous query text; used to reset selection when the filter changes.
     pub prior_query: String,
+    /// A command that takes an argument and is waiting for it (#1022). While this is set the
+    /// palette is asking for that argument **in the pane** — the command list is replaced by
+    /// the prompt, the input holds the argument rather than the filter, Enter runs it and
+    /// Escape backs out to the command list. Nothing pops up: the palette is already the
+    /// place you are typing.
+    pub pending: Option<crate::command_palette::PaletteCommandId>,
+    /// What has been typed for that argument.
+    pub argument: String,
 }
 
 impl CommandPaletteState {
@@ -2862,6 +2870,7 @@ impl CommandPaletteState {
         self.prior_query.clear();
         self.selected = 0;
         self.request_focus = true;
+        self.clear_pending();
     }
 
     pub fn close_palette(&mut self) {
@@ -2870,6 +2879,21 @@ impl CommandPaletteState {
         self.prior_query.clear();
         self.selected = 0;
         self.request_focus = false;
+        self.clear_pending();
+    }
+
+    /// Ask for a command's argument (#1022): the palette stays open and starts taking the
+    /// argument instead of the filter.
+    pub fn ask_for_argument(&mut self, command: crate::command_palette::PaletteCommandId) {
+        self.pending = Some(command);
+        self.argument.clear();
+        self.request_focus = true;
+    }
+
+    /// Back out of the argument prompt to the command list, keeping the palette open.
+    pub fn clear_pending(&mut self) {
+        self.pending = None;
+        self.argument.clear();
     }
 }
 
