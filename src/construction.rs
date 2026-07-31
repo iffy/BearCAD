@@ -4052,6 +4052,7 @@ mod tests {
                 Vec3::new(0.0, 10.0, 0.0),
             ]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -4097,6 +4098,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles,
             source_name: "blocker".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -4722,6 +4724,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles,
             source_name: "box".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -4809,7 +4812,7 @@ mod tests {
             triangles.extend(face);
         }
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh { triangles, source_name: "box".to_string() });
+        doc.imported_meshes.push(crate::model::ImportedMesh { triangles, source_name: "box".to_string(), step_bytes: None });
         doc.bodies.push(crate::model::Body { source: crate::model::BodySource::Imported(0), material: None, name: None, deleted: false, shadow: false });
         let project = |p: Vec3| Some(egui::pos2(p.x, p.y));
         let eye = Vec3::new(30.0, 30.0, 100.0);

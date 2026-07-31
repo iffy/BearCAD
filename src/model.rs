@@ -3116,11 +3116,18 @@ mod tracing_image_bytes {
 
 /// A solid mesh brought in via file import (STL, #70), stored as-is (no scaling/centering)
 /// in the document's coordinate space. Backs a `Body` via `BodySource::Imported`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// When the import was a real STEP BREP (#1029), `step_bytes` keeps the file so booleans
+/// and other kernel ops can re-read the solid. Pure mesh imports (STL, faceted-only STEP)
+/// leave it empty — they stay triangle-only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct ImportedMesh {
     pub triangles: Vec<[glam::Vec3; 3]>,
     /// Source file name (without extension), used as the default body name.
     pub source_name: String,
+    /// Original STEP content when the import came from a BREP file (#1029).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_bytes: Option<Vec<u8>>,
 }
 
 /// Which sketch primitive was created, in chronological order (for undo).

@@ -3820,7 +3820,15 @@ impl AppState {
 
     /// Add `triangles` from an imported file as a new body named after `path`'s file stem
     /// (shared by STL and STEP import, #70/#71).
-    fn import_mesh_body(&mut self, path: &str, triangles: Vec<[Vec3; 3]>) -> ActionResult {
+    ///
+    /// `step_bytes` is the original STEP file when the import came from real BREP (#1029),
+    /// so later booleans can re-read the solid. Pure mesh imports leave it `None`.
+    fn import_mesh_body(
+        &mut self,
+        path: &str,
+        triangles: Vec<[Vec3; 3]>,
+        step_bytes: Option<Vec<u8>>,
+    ) -> ActionResult {
         let source_name = std::path::Path::new(path)
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -3829,6 +3837,7 @@ impl AppState {
         self.doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles,
             source_name: source_name.clone(),
+            step_bytes,
         });
         let mesh_index = self.doc.imported_meshes.len() - 1;
         self.doc.bodies.push(crate::model::Body {
@@ -4001,9 +4010,11 @@ impl AppState {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn import_stl_bytes(&mut self, name: &str, bytes: &[u8]) -> ActionResult {
         match crate::stl::parse_stl(bytes) {
-            Ok(tris) => {
-                self.import_mesh_body(name, tris.into_iter().map(|t| t.vertices).collect())
-            }
+            Ok(tris) => self.import_mesh_body(
+                name,
+                tris.into_iter().map(|t| t.vertices).collect(),
+                None,
+            ),
             Err(e) => {
                 self.status = format!("Import failed: {e}");
                 ActionResult::Err(self.status.clone())
@@ -4016,13 +4027,14 @@ impl AppState {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn import_step_bytes(&mut self, name: &str, bytes: &[u8]) -> ActionResult {
         // Web kernel builds read real BREP (curved surfaces included) through the
-        // bridged STEP reader, mirroring the native path-based arm.
+        // bridged STEP reader, mirroring the native path-based arm. Keep the bytes so
+        // a later boolean can re-read the solid (#1029).
         #[cfg(target_arch = "wasm32")]
         {
             if let Some(shape) = crate::kernel::Shape::read_step_bytes(bytes) {
                 let tris = shape.tessellate(crate::extrude::OCCT_DEFLECTION as f64);
                 if !tris.is_empty() {
-                    return self.import_mesh_body(name, tris);
+                    return self.import_mesh_body(name, tris, Some(bytes.to_vec()));
                 }
             }
         }
@@ -4034,7 +4046,8 @@ impl AppState {
             }
         };
         match crate::step::parse_step_mesh(text) {
-            Ok(triangles) => self.import_mesh_body(name, triangles),
+            // Faceted-only parse: no BREP to keep.
+            Ok(triangles) => self.import_mesh_body(name, triangles, None),
             Err(e) => {
                 self.status = format!("Import failed: {e}");
                 ActionResult::Err(self.status.clone())
@@ -4052,6 +4065,10 @@ impl AppState {
     /// [`Self::import_step_bytes`], whose kernel arm is **wasm-only** — so a catalog part
     /// exported by SolidWorks, as McMaster's are, met the faceted parser and was rejected with
     /// "no FACE_SURFACE entities found" (#1023). Anything holding a path uses this.
+    ///
+    /// When the kernel succeeds, the original STEP bytes ride along on the body (#1029) so a
+    /// later Combine/Cut still has a solid to work with — tessellated triangles alone are not
+    /// enough for booleans.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn import_step_file(&mut self, name: &str, path: &std::path::Path) -> ActionResult {
         if let Some(shape) = crate::kernel::Shape::read_step(path) {
@@ -4062,7 +4079,8 @@ impl AppState {
                     path.display(),
                     tris.len()
                 ));
-                return self.import_mesh_body(name, tris);
+                let step_bytes = std::fs::read(path).ok();
+                return self.import_mesh_body(name, tris, step_bytes);
             }
             crate::diag::log(format!(
                 "step: the kernel read {} but tessellated to nothing — trying the faceted parser",
@@ -4082,7 +4100,7 @@ impl AppState {
             }
         };
         match crate::step::parse_step_mesh(&text) {
-            Ok(triangles) => self.import_mesh_body(name, triangles),
+            Ok(triangles) => self.import_mesh_body(name, triangles, None),
             Err(e) => {
                 self.status = format!("Import failed: {e}");
                 ActionResult::Err(self.status.clone())
@@ -6666,6 +6684,7 @@ impl AppState {
                     Ok(tris) => self.import_mesh_body(
                         &path,
                         tris.into_iter().map(|t| t.vertices).collect(),
+                        None,
                     ),
                     Err(e) => {
                         self.status = format!("Import failed: {e}");
@@ -16050,7 +16069,7 @@ mod tests {
             [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 2.0), Vec3::new(2.0, 0.0, 1.0)],
             [Vec3::new(2.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 2.0, 1.0)],
         ];
-        state.import_mesh_body("tetra.stl", tetra);
+        state.import_mesh_body("tetra.stl", tetra, None);
         let body = state.doc.bodies.len() - 1;
 
         let r = state.apply(Action::CreateMirrorOperation {
@@ -16335,7 +16354,7 @@ mod tests {
             [Vec3::X, Vec3::Z, Vec3::Y],
         ];
         for name in ["a.stl", "b.stl", "c.stl"] {
-            state.import_mesh_body(name, tetra.clone());
+            state.import_mesh_body(name, tetra.clone(), None);
         }
         // Body 0 → Frame (0), body 1 → nested (1), body 2 → the unrelated Other (2).
         state.doc.set_component_member(CM::Body, 0, Some(0));
@@ -18246,6 +18265,100 @@ mod tests {
         assert!(matches!(result, ActionResult::Err(_)));
         assert!(state.doc.bodies.is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1029: combining a STEP import with an extruded cube must leave a solid body.
+    /// STEP used to land as triangles only, so the boolean had no BREP for the import and
+    /// the combined body tessellated to nothing.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn combining_a_step_import_with_a_cube_keeps_a_solid() {
+        // A 10³ box as real BREP STEP (same path the catalog uses).
+        let box_shape = crate::kernel::Shape::prism(
+            &[
+                glam::Vec3::new(0.0, 0.0, 0.0),
+                glam::Vec3::new(10.0, 0.0, 0.0),
+                glam::Vec3::new(10.0, 10.0, 0.0),
+                glam::Vec3::new(0.0, 10.0, 0.0),
+            ],
+            glam::Vec3::new(0.0, 0.0, 10.0),
+        )
+        .expect("prism");
+        let path = std::env::temp_dir().join(format!(
+            "bearcad_combine_step_{}.step",
+            std::process::id()
+        ));
+        assert!(box_shape.write_step(&path), "write STEP");
+
+        let mut state = AppState::default();
+        assert!(matches!(
+            state.apply(Action::ImportStep {
+                path: path.to_string_lossy().to_string()
+            }),
+            ActionResult::Ok
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            state.doc.imported_meshes[0].step_bytes.is_some(),
+            "a kernel STEP import must keep the BREP bytes"
+        );
+        assert!(
+            crate::extrude::occt_body_shape(&state.doc, 0).is_some(),
+            "the import must re-read as a kernel solid"
+        );
+
+        // An extruded cube next to it (disjoint).
+        let sketch = begin_default_sketch(&mut state);
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            20.0,
+            0.0,
+            30.0,
+            10.0,
+            [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 10.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+        });
+        assert_eq!(state.doc.bodies.len(), 2);
+
+        assert!(matches!(
+            state.apply(Action::CreateBooleanOperation {
+                kind: crate::model::BooleanOpKind::Combine,
+                a: vec![0, 1],
+                b: Vec::new(),
+                keep_b: false,
+            }),
+            ActionResult::Ok
+        ));
+        let outputs = &state.doc.boolean_ops[0].outputs;
+        assert!(!outputs.is_empty(), "combine should produce at least one body");
+        let mut any_vol: f64 = 0.0;
+        for &out in outputs {
+            let mesh = crate::extrude::body_solid_mesh(&state.doc, out)
+                .expect("each combined body should have a mesh");
+            assert!(
+                !mesh.triangles.is_empty(),
+                "combining a STEP import with a cube must not produce an empty body"
+            );
+            let vol = crate::extrude::occt_body_shape(&state.doc, out)
+                .and_then(|s| s.volume())
+                .unwrap_or(0.0);
+            any_vol = any_vol.max(vol);
+        }
+        // Without the BREP bytes the fuse used to yield nothing (empty body, volume 0).
+        // With them there is real solid — at least one 10³ cube's worth of material.
+        assert!(
+            any_vol > 500.0,
+            "combined body should have real volume, got max {any_vol}"
+        );
     }
 
     #[test]

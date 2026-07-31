@@ -609,14 +609,45 @@ pub fn occt_unit_instance_shape(doc: &Document, instance: usize) -> Option<crate
     solid?.transformed(&mat4_to_rows_3x4(&m))
 }
 
+/// Re-read a STEP import's BREP from the bytes kept on the mesh (#1029). `None` when the
+/// import was triangle-only (STL, faceted parser) or the kernel can't parse the bytes.
+fn imported_step_shape(doc: &Document, mesh_index: usize) -> Option<crate::kernel::Shape> {
+    let bytes = doc.imported_meshes.get(mesh_index)?.step_bytes.as_ref()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return crate::kernel::Shape::read_step_bytes(bytes);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Native STEP reader is path-based; stage the bytes somewhere short-lived.
+        let path = std::env::temp_dir().join(format!(
+            "bearcad-import-shape-{}-{}.step",
+            std::process::id(),
+            mesh_index
+        ));
+        std::fs::write(&path, bytes).ok()?;
+        let shape = crate::kernel::Shape::read_step(&path);
+        let _ = std::fs::remove_file(&path);
+        shape
+    }
+}
+
 /// The body's real OCCT BREP solid (adds fused, cuts subtracted), *before* tessellation —
 /// used by STEP export (#65) to write genuine BREP rather than tessellated triangles. `None`
-/// for a deleted/missing body, an imported-mesh body (no kernel solid), or a body whose
-/// geometry isn't fully kernel-representable (the caller then falls back to the mesh path).
+/// for a deleted/missing body, a pure triangle import (STL / faceted-only STEP), or a body
+/// whose geometry isn't fully kernel-representable (the caller then falls back to the mesh
+/// path). A STEP import that kept its original bytes (#1029) re-reads them here so booleans
+/// and other kernel ops still see a solid.
 pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kernel::Shape> {
     let body = doc.bodies.get(body_index)?;
-    if body.deleted || body.source.imported_mesh_index().is_some() {
+    if body.deleted {
         return None;
+    }
+    if let Some(mi) = body.source.imported_mesh_index() {
+        return imported_step_shape(doc, mi);
     }
     let mut solid = match body.source {
         crate::model::BodySource::Primitive(pi) => {
@@ -3503,6 +3534,8 @@ pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
     for mesh in &doc.imported_meshes {
         std::io::Write::write_all(&mut writer, mesh.source_name.as_bytes()).ok();
         writer.0.write_usize(mesh.triangles.len());
+        // STEP imports keep their BREP (#1029); a body with/without it must not share a cache key.
+        writer.0.write_usize(mesh.step_bytes.as_ref().map(|b| b.len()).unwrap_or(0));
     }
     writer.0.finish()
 }
@@ -4428,9 +4461,10 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
     // #146: fuse the kernel-representable bodies into one real union so that where bodies
     // *intersect*, the overlap merges into a single watertight surface instead of exporting as
     // two interpenetrating shells with internal walls. Disjoint bodies simply co-exist in the
-    // fused compound (identical output to concatenation for them). Imported meshes have no
-    // kernel shape, so they're concatenated on top; if any kernel body isn't representable the
-    // whole union is unreliable and we fall back to plain concatenation.
+    // fused compound (identical output to concatenation for them). Triangle-only imports
+    // (STL, faceted STEP) have no kernel shape and are concatenated on top; a STEP import
+    // that kept its BREP (#1029) joins the union. If any non-import body isn't representable
+    // the whole union is unreliable and we fall back to plain concatenation.
     if let Some(mesh) = occt_document_union_mesh(doc) {
         return mesh;
     }
@@ -4444,9 +4478,10 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
 }
 
 /// Fuse every kernel-representable body into one unioned solid and tessellate it, appending any
-/// imported-mesh bodies' triangles (they have no kernel shape). `None` — so the caller falls
-/// back to plain per-body concatenation — when a non-imported body isn't kernel-representable
-/// or the fuse fails to build/tessellate. See [`document_solid_mesh`] (#146).
+/// triangle-only imports (they have no kernel shape). `None` — so the caller falls back to
+/// plain per-body concatenation — when a non-imported body isn't kernel-representable or the
+/// fuse fails to build/tessellate. See [`document_solid_mesh`] (#146). STEP imports that kept
+/// their BREP (#1029) join the fuse.
 fn occt_document_union_mesh(doc: &Document) -> Option<SolidMesh> {
     use crate::kernel::BoolOp;
     let mut fused: Option<crate::kernel::Shape> = None;
@@ -4457,7 +4492,14 @@ fn occt_document_union_mesh(doc: &Document) -> Option<SolidMesh> {
             continue;
         }
         if body.source.imported_mesh_index().is_some() {
-            if let Some(solid) = body_solid_mesh(doc, bi) {
+            // Prefer BREP when the import still has it (#1029); otherwise concatenate triangles.
+            if let Some(shape) = occt_body_shape(doc, bi) {
+                saw_kernel_body = true;
+                fused = Some(match fused {
+                    None => shape,
+                    Some(acc) => acc.boolean(&shape, BoolOp::Fuse)?,
+                });
+            } else if let Some(solid) = body_solid_mesh(doc, bi) {
                 imported_triangles.extend(solid.triangles);
             }
             continue;
@@ -6465,6 +6507,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[o, x, y]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6550,6 +6593,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[o, x, z]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6644,6 +6688,7 @@ mod tests {
                 Vec3::new(0.0, 6.0, 0.0),
             ]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6692,6 +6737,7 @@ mod tests {
                 Vec3::new(0.0, 10.0, 0.0),
             ]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6744,6 +6790,7 @@ mod tests {
                 Vec3::new(0.0, 10.0, 0.0),
             ]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6835,6 +6882,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[Vec3::ZERO, Vec3::X * 10.0, Vec3::Y * 10.0]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6884,6 +6932,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[corner, corner + Vec3::X * 10.0, corner + Vec3::Y * 10.0]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6931,6 +6980,7 @@ mod tests {
                 Vec3::new(20.0, 6.0, 0.0),
             ]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),

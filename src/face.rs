@@ -1695,6 +1695,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles,
             source_name: "box".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -1733,6 +1734,7 @@ mod tests {
             doc.imported_meshes.push(crate::model::ImportedMesh {
                 triangles: crate::extrude::tests_tube(glam::Vec3::new(x, y, 0.0), 8.0, 10.0),
                 source_name: format!("part{i}"),
+                step_bytes: None,
             });
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Imported(i),
@@ -1746,6 +1748,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: box_triangles(Vec3::new(300.0, 300.0, 0.0), Vec3::splat(20.0)),
             source_name: "box".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(doc.imported_meshes.len() - 1),

@@ -1916,6 +1916,7 @@ mod tests {
                 glam::Vec3::new(0.0, 40.0, 0.0),
             ]],
             source_name: "tri".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),

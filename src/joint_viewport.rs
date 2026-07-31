@@ -161,6 +161,7 @@ mod tests {
                     [origin + Vec3::X, origin + Vec3::Y, origin + Vec3::Z],
                 ],
                 source_name: format!("p{i}"),
+                step_bytes: None,
             });
             doc.bodies.push(Body {
                 source: BodySource::Imported(i),

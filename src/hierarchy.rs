@@ -5963,6 +5963,7 @@ mod tests {
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
             source_name: "part".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6336,6 +6337,7 @@ label_hidden: false,
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
             source_name: "part".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),
@@ -6361,6 +6363,7 @@ label_hidden: false,
         doc.imported_meshes.push(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
             source_name: "part".to_string(),
+                    step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Imported(0),

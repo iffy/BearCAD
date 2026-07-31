@@ -548,6 +548,7 @@ pub mod tests {
         doc.imported_meshes.push(ImportedMesh {
             triangles: cube_tris(origin, size),
             source_name: format!("part{}", doc.imported_meshes.len()),
+            step_bytes: None,
         });
         doc.bodies.push(Body {
             source: BodySource::Imported(doc.imported_meshes.len() - 1),
