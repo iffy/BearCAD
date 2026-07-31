@@ -12,6 +12,14 @@ bearcad.ui.wait(5)
 bearcad.ui.mcmaster("show", "91290A115")
 bearcad.ui.wait(60)
 local opened = bearcad.status()
+-- The window needs a platform web view: macOS and Windows have one, and wry's Linux path
+-- needs a GTK main loop this app doesn't run. Where it isn't available it says so and opens
+-- nothing, which is the whole assertion there.
+if opened:find("needs macOS or Windows") then
+  print("ok: the catalog window reports itself unavailable on this platform")
+  bearcad.quit()
+  return
+end
 assert(not opened:find("could not open"),
   "the catalog window should have built its webview, got: " .. opened)
 assert(opened:find("opened"), "the catalog window should report itself open, got: " .. opened)

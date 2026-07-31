@@ -636,7 +636,7 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         "Import BearCAD File",
         "import bearcad file unit part assembly library",
     ),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     PaletteCommand::new(
         PaletteCommandId::ImportMcMaster,
         "Import from McMaster-Carr",

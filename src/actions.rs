@@ -2959,6 +2959,11 @@ fn unique_instance_name(doc: &Document, base: &str) -> String {
         n += 1;
     }
 }
+/// Whether this platform can show the McMaster-Carr catalog window (#1022): it needs a
+/// platform web view that composites over the app's canvas. macOS and Windows have one;
+/// wry's Linux path needs a GTK main loop this app doesn't run, and only works on X11.
+pub const MCMASTER_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+
 
 /// Application state that actions mutate.
 pub struct AppState {
@@ -8178,6 +8183,15 @@ impl AppState {
                 }
             }
             Action::SetMcMasterWindow { open, part } => {
+                // The catalog window is a platform web view (#1022). macOS and Windows have
+                // one that composites over the app's canvas; wry's Linux path needs a GTK
+                // main loop this app doesn't run — and would panic rather than degrade — so
+                // there the window says so instead of opening.
+                if !MCMASTER_SUPPORTED {
+                    self.status =
+                        "The McMaster-Carr catalog window needs macOS or Windows".to_string();
+                    return ActionResult::Err(self.status.clone());
+                }
                 if let Some(part) = part {
                     self.mcmaster_part = part;
                 }

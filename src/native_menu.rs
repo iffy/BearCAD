@@ -281,6 +281,8 @@ impl NativeMenu {
         let export_step = MenuItem::with_id("export_step", "STEP…", true, None);
         let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
         let import_unit = MenuItem::with_id("import_unit", "BearCAD File…", true, None);
+        // The catalog window needs a platform web view the Linux build hasn't got (#1022).
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let import_mcmaster =
             MenuItem::with_id("import_mcmaster", "McMaster-Carr…", true, None);
         let import_stl = MenuItem::with_id("import_stl", "STL…", true, None);
@@ -356,6 +358,7 @@ impl NativeMenu {
         file_menu.append(&PredefinedMenuItem::separator())?;
         let import_menu = Submenu::new("Import", true);
         import_menu.append(&import_unit)?;
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         import_menu.append(&import_mcmaster)?;
         import_menu.append(&import_stl)?;
         import_menu.append(&import_step)?;
@@ -427,7 +430,10 @@ impl NativeMenu {
             load_script: load_script.id().clone(),
             import_stl: import_stl.id().clone(),
             import_unit: import_unit.id().clone(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             import_mcmaster: import_mcmaster.id().clone(),
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            import_mcmaster: MenuId::new("import_mcmaster"),
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
             document_json: document_json.id().clone(),

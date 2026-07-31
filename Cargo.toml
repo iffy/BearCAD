@@ -54,6 +54,12 @@ bytemuck = { version = "1", features = ["derive"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
+
+# The McMaster-Carr catalog window (#1022): a platform web view hosted in the app's own
+# window. macOS (WKWebView) and Windows (WebView2) only — wry's Linux backend needs a GTK
+# main loop this app doesn't run and works only on X11, so Linux neither uses nor builds it
+# (and so needs no webkit2gtk system packages).
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 wry = "0.56"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
