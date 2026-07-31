@@ -197,16 +197,15 @@ fn window_pos_override() -> Option<[f32; 2]> {
     Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
 }
 
-/// How long after launch to keep asking for frames (#1023).
+/// How long after launch to keep asking for frames (#1023/#1032).
 ///
 /// The launch countdown alone isn't enough. On a cold start — the first run of a
 /// freshly-built binary, which is exactly when this is reported — the GPU spends its first
 /// moments compiling pipelines, and the handful of frames the sequence draws can be built
 /// without ever being *presented*. egui is reactive, so once the countdown ends nothing asks
-/// for another, and the window keeps showing whatever it had: grey. Repainting for a couple
-/// of seconds costs a few dozen idle frames once, and guarantees at least one lands after the
-/// GPU is warm.
-const LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// for another, and the window keeps showing whatever it had: grey. A longer settle plus the
+/// viewport underpaint (#1032) makes a blank start look like the app rather than the OS chrome.
+const LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Whether the launch should still be asking for frames: the countdown is running, or the
 /// settle window hasn't closed. Pure, because it is the whole decision and the rest is egui.
@@ -236,6 +235,10 @@ fn tick_launch_maximize(
         // stderr says is "frame 1", which reads like a stall whether or not it was.
         diag::info("launch: ready");
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        // The resize maximize causes often needs a second push to reconfigure the surface
+        // on a cold Metal start (#1032).
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
     // Keep painting until the sequence is done, and for a moment after it (#978). egui is
     // **reactive** — it draws on input and on request, nothing else — so without this the
@@ -243,7 +246,7 @@ fn tick_launch_maximize(
     // can land with no repaint behind it. Either way the window ends up correctly sized and
     // never drawn: a blank grey rectangle with a title bar.
     ctx.request_repaint();
-    ctx.request_repaint_after(std::time::Duration::from_millis(150));
+    ctx.request_repaint_after(std::time::Duration::from_millis(100));
 }
 
 /// Vertical wheel travel this frame, unsmoothed.
@@ -25079,6 +25082,10 @@ impl App {
             scene_input.preview_solid = Some(sphere);
         }
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
+        // Always underpaint the viewport with the theme background (#1032). If the GPU
+        // blit misses a frame (surface not ready after maximize, cold-start pipelines),
+        // the user still sees the app's dark canvas instead of the OS grey rectangle.
+        painter.rect_filled(viewport, 0.0, col::BG);
         let gpu_drawn =
             self.gpu_viewport && gpu_viewport::paint(render_state, &painter, viewport, scene);
         // Frames being built while nothing reaches the screen is the other half of the
