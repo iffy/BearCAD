@@ -191,14 +191,27 @@ pub fn part_number_in(url: &str) -> Option<String> {
         .find(|s| looks_like_part_number(s))
 }
 
-/// The body name a caught download should land under: the part number where the filename
-/// carries one, else the one in the URL it came from, else the filename itself.
+/// The body name a caught download should land under.
+///
+/// McMaster names a CAD file `<part number>_<description>` — `3042T88_Clamping U-Bolt` — so
+/// the two halves are read apart and put back the way a part reads in the Elements pane:
+/// **Clamping U-Bolt (3042T88)**. Failing that, the part number from the filename or from
+/// anywhere along the URL, and failing *that*, whatever the file was called.
 pub fn body_name_for(path: &Path, url: &str) -> String {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    // McMaster names CAD downloads after the part, so the stem usually *is* the number.
+    // `PART_Description`: the description is the better name, with the number after it.
+    if let Some((head, description)) = stem.split_once('_') {
+        let number = normalize_part_number(head);
+        let description = description.replace('_', " ");
+        let description = description.trim();
+        if looks_like_part_number(&number) && !description.is_empty() {
+            return format!("{description} ({number})");
+        }
+    }
+    // A bare part number for a filename is the other convention they use.
     let from_stem = normalize_part_number(&stem);
     if looks_like_part_number(&from_stem) {
         return from_stem;
@@ -241,8 +254,12 @@ pub fn download_file_name(url: &str) -> String {
         .rsplit('/')
         .find(|s| !s.is_empty())
         .unwrap_or("");
-    let cleaned: String = tail
+    // Their CAD filenames carry the description, so they are percent-encoded in the URL:
+    // `3042T88_Clamping%20U-Bolt.STEP`. Decoding first is what keeps the `%20` from being
+    // sanitized down to a literal `20` in the middle of the name (#1023).
+    let cleaned: String = percent_decode(tail)
         .chars()
+        .map(|c| if c == ' ' { '_' } else { c })
         .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
         .collect();
     if cleaned.is_empty() || !cleaned.contains('.') {
@@ -250,6 +267,26 @@ pub fn download_file_name(url: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// Decode `%XX` escapes in a URL path segment. Anything malformed is left as it stands —
+/// this is naming a file, not parsing a protocol.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
 }
 
 /// Where caught downloads are written: the app's own scratch directory, so a catch never
@@ -313,7 +350,15 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
     crate::diag::info(format!("catalog: opening {start}"));
     crate::diag::log(format!("catalog: downloads land in {}", dir.display()));
 
+    // Where each download was sent, by the URL it came from. On macOS wry's completed
+    // handler is given `None` for the path — hardcoded, see `wkwebview/download.rs` — so the
+    // destination has to be remembered from the started handler, which is where *we* chose it
+    // anyway (#1023). A map rather than a single slot: several parts can be downloading.
+    let destinations: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
+        Default::default();
+
     let started_dir = dir.clone();
+    let started_destinations = destinations.clone();
     let webview = wry::WebViewBuilder::new()
         .with_url(start)
         .with_download_started_handler(move |url, path| {
@@ -322,21 +367,38 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
                 "catalog: download started — {url} → {}",
                 path.display()
             ));
+            if let Ok(mut destinations) = started_destinations.lock() {
+                destinations.insert(url, path.clone());
+            }
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            match (success, path) {
-                (true, Some(path)) => {
-                    crate::diag::info(format!("catalog: download finished — {}", path.display()));
-                    report(&path, &url);
-                }
-                (true, None) => crate::diag::warn(format!(
-                    "catalog: a download from {url} finished but landed nowhere"
-                )),
-                (false, _) => {
-                    crate::diag::warn(format!("catalog: the download from {url} did not finish"))
-                }
+            if !success {
+                crate::diag::warn(format!("catalog: the download from {url} did not finish"));
+                return;
             }
+            // Whatever the platform told us, falling back to where we sent it.
+            let landed = path.or_else(|| {
+                destinations
+                    .lock()
+                    .ok()
+                    .and_then(|mut d| d.remove(&url))
+            });
+            let Some(landed) = landed else {
+                crate::diag::warn(format!(
+                    "catalog: a download from {url} finished, but nothing recorded where it went"
+                ));
+                return;
+            };
+            if !landed.exists() {
+                crate::diag::warn(format!(
+                    "catalog: {url} reported finished, but {} is not there",
+                    landed.display()
+                ));
+                return;
+            }
+            crate::diag::info(format!("catalog: download finished — {}", landed.display()));
+            report(&landed, &url);
         })
         .with_new_window_req_handler(move |url, _features| {
             // Their site opens new windows for two unrelated things. A **download** has to
@@ -622,6 +684,27 @@ mod tests {
         assert_eq!(CadFormat::of(Path::new("/tmp/91290A115.dxf")), None);
         assert_eq!(CadFormat::of(Path::new("/tmp/91290A115.zip")), None);
         assert_eq!(CadFormat::of(Path::new("/tmp/noextension")), None);
+    }
+
+    /// #1023: the real thing, from a download that actually happened — their CAD filenames
+    /// are `<part>_<description>` and percent-encoded in the URL. Decoding has to come before
+    /// sanitizing, or the `%20` in `Clamping%20U-Bolt` survives as a literal `20`.
+    #[test]
+    fn a_real_cad_url_keeps_its_name_and_reads_as_a_part() {
+        let url = "https://www.mcmaster.com/mvC/Library/CAD2/20260408/2EF859E8/\
+                   3042T88_Clamping%20U-Bolt.STEP";
+        let file = download_file_name(url);
+        assert_eq!(file, "3042T88_Clamping_U-Bolt.STEP", "the space survives as one");
+        assert!(!file.contains("20U"), "the %20 must not become a literal 20");
+        // And it reads back as the part it is, description first.
+        assert_eq!(
+            body_name_for(Path::new(&format!("/tmp/{file}")), url),
+            "Clamping U-Bolt (3042T88)"
+        );
+        assert_eq!(percent_decode("Clamping%20U-Bolt"), "Clamping U-Bolt");
+        // Malformed escapes are left alone rather than swallowing the characters after them.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%zzb"), "a%zzb");
     }
 
     /// #1022: an imported part names itself by its part number, from the filename where

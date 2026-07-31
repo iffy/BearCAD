@@ -53,6 +53,8 @@ The lines to look for:
   telling a download from a help popup is a judgement about the URL, and it can be corrected.
 - **no download line at all** — the click never reached the window's download machinery.
 - **`did not finish`** — it started and failed part way.
+- **`nothing recorded where it went`** — it finished, but the destination was lost. The file
+  is probably in `/tmp/bearcad-mcmaster/`; **File → Import → STEP…** will take it from there.
 
 ## A blank window
 
