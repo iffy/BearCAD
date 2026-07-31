@@ -115,7 +115,7 @@ Direction is an `angle` in degrees (0 = the sketch's +X/u) or an explicit
 ## Repeating a cut (drilling a row of holes)
 
 A repeat can replay a **cut** along the axis — one hole becomes a row of holes. Spacing is
-centre-to-centre. From scripts:
+centre-to-centre, and each extra hole ghosts where it will be punched. From scripts:
 
 ```lua
 -- extrusion 1 is a hole cut through a plate; drill it 4 times, 12mm apart along X:

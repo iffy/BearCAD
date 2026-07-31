@@ -1086,7 +1086,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   Count/spacing/length are **expressions** (parameters
   work); the context pane shows the live instance count as they change, and the viewport shows
   translucent **ghost previews** of the would-be instances while count/spacing change (#223, the
-  picked bodies' meshes translated to each `repeat_offsets` offset); instance counts
+  picked bodies' meshes translated to each `repeat_offsets` offset). A **replayed extrusion**
+  (#220) ghosts too (#990): it makes no output body, so the body-target loop never saw one and
+  picking a cut to repeat previewed *nothing at all* until commit. Its ghost is the extrusion's
+  own prism (`extrude::extrusion_mesh`) — the tool that carves the hole — parked at each extra
+  placement, so a repeat holding only cuts still previews. Instance counts
   clamp at 512. End-to-start measurements use the targets' combined extent along the axis.
   "Edit repeat" re-opens the tool and resizes the output list. The fill length `L` may instead
   be **bound to a target's extended plane** (`RepeatOperation::length_target`, an

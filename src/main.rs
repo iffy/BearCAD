@@ -15982,8 +15982,12 @@ fn build_viewport_scene_input<'a>(
     // would-be instances — each picked body's mesh translated to every instance offset along the
     // axis — so the pattern previews live before commit. Reuses `repeat_offsets`, the same
     // evaluation a commit runs, so the ghosts land exactly where the copies will.
+    // A **cut** (or add) extrusion replayed at each offset (#220) previews too (#990): it makes
+    // no output body, so the body-target loop below never saw it and picking one to repeat
+    // showed nothing at all until commit. Its ghost is the extrusion's own prism — the tool that
+    // carves the hole — parked where each extra hole will be punched.
     let repeat_ghosts: Vec<extrude::SolidMesh> = creating_repeat
-        .filter(|c| !c.targets.is_empty())
+        .filter(|c| !c.targets.is_empty() || !c.extrusion_targets.is_empty())
         .and_then(|c| {
             let probe = model::RepeatOperation {
                 targets: c.targets.clone(),
@@ -16008,6 +16012,35 @@ fn build_viewport_scene_input<'a>(
             };
             let offsets = extrude::repeat_offsets(doc, &probe)?;
             let mut ghosts = Vec::new();
+            // The replayed extrusions' own prisms (#990/#220), one ghost per extra placement.
+            for &ei in &c.extrusion_targets {
+                let Some(base) = doc
+                    .extrusions
+                    .get(ei)
+                    .filter(|e| !e.deleted)
+                    .and_then(|e| extrude::extrusion_mesh(doc, e))
+                else {
+                    continue;
+                };
+                for &off in &offsets {
+                    let Some(m) = extrude::repeat_offset_transform(doc, &probe, off) else {
+                        continue;
+                    };
+                    ghosts.push(extrude::SolidMesh {
+                        triangles: base
+                            .triangles
+                            .iter()
+                            .map(|[a, b, c]| {
+                                [
+                                    m.transform_point3(*a),
+                                    m.transform_point3(*b),
+                                    m.transform_point3(*c),
+                                ]
+                            })
+                            .collect(),
+                    });
+                }
+            }
             for &bi in &c.targets {
                 if let Some(base) = extrude::body_solid_mesh(doc, bi) {
                     for &off in &offsets {
@@ -27476,6 +27509,60 @@ mod tests {
         );
         // 3 instances = original + 2 ghosts; each ghost is a non-empty translated copy.
         assert_eq!(scene_input.repeat_ghosts.len(), 2);
+        assert!(scene_input.repeat_ghosts.iter().all(|g| !g.is_empty()));
+
+        // #990: a **cut extrusion** replayed at each offset previews too. It produces no output
+        // body, so the body-target loop never saw it and picking one to repeat showed nothing
+        // at all until commit — the ghost is the extrusion's own prism, the tool that carves
+        // the hole, parked where each extra hole will be punched.
+        let cut = state.doc.extrusions.len();
+        state.doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            distance: -3.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        state.creating_repeat = Some(CreatingRepeat {
+            // No bodies at all: the cut alone is what is being repeated.
+            targets: Vec::new(),
+            extrusion_targets: vec![cut],
+            axis: Some(RevolveAxis::X),
+            mode: RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            ..CreatingRepeat::default()
+        });
+        let scene_input = build_viewport_scene_input(
+            &state.doc,
+            &cam,
+            test_viewport_rect(),
+            None,
+            &element_visibility,
+            &selection,
+            &health,
+            None, None, None, None, None, None, None, None,
+            Vec::new(),
+            None,
+            state.creating_repeat.as_ref(),
+            None, None, None, None, None, None, None, None, None,
+            Vec::new(),
+            None, None, None, None,
+            Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+            &[],
+            None, None,
+            Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+            std::collections::HashMap::new(),
+        );
+        assert_eq!(
+            scene_input.repeat_ghosts.len(),
+            2,
+            "a repeated cut extrusion ghosts its prism at each extra placement"
+        );
         assert!(scene_input.repeat_ghosts.iter().all(|g| !g.is_empty()));
     }
 
