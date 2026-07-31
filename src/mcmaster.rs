@@ -23,10 +23,11 @@
 //!
 //! So the window is its own process: **`bearcad mcmaster [part]`**, this same executable
 //! under a subcommand ([`run_catalog_process`]). It owns a `tao` event loop, so it is a real
-//! OS window with real z-order, its own taskbar entry, and — because `tao` initializes GTK
-//! itself — Linux support for free. It reports what it caught on **stdout**, one line per
-//! file ([`CaughtDownload::to_line`]), and the app reads those lines and imports them. No
-//! packaging cost either: the binary already ships.
+//! OS window with real z-order, and — because `tao` initializes GTK itself — Linux support
+//! for free. On macOS it runs as an **Accessory** helper (#1023): no second Dock tile, not a
+//! peer app — same idea as a browser content process. It reports what it caught on
+//! **stdout**, one line per file ([`CaughtDownload::to_line`]), and the app reads those
+//! lines and imports them. No packaging cost either: the binary already ships.
 
 use std::path::{Path, PathBuf};
 
@@ -353,9 +354,17 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
 
     // A `target=_blank` link — which is how a site can offer a download — arrives as a
     // new-window request, not a navigation. Without somewhere to send it the click does
-    // nothing at all, silently (#1023). These are loaded in the window we already have, so
-    // the download handlers below actually see them.
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // nothing at all, silently. These are loaded in the window we already have, so the
+    // download handlers below actually see them.
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // Helper, not peer (#1023): no Dock tile on macOS. Same multi-process shape as a
+    // browser content process — its own event loop and window, not a second app identity.
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        event_loop.set_dock_visibility(false);
+    }
     let proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
         .with_title("McMaster-Carr — BearCAD")

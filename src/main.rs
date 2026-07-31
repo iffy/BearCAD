@@ -4353,9 +4353,10 @@ impl App {
     /// Keep the McMaster-Carr catalog window in step with the app (#1022).
     ///
     /// The window is a **second process** — this same binary under `bearcad mcmaster` — so
-    /// there is nothing to draw here: it owns its own OS window, with its own z-order and
-    /// taskbar entry. All this does is start it when asked, stop it when asked, import
-    /// whatever it reports catching, and notice when the user closes it.
+    /// there is nothing to draw here: it owns its own OS window and z-order. On macOS it is
+    /// an Accessory helper (no Dock tile, #1023), not a peer app. All this does is start it
+    /// when asked, stop it when asked, import whatever it reports catching, and notice when
+    /// the user closes it.
     ///
     /// A new search from the palette while the window is already open restarts the process
     /// with that query (#1028) — otherwise the running window would ignore the new terms.
