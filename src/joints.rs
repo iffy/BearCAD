@@ -7,7 +7,7 @@
 //! loop, or drive a part another joint already drives, is skipped and reported through
 //! document health.
 
-use crate::model::{Document, Joint, JointFrame, JointKind, JointRef};
+use crate::model::{Document, Joint, JointKind, JointRef};
 use glam::{Mat3, Mat4, Vec3};
 use std::collections::HashMap;
 
@@ -46,30 +46,30 @@ fn frame_mat(f: &Frame) -> Mat4 {
     )
 }
 
-/// Resolve a picked frame against the live (un-jointed) meshes. `None` when the origin is
+/// The frame a joint's freedoms act in, taken from its solved mate (#1021).
+///
+/// The mate places the part; the freedoms need somewhere to act, and the mating plane is the
+/// only thing the placement names. The primary axis is the **mating normal** — a part spun,
+/// tilted or screwed on a face turns about the face it sits on — except for the two kinds
+/// whose slide is travel rather than lift: a Slider and a PinSlot take the first line-up
+/// row's direction instead, because a part flush on a face slides **along** it, not off it.
+fn mate_frame(kind: &JointKind, p: &crate::mate::Placement) -> Frame {
+    let n = p.normal;
+    let d = p.along;
+    let (x, y) = match kind {
+        JointKind::Slider | JointKind::PinSlot => (d, n),
+        _ => (n, d),
+    };
+    let y = (y - x * y.dot(x)).normalize_or_zero();
+    let y = if y.length_squared() > 0.5 { y } else { x.any_orthonormal_vector() };
+    Frame { origin: p.origin, x, y, z: x.cross(y).normalize_or_zero() }
+}
+
+/// Solve a joint's mate against the base side's pose (#1021). `None` when the face pair is
 /// unset or no longer resolves — the joint then mates as identity, which is exactly the
 /// join-in-place behaviour (#891): parts that already touch stay put.
-fn resolve_frame(doc: &Document, frame: &JointFrame) -> Option<Frame> {
-    let origin = crate::extrude::move_point_world(doc, frame.origin.as_ref()?)?;
-    let x = frame
-        .axis
-        .as_ref()
-        .and_then(|p| crate::extrude::move_point_world(doc, p))
-        .map(|p| (p - origin).normalize_or_zero())
-        .filter(|v| v.length_squared() > 0.5)
-        .unwrap_or(Vec3::Z);
-    let y = frame
-        .orient
-        .as_ref()
-        .and_then(|p| crate::extrude::move_point_world(doc, p))
-        .map(|p| {
-            let v = p - origin;
-            (v - x * v.dot(x)).normalize_or_zero()
-        })
-        .filter(|v| v.length_squared() > 0.5)
-        .unwrap_or_else(|| x.any_orthonormal_vector());
-    let z = x.cross(y).normalize_or_zero();
-    Some(Frame { origin, x, y, z })
+fn solve_mate(doc: &Document, joint: &Joint, base_pose: Mat4) -> Option<crate::mate::Placement> {
+    crate::mate::placement(doc, &crate::mate::settled(joint), base_pose)
 }
 
 /// A joint's resolved travel bounds (#896): mm for the slide, radians for the turn.
@@ -99,6 +99,19 @@ impl ResolvedJointLimits {
 /// extended plane (the "extrude to object" idea), recomputed as the model changes — a
 /// geometry stop wins over the expression on the same end.
 pub fn resolve_limits(doc: &Document, joint: &Joint) -> ResolvedJointLimits {
+    resolve_limits_posed(doc, joint, base_pose_of(doc, joint))
+}
+
+/// The pose the joint's base side carries, for resolving a mate against where the fixed part
+/// actually sits (#1021). Identity for an ungrounded base.
+fn base_pose_of(doc: &Document, joint: &Joint) -> Mat4 {
+    joint
+        .base_member()
+        .and_then(|m| joint_resolution(doc).member_pose(m))
+        .unwrap_or(Mat4::IDENTITY)
+}
+
+fn resolve_limits_posed(doc: &Document, joint: &Joint, base_pose: Mat4) -> ResolvedJointLimits {
     let len = |e: &str| {
         if e.trim().is_empty() {
             None
@@ -115,8 +128,8 @@ pub fn resolve_limits(doc: &Document, joint: &Joint) -> ResolvedJointLimits {
     };
     let stop = |target: &Option<crate::model::ExtrudeTarget>| -> Option<f32> {
         let target = target.as_ref()?;
-        let fa = resolve_frame(doc, &joint.frame_a)?;
-        crate::extrude::target_distance(doc, fa.origin, fa.x, target)
+        let frame = mate_frame(&joint.kind, &solve_mate(doc, joint, base_pose)?);
+        crate::extrude::target_distance(doc, frame.origin, frame.x, target)
     };
     ResolvedJointLimits {
         slide_min: stop(&joint.limits.slide_min_target).or_else(|| len(&joint.limits.slide_min)),
@@ -130,8 +143,8 @@ pub fn resolve_limits(doc: &Document, joint: &Joint) -> ResolvedJointLimits {
 /// coordinates (`x` = primary axis), clamped to its limits (#896). Empty expressions read
 /// as zero, so a fresh joint sits at its captured pose. `None` when an expression doesn't
 /// evaluate.
-fn motion(doc: &Document, joint: &Joint) -> Option<Mat4> {
-    let limits = resolve_limits(doc, joint);
+fn motion(doc: &Document, joint: &Joint, base_pose: Mat4) -> Option<Mat4> {
+    let limits = resolve_limits_posed(doc, joint, base_pose);
     let len = |e: &str| {
         if e.trim().is_empty() {
             Some(0.0)
@@ -196,27 +209,19 @@ fn motion(doc: &Document, joint: &Joint) -> Option<Mat4> {
     })
 }
 
-/// The transform a joint imposes on its driven side, given the base side's own pose:
-/// carry the driven part's mating frame onto the base's (posed) frame, then move it
-/// through the joint's freedoms. Falls back to the base pose alone when either frame is
-/// unset/unresolvable — the identity mate that keeps already-placed parts in place.
-fn joint_transform(doc: &Document, joint: &Joint, base_pose: Mat4, base_is_first: bool) -> Mat4 {
-    let mate = match (
-        resolve_frame(doc, &joint.frame_a),
-        resolve_frame(doc, &joint.frame_b),
-        motion(doc, joint),
-    ) {
-        (Some(fa), Some(fb), Some(m)) => {
-            if base_is_first {
-                frame_mat(&fa) * m * frame_mat(&fb).inverse()
-            } else {
-                // The base is the second member: drive the first through the inverse.
-                frame_mat(&fb) * m.inverse() * frame_mat(&fa).inverse()
-            }
-        }
-        _ => Mat4::IDENTITY,
+/// The transform a joint imposes on its driven side, given the base side's own pose: put the
+/// driven part where the mate says (#1021), then move it through the joint's freedoms about
+/// the mate's frame. Falls back to the base pose alone when the mate is unset or no longer
+/// resolves — the identity mate that keeps already-placed parts in place.
+fn joint_transform(doc: &Document, joint: &Joint, base_pose: Mat4) -> Mat4 {
+    let Some(placed) = solve_mate(doc, joint, base_pose) else {
+        return base_pose;
     };
-    base_pose * mate
+    let Some(m) = motion(doc, joint, base_pose) else {
+        return placed.transform;
+    };
+    let frame = frame_mat(&mate_frame(&joint.kind, &placed));
+    frame * m * frame.inverse() * placed.transform
 }
 
 /// Resolve every live joint's pose, in dependency order (#893). A joint is ready once the
@@ -274,14 +279,13 @@ pub fn resolve_joint_poses(doc: &Document) -> JointResolution {
                 continue;
             }
             let base_pose = out.poses.get(&base).copied().unwrap_or(Mat4::IDENTITY);
-            if motion(doc, joint).is_none() {
+            if motion(doc, joint, base_pose).is_none() {
                 out.errors.push((
                     ji,
                     "A joint position expression cannot be evaluated".to_string(),
                 ));
             }
-            let base_is_first = joint.base == 0 || joint.base >= joint.members.len();
-            let pose = joint_transform(doc, joint, base_pose, base_is_first);
+            let pose = joint_transform(doc, joint, base_pose);
             for m in joint.driven_members() {
                 out.poses.insert(m, pose);
             }
@@ -476,22 +480,9 @@ pub fn body_drag_joint(doc: &Document, body: usize) -> BodyDragTarget {
 /// a frameless joint has no axis to drag along.
 pub fn posed_joint_frame(doc: &Document, ji: usize) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
     let joint = doc.joints.get(ji).filter(|j| !j.deleted)?;
-    let base = joint.base_member()?;
-    let base_pose = joint_resolution(doc)
-        .member_pose(base)
-        .unwrap_or(Mat4::IDENTITY);
-    let base_is_first = joint.base == 0 || joint.base >= joint.members.len();
-    let frame = resolve_frame(
-        doc,
-        if base_is_first { &joint.frame_a } else { &joint.frame_b },
-    )?;
-    let m = base_pose * frame_mat(&frame);
-    Some((
-        m.transform_point3(Vec3::ZERO),
-        m.transform_vector3(Vec3::X).normalize_or_zero(),
-        m.transform_vector3(Vec3::Y).normalize_or_zero(),
-        m.transform_vector3(Vec3::Z).normalize_or_zero(),
-    ))
+    let base_pose = base_pose_of(doc, joint);
+    let frame = mate_frame(&joint.kind, &solve_mate(doc, joint, base_pose)?);
+    Some((frame.origin, frame.x, frame.y, frame.z))
 }
 
 /// A joint's three position slots evaluated to numbers (#897): mm for slide slots,
@@ -605,12 +596,9 @@ pub fn sweep_positions(doc: &Document, joint: &Joint, time: f64) -> Option<(f32,
 /// assembly's base pose composed with the probe's mate — what the tool's ghost shows.
 /// `None` when it works out to identity (nothing to ghost).
 pub fn preview_pose(doc: &Document, joint: &Joint) -> Option<Mat4> {
-    let base = joint.base_member()?;
-    let base_pose = joint_resolution(doc)
-        .member_pose(base)
-        .unwrap_or(Mat4::IDENTITY);
-    let base_is_first = joint.base == 0 || joint.base >= joint.members.len();
-    let pose = joint_transform(doc, joint, base_pose, base_is_first);
+    joint.base_member()?;
+    let base_pose = base_pose_of(doc, joint);
+    let pose = joint_transform(doc, joint, base_pose);
     if pose.abs_diff_eq(Mat4::IDENTITY, 1e-5) {
         None
     } else {
@@ -642,65 +630,55 @@ pub fn posed_mesh(
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Body, BodySource, ImportedMesh, Joint, JointLimits, MovePointRef};
+    use crate::mate::tests::{cube_body, face_ref, joint};
+    use crate::model::{JointLimits, JointMate, MateLineUp, MateRef};
 
-    /// A 1 mm right tetrahedron at `origin` — enough mesh for vertex keys to resolve.
-    fn tetra(origin: Vec3) -> Vec<[Vec3; 3]> {
-        let o = origin;
-        let x = origin + Vec3::X;
-        let y = origin + Vec3::Y;
-        let z = origin + Vec3::Z;
-        vec![[o, x, y], [o, x, z], [o, y, z], [x, y, z]]
+    /// The two cubes every test mates: a 10 mm block at the origin and a 4 mm block parked
+    /// well away from it, so a placement that fires is unmistakable.
+    fn two_cubes(doc: &mut Document) -> (usize, usize) {
+        let fixed = cube_body(doc, Vec3::ZERO, Vec3::splat(10.0));
+        let moving = cube_body(doc, Vec3::new(40.0, 0.0, 0.0), Vec3::splat(4.0));
+        (fixed, moving)
     }
 
-    fn mesh_body(doc: &mut Document, origin: Vec3) -> usize {
-        doc.imported_meshes.push(ImportedMesh {
-            triangles: tetra(origin),
-            source_name: format!("part{}", doc.imported_meshes.len()),
-        });
-        doc.bodies.push(Body {
-            source: BodySource::Imported(doc.imported_meshes.len() - 1),
-            name: None,
-            material: None,
-            deleted: false,
-            shadow: false,
-        });
-        doc.bodies.len() - 1
-    }
-
-    fn joint(members: Vec<JointRef>, kind: JointKind) -> Joint {
-        Joint {
-            members,
-            base: 0,
-            kind,
-            frame_a: JointFrame::default(),
-            frame_b: JointFrame::default(),
-            position: String::new(),
-            position2: String::new(),
-            position3: String::new(),
-            rest: String::new(),
-            rest2: String::new(),
-            rest3: String::new(),
-            limits: JointLimits::default(),
-            name: None,
-            deleted: false,
+    /// The moving cube's underside onto the fixed cube's top: lands it at z = 10, keeping
+    /// where it sits in the plane.
+    fn stack_mate(doc: &Document, fixed: usize, moving: usize) -> JointMate {
+        JointMate {
+            moving_face: Some(face_ref(doc, moving, Vec3::new(42.0, 2.0, 0.0))),
+            fixed_face: Some(face_ref(doc, fixed, Vec3::new(5.0, 5.0, 10.0))),
+            ..Default::default()
         }
     }
 
-    fn vert(body: usize, p: Vec3) -> Option<MovePointRef> {
-        Some(MovePointRef::Vertex { body, p: crate::hierarchy::quantize_body_point(p) })
+    /// A line-up row aiming both parts' near edges along +X, which is what gives a slider a
+    /// direction to travel in.
+    fn along_x_row(fixed: usize, moving: usize, moving_lo: Vec3, fixed_lo: Vec3) -> MateLineUp {
+        let q = crate::hierarchy::quantize_body_point;
+        MateLineUp {
+            moving: Some(MateRef::Edge {
+                body: moving,
+                a: q(moving_lo),
+                b: q(moving_lo + Vec3::X * 4.0),
+            }),
+            fixed: Some(MateRef::Edge {
+                body: fixed,
+                a: q(fixed_lo),
+                b: q(fixed_lo + Vec3::X * 10.0),
+            }),
+        }
     }
 
-    /// #893: a joint with no frames set mates as identity — joining parts already in
-    /// place moves nothing.
+    /// #893/#1021: a joint with no mate places nothing — joining parts already in place
+    /// moves them not at all.
     #[test]
-    fn frameless_joint_is_a_no_op() {
+    fn mateless_joint_is_a_no_op() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
+        let (a, b) = two_cubes(&mut doc);
         doc.joints.push(joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
@@ -711,91 +689,66 @@ mod tests {
         assert!(resolve_joint_poses(&doc).errors.is_empty());
     }
 
-    /// #893: a slider carries the driven part along the frame's primary axis by its
-    /// position expression, parametrically.
+    /// #893/#1021: the face pair places the part, then the slider carries it along the
+    /// line-up row's direction — the mate is the starting position, the kind is the motion.
     #[test]
-    fn slider_translates_along_its_axis() {
+    fn slider_travels_along_the_line_up() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
-        // Frame on A: origin at its corner, axis toward +Y. Frame on B: its own corner,
-        // same +Y axis (already-in-place mate — the frames coincide in orientation).
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Y),
-            orient: None,
-        };
-        j.frame_b = JointFrame {
-            origin: vert(b, Vec3::new(5.0, 0.0, 0.0)),
-            axis: vert(b, Vec3::new(5.0, 1.0, 0.0)),
-            orient: None,
-        };
+        j.mate = stack_mate(&doc, a, b);
+        j.mate.line_up.push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
         j.position = "7".to_string();
         doc.joints.push(j);
-        let pose = body_joint_pose(&doc, b).expect("driven body carries a pose");
-        // B's frame origin lands on A's origin, then slides 7 mm along +Y.
-        let landed = pose.transform_point3(Vec3::new(5.0, 0.0, 0.0));
+        let pose = body_joint_pose(&doc, b).expect("the driven body carries a pose");
+        let landed = pose.transform_point3(Vec3::new(40.0, 0.0, 0.0));
         assert!(
-            (landed - Vec3::new(0.0, 7.0, 0.0)).length() < 1e-4,
+            (landed - Vec3::new(47.0, 0.0, 10.0)).length() < 1e-3,
             "landed at {landed}"
         );
         assert!(body_joint_pose(&doc, a).is_none(), "the base is held");
     }
 
-    /// #893: a revolute turns the driven part about the frame's axis; 90° about +Z sends
-    /// +X to +Y.
+    /// #893/#1021: a revolute turns about the mating normal — a part spun on the face it
+    /// sits on. 90° about +Z sends +X to +Y about the landing point.
     #[test]
-    fn revolute_turns_about_its_axis() {
+    fn revolute_turns_about_the_mating_normal() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Z),
-            orient: vert(a, Vec3::X),
-        };
-        j.frame_b = JointFrame {
-            origin: vert(b, Vec3::ZERO),
-            axis: vert(b, Vec3::Z),
-            orient: vert(b, Vec3::X),
-        };
+        j.mate = stack_mate(&doc, a, b);
         j.position = "90".to_string();
         doc.joints.push(j);
         let pose = body_joint_pose(&doc, b).unwrap();
-        let moved = pose.transform_point3(Vec3::X);
-        assert!((moved - Vec3::Y).length() < 1e-4, "+X turned to {moved}");
+        // The face's middle lands at (42, 2, 10) and is the turn's centre; a point 2 mm
+        // along +X of it swings to 2 mm along +Y.
+        let moved = pose.transform_point3(Vec3::new(44.0, 2.0, 0.0));
+        assert!(
+            (moved - Vec3::new(42.0, 4.0, 10.0)).length() < 1e-3,
+            "swung to {moved}"
+        );
     }
 
-    /// #893: a screw couples travel to turn by its lead — a full turn advances one lead.
+    /// #893: a screw couples travel to turn by its lead — a full turn advances one lead
+    /// along the mating normal.
     #[test]
     fn screw_couples_turn_to_travel() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Screw { lead: "2".to_string() },
         );
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Z),
-            orient: vert(a, Vec3::X),
-        };
-        j.frame_b = j.frame_a.clone();
-        j.frame_b.origin = vert(b, Vec3::ZERO);
-        j.frame_b.axis = vert(b, Vec3::Z);
-        j.frame_b.orient = vert(b, Vec3::X);
+        j.mate = stack_mate(&doc, a, b);
         j.position = "360".to_string();
         doc.joints.push(j);
         let pose = body_joint_pose(&doc, b).unwrap();
-        let moved = pose.transform_point3(Vec3::ZERO);
+        let moved = pose.transform_point3(Vec3::new(42.0, 2.0, 0.0));
         assert!(
-            (moved - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-4,
+            (moved - Vec3::new(42.0, 2.0, 12.0)).length() < 1e-3,
             "advanced to {moved}"
         );
     }
@@ -804,121 +757,104 @@ mod tests {
     #[test]
     fn slider_clamps_to_expression_limits() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Z),
-            orient: None,
-        };
-        j.frame_b = j.frame_a;
-        j.frame_b.origin = vert(b, Vec3::ZERO);
-        j.frame_b.axis = vert(b, Vec3::Z);
+        j.mate = stack_mate(&doc, a, b);
+        j.mate.line_up.push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
         j.position = "7".to_string();
         j.limits.slide_max = "4".to_string();
         j.limits.slide_min = "-1".to_string();
         doc.joints.push(j);
-        let pose = body_joint_pose(&doc, b).unwrap();
-        let moved = pose.transform_point3(Vec3::ZERO);
-        assert!((moved.z - 4.0).abs() < 1e-4, "clamped to the max, got {moved}");
+        let x = |doc: &Document| {
+            resolve_joint_poses(doc)
+                .member_pose(JointRef::Body(b))
+                .unwrap()
+                .transform_point3(Vec3::new(40.0, 0.0, 0.0))
+                .x
+        };
+        assert!((x(&doc) - 44.0).abs() < 1e-3, "clamped to the max");
         doc.joints[0].position = "-9".to_string();
-        let pose = resolve_joint_poses(&doc).member_pose(JointRef::Body(b)).unwrap();
-        let moved = pose.transform_point3(Vec3::ZERO);
-        assert!((moved.z - -1.0).abs() < 1e-4, "clamped to the min, got {moved}");
+        assert!((x(&doc) - 39.0).abs() < 1e-3, "clamped to the min");
     }
 
     /// #896: turn limits clamp a revolute — 110° one way and not at all the other.
     #[test]
     fn revolute_clamps_to_turn_limits() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Z),
-            orient: vert(a, Vec3::X),
-        };
-        j.frame_b = j.frame_a;
-        j.frame_b.origin = vert(b, Vec3::ZERO);
-        j.frame_b.axis = vert(b, Vec3::Z);
-        j.frame_b.orient = vert(b, Vec3::X);
+        j.mate = stack_mate(&doc, a, b);
         j.position = "90".to_string();
         j.limits.turn_min = "0".to_string();
         j.limits.turn_max = "45".to_string();
         doc.joints.push(j);
-        let pose = body_joint_pose(&doc, b).unwrap();
-        let moved = pose.transform_point3(Vec3::X);
-        let expected = Vec3::new(45f32.to_radians().cos(), 45f32.to_radians().sin(), 0.0);
-        assert!((moved - expected).length() < 1e-4, "clamped to 45°, got {moved}");
+        let arm = |doc: &Document| {
+            resolve_joint_poses(doc)
+                .member_pose(JointRef::Body(b))
+                .unwrap()
+                .transform_point3(Vec3::new(44.0, 2.0, 0.0))
+                - Vec3::new(42.0, 2.0, 10.0)
+        };
+        let a45 = 45f32.to_radians();
+        let expected = Vec3::new(2.0 * a45.cos(), 2.0 * a45.sin(), 0.0);
+        assert!((arm(&doc) - expected).length() < 1e-3, "clamped to 45°");
         doc.joints[0].position = "-30".to_string();
-        let pose = resolve_joint_poses(&doc).member_pose(JointRef::Body(b)).unwrap();
-        let moved = pose.transform_point3(Vec3::X);
-        assert!((moved - Vec3::X).length() < 1e-4, "no travel the other way, got {moved}");
+        assert!(
+            (arm(&doc) - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-3,
+            "no travel the other way"
+        );
     }
 
-    /// #896: a slide stop picked as geometry — the travel ends where the axis meets the
-    /// plane, recomputed as the model changes.
+    /// #896: a slide stop picked as geometry — the travel ends where the joint's axis meets
+    /// the target's plane, recomputed as the model changes.
     #[test]
     fn slide_stop_resolves_against_a_plane() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
-        // Park the XY datum plane 8 mm up: the slide (along +Z from the origin) must
-        // stop there.
-        doc.construction_planes[0].origin = Vec3::new(0.0, 0.0, 8.0);
-        let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Z),
-            orient: None,
-        };
-        j.frame_b = j.frame_a;
-        j.frame_b.origin = vert(b, Vec3::ZERO);
-        j.frame_b.axis = vert(b, Vec3::Z);
+        let (a, b) = two_cubes(&mut doc);
+        // Park the XY datum plane 18 mm up: the part lands at z = 10 and its slide along the
+        // mating normal must stop 8 mm later.
+        doc.construction_planes[0].origin = Vec3::new(0.0, 0.0, 18.0);
+        doc.construction_planes[0].normal = Vec3::Z;
+        let mut j = joint(
+            vec![JointRef::Body(a), JointRef::Body(b)],
+            JointKind::Cylindrical,
+        );
+        j.mate = stack_mate(&doc, a, b);
         j.position = "20".to_string();
         j.limits.slide_max_target = Some(crate::model::ExtrudeTarget::Plane(0));
         doc.joints.push(j);
         let limits = resolve_limits(&doc, &doc.joints[0]);
         assert!(
-            limits.slide_max.is_some_and(|m| (m - 8.0).abs() < 1e-4),
+            limits.slide_max.is_some_and(|m| (m - 8.0).abs() < 1e-3),
             "stop resolves to 8 mm, got {limits:?}"
         );
-        let pose = body_joint_pose(&doc, b).unwrap();
-        let moved = pose.transform_point3(Vec3::ZERO);
-        assert!((moved.z - 8.0).abs() < 1e-4, "clamped at the plane, got {moved}");
+        let moved = body_joint_pose(&doc, b)
+            .unwrap()
+            .transform_point3(Vec3::new(42.0, 2.0, 0.0));
+        assert!((moved.z - 18.0).abs() < 1e-3, "clamped at the plane, got {moved}");
     }
 
     /// #896: a screw's slide limit bounds the coupled travel through its lead.
     #[test]
     fn screw_slide_limit_bounds_the_turn() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Screw { lead: "2".to_string() },
         );
-        j.frame_a = JointFrame {
-            origin: vert(a, Vec3::ZERO),
-            axis: vert(a, Vec3::Z),
-            orient: vert(a, Vec3::X),
-        };
-        j.frame_b = j.frame_a;
-        j.frame_b.origin = vert(b, Vec3::ZERO);
-        j.frame_b.axis = vert(b, Vec3::Z);
-        j.frame_b.orient = vert(b, Vec3::X);
+        j.mate = stack_mate(&doc, a, b);
         j.position = "720".to_string();
         j.limits.slide_max = "1".to_string();
         doc.joints.push(j);
-        let pose = body_joint_pose(&doc, b).unwrap();
-        let moved = pose.transform_point3(Vec3::ZERO);
+        let moved = body_joint_pose(&doc, b)
+            .unwrap()
+            .transform_point3(Vec3::new(42.0, 2.0, 0.0));
         assert!(
-            (moved.z - 1.0).abs() < 1e-4,
+            (moved.z - 11.0).abs() < 1e-3,
             "travel bounded to the slide max, got {moved}"
         );
     }
@@ -928,25 +864,14 @@ mod tests {
     #[test]
     fn body_drag_resolves_through_the_chain() {
         let mut doc = Document::default();
-        let ground = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
-        let c = mesh_body(&mut doc, Vec3::new(10.0, 0.0, 0.0));
-        let free = mesh_body(&mut doc, Vec3::new(20.0, 0.0, 0.0));
-        // Hinge ground→B, then C tied rigidly to B.
+        let (ground, b) = two_cubes(&mut doc);
+        let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
+        let free = cube_body(&mut doc, Vec3::new(90.0, 0.0, 0.0), Vec3::splat(4.0));
         let mut hinge = joint(
             vec![JointRef::Body(ground), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        hinge.frame_a = JointFrame {
-            origin: vert(ground, Vec3::ZERO),
-            axis: vert(ground, Vec3::Z),
-            orient: None,
-        };
-        hinge.frame_b = JointFrame {
-            origin: vert(b, Vec3::new(5.0, 0.0, 0.0)),
-            axis: vert(b, Vec3::new(5.0, 0.0, 1.0)),
-            orient: None,
-        };
+        hinge.mate = stack_mate(&doc, ground, b);
         doc.joints.push(hinge);
         doc.joints.push(joint(
             vec![JointRef::Body(b), JointRef::Body(c)],
@@ -964,10 +889,10 @@ mod tests {
             "the held side refuses"
         );
         assert_eq!(body_drag_joint(&doc, free), BodyDragTarget::Free, "unjointed is free");
-        // The posed drag frame sits at the hinge's mating origin.
+        // The posed drag frame sits at the mate's landing point, aimed along its normal.
         let (origin, axis, _, _) = posed_joint_frame(&doc, 0).expect("a frame to drag on");
-        assert!((origin - Vec3::ZERO).length() < 1e-4);
-        assert!((axis - Vec3::Z).length() < 1e-4);
+        assert!((origin - Vec3::new(42.0, 2.0, 10.0)).length() < 1e-3, "origin {origin}");
+        assert!((axis - Vec3::Z).length() < 1e-3, "axis {axis}");
     }
 
     /// #897: the drag reads its start values from the position expressions, in the units
@@ -975,8 +900,7 @@ mod tests {
     #[test]
     fn drag_start_values_evaluate_per_kind() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Cylindrical,
@@ -993,8 +917,7 @@ mod tests {
     #[test]
     fn sweep_glides_between_the_limits() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::ZERO);
+        let (a, b) = two_cubes(&mut doc);
         let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
         j.limits.slide_min = "-1".to_string();
         j.limits.slide_max = "4".to_string();
@@ -1010,52 +933,59 @@ mod tests {
         assert!(sweep_positions(&doc, &j, 1.0).is_none(), "rigid has nothing to sweep");
     }
 
-    /// #893: a chain A→B→C composes — C carries B's pose on top of its own slide.
+    /// #893/#1021: a chain A→B→C composes — C's mate resolves against B's **posed**
+    /// geometry, so it lines up where B actually ended up rather than where it was drawn.
     #[test]
     fn chained_joints_compose_in_order() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
-        let c = mesh_body(&mut doc, Vec3::new(10.0, 0.0, 0.0));
-        let slide = |from: usize, to: usize, from_o: Vec3, to_o: Vec3, amount: &str| {
-            let mut j = joint(
-                vec![JointRef::Body(from), JointRef::Body(to)],
-                JointKind::Slider,
-            );
-            j.frame_a = JointFrame {
-                origin: vert(from, from_o),
-                axis: vert(from, from_o + Vec3::Y),
-                orient: None,
-            };
-            j.frame_b = JointFrame {
-                origin: vert(to, to_o),
-                axis: vert(to, to_o + Vec3::Y),
-                orient: None,
-            };
-            j.position = amount.to_string();
-            j
+        let (a, b) = two_cubes(&mut doc);
+        let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
+        let mut ab = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
+        ab.mate = stack_mate(&doc, a, b);
+        ab.mate
+            .line_up
+            .push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
+        ab.position = "2".to_string();
+        let q = crate::hierarchy::quantize_body_point;
+        let mut bc = joint(vec![JointRef::Body(b), JointRef::Body(c)], JointKind::Slider);
+        bc.mate = JointMate {
+            moving_face: Some(face_ref(&doc, c, Vec3::new(62.0, 2.0, 0.0))),
+            fixed_face: Some(face_ref(&doc, b, Vec3::new(42.0, 2.0, 4.0))),
+            line_up: vec![MateLineUp {
+                moving: Some(MateRef::Edge {
+                    body: c,
+                    a: q(Vec3::new(60.0, 0.0, 0.0)),
+                    b: q(Vec3::new(64.0, 0.0, 0.0)),
+                }),
+                fixed: Some(MateRef::Edge {
+                    body: b,
+                    a: q(Vec3::new(40.0, 0.0, 4.0)),
+                    b: q(Vec3::new(44.0, 0.0, 4.0)),
+                }),
+            }],
+            ..Default::default()
         };
+        bc.position = "3".to_string();
         // Deliberately out of dependency order: the B→C joint is authored first.
-        doc.joints.push(slide(b, c, Vec3::new(5.0, 0.0, 0.0), Vec3::new(10.0, 0.0, 0.0), "3"));
-        doc.joints.push(slide(a, b, Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0), "2"));
+        doc.joints.push(bc);
+        doc.joints.push(ab);
         let res = resolve_joint_poses(&doc);
         assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
-        // B: lands on A's origin, slides 2 along Y.
+        // B lands on A's top and slides 2 along +X.
         let pb = res.member_pose(JointRef::Body(b)).unwrap();
-        let b_at = pb.transform_point3(Vec3::new(5.0, 0.0, 0.0));
-        assert!((b_at - Vec3::new(0.0, 2.0, 0.0)).length() < 1e-4, "B at {b_at}");
-        // C: lands on B's *posed* frame (0,2,0), slides 3 more along Y.
+        let b_at = pb.transform_point3(Vec3::new(40.0, 0.0, 0.0));
+        assert!((b_at - Vec3::new(42.0, 0.0, 10.0)).length() < 1e-3, "B at {b_at}");
+        // C lands on B's *posed* top (z = 14) and slides 3 more.
         let pc = res.member_pose(JointRef::Body(c)).unwrap();
-        let c_at = pc.transform_point3(Vec3::new(10.0, 0.0, 0.0));
-        assert!((c_at - Vec3::new(0.0, 5.0, 0.0)).length() < 1e-4, "C at {c_at}");
+        let c_at = pc.transform_point3(Vec3::new(60.0, 0.0, 0.0));
+        assert!((c_at - Vec3::new(63.0, 0.0, 14.0)).length() < 1e-3, "C at {c_at}");
     }
 
     /// #893: a loop of joints resolves nothing and reports every joint in the loop.
     #[test]
     fn joint_cycle_is_reported_not_resolved() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
+        let (a, b) = two_cubes(&mut doc);
         doc.joints.push(joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Rigid,
@@ -1066,7 +996,6 @@ mod tests {
         ));
         let res = resolve_joint_poses(&doc);
         assert_eq!(res.errors.len(), 2, "both loop joints report: {:?}", res.errors);
-        // Health surfaces them as invalid elements with the reason.
         let health = crate::document_health::recompute_document_health(&doc);
         assert!(health
             .element_reasons
@@ -1081,9 +1010,8 @@ mod tests {
     #[test]
     fn double_driven_part_reports_the_second_joint() {
         let mut doc = Document::default();
-        let a = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
-        let c = mesh_body(&mut doc, Vec3::new(10.0, 0.0, 0.0));
+        let (a, b) = two_cubes(&mut doc);
+        let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
         doc.joints.push(joint(
             vec![JointRef::Body(a), JointRef::Body(c)],
             JointKind::Rigid,
@@ -1097,15 +1025,13 @@ mod tests {
         assert_eq!(res.errors[0].0, 1, "the later joint is the one refused");
     }
 
-    /// #893: a rigid group's driven members ride the base's pose — and the whole group
-    /// swings when the base is itself driven through a revolute.
+    /// #893: a rigid group's driven members ride the base's pose — the whole group swings
+    /// when the base is itself driven through a revolute.
     #[test]
     fn rigid_group_rides_its_base_through_a_chain() {
         let mut doc = Document::default();
-        let ground = mesh_body(&mut doc, Vec3::ZERO);
-        let b = mesh_body(&mut doc, Vec3::new(5.0, 0.0, 0.0));
-        let c = mesh_body(&mut doc, Vec3::new(10.0, 0.0, 0.0));
-        // Tie B and C rigidly (in place), then hinge B off ground by 90° about +Z.
+        let (ground, b) = two_cubes(&mut doc);
+        let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
         doc.joints.push(joint(
             vec![JointRef::Body(b), JointRef::Body(c)],
             JointKind::Rigid,
@@ -1114,25 +1040,23 @@ mod tests {
             vec![JointRef::Body(ground), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        hinge.frame_a = JointFrame {
-            origin: vert(ground, Vec3::ZERO),
-            axis: vert(ground, Vec3::Z),
-            orient: vert(ground, Vec3::X),
-        };
-        hinge.frame_b = JointFrame {
-            origin: vert(b, Vec3::new(5.0, 0.0, 0.0)),
-            axis: vert(b, Vec3::new(5.0, 0.0, 1.0)),
-            orient: vert(b, Vec3::new(6.0, 0.0, 0.0)),
-        };
+        hinge.mate = stack_mate(&doc, ground, b);
         hinge.position = "90".to_string();
         doc.joints.push(hinge);
         let res = resolve_joint_poses(&doc);
         assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+        let pb = res.member_pose(JointRef::Body(b)).unwrap();
         let pc = res.member_pose(JointRef::Body(c)).unwrap();
-        // C sat 5 mm along +X from B's frame origin; after the 90° swing it sits 5 mm
-        // along +Y from A's origin.
-        let c_at = pc.transform_point3(Vec3::new(10.0, 0.0, 0.0));
-        assert!((c_at - Vec3::new(0.0, 5.0, 0.0)).length() < 1e-4, "C at {c_at}");
+        assert!(
+            pb.abs_diff_eq(pc, 1e-5),
+            "the rigid tie carries the hinge's pose whole"
+        );
+        // C sat 18 mm along +X of the hinge's landing point; the 90° swing puts it 18 mm
+        // along +Y of it.
+        let c_at = pc.transform_point3(Vec3::new(60.0, 2.0, 0.0));
+        assert!(
+            (c_at - Vec3::new(42.0, 20.0, 10.0)).length() < 1e-3,
+            "C at {c_at}"
+        );
     }
 }
-

@@ -860,8 +860,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   keep adding to it", so it is never auto-released. The Move and Joint tools were the same
   algorithm written out twice, seven states and nine; they now declare a chain each
   (`move_focus_chain` / `joint_focus_chain`) and share the walk. A Free move has no point
-  pairs, so its chain is just the bodies and start A; the Joint tool's slide stops (#896) are
-  hand-focused from the pane rather than stepped into, so they sit outside its chain.
+  pairs, so its chain is just the bodies and start A; the Joint tool's chain runs the parts, the
+  mate's face pair, then a line-up row at a time (#1021), and its slide stops (#896) are
+  hand-focused from the pane rather than stepped into, so they sit outside it.
 
   - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
     B** on stationary geometry, adds the **rotation** — the pane labels the B and C rows
@@ -1368,23 +1369,56 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   selection while the tint is on — lighting both sides the same answered "these two", which was
   never the question. Only while previewing, and only for a two-sided kind: a Rigid group has no
   moving side to tell apart, and a committed joint's parts are ordinary bodies again.
-  **Pane layout (#997):** the section is in two named parts. **Mate** holds the six snap-pair
-  pickers — how the parts line up — and previews exactly as the Move tool does: with any of them
-  focused, the A→A translation draws as a connector and the B (and C) pair's arc as its swept
-  path, off one shared `SnapPreviewPoints` so the two tools cannot drift apart. Below it, a
-  section named for the **kind** (*Slider*, *Revolute*, …) holds that kind's own freedoms and the
-  limits on them; Rigid has neither, so it gets no second section. Point-to-point is what mates
-  today; face-to-face and edge-to-edge are the natural next step for the kinds that want them.
-  **Frames (#892/#894, `model::JointFrame`):** each side carries a mating frame — an
-  origin, an axis point, and a spin-pinning point — picked with the Move tool's snap
-  pairs (start points on the driven part, end points on the base;
-  `main::JointFocus` steps one focused picker at a time) and stored as
-  `model::MovePointRef`s, body-local keys re-found on the live mesh so frames survive a
-  rebuild. The joint's transform mates the driven frame onto the base's
-  (`FA · M(position) · FB⁻¹`); unset frames mate as **identity**, so joining two parts
-  already in place moves nothing. Positions (`Joint::position`/`position2`/`position3`)
-  are expressions — mm for slides, degrees for turns — so poses are parametric.
-  **Grounded tree (#893):** one side is the **base** (default the first picked; the pane
+  **Pane layout (#997/#1021):** the section is in two named parts. **Mate** says where the
+  parts start out; below it, a section named for the **kind** (*Slider*, *Revolute*, …) holds
+  that kind's own freedoms and the limits on them. Rigid has neither, so it gets no second
+  section.
+  **The mate (#1021, `model::JointMate`):** *put this face on that face, then line this up with
+  that.* Two columns headed **Moving** and **Fixed** with no left-hand row label — the columns
+  already say which side each pick belongs to. The mate is a **starting placement and nothing
+  more**: it works out to a rigid transform (`mate::placement`) that the kind's freedoms then act
+  on top of, exactly where the frames sat in `joints::joint_transform`, and has no bearing on how
+  the joint moves. Anchoring a slider fully and then choosing its slide axis and limits stays
+  valid — the two are independent by design.
+  - **The face pair (#1014):** a face on the moving part and the face (or datum plane) it lands
+    on. Completing it places the part flush, which is a usable placement on its own — so the
+    common mate is two clicks. **Flip** switches which way the part ends up facing (the default
+    puts the normals opposed, so the surfaces touch) and **Offset** holds it off by a parametric
+    distance.
+  - **Line-up rows (#1015):** after the face pair the part can still slide two ways in the mating
+    plane and spin about its normal. Each row pairs a point or edge on the moving part with one
+    on the fixed side, and — the point of it — **the pick need not lie in the mating plane**.
+    Both picks are projected along the mating normal and the relationship applied to the
+    *projections*, so a part lines up by a hole rim, a boss centre or a far corner, and a row can
+    never disturb the face pair. Two points make their projections coincide (pinning both
+    slides); two edges make theirs collinear (the spin and the slide across the line); a point
+    and an edge put the point on the line. A face plus two more picks fully places a part.
+  - **One row at a time (#1016):** completing a row opens the next; a pick that pins nothing the
+    rows before it left open is refused, and **no further row appears once nothing is left to
+    pin** — which is the whole "fully placed" signal, with no prose in the pane
+    (`Placement::open_freedoms`).
+  - **Least motion:** what the face pair and the rows leave undetermined is chosen by least
+    motion from where the part already sits, so a part dragged roughly into place doesn't jump
+    across the document and the preview doesn't drift as rows are added. The in-plane fit is
+    linear in the slide for any fixed spin, so it solves as a sweep over the spin with a
+    least-norm 2×2 solve inside — no iteration to diverge, and an underdetermined mate falls out
+    as "stay put" rather than as a failure.
+  - **The freedoms' frame:** the mate names the only frame there is, so the kind's primary axis
+    is the **mating normal** — a part spun, tilted or screwed on a face turns about the face it
+    sits on — except for `slider` and `pin_slot`, whose slide is travel rather than lift: those
+    take the first line-up row's direction, because a part flush on a face slides *along* it.
+  - **Grounding against the world (#1018):** the fixed side takes a datum plane, a world axis or
+    the origin as readily as another part's geometry, which is how the first part of an assembly
+    is placed. World-fixed picks don't ride the base's pose; body picks do, so a chain lines up
+    against the fixed part where it actually sits.
+  - **Durability (#1019):** picks are body-local keys (`model::MateRef`) re-found on the live
+    mesh, stored un-posed so a part picked where it is drawn still reads body-locally. A mate
+    whose picks no longer resolve places nothing, so the parts stay where they are — the same
+    identity mate an empty one gives.
+  **Telling the mate apart in 3D:** the mate's picks are marked where they sit, moving picks
+  green and fixed ones red, and the driven part ghosts at the pose the mate implies
+  (`joints::preview_pose`, #1017), live as each pick lands.
+    **Grounded tree (#893):** one side is the **base** (default the first picked; the pane
   swaps it), the rest are driven. Joints resolve in dependency order so chains compose;
   a joint that would close a **loop**, or drive a part another joint already drives, is
   refused at commit with the reason, and one that decays into that state reads through
@@ -1425,9 +1459,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   parts.
   **Shortcut (#921):** **J** picks the tool; pressing it again **cycles the kind**
   (`JointKind::next`, the dropdown's order), clearing the positions as a kind change does.
-  Scripting (#901): `bearcad.joint{ a =, b = | parts = {…}, kind =, lead?, base = "a"|"b",
-  from?/to?, from_b?/to_b?, from_c?/to_c?, position?, position2?, position3?, slide_min?,
-  slide_max?, slide_min_to?, slide_max_to?, turn_min?, turn_max?, name? }`,
+  Scripting (#901/#1020): `bearcad.joint{ a =, b = | parts = {…}, kind =, lead?, base = "a"|"b",
+  face? = { moving =, fixed =, flip?, offset? }, line_up? = { { moving =, fixed = }, … },
+  position?, position2?, position3?, slide_min?,
+  slide_max?, slide_min_to?, slide_max_to?, turn_min?, turn_max?, name? }`, where a mate pick is
+  `{ body =, face = {x,y,z}, normal = {x,y,z} }`, `{ plane = i }`,
+  `{ body =, edge = { {x,y,z}, {x,y,z} } }`, `{ axis = "x"|"y"|"z" }`, or a point
+  (`vertex`/`on_edge`/`face_center`/`midpoint`/`origin`);
+  `bearcad.body_faces(i)` and `bearcad.body_edges(i)` report a body's faces and edges in exactly
+  that spelling, so a script names one without guessing its key;
   `bearcad.edit_joint{ index, … }`, `bearcad.begin_joint{ … }` (arms the tool without
   committing, like `begin_move`), `bearcad.set_joint_rest(i)` / `bearcad.revert_joint(i)`
   / `bearcad.revert_joints()`, and `bearcad.count("joint")`; session-command export

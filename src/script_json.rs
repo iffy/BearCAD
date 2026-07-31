@@ -430,14 +430,14 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
+            let (members, base, kind, mate, position, position2, position3, limits) =
                 joint_op_args(o)?;
-            Ok(Instruction::CreateJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits })
+            Ok(Instruction::CreateJointOp { members, base, kind, mate, position, position2, position3, limits })
         }
         "begin_joint" => {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
+            let (members, base, kind, mate, position, position2, position3, limits) =
                 joint_op_args(o)?;
-            Ok(Instruction::BeginJointOp { members, base, kind, frame_a, frame_b, position, position2, position3, limits })
+            Ok(Instruction::BeginJointOp { members, base, kind, mate, position, position2, position3, limits })
         }
         "set_joint_rest" => Ok(Instruction::SetJointRest {
             op: req_usize(o, "index", "set_joint_rest")?,
@@ -448,9 +448,9 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         "revert_joints" => Ok(Instruction::RevertAllJoints),
         "edit_joint" => {
             let op = req_usize(o, "index", "edit_joint")?;
-            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
+            let (members, base, kind, mate, position, position2, position3, limits) =
                 joint_op_args(o)?;
-            Ok(Instruction::EditJointOp { op, members, base, kind, frame_a, frame_b, position, position2, position3, limits })
+            Ok(Instruction::EditJointOp { op, members, base, kind, mate, position, position2, position3, limits })
         }
         "begin_move" => {
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -1199,8 +1199,9 @@ fn move_op_args(
 }
 
 /// `joint`/`edit_joint`/`begin_joint` shared arguments (#894): the members (`a`/`b` or
-/// `parts`), kind (+ screw `lead`), base side, the `from`/`to` mating pairs, and the
-/// position expressions — the JSON twin of `lua_script::parse_joint_op_args`.
+/// `parts`), kind (+ screw `lead`), base side, the mate that places them (#1020 — a `face`
+/// pair plus `line_up` rows), and the position expressions — the JSON twin of
+/// `lua_script::parse_joint_op_args`.
 #[allow(clippy::type_complexity)]
 fn joint_op_args(
     o: &Map<String, Value>,
@@ -1209,8 +1210,7 @@ fn joint_op_args(
         Vec<crate::model::JointRef>,
         usize,
         crate::model::JointKind,
-        crate::model::JointFrame,
-        crate::model::JointFrame,
+        crate::model::JointMate,
         String,
         String,
         String,
@@ -1278,17 +1278,7 @@ fn joint_op_args(
         Some("b") => 1,
         Some(other) => return Err(format!("unknown base '{other}' (expected 'a' or 'b')")),
     };
-    let starts = crate::model::JointFrame {
-        origin: move_point_from_json(o.get("from"), "from")?,
-        axis: move_point_from_json(o.get("from_b"), "from_b")?,
-        orient: move_point_from_json(o.get("from_c"), "from_c")?,
-    };
-    let ends = crate::model::JointFrame {
-        origin: move_point_from_json(o.get("to"), "to")?,
-        axis: move_point_from_json(o.get("to_b"), "to_b")?,
-        orient: move_point_from_json(o.get("to_c"), "to_c")?,
-    };
-    let (frame_a, frame_b) = if base == 0 { (ends, starts) } else { (starts, ends) };
+    let mate = mate_from_json(o)?;
     // Travel limits (#896): expressions on either end, or a stop picked as geometry.
     let stop = |key: &str| -> Result<Option<ExtrudeTarget>, String> {
         match o.get(key) {
@@ -1308,13 +1298,102 @@ fn joint_op_args(
         members,
         base,
         kind,
-        frame_a,
-        frame_b,
+        mate,
         expr_arg(o, "position")?,
         expr_arg(o, "position2")?,
         expr_arg(o, "position3")?,
         limits,
     ))
+}
+
+/// The `face` pair and `line_up` rows of a joint call (#1020), the JSON twin of
+/// `lua_script::parse_mate`.
+fn mate_from_json(o: &Map<String, Value>) -> Result<crate::model::JointMate, String> {
+    let mut mate = crate::model::JointMate::default();
+    if let Some(face) = o.get("face").and_then(Value::as_object) {
+        mate.moving_face = mate_ref_from_json(face.get("moving"), "face.moving")?;
+        mate.fixed_face = mate_ref_from_json(face.get("fixed"), "face.fixed")?;
+        mate.flip = face.get("flip").and_then(Value::as_bool).unwrap_or(false);
+        mate.offset = expr_arg(face, "offset")?;
+    }
+    if let Some(rows) = o.get("line_up").and_then(Value::as_array) {
+        for row in rows {
+            let row = row
+                .as_object()
+                .ok_or("joint `line_up` rows must be objects")?;
+            mate.line_up.push(crate::model::MateLineUp {
+                moving: mate_ref_from_json(row.get("moving"), "line_up.moving")?,
+                fixed: mate_ref_from_json(row.get("fixed"), "line_up.fixed")?,
+            });
+        }
+    }
+    Ok(mate)
+}
+
+/// One side of a mate pick (#1020): a body `face` + `normal`, a datum `plane`, a body
+/// `edge`, a world `axis`, or a point — the point spellings are the Move tool's, except that
+/// an edge **midpoint** is `midpoint` here, since `edge` names the whole edge.
+fn mate_ref_from_json(
+    v: Option<&Value>,
+    what: &str,
+) -> Result<Option<crate::model::MateRef>, String> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let t = v
+        .as_object()
+        .ok_or_else(|| format!("`{what}` must be an object"))?;
+    let point = |v: &Value| -> Result<[i32; 3], String> {
+        let a = v
+            .as_array()
+            .filter(|a| a.len() == 3)
+            .ok_or_else(|| format!("`{what}` points must be [x, y, z] in mm"))?;
+        let n = |i: usize| -> Result<f32, String> {
+            a[i].as_f64()
+                .map(|f| f as f32)
+                .ok_or_else(|| format!("`{what}` points must be numbers"))
+        };
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+            n(0)?,
+            n(1)?,
+            n(2)?,
+        )))
+    };
+    if let Some(i) = t.get("plane").and_then(Value::as_u64) {
+        return Ok(Some(crate::model::MateRef::Plane(i as usize)));
+    }
+    if let Some(name) = t.get("axis").and_then(Value::as_str) {
+        return Ok(Some(crate::model::MateRef::Axis(match name {
+            "x" => crate::construction::GlobalAxis::X,
+            "y" => crate::construction::GlobalAxis::Y,
+            "z" => crate::construction::GlobalAxis::Z,
+            other => return Err(format!("unknown axis '{other}' (expected 'x', 'y' or 'z')")),
+        })));
+    }
+    if let Some(v) = t.get("face").filter(|v| !v.is_null()) {
+        let n = t
+            .get("normal")
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| format!("`{what}.face` needs a `normal`"))?;
+        return Ok(Some(crate::model::MateRef::Face {
+            body: req_usize(t, "body", what)?,
+            centroid: point(v)?,
+            normal: point(n)?,
+        }));
+    }
+    for (key, whole) in [("edge", true), ("midpoint", false)] {
+        let Some(ends) = t.get(key).and_then(Value::as_array).filter(|a| a.len() == 2) else {
+            continue;
+        };
+        let body = req_usize(t, "body", what)?;
+        let (a, b) = (point(&ends[0])?, point(&ends[1])?);
+        return Ok(Some(if whole {
+            crate::model::MateRef::Edge { body, a, b }
+        } else {
+            crate::model::MateRef::Point(crate::model::MovePointRef::EdgeMidpoint { body, a, b })
+        }));
+    }
+    move_point_from_json(Some(v), what).map(|p| p.map(crate::model::MateRef::Point))
 }
 
 /// A [`crate::model::MovePointRef`] from `{ "body": i, "vertex": [x,y,z] }` or
@@ -2305,8 +2384,18 @@ mod tests {
                     "a": 0,
                     "b": { "kind": "unit_instance", "index": 2 },
                     "kind": "revolute",
-                    "from": { "body": 1, "vertex": [40, 0, 0] },
-                    "to": { "body": 0, "vertex": [0, 0, 0] },
+                    "face": {
+                        "moving": { "body": 1, "face": [40, 0, 0], "normal": [0, 0, 1] },
+                        "fixed": { "body": 0, "face": [0, 0, 0], "normal": [0, 0, 1] },
+                        "flip": true,
+                        "offset": 2,
+                    },
+                    "line_up": [
+                        {
+                            "moving": { "body": 1, "edge": [[40, 0, 0], [44, 0, 0]] },
+                            "fixed": { "axis": "x" },
+                        },
+                    ],
                     "position": 90,
                 })
             ),
@@ -2317,18 +2406,29 @@ mod tests {
                 ],
                 base: 0,
                 kind: crate::model::JointKind::Revolute,
-                frame_a: crate::model::JointFrame {
-                    origin: Some(crate::model::MovePointRef::Vertex { body: 0, p: [0, 0, 0] }),
-                    axis: None,
-                    orient: None,
-                },
-                frame_b: crate::model::JointFrame {
-                    origin: Some(crate::model::MovePointRef::Vertex {
+                mate: crate::model::JointMate {
+                    moving_face: Some(crate::model::MateRef::Face {
                         body: 1,
-                        p: [4000, 0, 0],
+                        centroid: [4000, 0, 0],
+                        normal: [0, 0, 100],
                     }),
-                    axis: None,
-                    orient: None,
+                    fixed_face: Some(crate::model::MateRef::Face {
+                        body: 0,
+                        centroid: [0, 0, 0],
+                        normal: [0, 0, 100],
+                    }),
+                    flip: true,
+                    offset: "2".into(),
+                    line_up: vec![crate::model::MateLineUp {
+                        moving: Some(crate::model::MateRef::Edge {
+                            body: 1,
+                            a: [4000, 0, 0],
+                            b: [4400, 0, 0],
+                        }),
+                        fixed: Some(crate::model::MateRef::Axis(
+                            crate::construction::GlobalAxis::X,
+                        )),
+                    }],
                 },
                 position: "90".into(),
                 position2: String::new(),
@@ -2336,7 +2436,7 @@ mod tests {
                 limits: Default::default(),
             })
         );
-        // `base = "b"` swaps which side the frames land on.
+        // `base = "b"` names the second member as the held side.
         assert_eq!(
             instruction_from_json(
                 "edit_joint",
@@ -2350,8 +2450,7 @@ mod tests {
                 ],
                 base: 1,
                 kind: crate::model::JointKind::Screw { lead: "2".into() },
-                frame_a: Default::default(),
-                frame_b: Default::default(),
+                mate: Default::default(),
                 position: String::new(),
                 position2: String::new(),
                 position3: String::new(),

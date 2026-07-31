@@ -35,32 +35,32 @@ end
 -- A slider names both sides; nothing is picked yet, so Mobile wears the ring.
 bearcad.begin_joint{ parts = {}, kind = "slider" }
 bearcad.ui.wait(8)
-assert(picker("Mobile"), "a slider should offer a Mobile picker")
-assert(picker("Fixed"), "and a Fixed one")
+assert(picker("Moving part"), "a slider should offer a Moving part picker")
+assert(picker("Fixed part"), "and a Fixed one")
 assert(not picker("Parts"), "the two slots replace the plain Parts list")
-assert(picker("Mobile").focused, "the mobile part is picked first")
-assert(not picker("Fixed").focused, "one ring at a time")
+assert(picker("Moving part").focused, "the mobile part is picked first")
+assert(not picker("Fixed part").focused, "one ring at a time")
 
 -- The first click fills Mobile and hands the ring to Fixed.
 bearcad.ui.click_ground(15, 15)
 bearcad.ui.wait(8)
-assert(#picker("Mobile").items == 1,
-  "the first click should fill Mobile, got " .. #picker("Mobile").items)
-assert(#picker("Fixed").items == 0, "and leave Fixed empty")
-assert(picker("Fixed").focused, "the ring moves on to Fixed")
+assert(#picker("Moving part").items == 1,
+  "the first click should fill Mobile, got " .. #picker("Moving part").items)
+assert(#picker("Fixed part").items == 0, "and leave Fixed empty")
+assert(picker("Fixed part").focused, "the ring moves on to Fixed")
 
 -- The second click fills Fixed.
 bearcad.ui.click_ground(70, 10)
 bearcad.ui.wait(8)
-assert(#picker("Mobile").items == 1, "the mobile part stays put")
-assert(#picker("Fixed").items == 1,
-  "the second click should fill Fixed, got " .. #picker("Fixed").items)
+assert(#picker("Moving part").items == 1, "the mobile part stays put")
+assert(#picker("Fixed part").items == 1,
+  "the second click should fill Fixed, got " .. #picker("Fixed part").items)
 
 -- Rigid joins any number of parts and none of them moves, so it keeps the plain list.
 bearcad.begin_joint{ parts = {1, 0}, kind = "rigid" }
 bearcad.ui.wait(8)
 assert(picker("Parts"), "a rigid group keeps its Parts list")
-assert(not picker("Mobile") and not picker("Fixed"),
+assert(not picker("Moving part") and not picker("Fixed part"),
   "a rigid group has no moving side to name")
 
 print("ok: a two-sided joint picks its mobile part, then the part holding it")

@@ -1107,7 +1107,10 @@ pub struct AxisGizmoDrag {
 }
 
 /// World coordinate axis (origin triad).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum GlobalAxis {
     X,
     Y,

@@ -285,6 +285,48 @@ impl SceneElement {
         }
     }
 
+    /// The element a mate pick holds (#1014/#1015). Every [`crate::model::MateRef`] already
+    /// names an element the pickers and the Elements pane know, so this is a straight
+    /// re-spelling — which is what lets the mate rows be ordinary element pickers.
+    pub fn from_mate_ref(r: &crate::model::MateRef) -> SceneElement {
+        use crate::model::MateRef;
+        match r {
+            MateRef::Face { body, centroid, normal } => SceneElement::BodyFace {
+                body: *body,
+                centroid: *centroid,
+                normal: *normal,
+            },
+            MateRef::Plane(i) => SceneElement::ConstructionPlane(*i),
+            MateRef::Edge { body, a, b } => SceneElement::BodyEdge { body: *body, a: *a, b: *b },
+            MateRef::Axis(a) => SceneElement::GlobalAxis(*a),
+            MateRef::Point(p) => SceneElement::from_move_point(*p),
+        }
+    }
+
+    /// The mate pick an element stands for, if a mate can hold it — the inverse of
+    /// [`SceneElement::from_mate_ref`], and what turns a viewport click into a mate row.
+    pub fn to_mate_ref(&self) -> Option<crate::model::MateRef> {
+        use crate::model::{MateRef, MovePointRef};
+        Some(match self {
+            SceneElement::BodyFace { body, centroid, normal } => MateRef::Face {
+                body: *body,
+                centroid: *centroid,
+                normal: *normal,
+            },
+            SceneElement::ConstructionPlane(i) => MateRef::Plane(*i),
+            SceneElement::BodyEdge { body, a, b } => {
+                MateRef::Edge { body: *body, a: *a, b: *b }
+            }
+            SceneElement::GlobalAxis(a) => MateRef::Axis(*a),
+            SceneElement::BodyVertex { body, p } => {
+                MateRef::Point(MovePointRef::Vertex { body: *body, p: *p })
+            }
+            SceneElement::Origin => MateRef::Point(MovePointRef::Origin),
+            SceneElement::MovePoint(p) => MateRef::Point(*p),
+            _ => return None,
+        })
+    }
+
     /// The element for an "extrude up to" style target (#955): a vertex, a face, a plane, or a
     /// repeat instance's translated face. Every `ExtrudeTarget` maps to exactly one element.
     pub fn from_extrude_target(target: &crate::model::ExtrudeTarget) -> SceneElement {
@@ -5514,8 +5556,7 @@ mod tests {
             members: vec![JointRef::Body(0), JointRef::Body(1)],
             base: 0,
             kind: JointKind::Rigid,
-            frame_a: crate::model::JointFrame::default(),
-            frame_b: crate::model::JointFrame::default(),
+            mate: crate::model::JointMate::default(),
             position: String::new(),
             position2: String::new(),
             position3: String::new(),

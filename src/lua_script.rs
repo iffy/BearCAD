@@ -915,6 +915,111 @@ fn parse_move_point(
 }
 
 
+/// One side of a mate pick (#1020): a body face, a datum plane, a body edge, a world axis,
+/// or a point. The point spellings are the Move tool's, except that an edge **midpoint** is
+/// `midpoint` here — `edge` names the whole edge, which is what a line-up row lines up.
+fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model::MateRef>> {
+    let Value::Table(t) = value else {
+        return match value {
+            Value::Nil => Ok(None),
+            _ => Err(mlua::Error::external(format!(
+                "`{what}` must be {{body = i, face = {{x,y,z}}, normal = {{x,y,z}}}}, \
+                 {{plane = i}}, {{body = i, edge = {{{{x,y,z}}, {{x,y,z}}}}}}, \
+                 {{axis = \"x\"}}, or a point"
+            ))),
+        };
+    };
+    let mm = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
+        if v.len() != 3 {
+            return Err(mlua::Error::external(format!(
+                "`{what}` points must be {{x, y, z}} in mm"
+            )));
+        }
+        Ok(crate::hierarchy::quantize_body_point(glam::Vec3::new(
+            v[0], v[1], v[2],
+        )))
+    };
+    if let Some(i) = t.get::<Option<usize>>("plane")? {
+        return Ok(Some(crate::model::MateRef::Plane(i)));
+    }
+    if let Some(name) = t.get::<Option<String>>("axis")? {
+        let axis = match name.to_ascii_lowercase().as_str() {
+            "x" => crate::construction::GlobalAxis::X,
+            "y" => crate::construction::GlobalAxis::Y,
+            "z" => crate::construction::GlobalAxis::Z,
+            other => {
+                return Err(mlua::Error::external(format!(
+                    "unknown axis '{other}' (expected 'x', 'y' or 'z')"
+                )))
+            }
+        };
+        return Ok(Some(crate::model::MateRef::Axis(axis)));
+    }
+    if let Some(v) = t.get::<Option<Vec<f32>>>("face")? {
+        let body: usize = t.get("body")?;
+        let n: Vec<f32> = t
+            .get("normal")
+            .map_err(|_| mlua::Error::external(format!("`{what}.face` needs a `normal`")))?;
+        return Ok(Some(crate::model::MateRef::Face {
+            body,
+            centroid: mm(v)?,
+            normal: mm(n)?,
+        }));
+    }
+    if let Some(ends) = t.get::<Option<Vec<Vec<f32>>>>("edge")? {
+        let body: usize = t.get("body")?;
+        if ends.len() != 2 {
+            return Err(mlua::Error::external(format!(
+                "`{what}.edge` must be two {{x, y, z}} points"
+            )));
+        }
+        return Ok(Some(crate::model::MateRef::Edge {
+            body,
+            a: mm(ends[0].clone())?,
+            b: mm(ends[1].clone())?,
+        }));
+    }
+    if let Some(ends) = t.get::<Option<Vec<Vec<f32>>>>("midpoint")? {
+        let body: usize = t.get("body")?;
+        if ends.len() != 2 {
+            return Err(mlua::Error::external(format!(
+                "`{what}.midpoint` must be two {{x, y, z}} points"
+            )));
+        }
+        return Ok(Some(crate::model::MateRef::Point(
+            crate::model::MovePointRef::EdgeMidpoint {
+                body,
+                a: mm(ends[0].clone())?,
+                b: mm(ends[1].clone())?,
+            },
+        )));
+    }
+    parse_move_point(Value::Table(t), what).map(|p| p.map(crate::model::MateRef::Point))
+}
+
+/// The `face = {…}` block of a joint call (#1020).
+fn parse_mate(opts: &Table) -> mlua::Result<crate::model::JointMate> {
+    let mut mate = crate::model::JointMate::default();
+    if let Some(face) = opts.get::<Option<Table>>("face")? {
+        check_keys(&face, "joint face", &["moving", "fixed", "flip", "offset"])?;
+        mate.moving_face = parse_mate_ref(face.get("moving")?, "face.moving")?;
+        mate.fixed_face = parse_mate_ref(face.get("fixed")?, "face.fixed")?;
+        mate.flip = face.get::<Option<bool>>("flip")?.unwrap_or(false);
+        mate.offset = joint_position_arg(&face, "offset")?;
+    }
+    if let Some(rows) = opts.get::<Option<Table>>("line_up")? {
+        for row in rows.sequence_values::<Table>() {
+            let row = row?;
+            check_keys(&row, "joint line_up row", &["moving", "fixed"])?;
+            mate.line_up.push(crate::model::MateLineUp {
+                moving: parse_mate_ref(row.get("moving")?, "line_up.moving")?,
+                fixed: parse_mate_ref(row.get("fixed")?, "line_up.fixed")?,
+            });
+        }
+    }
+    Ok(mate)
+}
+
 /// Keys every shape call accepts (#909).
 fn check_shape_keys(opts: &Table, call: &str) -> mlua::Result<()> {
     check_keys(
@@ -1364,8 +1469,7 @@ type JointOpArgs = (
     Vec<crate::model::JointRef>,
     usize,
     crate::model::JointKind,
-    crate::model::JointFrame,
-    crate::model::JointFrame,
+    crate::model::JointMate,
     String,
     String,
     String,
@@ -1374,15 +1478,15 @@ type JointOpArgs = (
 
 /// Shared parsing for `joint` / `edit_joint` / `begin_joint` (#894/#901): the members
 /// (`a`/`b`, or `parts` for a rigid group), the kind (+ `lead` for a screw), which side is
-/// the base, the `from`/`to` mating pairs (starts on the driven part, ends on the base),
-/// and the position expressions.
+/// the base, the mate that places them (#1020 — a `face` pair plus `line_up` rows), and the
+/// position expressions.
 fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<JointOpArgs> {
     check_keys(
         opts,
         call,
         &[
-            "index", "a", "b", "parts", "kind", "lead", "base", "from", "to", "from_b",
-            "to_b", "from_c", "to_c", "position", "position2", "position3", "slide_min",
+            "index", "a", "b", "parts", "kind", "lead", "base", "face", "line_up",
+            "position", "position2", "position3", "slide_min",
             "slide_max", "slide_min_to", "slide_max_to", "turn_min", "turn_max", "name",
         ],
     )?;
@@ -1436,25 +1540,7 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
             )))
         }
     };
-    let pair = |from_key: &str, to_key: &str| -> mlua::Result<(Option<crate::model::MovePointRef>, Option<crate::model::MovePointRef>)> {
-        let from = match opts.get::<Option<Value>>(from_key)? {
-            Some(v) => parse_move_point(v, from_key)?,
-            None => None,
-        };
-        let to = match opts.get::<Option<Value>>(to_key)? {
-            Some(v) => parse_move_point(v, to_key)?,
-            None => None,
-        };
-        Ok((from, to))
-    };
-    let (from_a, to_a) = pair("from", "to")?;
-    let (from_b, to_b) = pair("from_b", "to_b")?;
-    let (from_c, to_c) = pair("from_c", "to_c")?;
-    // `to` points sit on the base side, `from` points on the driven; `frame_a` always
-    // belongs to the first member.
-    let ends = crate::model::JointFrame { origin: to_a, axis: to_b, orient: to_c };
-    let starts = crate::model::JointFrame { origin: from_a, axis: from_b, orient: from_c };
-    let (frame_a, frame_b) = if base == 0 { (ends, starts) } else { (starts, ends) };
+    let mate = parse_mate(opts)?;
     // Travel limits (#896): expressions on either end, or a stop picked as geometry.
     let limits = crate::model::JointLimits {
         slide_min: joint_position_arg(opts, "slide_min")?,
@@ -1474,8 +1560,7 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
         members,
         base,
         kind,
-        frame_a,
-        frame_b,
+        mate,
         joint_position_arg(opts, "position")?,
         joint_position_arg(opts, "position2")?,
         joint_position_arg(opts, "position3")?,
@@ -2420,6 +2505,75 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             bbox.set("max", vec3_lua(lua, max)?)?;
             t.set("bbox", bbox)?;
             Ok(Value::Table(t))
+        })?,
+    )?;
+
+    // A body's flat faces (#1020): `{ center = {x,y,z}, normal = {x,y,z} }` per face, in the
+    // un-posed body's own coordinates — exactly what a mate's `face = {…}` argument takes.
+    // Without this a script would have to guess a face's quantized key to name it at all.
+    api.set(
+        "body_faces",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let out = lua.create_table()?;
+            let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, index) else {
+                return Ok(Value::Table(out));
+            };
+            for (i, tris) in crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh)
+                .iter()
+                .enumerate()
+            {
+                let face = lua.create_table()?;
+                face.set("body", index)?;
+                face.set(
+                    "face",
+                    vec3_lua(lua, crate::extrude::face_group_center(tris))?,
+                )?;
+                face.set(
+                    "normal",
+                    vec3_lua(
+                        lua,
+                        (tris[0][1] - tris[0][0])
+                            .cross(tris[0][2] - tris[0][0])
+                            .normalize_or_zero(),
+                    )?,
+                )?;
+                out.set(i + 1, face)?;
+            }
+            Ok(Value::Table(out))
+        })?,
+    )?;
+
+    // A body's feature edges (#1020): `{ edge = { {x,y,z}, {x,y,z} } }` per edge, in the
+    // un-posed body's own coordinates — what a mate's `line_up` row takes.
+    api.set(
+        "body_edges",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let out = lua.create_table()?;
+            let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, index) else {
+                return Ok(Value::Table(out));
+            };
+            for (i, chain) in crate::gpu_viewport::solid_mesh_edge_chains(&mesh)
+                .iter()
+                .enumerate()
+            {
+                let (a, b) = crate::gpu_viewport::chain_canonical_segment(chain);
+                let edge = lua.create_table()?;
+                edge.set("body", index)?;
+                let ends = lua.create_table()?;
+                ends.set(1, vec3_lua(lua, a)?)?;
+                ends.set(2, vec3_lua(lua, b)?)?;
+                edge.set("edge", ends)?;
+                out.set(i + 1, edge)?;
+            }
+            Ok(Value::Table(out))
         })?,
     )?;
 
@@ -4321,12 +4475,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
+            let (members, base, kind, mate, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::CreateJointOp {
-                    members, base, kind, frame_a, frame_b, position, position2, position3, limits,
+                    members, base, kind, mate, position, position2, position3, limits,
                 })?;
             }
             let element = SceneElement::Joint(unsafe {
@@ -4342,12 +4496,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "begin_joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
+            let (members, base, kind, mate, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "begin_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::BeginJointOp {
-                    members, base, kind, frame_a, frame_b, position, position2, position3, limits,
+                    members, base, kind, mate, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -4358,12 +4512,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_joint",
         lua.create_function(|lua, opts: Table| {
             let op: usize = opts.get("index")?;
-            let (members, base, kind, frame_a, frame_b, position, position2, position3, limits) =
+            let (members, base, kind, mate, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "edit_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::EditJointOp {
-                    op, members, base, kind, frame_a, frame_b, position, position2, position3, limits,
+                    op, members, base, kind, mate, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -7605,12 +7759,19 @@ mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
             bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
             bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            -- Faces are named by their own middle and normal, which `body_faces` reports.
+            local function face_at(body, nx, ny, nz)
+              for _, f in ipairs(bearcad.body_faces(body)) do
+                if math.abs(f.normal[1] - nx) < 0.01
+                   and math.abs(f.normal[2] - ny) < 0.01
+                   and math.abs(f.normal[3] - nz) < 0.01 then
+                  return f
+                end
+              end
+            end
             bearcad.joint{
                 a = 0, b = 1, kind = "revolute",
-                from   = { body = 1, vertex = {40, 0, 0} },
-                to     = { body = 0, vertex = {0, 0, 0} },
-                from_b = { body = 1, vertex = {40, 0, 5} },
-                to_b   = { body = 0, vertex = {0, 0, 5} },
+                face = { moving = face_at(1, 0, 0, -1), fixed = face_at(0, 0, 0, 1) },
                 position = 90,
                 name = "Hinge",
             }
@@ -7622,11 +7783,12 @@ mod tests {
         assert_eq!(joint.name.as_deref(), Some("Hinge"));
         assert_eq!(joint.rest, "90", "rest pose captured from creation (#898)");
         let pose = crate::joints::body_joint_pose(&state.doc, 1).expect("driven body posed");
-        // B's mating corner (40,0,0) lands on A's (0,0,0); B's (50,0,0) — 10 mm along +X
-        // of the axis point — swings 90° about +Z to (0,10,0).
+        // B's underside lands on A's top (z = 5) keeping its place in the plane, so its
+        // face middle sits at (45, 5, 5); the 90° turn about that normal swings B's far
+        // corner (50, 0, 0) — 5 mm along +X and 5 mm along -Y of it — round to (50, 10, 5).
         let landed = pose.transform_point3(glam::Vec3::new(50.0, 0.0, 0.0));
         assert!(
-            (landed - glam::Vec3::new(0.0, 10.0, 0.0)).length() < 1e-2,
+            (landed - glam::Vec3::new(50.0, 10.0, 5.0)).length() < 1e-2,
             "swung corner lands at {landed:?}"
         );
         // The status names the joint and both parts.
@@ -7644,8 +7806,10 @@ mod tests {
             bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
             bearcad.begin_joint{
                 a = 0, b = 1, kind = "slider",
-                from = { body = 1, vertex = {40, 0, 0} },
-                to   = { body = 0, vertex = {0, 0, 0} },
+                face = {
+                  moving = bearcad.body_faces(1)[1],
+                  fixed  = bearcad.body_faces(0)[1],
+                },
             }
             "#,
         );
@@ -7653,7 +7817,7 @@ mod tests {
         assert!(state.doc.joints.is_empty(), "nothing is committed");
         let cj = state.creating_joint.as_ref().expect("a joint in progress");
         assert_eq!(cj.members.len(), 2);
-        assert!(cj.start_point_a.is_some() && cj.end_point_a.is_some());
+        assert!(cj.mate.has_face_pair());
         assert!(matches!(cj.kind, crate::model::JointKind::Slider));
     }
 

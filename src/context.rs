@@ -379,23 +379,21 @@ pub struct JointControl {
     pub kind: crate::model::JointKind,
     /// The held side's label, shown on the Base row; clicking swaps sides.
     pub base_label: String,
-    /// The A pair sets the mating origins, B aims the axis, C pins the spin — start
-    /// points on the **driven** part, end points on the **base** (#953): each picker holds
-    /// that rule, so a click on the wrong part is simply not a pick.
+    /// Every mate pick sits on one side or the other (#953/#1014): moving picks on the
+    /// driven part, fixed picks on the base — each picker holds that rule, so a click on the
+    /// wrong part is simply not a pick.
     pub driven_bodies: Vec<usize>,
     pub base_bodies: Vec<usize>,
-    pub start_a: Option<crate::model::MovePointRef>,
-    pub start_a_focused: bool,
-    pub end_a: Option<crate::model::MovePointRef>,
-    pub end_a_focused: bool,
-    pub start_b: Option<crate::model::MovePointRef>,
-    pub start_b_focused: bool,
-    pub end_b: Option<crate::model::MovePointRef>,
-    pub end_b_focused: bool,
-    pub start_c: Option<crate::model::MovePointRef>,
-    pub start_c_focused: bool,
-    pub end_c: Option<crate::model::MovePointRef>,
-    pub end_c_focused: bool,
+    /// The face pair (#1014) and what it holds the part off by.
+    pub moving_face: Option<crate::model::MateRef>,
+    pub moving_face_focused: bool,
+    pub fixed_face: Option<crate::model::MateRef>,
+    pub fixed_face_focused: bool,
+    pub flip: bool,
+    pub offset: String,
+    /// The line-up rows (#1015), each with its two picks and which of them is armed. The
+    /// last is the one being picked into; there is none once nothing is left to pin.
+    pub line_up: Vec<JointLineUpRow>,
     pub position: String,
     pub position2: String,
     pub position3: String,
@@ -414,6 +412,25 @@ pub struct JointControl {
     /// Whether the preview sweep animates (#906) — one app-wide switch, shown on every
     /// joint's pane.
     pub animate: bool,
+}
+
+/// A line-up row picker's registered name (#1015/#968): rows are numbered so a script can
+/// name one, and the two mate columns don't collide with the part slots above them. Beyond
+/// the numbered few a row keeps the plain name — a mate is fully placed in two or three.
+fn line_up_heading(row: usize, moving: bool) -> &'static str {
+    const MOVING: [&str; 4] = ["Line up 1 moving", "Line up 2 moving", "Line up 3 moving", "Line up 4 moving"];
+    const FIXED: [&str; 4] = ["Line up 1 fixed", "Line up 2 fixed", "Line up 3 fixed", "Line up 4 fixed"];
+    let table = if moving { &MOVING } else { &FIXED };
+    table.get(row).copied().unwrap_or(if moving { "Line up moving" } else { "Line up fixed" })
+}
+
+/// One line-up row of the Mate section (#1015).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointLineUpRow {
+    pub moving: Option<crate::model::MateRef>,
+    pub moving_focused: bool,
+    pub fixed: Option<crate::model::MateRef>,
+    pub fixed_focused: bool,
 }
 
 /// One edit from the Joint context section (#894).
@@ -450,18 +467,19 @@ pub enum JointEdit {
     MembersFocus,
     RemoveMember(usize),
     ClearMembers,
-    StartAFocus,
-    ClearStartA,
-    EndAFocus,
-    ClearEndA,
-    StartBFocus,
-    ClearStartB,
-    EndBFocus,
-    ClearEndB,
-    StartCFocus,
-    ClearStartC,
-    EndCFocus,
-    ClearEndC,
+    /// The face pair (#1014).
+    MovingFaceFocus,
+    ClearMovingFace,
+    FixedFaceFocus,
+    ClearFixedFace,
+    /// Which way the moving part ends up facing, and the gap it's held off by.
+    Flip(bool),
+    Offset(String),
+    /// A line-up row (#1015), by its index.
+    LineUpMovingFocus(usize),
+    ClearLineUpMoving(usize),
+    LineUpFixedFocus(usize),
+    ClearLineUpFixed(usize),
     Commit,
 }
 
@@ -1257,14 +1275,13 @@ pub enum PickerTarget {
     MoveEndB,
     MoveStartC,
     MoveEndC,
-    /// The Joint tool's six mating-point pickers and its two travel stops (#894/#896/#958),
-    /// likewise inline but registered.
-    JointStartA,
-    JointEndA,
-    JointStartB,
-    JointEndB,
-    JointStartC,
-    JointEndC,
+    /// The Joint tool's mate pickers (#1014/#1015) and its two travel stops (#896/#958),
+    /// likewise inline but registered: the face pair, then a moving/fixed pair per line-up
+    /// row (indexed, since the rows appear one at a time as the mate is pinned down).
+    JointMovingFace,
+    JointFixedFace,
+    JointLineUpMoving(usize),
+    JointLineUpFixed(usize),
     JointMinStop,
     JointMaxStop,
     /// Extrude's "Up to" target and Repeat's "Distance to" (#584/#645/#958): inline under
@@ -1916,27 +1933,46 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         });
     }
     if let Some(j) = input.joint.as_ref() {
-        // The Joint tool's six mating-point pickers and its two slide stops (#894/#896/#958).
-        // Inline, like the Move tool's — registered so focus, hover and scripts see them.
-        for (heading, target, point, on_driven, focused) in [
-            ("Start point A", PickerTarget::JointStartA, j.start_a, true, j.start_a_focused),
-            ("End point A", PickerTarget::JointEndA, j.end_a, false, j.end_a_focused),
-            ("Start point B", PickerTarget::JointStartB, j.start_b, true, j.start_b_focused),
-            ("End point B", PickerTarget::JointEndB, j.end_b, false, j.end_b_focused),
-            ("Start point C", PickerTarget::JointStartC, j.start_c, true, j.start_c_focused),
-            ("End point C", PickerTarget::JointEndC, j.end_c, false, j.end_c_focused),
-        ] {
-            let side = if on_driven {
-                j.driven_bodies.clone()
+        // The Joint tool's mate pickers (#1014/#1015): the face pair, then a moving/fixed
+        // pair per line-up row. Inline, like the Move tool's point rows — registered so
+        // focus, hover and scripts see them.
+        //
+        // The moving side is narrowed to the driven part's bodies; the fixed side to the
+        // base's, plus the document's own geometry (#1018) — `OffBodies` already counts a
+        // datum plane, a world axis and the origin as stationary, so grounding the first
+        // part of an assembly against the world falls out.
+        let mate_picker = |kinds: &[ElementKind], on_moving: bool, focused: bool| {
+            let rule = if on_moving {
+                PickRule::OnBodies(j.driven_bodies.clone())
             } else {
-                j.base_bodies.clone()
+                PickRule::OffBodies(j.driven_bodies.clone())
             };
-            let mut picker = ElementPicker::new(
-                ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OnBodies(side)),
-                PickLimit::Finite(1),
-            );
+            let mut picker =
+                ElementPicker::new(ElementFilter::kinds(kinds).rule(rule), PickLimit::Finite(1));
             picker.set_focused(focused);
-            picker.set_picked(input.doc, point.map(SceneElement::from_move_point));
+            picker
+        };
+        const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
+        const LINE_UP_KINDS: [ElementKind; 3] =
+            [ElementKind::Vertex, ElementKind::Edge, ElementKind::Axis];
+        for (heading, target, pick, on_moving, focused) in [
+            (
+                "Moving face",
+                PickerTarget::JointMovingFace,
+                j.moving_face,
+                true,
+                j.moving_face_focused,
+            ),
+            (
+                "Fixed face",
+                PickerTarget::JointFixedFace,
+                j.fixed_face,
+                false,
+                j.fixed_face_focused,
+            ),
+        ] {
+            let mut picker = mate_picker(&FACE_KINDS, on_moving, focused);
+            picker.set_picked(input.doc, pick.as_ref().map(SceneElement::from_mate_ref));
             tool_pickers.push(ToolPickerView {
                 heading,
                 picker,
@@ -1944,6 +1980,34 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 separator_above: false,
                 render: PickerRender::Inline,
             });
+        }
+        for (i, row) in j.line_up.iter().enumerate() {
+            for (heading, target, pick, on_moving, focused) in [
+                (
+                    line_up_heading(i, true),
+                    PickerTarget::JointLineUpMoving(i),
+                    row.moving,
+                    true,
+                    row.moving_focused,
+                ),
+                (
+                    line_up_heading(i, false),
+                    PickerTarget::JointLineUpFixed(i),
+                    row.fixed,
+                    false,
+                    row.fixed_focused,
+                ),
+            ] {
+                let mut picker = mate_picker(&LINE_UP_KINDS, on_moving, focused);
+                picker.set_picked(input.doc, pick.as_ref().map(SceneElement::from_mate_ref));
+                tool_pickers.push(ToolPickerView {
+                    heading,
+                    picker,
+                    target,
+                    separator_above: false,
+                    render: PickerRender::Inline,
+                });
+            }
         }
         for (heading, target, stop, focused) in [
             ("Min stop", PickerTarget::JointMinStop, j.slide_min_stop.clone(), j.slide_min_stop_focused),
@@ -2013,14 +2077,14 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 p
             };
             tool_pickers.push(ToolPickerView {
-                heading: "Mobile",
+                heading: "Moving part",
                 picker: side(j.mobile_focused, j.mobile),
                 target: PickerTarget::JointMobile,
                 separator_above: false,
                 render: PickerRender::Inline,
             });
             tool_pickers.push(ToolPickerView {
-                heading: "Fixed",
+                heading: "Fixed part",
                 picker: side(j.fixed_focused, j.fixed),
                 target: PickerTarget::JointFixed,
                 separator_above: false,
@@ -5361,7 +5425,7 @@ pub fn show_pane(
                 ui,
                 &mut pending,
                 PickerTarget::JointMobile,
-                "Mobile",
+                "Moving",
                 "joint_mobile",
                 JointEdit::MobileFocus,
                 JointEdit::ClearMobile,
@@ -5405,83 +5469,107 @@ pub fn show_pane(
                 }
             });
         }
-        // Built with the other tool pickers (#958), drawn here. Start points mate on the
-        // driven part, end points on the base (#953) — the picker refuses a point on the other
-        // side rather than letting a wrong pick land.
+        // Built with the other tool pickers (#958), drawn here. Moving picks sit on the
+        // driven part, fixed picks on the base (#953) — the picker refuses a pick on the
+        // other side rather than letting a wrong one land.
         let tool_pickers = &content.tool_pickers;
-        let mut picker_row = |ui: &mut egui::Ui,
-                              label: &'static str,
-                              id: &'static str,
-                              target: PickerTarget,
-                              on_focus: JointEdit,
-                              on_clear: JointEdit| {
-            let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
-                return;
-            };
-            labeled_row_top(ui, label, |ui| {
-                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
-                    pending = Some(match event {
-                        crate::element_picker::PickerEvent::Focus => on_focus,
-                        crate::element_picker::PickerEvent::Remove(_)
-                        | crate::element_picker::PickerEvent::Clear => on_clear,
+        // The **mate** — where the parts start out (#1021): *put this face on that face,
+        // then line this up with that.* Two columns, headed Moving and Fixed with no
+        // left-hand label, because the columns say which side each pick belongs to. The
+        // face pair comes first; the line-up rows below take away what it leaves free, and
+        // simply stop appearing once nothing is left to pin.
+        section_label(ui, "Mate");
+        let column_pair = |ui: &mut egui::Ui,
+                           pending: &mut Option<JointEdit>,
+                           id: &'static str,
+                           left: (PickerTarget, JointEdit, JointEdit),
+                           right: (PickerTarget, JointEdit, JointEdit)| {
+            ui.horizontal_top(|ui| {
+                let width = (ui.available_width() - ui.spacing().item_spacing.x) * 0.5;
+                for (i, (target, on_focus, on_clear)) in [left, right].into_iter().enumerate() {
+                    let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                        continue;
+                    };
+                    ui.allocate_ui(egui::vec2(width, 26.0), |ui| {
+                        ui.set_max_width(width);
+                        let cell = if i == 0 { "a" } else { "b" };
+                        if let Some(event) = crate::element_picker::show(
+                            ui,
+                            &view.picker,
+                            doc,
+                            &format!("{id}_{cell}"),
+                        ) {
+                            *pending = Some(match event {
+                                crate::element_picker::PickerEvent::Focus => on_focus.clone(),
+                                _ => on_clear.clone(),
+                            });
+                        }
                     });
                 }
             });
         };
-        // The **mate** — how the two parts line up (#997). Point-to-point, exactly as the Move
-        // tool mates, and previewed the same way: focus any of these and the translation and
-        // turn draw in the 3D view. (Face-to-face and edge-to-edge mates are the natural next
-        // step for the kinds that want them.)
-        section_label(ui, "Mate");
-        picker_row(
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - ui.spacing().item_spacing.x) * 0.5;
+            for heading in ["Moving", "Fixed"] {
+                ui.allocate_ui(egui::vec2(width, 14.0), |ui| {
+                    ui.set_max_width(width);
+                    section_label(ui, heading);
+                });
+            }
+        });
+        column_pair(
             ui,
-            "Start point A",
-            "joint_start_point_a",
-            PickerTarget::JointStartA,
-            JointEdit::StartAFocus,
-            JointEdit::ClearStartA,
+            &mut pending,
+            "joint_mate_face",
+            (
+                PickerTarget::JointMovingFace,
+                JointEdit::MovingFaceFocus,
+                JointEdit::ClearMovingFace,
+            ),
+            (
+                PickerTarget::JointFixedFace,
+                JointEdit::FixedFaceFocus,
+                JointEdit::ClearFixedFace,
+            ),
         );
-        picker_row(
-            ui,
-            "End point A",
-            "joint_end_point_a",
-            PickerTarget::JointEndA,
-            JointEdit::EndAFocus,
-            JointEdit::ClearEndA,
-        );
-        picker_row(
-            ui,
-            "Start point B",
-            "joint_start_point_b",
-            PickerTarget::JointStartB,
-            JointEdit::StartBFocus,
-            JointEdit::ClearStartB,
-        );
-        picker_row(
-            ui,
-            "End point B",
-            "joint_end_point_b",
-            PickerTarget::JointEndB,
-            JointEdit::EndBFocus,
-            JointEdit::ClearEndB,
-        );
-        picker_row(
-            ui,
-            "Start point C",
-            "joint_start_point_c",
-            PickerTarget::JointStartC,
-            JointEdit::StartCFocus,
-            JointEdit::ClearStartC,
-        );
-        picker_row(
-            ui,
-            "End point C",
-            "joint_end_point_c",
-            PickerTarget::JointEndC,
-            JointEdit::EndCFocus,
-            JointEdit::ClearEndC,
-        );
-        drop(picker_row);
+        // How the face pair lands: which way round, and the gap it's held off by (#1014).
+        if control.moving_face.is_some() || control.fixed_face.is_some() {
+            labeled_row(ui, "Flip", |ui| {
+                let mut flip = control.flip;
+                if ui.checkbox(&mut flip, "").changed() {
+                    pending = Some(JointEdit::Flip(flip));
+                }
+            });
+            labeled_row(ui, "Offset", |ui| {
+                let mut text = control.offset.clone();
+                let resp = crate::expression_input::ValueInput::new(
+                    ("joint_field", "Offset"),
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    pending = Some(JointEdit::Offset(text));
+                }
+            });
+        }
+        for i in 0..control.line_up.len() {
+            column_pair(
+                ui,
+                &mut pending,
+                "joint_mate_line_up",
+                (
+                    PickerTarget::JointLineUpMoving(i),
+                    JointEdit::LineUpMovingFocus(i),
+                    JointEdit::ClearLineUpMoving(i),
+                ),
+                (
+                    PickerTarget::JointLineUpFixed(i),
+                    JointEdit::LineUpFixedFocus(i),
+                    JointEdit::ClearLineUpFixed(i),
+                ),
+            );
+        }
         // What this kind of joint can do, under its own name (#997): the freedoms it has and
         // the limits on them. Rigid has neither, so it gets no section at all.
         if !matches!(control.kind, crate::model::JointKind::Rigid) {
@@ -8238,12 +8326,11 @@ mod tests {
                 base_label: String::new(),
                 driven_bodies: Vec::new(),
                 base_bodies: Vec::new(),
-                start_a: None, start_a_focused: false,
-                end_a: None, end_a_focused: false,
-                start_b: None, start_b_focused: false,
-                end_b: None, end_b_focused: false,
-                start_c: None, start_c_focused: false,
-                end_c: None, end_c_focused: false,
+                moving_face: None, moving_face_focused: false,
+                fixed_face: None, fixed_face_focused: false,
+                flip: false,
+                offset: String::new(),
+                line_up: Vec::new(),
                 position: String::new(),
                 position2: String::new(),
                 position3: String::new(),

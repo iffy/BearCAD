@@ -2197,23 +2197,97 @@ pub enum JointKind {
     },
 }
 
-/// A mating frame on one side of a joint (#892): an origin and the picked points that aim
-/// its axes, each resolved the way Move points are ([`MovePointRef`]) — body-local keys
-/// re-found on the live mesh, so the frame survives a rebuild and simply stops resolving
-/// if its geometry goes away.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JointFrame {
-    /// The frame's origin.
+/// One side of a mate pick (#1014/#1015): the geometry a part is placed by. Every variant is
+/// a body-local or world-fixed key resolved against the live model, like [`MovePointRef`], so
+/// a mate survives a rebuild and simply stops resolving when its geometry goes away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MateRef {
+    /// A planar face of a body's mesh, keyed by quantized centroid + normal exactly like
+    /// [`crate::hierarchy::SceneElement::BodyFace`].
+    Face {
+        body: usize,
+        centroid: [i32; 3],
+        normal: [i32; 3],
+    },
+    /// A datum plane (#1018) — what the first part of an assembly is grounded against.
+    Plane(usize),
+    /// A straight edge of a body's mesh, keyed like [`crate::hierarchy::SceneElement::BodyEdge`].
+    Edge {
+        body: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
+    /// One of the world axes (#952/#1018).
+    Axis(crate::construction::GlobalAxis),
+    /// A point: a corner, an edge midpoint, a face's middle, or the world origin.
+    Point(MovePointRef),
+}
+
+impl MateRef {
+    /// The body this reference lives on. `None` for the world-fixed ones (a datum plane, a
+    /// world axis, the origin), which no body owns and no joint pose carries.
+    pub fn body(&self) -> Option<usize> {
+        match self {
+            MateRef::Face { body, .. } | MateRef::Edge { body, .. } => Some(*body),
+            MateRef::Point(p) => p.body(),
+            MateRef::Plane(_) | MateRef::Axis(_) => None,
+        }
+    }
+}
+
+/// One line-up row of a mate (#1015): a point or edge on the moving part paired with one on
+/// the fixed side. Both picks are projected along the mating normal and the relationship
+/// applied to the projections, so the pick need not lie in the mating plane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MateLineUp {
     #[serde(default)]
-    pub origin: Option<MovePointRef>,
-    /// Aims the primary axis (the slide direction / turn axis): it runs from `origin`
-    /// toward this point.
+    pub moving: Option<MateRef>,
     #[serde(default)]
-    pub axis: Option<MovePointRef>,
-    /// Pins the spin about the primary axis: the secondary axis points from `origin`
-    /// toward this point, with its component along the primary axis removed.
+    pub fixed: Option<MateRef>,
+}
+
+impl MateLineUp {
+    pub fn is_complete(&self) -> bool {
+        self.moving.is_some() && self.fixed.is_some()
+    }
+}
+
+/// How a joint's parts are placed to start with (#1021): put a face on a face, then line it
+/// up. A **starting placement only** — it composes into a rigid transform ahead of the kind's
+/// freedoms and has no bearing on how the joint moves.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct JointMate {
+    /// The face on the moving (driven) part.
     #[serde(default)]
-    pub orient: Option<MovePointRef>,
+    pub moving_face: Option<MateRef>,
+    /// The face — or datum plane (#1018) — on the fixed side it lands on.
+    #[serde(default)]
+    pub fixed_face: Option<MateRef>,
+    /// Which way the part ends up facing. The default puts the normals opposed, so the
+    /// surfaces touch; flipped, they point the same way.
+    #[serde(default)]
+    pub flip: bool,
+    /// A gap held along the fixed face's normal, a mm expression. Empty is flush.
+    #[serde(default)]
+    pub offset: String,
+    /// Line-up rows (#1015), applied in order to what the face pair leaves free.
+    #[serde(default)]
+    pub line_up: Vec<MateLineUp>,
+}
+
+impl JointMate {
+    /// Whether the face pair is complete — the point at which the mate places anything.
+    pub fn has_face_pair(&self) -> bool {
+        self.moving_face.is_some() && self.fixed_face.is_some()
+    }
+
+    /// Nothing picked at all: the joint mates as identity and parts stay where they are.
+    pub fn is_empty(&self) -> bool {
+        self.moving_face.is_none()
+            && self.fixed_face.is_none()
+            && self.line_up.iter().all(|r| r.moving.is_none() && r.fixed.is_none())
+    }
 }
 
 /// Where a joint's travel stops (#896). Every field is optional — an empty expression and
@@ -2255,12 +2329,11 @@ pub struct Joint {
     pub base: usize,
     #[serde(default)]
     pub kind: JointKind,
-    /// The mating frame on the base side.
+    /// Where the parts start out (#1021): a face on a face, then the line-up rows that take
+    /// away what the face pair leaves free. A placement only — the kind's freedoms act on top
+    /// of it. Empty mates as identity, so joining parts already in place moves nothing.
     #[serde(default)]
-    pub frame_a: JointFrame,
-    /// The mating frame on the driven side.
-    #[serde(default)]
-    pub frame_b: JointFrame,
+    pub mate: JointMate,
     /// The joint's current value along each freedom, as expressions so a pose is
     /// parametric like a dimension. What each slot means depends on `kind`:
     /// slider/cylindrical/pin-slot/planar read `position` as mm of slide (planar's u),

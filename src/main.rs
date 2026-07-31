@@ -44,6 +44,7 @@ mod hierarchy;
 mod icons;
 mod joint_viewport;
 mod joints;
+mod mate;
 mod kernel;
 mod names;
 mod parameters;
@@ -608,24 +609,20 @@ pub enum MoveFocus {
 }
 
 /// Which of the Joint tool's pickers the next viewport click feeds (#894) — the same
-/// one-focused-picker rule the Move tool follows (#656). The pairs mean "these features
-/// mate": start points sit on the driven part, end points on the base.
+/// one-focused-picker rule the Move tool follows (#656). The mate reads *put this face on
+/// that face, then line this up with that* (#1021).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JointFocus {
     /// The two parts being joined.
     Members,
-    /// **Start point A**: the mating origin on the **driven** part.
-    StartPointA,
-    /// **End point A**: the mating origin on the **base** part.
-    EndPointA,
-    /// **Start point B**: aims the driven side's axis from start A.
-    StartPointB,
-    /// **End point B**: aims the base side's axis from end A.
-    EndPointB,
-    /// **Start point C**: pins the driven side's spin about its axis.
-    StartPointC,
-    /// **End point C**: pins the base side's spin about its axis.
-    EndPointC,
+    /// The face pair's **moving** side (#1014): a face on the part that moves.
+    MovingFace,
+    /// The face pair's **fixed** side: the face (or datum plane) it lands on.
+    FixedFace,
+    /// A line-up row's **moving** side (#1015): a point or edge anywhere on the part.
+    LineUpMoving(usize),
+    /// A line-up row's **fixed** side.
+    LineUpFixed(usize),
     /// The slide's **min stop** (#896): a face or plane the travel ends at.
     SlideMinStop,
     /// The slide's **max stop** (#896).
@@ -7921,20 +7918,12 @@ impl App {
                 .creating_joint
                 .as_ref()
                 .and_then(|cj| {
-                    let (frame_a, _) = cj.frames();
-                    let origin = extrude::move_point_world(
+                    let placed = crate::mate::placement(
                         &self.state.doc,
-                        frame_a.origin.as_ref()?,
+                        &crate::mate::settled_mate(&cj.mate),
+                        glam::Mat4::IDENTITY,
                     )?;
-                    let axis_point = frame_a
-                        .axis
-                        .as_ref()
-                        .and_then(|p| extrude::move_point_world(&self.state.doc, p));
-                    let dir = axis_point
-                        .map(|p| (p - origin).normalize_or_zero())
-                        .filter(|v| v.length_squared() > 0.5)
-                        .unwrap_or(Vec3::Z);
-                    Some((origin, dir))
+                    Some((placed.origin, placed.normal))
                 })
                 .unwrap_or((Vec3::ZERO, Vec3::Z));
             match pick_extrude_target(
@@ -7967,16 +7956,16 @@ impl App {
             }
             return;
         }
-        if let Some((on_driven, what)) = match focus {
-            JointFocus::StartPointA => Some((true, "start A")),
-            JointFocus::EndPointA => Some((false, "end A")),
-            JointFocus::StartPointB => Some((true, "start B")),
-            JointFocus::EndPointB => Some((false, "end B")),
-            JointFocus::StartPointC => Some((true, "start C")),
-            JointFocus::EndPointC => Some((false, "end C")),
+        // The mate's own pickers (#1021): a face on each part, then the line-up rows.
+        if let Some((on_moving, faces_only, what)) = match focus {
+            JointFocus::MovingFace => Some((true, true, "moving face")),
+            JointFocus::FixedFace => Some((false, true, "fixed face")),
+            JointFocus::LineUpMoving(_) => Some((true, false, "line up")),
+            JointFocus::LineUpFixed(_) => Some((false, false, "line up")),
             JointFocus::Members | JointFocus::SlideMinStop | JointFocus::SlideMaxStop => None,
         } {
-            // Start points sit on the driven member's bodies, end points on the base's.
+            // Moving picks sit on the driven member's bodies; fixed picks on the base's —
+            // plus, on the fixed side, the world's own geometry (#1018).
             let side_bodies: Vec<usize> = self
                 .state
                 .creating_joint
@@ -7986,37 +7975,34 @@ impl App {
                     cj.members
                         .iter()
                         .enumerate()
-                        .filter(|(i, _)| (*i != base) == on_driven)
+                        .filter(|(i, _)| (*i != base) == on_moving)
                         .flat_map(|(_, m)| joints::member_bodies(&self.state.doc, *m))
                         .collect()
                 })
                 .unwrap_or_default();
-            let allowed = |body: usize| side_bodies.contains(&body);
-            match self.pick_body_point(pp, project, pick_occlusion, &allowed, false) {
-                Some(point) => {
-                    let label = self.move_point_label(&point);
+            match self.pick_mate_ref(pp, project, pick_occlusion, &side_bodies, faces_only, !on_moving)
+            {
+                // A line-up pick that changes nothing isn't a pick (#1016): refuse it and
+                // leave the picker armed, rather than adding a row that pins nothing.
+                Some(picked) if !self.mate_pick_pins_something(focus, &picked) => {
+                    self.state.status =
+                        "That is already lined up — pick something that pins it down".to_string();
+                }
+                Some(picked) => {
+                    let label = self.mate_ref_label(&picked);
                     if let Some(cj) = self.state.creating_joint.as_mut() {
-                        match focus {
-                            JointFocus::StartPointA => cj.start_point_a = Some(point),
-                            JointFocus::EndPointA => cj.end_point_a = Some(point),
-                            JointFocus::StartPointB => cj.start_point_b = Some(point),
-                            JointFocus::EndPointB => cj.end_point_b = Some(point),
-                            JointFocus::StartPointC => cj.start_point_c = Some(point),
-                            JointFocus::EndPointC => cj.end_point_c = Some(point),
-                            JointFocus::Members
-                            | JointFocus::SlideMinStop
-                            | JointFocus::SlideMaxStop => {}
-                        }
+                        set_mate_pick(cj, focus, Some(picked));
                     }
                     self.release_satisfied_joint_focus();
-                    self.state.status = format!("Joint: {what} point — {label}");
+                    self.state.status = format!("Joint: {what} — {label}");
                 }
                 // Missing the allowed geometry leaves the picker armed, like Move (#656).
                 None => {
-                    self.state.status = if on_driven {
-                        "Pick a corner, edge, or face middle on the driven part".to_string()
-                    } else {
-                        "Pick a corner, edge, or face middle on the base part".to_string()
+                    self.state.status = match (faces_only, on_moving) {
+                        (true, true) => "Pick a face on the moving part".to_string(),
+                        (true, false) => "Pick a face or plane on the fixed side".to_string(),
+                        (false, true) => "Pick a point or edge on the moving part".to_string(),
+                        (false, false) => "Pick a point or edge on the fixed side".to_string(),
                     };
                 }
             }
@@ -8296,14 +8282,8 @@ impl App {
                 start_c: cm.start_point_c,
                 end_c: cm.end_point_c,
             }),
-            Tool::Joint => self.state.creating_joint.as_ref().map(|cj| SnapPreviewPoints {
-                start_a: cj.start_point_a,
-                end_a: cj.end_point_a,
-                start_b: cj.start_point_b,
-                end_b: cj.end_point_b,
-                start_c: cj.start_point_c,
-                end_c: cj.end_point_c,
-            }),
+            // The Joint tool's mate has no point pairs to draw lines between (#1021): the
+            // ghost of where the part lands is the preview (#1017).
             _ => None,
         }
     }
@@ -8838,7 +8818,11 @@ impl App {
     }
 
     fn joint_focus(&self) -> JointFocus {
-        joint_focus_for(self.state.creating_joint.as_ref(), self.state.joint_focus_override)
+        joint_focus_for(
+            &self.state.doc,
+            self.state.creating_joint.as_ref(),
+            self.state.joint_focus_override,
+        )
     }
 
     /// Drop a hand-picked Joint focus once that picker has what it needs (#894).
@@ -8850,7 +8834,7 @@ impl App {
             self.state.joint_focus_override = None;
             return;
         };
-        if joint_focus_satisfied(cj, focus) {
+        if joint_focus_satisfied(&self.state.doc, cj, focus) {
             self.state.joint_focus_override = None;
         }
     }
@@ -8972,6 +8956,129 @@ impl App {
             &self.state.doc,
             &SceneElement::from_move_point(*point),
         )
+    }
+
+    fn mate_ref_label(&self, r: &model::MateRef) -> String {
+        names::scene_element_label(&self.state.doc, &SceneElement::from_mate_ref(r))
+    }
+
+    /// Whether a pick about to land in a line-up row still pins one of the freedoms the face
+    /// pair leaves (#1016). A second corner on top of one already pinned, or a second edge
+    /// parallel to one already made collinear, changes nothing — so it isn't a pick.
+    /// The face pair itself always counts: it is the placement.
+    fn mate_pick_pins_something(&self, focus: JointFocus, pick: &model::MateRef) -> bool {
+        let (JointFocus::LineUpMoving(i) | JointFocus::LineUpFixed(i)) = focus else {
+            return true;
+        };
+        let Some(cj) = self.state.creating_joint.as_ref() else {
+            return true;
+        };
+        // Only a completed row can be judged: the first half of a pair pins nothing yet.
+        let mut row = cj.mate.line_up.get(i).copied().unwrap_or_default();
+        match focus {
+            JointFocus::LineUpMoving(_) => row.moving = Some(*pick),
+            _ => row.fixed = Some(*pick),
+        }
+        if !row.is_complete() {
+            return true;
+        }
+        let mut before = crate::mate::settled_mate(&cj.mate);
+        before.line_up.truncate(i);
+        crate::mate::row_pins_something(&self.state.doc, &before, glam::Mat4::IDENTITY, &row)
+    }
+
+    /// Pick one side of a mate row from the viewport (#1014/#1015). `faces_only` is the face
+    /// pair, which takes a flat face or a datum plane; otherwise it's a line-up row, which
+    /// takes a point or a whole edge — anywhere on the part, in or out of the mating plane.
+    /// `world_ok` opens the fixed side to the document's own geometry (#1018).
+    ///
+    /// Keys are stored **un-posed**: a body that already carries a joint pose is picked where
+    /// it is drawn, but a mate reference is body-local, so the pose comes back off (#1019).
+    fn pick_mate_ref(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        bodies: &[usize],
+        faces_only: bool,
+        world_ok: bool,
+    ) -> Option<model::MateRef> {
+        let doc = &self.state.doc;
+        let unpose = |body: usize| {
+            joints::body_joint_pose(doc, body)
+                .map(|m| m.inverse())
+                .unwrap_or(glam::Mat4::IDENTITY)
+        };
+        let q = hierarchy::quantize_body_point;
+        if !faces_only {
+            // The world origin (#946/#1018) wins over what sits under it, like a sketch's.
+            if world_ok
+                && project(Vec3::ZERO).is_some_and(|op| {
+                    (op - pp).length() <= touch::hit(construction::POINT_PICK_RADIUS_PX)
+                })
+            {
+                return Some(model::MateRef::Point(model::MovePointRef::Origin));
+            }
+            if let Some(construction::PickTargetKind::BodyVertex { body, position }) =
+                pickable_body_vertex(pp, project, doc, pick_occlusion)
+            {
+                if bodies.contains(&body) {
+                    return Some(model::MateRef::Point(model::MovePointRef::Vertex {
+                        body,
+                        p: q(unpose(body).transform_point3(position)),
+                    }));
+                }
+            }
+            if let Some(target) = resolve_pick_target(pp, project, None, doc, pick_occlusion) {
+                match target.kind {
+                    // A whole edge, not its midpoint: a line-up row lines lines up (#1015).
+                    construction::PickTargetKind::BodyEdge { body, a, b }
+                        if bodies.contains(&body) =>
+                    {
+                        let m = unpose(body);
+                        return Some(model::MateRef::Edge {
+                            body,
+                            a: q(m.transform_point3(a)),
+                            b: q(m.transform_point3(b)),
+                        });
+                    }
+                    construction::PickTargetKind::GlobalAxis(axis) if world_ok => {
+                        return Some(model::MateRef::Axis(axis));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A face: the mating face itself, or — for a line-up row — its middle, which is how a
+        // boss or a hole's mouth lines up.
+        if let Some(construction::PickTargetKind::BodyFace { body, triangles, normal }) =
+            crate::face::pick_body_face(pp, project, doc, self.state.cam.eye())
+                .filter(|kind| pick_occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
+        {
+            if bodies.contains(&body) {
+                let m = unpose(body);
+                let centroid = q(m.transform_point3(extrude::face_group_center(&triangles)));
+                let normal = q(m.transform_vector3(normal).normalize_or_zero());
+                return Some(if faces_only {
+                    model::MateRef::Face { body, centroid, normal }
+                } else {
+                    model::MateRef::Point(model::MovePointRef::FaceCenter {
+                        body,
+                        centroid,
+                        normal,
+                    })
+                });
+            }
+        }
+        // A datum plane grounds the first part of an assembly (#1018).
+        if world_ok && faces_only {
+            if let Some(construction::PickTargetKind::ConstructionPlane(i)) =
+                resolve_pick_target(pp, project, None, doc, pick_occlusion).map(|t| t.kind)
+            {
+                return Some(model::MateRef::Plane(i));
+            }
+        }
+        None
     }
 
     /// Drag a jointed part with the Select tool (#897): grabbing an already-selected
@@ -9180,8 +9287,7 @@ impl App {
             members: joint.members,
             base: joint.base,
             kind: joint.kind,
-            frame_a: joint.frame_a,
-            frame_b: joint.frame_b,
+            mate: joint.mate,
             position: landed.0,
             position2: landed.1,
             position3: landed.2,
@@ -12070,18 +12176,28 @@ impl eframe::App for App {
                         .get(base)
                         .map(|m| self.joint_member_label(*m))
                         .unwrap_or_default(),
-                    start_a: cj.and_then(|c| c.start_point_a),
-                    start_a_focused: joint_focus == JointFocus::StartPointA,
-                    end_a: cj.and_then(|c| c.end_point_a),
-                    end_a_focused: joint_focus == JointFocus::EndPointA,
-                    start_b: cj.and_then(|c| c.start_point_b),
-                    start_b_focused: joint_focus == JointFocus::StartPointB,
-                    end_b: cj.and_then(|c| c.end_point_b),
-                    end_b_focused: joint_focus == JointFocus::EndPointB,
-                    start_c: cj.and_then(|c| c.start_point_c),
-                    start_c_focused: joint_focus == JointFocus::StartPointC,
-                    end_c: cj.and_then(|c| c.end_point_c),
-                    end_c_focused: joint_focus == JointFocus::EndPointC,
+                    moving_face: cj.and_then(|c| c.mate.moving_face),
+                    moving_face_focused: joint_focus == JointFocus::MovingFace,
+                    fixed_face: cj.and_then(|c| c.mate.fixed_face),
+                    fixed_face_focused: joint_focus == JointFocus::FixedFace,
+                    flip: cj.is_some_and(|c| c.mate.flip),
+                    offset: cj.map(|c| c.mate.offset.clone()).unwrap_or_default(),
+                    // One row at a time (#1015): the picked rows plus the one being picked
+                    // into, and none at all once nothing is left to pin.
+                    line_up: cj
+                        .map(|c| {
+                            c.line_up_rows(joint_mate_open(&self.state.doc, c))
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, row)| context::JointLineUpRow {
+                                    moving: row.moving,
+                                    moving_focused: joint_focus == JointFocus::LineUpMoving(i),
+                                    fixed: row.fixed,
+                                    fixed_focused: joint_focus == JointFocus::LineUpFixed(i),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     position: cj.map(|c| c.position.clone()).unwrap_or_default(),
                     position2: cj.map(|c| c.position2.clone()).unwrap_or_default(),
                     position3: cj.map(|c| c.position3.clone()).unwrap_or_default(),
@@ -13062,23 +13178,17 @@ impl eframe::App for App {
                             cj.set_fixed(None);
                         }
                     }
-                    context::JointEdit::StartAFocus => {
-                        self.state.joint_focus_override = Some(JointFocus::StartPointA)
+                    context::JointEdit::MovingFaceFocus => {
+                        self.state.joint_focus_override = Some(JointFocus::MovingFace)
                     }
-                    context::JointEdit::EndAFocus => {
-                        self.state.joint_focus_override = Some(JointFocus::EndPointA)
+                    context::JointEdit::FixedFaceFocus => {
+                        self.state.joint_focus_override = Some(JointFocus::FixedFace)
                     }
-                    context::JointEdit::StartBFocus => {
-                        self.state.joint_focus_override = Some(JointFocus::StartPointB)
+                    context::JointEdit::LineUpMovingFocus(i) => {
+                        self.state.joint_focus_override = Some(JointFocus::LineUpMoving(*i))
                     }
-                    context::JointEdit::EndBFocus => {
-                        self.state.joint_focus_override = Some(JointFocus::EndPointB)
-                    }
-                    context::JointEdit::StartCFocus => {
-                        self.state.joint_focus_override = Some(JointFocus::StartPointC)
-                    }
-                    context::JointEdit::EndCFocus => {
-                        self.state.joint_focus_override = Some(JointFocus::EndPointC)
+                    context::JointEdit::LineUpFixedFocus(i) => {
+                        self.state.joint_focus_override = Some(JointFocus::LineUpFixed(*i))
                     }
                     context::JointEdit::SlideMinStopFocus => {
                         self.state.joint_focus_override = Some(JointFocus::SlideMinStop)
@@ -13086,12 +13196,10 @@ impl eframe::App for App {
                     context::JointEdit::SlideMaxStopFocus => {
                         self.state.joint_focus_override = Some(JointFocus::SlideMaxStop)
                     }
-                    context::JointEdit::ClearStartA
-                    | context::JointEdit::ClearEndA
-                    | context::JointEdit::ClearStartB
-                    | context::JointEdit::ClearEndB
-                    | context::JointEdit::ClearStartC
-                    | context::JointEdit::ClearEndC
+                    context::JointEdit::ClearMovingFace
+                    | context::JointEdit::ClearFixedFace
+                    | context::JointEdit::ClearLineUpMoving(_)
+                    | context::JointEdit::ClearLineUpFixed(_)
                     | context::JointEdit::ClearSlideMinStop
                     | context::JointEdit::ClearSlideMaxStop
                     | context::JointEdit::Commit => self.state.joint_focus_override = None,
@@ -13138,7 +13246,7 @@ impl eframe::App for App {
                             .get_or_insert_with(actions::CreatingJoint::default);
                         match edit {
                             context::JointEdit::Kind(k) => {
-                                // Changing kind keeps the frames; positions reset — their
+                                // Changing kind keeps the mate; positions reset — their
                                 // meaning (mm vs degrees, which freedom) changed.
                                 cj.kind = k;
                                 cj.position.clear();
@@ -13174,12 +13282,20 @@ impl eframe::App for App {
                                 cj.members.clear();
                                 cj.base = 0;
                             }
-                            context::JointEdit::ClearStartA => cj.start_point_a = None,
-                            context::JointEdit::ClearEndA => cj.end_point_a = None,
-                            context::JointEdit::ClearStartB => cj.start_point_b = None,
-                            context::JointEdit::ClearEndB => cj.end_point_b = None,
-                            context::JointEdit::ClearStartC => cj.start_point_c = None,
-                            context::JointEdit::ClearEndC => cj.end_point_c = None,
+                            context::JointEdit::ClearMovingFace => {
+                                set_mate_pick(cj, JointFocus::MovingFace, None)
+                            }
+                            context::JointEdit::ClearFixedFace => {
+                                set_mate_pick(cj, JointFocus::FixedFace, None)
+                            }
+                            context::JointEdit::ClearLineUpMoving(i) => {
+                                set_mate_pick(cj, JointFocus::LineUpMoving(i), None)
+                            }
+                            context::JointEdit::ClearLineUpFixed(i) => {
+                                set_mate_pick(cj, JointFocus::LineUpFixed(i), None)
+                            }
+                            context::JointEdit::Flip(on) => cj.mate.flip = on,
+                            context::JointEdit::Offset(v) => cj.mate.offset = v,
                             context::JointEdit::SlideMin(v) => cj.limits.slide_min = v,
                             context::JointEdit::SlideMax(v) => cj.limits.slide_max = v,
                             context::JointEdit::TurnMin(v) => cj.limits.turn_min = v,
@@ -13197,12 +13313,10 @@ impl eframe::App for App {
                             | context::JointEdit::FixedFocus
                             | context::JointEdit::ClearMobile
                             | context::JointEdit::ClearFixed
-                            | context::JointEdit::StartAFocus
-                            | context::JointEdit::EndAFocus
-                            | context::JointEdit::StartBFocus
-                            | context::JointEdit::EndBFocus
-                            | context::JointEdit::StartCFocus
-                            | context::JointEdit::EndCFocus
+                            | context::JointEdit::MovingFaceFocus
+                            | context::JointEdit::FixedFaceFocus
+                            | context::JointEdit::LineUpMovingFocus(_)
+                            | context::JointEdit::LineUpFixedFocus(_)
                             | context::JointEdit::SlideMinStopFocus
                             | context::JointEdit::SlideMaxStopFocus => {}
                             context::JointEdit::Commit
@@ -13806,12 +13920,10 @@ impl eframe::App for App {
                     | context::PickerTarget::MoveStartC
                     | context::PickerTarget::MoveEndC
                     // Likewise the Joint tool's, driven by `JointEdit` from its own rows.
-                    | context::PickerTarget::JointStartA
-                    | context::PickerTarget::JointEndA
-                    | context::PickerTarget::JointStartB
-                    | context::PickerTarget::JointEndB
-                    | context::PickerTarget::JointStartC
-                    | context::PickerTarget::JointEndC
+                    | context::PickerTarget::JointMovingFace
+                    | context::PickerTarget::JointFixedFace
+                    | context::PickerTarget::JointLineUpMoving(_)
+                    | context::PickerTarget::JointLineUpFixed(_)
                     | context::PickerTarget::JointMinStop
                     | context::PickerTarget::JointMaxStop
                     | context::PickerTarget::ExtrudeUpTo
@@ -15267,22 +15379,63 @@ fn move_focus_chain(cm: &actions::CreatingMove) -> FocusChain<MoveFocus> {
     chain
 }
 
-/// The Joint tool's pickers in order (#894), the Move chain's twin: the two parts, then the
-/// A/B/C mating pairs. Every pair is optional — parts already in place join with no points at
-/// all — so the chain simply stops advancing once the user commits.
+/// The Joint tool's pickers in order (#894/#1021), the Move chain's twin: the two parts, the
+/// face pair, then a line-up row at a time. Everything past the parts is optional — parts
+/// already in place join with no mate at all — so the chain simply stops advancing once the
+/// user commits.
 ///
 /// The slide stops (#896) are hand-focused from the pane rather than stepped into, so they
 /// aren't chain entries; [`joint_focus_satisfied`] handles them separately.
-fn joint_focus_chain(cj: &actions::CreatingJoint) -> FocusChain<JointFocus> {
-    vec![
+fn joint_focus_chain(doc: &model::Document, cj: &actions::CreatingJoint) -> FocusChain<JointFocus> {
+    let mut chain = vec![
         (JointFocus::Members, cj.members.len() >= 2),
-        (JointFocus::StartPointA, cj.start_point_a.is_some()),
-        (JointFocus::EndPointA, cj.end_point_a.is_some()),
-        (JointFocus::StartPointB, cj.start_point_b.is_some()),
-        (JointFocus::EndPointB, cj.end_point_b.is_some()),
-        (JointFocus::StartPointC, cj.start_point_c.is_some()),
-        (JointFocus::EndPointC, cj.end_point_c.is_some()),
-    ]
+        (JointFocus::MovingFace, cj.mate.moving_face.is_some()),
+        (JointFocus::FixedFace, cj.mate.fixed_face.is_some()),
+    ];
+    for (i, row) in cj.line_up_rows(joint_mate_open(doc, cj)).iter().enumerate() {
+        chain.push((JointFocus::LineUpMoving(i), row.moving.is_some()));
+        chain.push((JointFocus::LineUpFixed(i), row.fixed.is_some()));
+    }
+    chain
+}
+
+/// Whether the mate still leaves a freedom for another line-up row to pin (#1016). No open
+/// freedom means no further row appears — the whole "fully placed" signal.
+fn joint_mate_open(doc: &model::Document, cj: &actions::CreatingJoint) -> bool {
+    !cj.mate.has_face_pair()
+        || crate::mate::placement(doc, &crate::mate::settled_mate(&cj.mate), glam::Mat4::IDENTITY)
+            .is_none_or(|p| p.open_freedoms > 0)
+}
+
+/// Put a mate pick where the focused row wants it (#1021).
+fn set_mate_pick(
+    cj: &mut actions::CreatingJoint,
+    focus: JointFocus,
+    pick: Option<model::MateRef>,
+) {
+    fn row(cj: &mut actions::CreatingJoint, i: usize) -> &mut model::MateLineUp {
+        while cj.mate.line_up.len() <= i {
+            cj.mate.line_up.push(model::MateLineUp::default());
+        }
+        &mut cj.mate.line_up[i]
+    }
+    match focus {
+        JointFocus::MovingFace => cj.mate.moving_face = pick,
+        JointFocus::FixedFace => cj.mate.fixed_face = pick,
+        JointFocus::LineUpMoving(i) => row(cj, i).moving = pick,
+        JointFocus::LineUpFixed(i) => row(cj, i).fixed = pick,
+        JointFocus::Members | JointFocus::SlideMinStop | JointFocus::SlideMaxStop => {}
+    }
+    // A row emptied on both sides isn't a row any more; trailing blanks would keep the pane
+    // growing an extra input that pins nothing.
+    while cj
+        .mate
+        .line_up
+        .last()
+        .is_some_and(|r| r.moving.is_none() && r.fixed.is_none())
+    {
+        cj.mate.line_up.pop();
+    }
 }
 
 fn move_focus_for(
@@ -15296,22 +15449,27 @@ fn move_focus_for(
 }
 
 fn joint_focus_for(
+    doc: &model::Document,
     creating: Option<&actions::CreatingJoint>,
     focus_override: Option<JointFocus>,
 ) -> JointFocus {
     let Some(cj) = creating else {
         return focus_override.unwrap_or(JointFocus::Members);
     };
-    focus_chain_step(&joint_focus_chain(cj), focus_override, JointFocus::Members)
+    focus_chain_step(&joint_focus_chain(doc, cj), focus_override, JointFocus::Members)
 }
 
 /// Whether a hand-picked Joint focus now has what it needs. The slide stops sit outside the
 /// chain (they're hand-focused from the pane, never stepped into), so they're checked here.
-fn joint_focus_satisfied(cj: &actions::CreatingJoint, focus: JointFocus) -> bool {
+fn joint_focus_satisfied(
+    doc: &model::Document,
+    cj: &actions::CreatingJoint,
+    focus: JointFocus,
+) -> bool {
     match focus {
         JointFocus::SlideMinStop => cj.limits.slide_min_target.is_some(),
         JointFocus::SlideMaxStop => cj.limits.slide_max_target.is_some(),
-        _ => focus_chain_satisfied(&joint_focus_chain(cj), focus),
+        _ => focus_chain_satisfied(&joint_focus_chain(doc, cj), focus),
     }
 }
 
@@ -16313,13 +16471,11 @@ fn build_viewport_scene_input<'a>(
     // Joint-tool preview (#894): ghost the driven part at the pose the in-progress joint
     // implies, through the same translucent preview-solid path Move's ghost uses.
     if let Some(cj) = creating_joint.filter(|c| c.members.len() >= 2) {
-        let (frame_a, frame_b) = cj.frames();
         let probe = model::Joint {
             members: cj.members.clone(),
             base: cj.base,
             kind: cj.kind.clone(),
-            frame_a,
-            frame_b,
+            mate: crate::mate::settled_mate(&cj.mate),
             position: cj.position.clone(),
             position2: cj.position2.clone(),
             position3: cj.position3.clone(),
@@ -24123,36 +24279,37 @@ impl App {
                 .collect()
             })
             .unwrap_or_default();
-        // Joint tool (#894): the same picked-point marks — starts green, ends red — so the
-        // mating pairs read like Move's snap pairs.
+        // Joint tool (#1021): the mate's picks marked where they sit — moving picks green,
+        // fixed ones red, the same reading Move's snap pairs get.
         let joint_point_marks: Vec<(construction::PickTargetKind, egui::Color32)> = self
             .state
             .creating_joint
             .as_ref()
             .filter(|_| self.state.tool == Tool::Joint && self.state.sketch_session.is_none())
             .map(|cj| {
-                [
-                    (cj.start_point_a, theme::MOVE_START_POINT),
-                    (cj.end_point_a, theme::MOVE_END_POINT),
-                    (cj.start_point_b, theme::MOVE_START_POINT),
-                    (cj.end_point_b, theme::MOVE_END_POINT),
-                    (cj.start_point_c, theme::MOVE_START_POINT),
-                    (cj.end_point_c, theme::MOVE_END_POINT),
-                ]
-                .into_iter()
-                .filter_map(|(point, color)| {
-                    let point = point?;
-                    let position = extrude::move_point_world(&self.state.doc, &point)?;
-                    Some((
-                        construction::PickTargetKind::BodyVertex {
-                            // Only `position` is drawn; the world origin (#946) has no body.
-                            body: point.body().unwrap_or(usize::MAX),
-                            position,
-                        },
-                        color,
-                    ))
-                })
-                .collect()
+                let mut picks = vec![
+                    (cj.mate.moving_face, theme::MOVE_START_POINT),
+                    (cj.mate.fixed_face, theme::MOVE_END_POINT),
+                ];
+                for row in &cj.mate.line_up {
+                    picks.push((row.moving, theme::MOVE_START_POINT));
+                    picks.push((row.fixed, theme::MOVE_END_POINT));
+                }
+                picks
+                    .into_iter()
+                    .filter_map(|(pick, color)| {
+                        let pick = pick?;
+                        let geom = crate::mate::resolve(&self.state.doc, &pick)?;
+                        Some((
+                            construction::PickTargetKind::BodyVertex {
+                                // Only `position` is drawn; world geometry has no body.
+                                body: pick.body().unwrap_or(usize::MAX),
+                                position: crate::mate::geom_point(&geom),
+                            },
+                            color,
+                        ))
+                    })
+                    .collect()
             })
             .unwrap_or_default();
         // The B pair's path (#748): a dashed curve from start B to end B — in the same
@@ -24553,13 +24710,11 @@ impl App {
         .flatten()
         .filter(|c| c.members.len() >= 2)
         .and_then(|cj| {
-            let (frame_a, frame_b) = cj.frames();
             let probe = model::Joint {
                 members: cj.members.clone(),
                 base: cj.base,
                 kind: cj.kind.clone(),
-                frame_a,
-                frame_b,
+                mate: crate::mate::settled_mate(&cj.mate),
                 position: cj.position.clone(),
                 position2: cj.position2.clone(),
                 position3: cj.position3.clone(),
@@ -27864,76 +28019,53 @@ mod tests {
         );
     }
 
-    /// #997: the Joint tool mates the same way the Move tool does, so its Mate pickers preview
-    /// the motion the same way — the A→A translation and the arc the B pair sweeps. Before, a
-    /// joint's points were bare dots with nothing drawn between them.
+    /// #1017: the Joint tool previews its mate — the driven part ghosted where the face
+    /// pair and the line-up rows put it, live as each pick lands.
     #[test]
-    fn a_joints_mate_points_preview_like_a_moves() {
-        use crate::actions::{AppState, CreatingJoint, CreatingMove, Tool};
-        use crate::model::MovePointRef;
-        let q = crate::hierarchy::quantize_body_point;
-        let corner = glam::Vec3::new(10.0, 0.0, 0.0);
-        let mut state = AppState::default();
-        state.doc.imported_meshes.push(crate::model::ImportedMesh {
-            triangles: vec![[glam::Vec3::ZERO, corner, glam::Vec3::new(0.0, 10.0, 0.0)]],
-            source_name: "tri".to_string(),
-        });
-        state.doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
-            material: None,
+    fn a_joints_mate_previews_where_the_part_lands() {
+        use crate::actions::CreatingJoint;
+        use crate::mate::tests::{cube_body, face_ref};
+        use crate::model::{JointKind, JointMate, JointRef};
+        let mut doc = crate::model::Document::default();
+        let fixed = cube_body(&mut doc, glam::Vec3::ZERO, glam::Vec3::splat(10.0));
+        let moving = cube_body(&mut doc, glam::Vec3::new(40.0, 0.0, 0.0), glam::Vec3::splat(4.0));
+        let mut cj = CreatingJoint {
+            members: vec![JointRef::Body(fixed), JointRef::Body(moving)],
+            base: 0,
+            kind: JointKind::Slider,
+            ..Default::default()
+        };
+        let probe = |cj: &CreatingJoint| crate::model::Joint {
+            members: cj.members.clone(),
+            base: cj.base,
+            kind: cj.kind.clone(),
+            mate: crate::mate::settled_mate(&cj.mate),
+            position: String::new(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: Default::default(),
             name: None,
             deleted: false,
-            shadow: false,
-        });
-        let start = MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) };
-        let end = MovePointRef::Vertex { body: 0, p: q(corner) };
-
-        // The Joint tool reports the same pair the Move tool would, so everything drawn from
-        // it follows.
-        state.tool = Tool::Joint;
-        state.creating_joint = Some(CreatingJoint {
-            start_point_a: Some(start),
-            end_point_a: Some(end),
-            ..Default::default()
-        });
-        let app_points = |state: &AppState| -> Option<super::SnapPreviewPoints> {
-            match state.tool {
-                Tool::Move => state.creating_move.as_ref().map(|cm| super::SnapPreviewPoints {
-                    start_a: cm.start_point_a,
-                    end_a: cm.end_point_a,
-                    start_b: cm.start_point_b,
-                    end_b: cm.end_point_b,
-                    start_c: cm.start_point_c,
-                    end_c: cm.end_point_c,
-                }),
-                Tool::Joint => state.creating_joint.as_ref().map(|cj| super::SnapPreviewPoints {
-                    start_a: cj.start_point_a,
-                    end_a: cj.end_point_a,
-                    start_b: cj.start_point_b,
-                    end_b: cj.end_point_b,
-                    start_c: cj.start_point_c,
-                    end_c: cj.end_point_c,
-                }),
-                _ => None,
-            }
         };
-        let joint = app_points(&state).expect("the Joint tool previews its mate");
-        let (a, b) = joint.connector(&state.doc).expect("both mate points resolve");
-        assert!((a - glam::Vec3::ZERO).length() < 1e-3);
-        assert!((b - corner).length() < 1e-3);
-
-        // And it is the *same* preview: the Move tool with the same pair gives the same line.
-        let mut moving = AppState { tool: Tool::Move, ..AppState::default() };
-        moving.doc = state.doc.clone();
-        moving.creating_move = Some(CreatingMove {
-            start_point_a: Some(start),
-            end_point_a: Some(end),
+        // Half a face pair previews nothing: there is no placement yet.
+        cj.mate = JointMate {
+            moving_face: Some(face_ref(&doc, moving, glam::Vec3::new(42.0, 2.0, 0.0))),
             ..Default::default()
-        });
-        assert_eq!(
-            app_points(&moving).and_then(|p| p.connector(&moving.doc)),
-            Some((a, b)),
-            "a joint's mate and a move's snap preview the same translation"
+        };
+        assert!(
+            joints::preview_pose(&doc, &probe(&cj)).is_none(),
+            "half a face pair places nothing"
+        );
+        // Completing it ghosts the part flush on the fixed face.
+        cj.mate.fixed_face = Some(face_ref(&doc, fixed, glam::Vec3::new(5.0, 5.0, 10.0)));
+        let pose = joints::preview_pose(&doc, &probe(&cj)).expect("a complete pair previews");
+        let landed = pose.transform_point3(glam::Vec3::new(42.0, 2.0, 0.0));
+        assert!(
+            (landed - glam::Vec3::new(42.0, 2.0, 10.0)).length() < 1e-3,
+            "the ghost sits on the fixed face, at {landed}"
         );
     }
 
@@ -29080,33 +29212,54 @@ mod tests {
 
     #[test]
     fn the_joint_focus_chain_matches_the_move_one() {
-        // Both tools run the same walk (#954), so the Joint chain steps like Move's.
+        // Both tools run the same walk (#954), so the Joint chain steps like Move's — now
+        // through the mate: the parts, the face pair, then a line-up row at a time (#1021).
         use super::{joint_focus_for, joint_focus_satisfied};
-        use crate::model::MovePointRef;
-        let point = |body| MovePointRef::Vertex { body, p: [0; 3] };
-        let focus = |cj: &actions::CreatingJoint| joint_focus_for(Some(cj), None);
-        assert_eq!(joint_focus_for(None, None), JointFocus::Members);
+        use crate::mate::tests::{cube_body, face_ref, vertex_ref};
+        let mut doc = crate::model::Document::default();
+        let fixed = cube_body(&mut doc, glam::Vec3::ZERO, glam::Vec3::splat(10.0));
+        let moving = cube_body(&mut doc, glam::Vec3::new(40.0, 0.0, 0.0), glam::Vec3::splat(4.0));
+        let focus = |doc: &crate::model::Document, cj: &actions::CreatingJoint| {
+            joint_focus_for(doc, Some(cj), None)
+        };
+        assert_eq!(joint_focus_for(&doc, None, None), JointFocus::Members);
 
         let mut cj = actions::CreatingJoint::default();
-        assert_eq!(focus(&cj), JointFocus::Members, "no parts picked yet");
-        cj.members.push(crate::model::JointRef::Body(0));
-        assert_eq!(focus(&cj), JointFocus::Members, "a joint takes two parts");
-        cj.members.push(crate::model::JointRef::Body(1));
-        assert_eq!(focus(&cj), JointFocus::StartPointA);
-        cj.start_point_a = Some(point(0));
-        assert_eq!(focus(&cj), JointFocus::EndPointA);
-        cj.end_point_a = Some(point(1));
-        assert_eq!(focus(&cj), JointFocus::StartPointB);
+        assert_eq!(focus(&doc, &cj), JointFocus::Members, "no parts picked yet");
+        cj.members.push(crate::model::JointRef::Body(fixed));
+        assert_eq!(focus(&doc, &cj), JointFocus::Members, "a joint takes two parts");
+        cj.members.push(crate::model::JointRef::Body(moving));
+        assert_eq!(focus(&doc, &cj), JointFocus::MovingFace);
+        cj.mate.moving_face = Some(face_ref(&doc, moving, glam::Vec3::new(42.0, 2.0, 0.0)));
+        assert_eq!(focus(&doc, &cj), JointFocus::FixedFace);
+        cj.mate.fixed_face = Some(face_ref(&doc, fixed, glam::Vec3::new(5.0, 5.0, 10.0)));
+        // With the pair complete the first line-up row opens and takes the next click.
+        assert_eq!(focus(&doc, &cj), JointFocus::LineUpMoving(0));
+        cj.mate.line_up.push(crate::model::MateLineUp {
+            moving: Some(vertex_ref(moving, glam::Vec3::new(40.0, 0.0, 0.0))),
+            fixed: None,
+        });
+        assert_eq!(focus(&doc, &cj), JointFocus::LineUpFixed(0));
+        cj.mate.line_up[0].fixed = Some(vertex_ref(fixed, glam::Vec3::new(0.0, 0.0, 10.0)));
+        assert_eq!(focus(&doc, &cj), JointFocus::LineUpMoving(1), "the next row opens");
+
+        // Once nothing is left to pin, no further row appears at all (#1016) — the whole
+        // "fully placed" signal, with no prose in the pane.
+        cj.mate.line_up.push(crate::model::MateLineUp {
+            moving: Some(vertex_ref(moving, glam::Vec3::new(44.0, 0.0, 0.0))),
+            fixed: Some(vertex_ref(fixed, glam::Vec3::new(10.0, 0.0, 10.0))),
+        });
+        assert_eq!(cj.line_up_rows(super::joint_mate_open(&doc, &cj)).len(), 2);
 
         // The slide stops sit outside the chain — hand-focused from the pane, never stepped
         // into — so they're satisfied by their own targets, not by chain position.
-        assert!(!joint_focus_satisfied(&cj, JointFocus::SlideMinStop));
+        assert!(!joint_focus_satisfied(&doc, &cj, JointFocus::SlideMinStop));
         assert!(
-            joint_focus_satisfied(&cj, JointFocus::EndPointA),
+            joint_focus_satisfied(&doc, &cj, JointFocus::FixedFace),
             "a filled pair releases its hand-picked focus"
         );
         assert!(
-            !joint_focus_satisfied(&cj, JointFocus::Members),
+            !joint_focus_satisfied(&doc, &cj, JointFocus::Members),
             "the primary picker is never auto-released"
         );
     }

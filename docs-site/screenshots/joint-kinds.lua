@@ -7,22 +7,44 @@
 
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/joint-kinds"
 
+-- Faces and edges are named by their own geometry, which `body_faces`/`body_edges` report.
+local function near(p, q)
+  return math.abs(p[1] - q[1]) < 0.01 and math.abs(p[2] - q[2]) < 0.01
+     and math.abs(p[3] - q[3]) < 0.01
+end
+local function face_facing(body, n)
+  for _, f in ipairs(bearcad.body_faces(body)) do
+    if near(f.normal, n) then return f end
+  end
+  error("no face of body " .. body .. " faces {" .. table.concat(n, ", ") .. "}")
+end
+local function edge_between(body, a, b)
+  for _, e in ipairs(bearcad.body_edges(body)) do
+    if (near(e.edge[1], a) and near(e.edge[2], b))
+       or (near(e.edge[1], b) and near(e.edge[2], a)) then return e end
+  end
+  error("no edge of body " .. body .. " runs between those corners")
+end
+
 local kinds = {
   { kind = "rigid", label = "Rigid" },
-  { kind = "slider", label = "Sliding", axis_to = {0, 0, 0}, position = 12 },
+  -- The two kinds whose slide is travel take their direction from a line-up row, since a
+  -- part flush on a face slides along it rather than off it.
+  { kind = "slider", label = "Sliding", line_up = true, position = 12 },
   { kind = "revolute", label = "Revolute", position = 45 },
   { kind = "cylindrical", label = "Cylindrical", position = 6, position2 = 30 },
   { kind = "planar", label = "Planar", position = 8, position2 = 5, position3 = 15 },
   { kind = "ball", label = "Ball", position = 20, position2 = 15 },
-  { kind = "pin_slot", label = "Pin-slot", position = 8, position2 = 25 },
+  { kind = "pin_slot", label = "Pin-slot", line_up = true, position = 8, position2 = 25 },
   -- The screw is a rod threaded through a hole in the plate, so its turn-into-travel
   -- reads as what it is: two full turns at 4 mm of lead drive it 8 mm up.
   { kind = "screw", label = "Screw", rod = true, lead = 4, position = 720 },
 }
 
 -- Build one kind's pair at (ox, oy) — the base body first, then the moveable one —
--- advancing the sketch's line/circle counters in `idx`. Returns the joint's mating
--- points for the two body indices `a` (base) and `b` (moveable).
+-- advancing the sketch's line/circle counters in `idx`. Returns the mate that places the
+-- moveable body `b` against the base `a`: a face on a face, plus a line-up row where the
+-- kind needs a direction to travel in.
 local function build_pair(spec, ox, oy, idx, a, b)
   if spec.rod then
     bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
@@ -38,11 +60,14 @@ local function build_pair(spec, ox, oy, idx, a, b)
       distance = 5,
     }
     bearcad.extrude{ circle = rod, distance = 24, symmetric = true }
+    -- The rod's lower cap onto the plate's underside, both facing the same way, so the rod
+    -- stands through the hole it was cut for and screws along that face's normal.
     return {
-      from   = { body = b, on_edge = { ox + 15, oy + 10, 0 } },
-      to     = { body = a, on_edge = { ox + 15, oy + 10, 0 } },
-      from_b = { body = b, on_edge = { ox + 15, oy + 10, 10 } },
-      to_b   = { body = a, on_edge = { ox + 15, oy + 10, 10 } },
+      face = {
+        moving = face_facing(b, {0, 0, -1}),
+        fixed  = face_facing(a, {0, 0, -1}),
+        flip = true,
+      },
     }
   end
   bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
@@ -52,14 +77,19 @@ local function build_pair(spec, ox, oy, idx, a, b)
   idx.line = idx.line + 8
   bearcad.extrude{ polygon = slab, distance = 5 }
   bearcad.extrude{ polygon = arm, distance = 5 }
-  local axis_to = { ox + 30, oy, 5 }
-  if spec.axis_to then axis_to = { ox + spec.axis_to[1], oy + spec.axis_to[2], spec.axis_to[3] } end
-  return {
-    from   = { body = b, vertex = { ox + 40, oy, 0 } },
-    to     = { body = a, vertex = { ox + 30, oy, 0 } },
-    from_b = { body = b, vertex = { ox + 40, oy, 5 } },
-    to_b   = { body = a, vertex = axis_to },
+  -- The arm's inner face onto the slab's outer one, so it stands against the slab.
+  local mate = {
+    face = { moving = face_facing(b, {-1, 0, 0}), fixed = face_facing(a, {1, 0, 0}) },
   }
+  if spec.line_up then
+    mate.line_up = {
+      {
+        moving = edge_between(b, { ox + 40, oy, 0 }, { ox + 40, oy + 8, 0 }),
+        fixed  = edge_between(a, { ox + 30, oy, 0 }, { ox + 30, oy + 20, 0 }),
+      },
+    }
+  end
+  return mate
 end
 
 for _, spec in ipairs(kinds) do
@@ -68,12 +98,12 @@ for _, spec in ipairs(kinds) do
   bearcad.ui.pane("context", "hide")
   bearcad.ui.pane("parameters", "hide")
 
-  local frames = build_pair(spec, 0, 0, { line = 0, circle = 0 }, 0, 1)
+  local mate = build_pair(spec, 0, 0, { line = 0, circle = 0 }, 0, 1)
   bearcad.exit_sketch()
 
   bearcad.joint{
     a = 0, b = 1, kind = spec.kind, lead = spec.lead,
-    from = frames.from, to = frames.to, from_b = frames.from_b, to_b = frames.to_b,
+    face = mate.face, line_up = mate.line_up,
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }
 
@@ -100,13 +130,13 @@ for i, spec in ipairs(kinds) do
   local ox = col * 100
   local oy = row * -70
   local base = (i - 1) * 2
-  local frames = build_pair(spec, ox, oy, idx, base, base + 1)
+  local mate = build_pair(spec, ox, oy, idx, base, base + 1)
   -- Named after their joint, so the linked document reads as eight labelled pairs.
   bearcad.set_name(bearcad.element("body", base), spec.label .. " Base")
   bearcad.set_name(bearcad.element("body", base + 1), spec.label .. " Moveable")
   bearcad.joint{
     a = base, b = base + 1, kind = spec.kind, lead = spec.lead,
-    from = frames.from, to = frames.to, from_b = frames.from_b, to_b = frames.to_b,
+    face = mate.face, line_up = mate.line_up,
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }
 end

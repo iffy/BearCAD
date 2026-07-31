@@ -827,19 +827,25 @@ mod tests {
             ],
             base: 0,
             kind: crate::model::JointKind::Screw { lead: "2 * pitch".to_string() },
-            frame_a: crate::model::JointFrame {
-                origin: Some(crate::model::MovePointRef::Vertex { body: 0, p: [0, 0, 0] }),
-                axis: Some(crate::model::MovePointRef::Vertex { body: 0, p: [0, 0, 100] }),
-                orient: None,
-            },
-            frame_b: crate::model::JointFrame {
-                origin: Some(crate::model::MovePointRef::FaceCenter {
+            mate: crate::model::JointMate {
+                moving_face: Some(crate::model::MateRef::Face {
                     body: 1,
                     centroid: [500, 0, 0],
                     normal: [0, 0, 100],
                 }),
-                axis: None,
-                orient: None,
+                fixed_face: Some(crate::model::MateRef::Plane(0)),
+                flip: true,
+                offset: "1.5".to_string(),
+                line_up: vec![crate::model::MateLineUp {
+                    moving: Some(crate::model::MateRef::Edge {
+                        body: 1,
+                        a: [0, 0, 0],
+                        b: [1000, 0, 0],
+                    }),
+                    fixed: Some(crate::model::MateRef::Point(
+                        crate::model::MovePointRef::Origin,
+                    )),
+                }],
             },
             position: "90".to_string(),
             position2: String::new(),

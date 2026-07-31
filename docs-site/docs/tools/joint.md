@@ -20,17 +20,38 @@ poses the moving part; it never changes any shape.
 1. Pick the **Joint** tool. Parts already selected come along as the joint's parts.
 2. Choose the **Type**: rigid, slider, revolute, cylindrical, planar, ball, pin-slot, or
    screw — each with its own icon in the dropdown, or press `J` again to step through them.
-3. Click the part that **moves**, then the part that **holds** it. They fill the **Mobile**
+3. Click the part that **moves**, then the part that **holds** it. They fill the **Moving**
    and **Fixed** slots in that order. (Rigid takes any number of parts in one list instead —
    nothing moves.)
-4. Under **Mate**, snap the mating points: **Start point A** on the moving part, **End point
-   A** on the held one. The **B** pair aims the axis, the **C** pair pins the spin. While you
-   are picking them the viewport draws the move they describe, the way the Move tool does.
-   Below that, a section named for the joint type holds its own values and travel limits.
-5. **Enter** (or the blue button) commits.
+4. Under **Mate**, click a face on the moving part, then the face it lands on. The part goes
+   flush. Two clicks is the whole of most mates.
+5. Line it up: pair a corner or an edge on each part. **Enter** (or the blue button) commits.
 
-Skip the points to join parts right where they sit — the joint records the existing
+Below the Mate section, a section named for the joint type holds its own values and travel
+limits.
+
+Skip the mate to join parts right where they sit — the joint records the existing
 relationship and nothing moves.
+
+## Mating
+
+**Put this face on that face, then line this up with that.**
+
+The **face pair** is the placement: pick a face on each part and the moving one sits flush on
+the other. **Flip** turns it the other way round; **Offset** holds it off by a distance, as an
+expression like any other.
+
+**Line-up rows** take away what the face pair leaves — two slides in the mating plane and the
+spin about it. Each row pairs a point or an edge on each part, and the pick **need not lie in
+the mating plane**: line a part up by a hole rim, a boss centre, or a corner right across it.
+Two points bring their projections together; two edges make them run in line; a point and an
+edge put the point on the line.
+
+A row appears as soon as there is something for it to pin, and stops appearing once the part
+is fully placed. A face plus two more picks places anything.
+
+The fixed side takes a datum plane, a world axis or the origin too, which is how the first
+part of an assembly is grounded.
 
 While the joint is being created or edited, the two parts are coloured by their role —
 **green** for the one that moves, **blue** for the one holding it — so you can see which is
@@ -66,9 +87,9 @@ commit. **Animate** turns that sweep off — one switch for every joint.
 | <img src={useBaseUrl("/img/icons/joint_pin_slot.svg")} width="22" /> | Pin-slot | Slides along one axis while turning about another. |
 | <img src={useBaseUrl("/img/icons/joint_screw.svg")} width="22" /> | Screw | Turns, advancing by the lead per full turn. |
 
-## Mobile and fixed
+## Moving and fixed
 
-The **Fixed** part stays put; the **Mobile** one moves through the joint. Rigid instead takes
+The **Fixed** part stays put; the **Moving** one moves through the joint. Rigid instead takes
 any number of parts in one list, with a **Base** row to say which of them holds still. Joints
 chain: a part driven by one joint can be the fixed side of the next, and a rigid joint with
 three or more parts ties them into one group that moves together.
@@ -105,16 +126,30 @@ Double-click the row to edit the joint.
 ## Scripting
 
 ```lua
--- Join two bodies with a hinge, mated corner-to-corner, swung 90°.
+-- `body_faces` and `body_edges` report a body's faces and edges in the spelling a mate
+-- takes, so nothing has to be typed by hand.
+local moving = bearcad.body_faces(1)[1]
+local fixed  = bearcad.body_faces(0)[2]
+
+-- Join two bodies with a hinge: face on face, lined up by a corner, swung 90°.
 bearcad.joint{
   a = 0, b = 1, kind = "revolute",
-  from   = { body = 1, vertex = {40, 0, 0} },  -- on the moving part
-  to     = { body = 0, vertex = {0, 0, 0} },   -- on the held part
-  from_b = { body = 1, vertex = {40, 0, 5} },  -- aims the axis
-  to_b   = { body = 0, vertex = {0, 0, 5} },
+  face = { moving = moving, fixed = fixed, offset = 2 },
+  line_up = {
+    {
+      moving = { body = 1, vertex = {40, 0, 0} },
+      fixed  = { body = 0, vertex = {0, 0, 0} },
+    },
+  },
   position = 90,
   turn_min = 0, turn_max = 110,
   name = "Hinge",
+}
+
+-- Ground the first part against a datum plane.
+bearcad.joint{
+  a = 0, b = 1, kind = "rigid",
+  face = { moving = bearcad.body_faces(1)[1], fixed = { plane = 0 } },
 }
 
 -- Drive the pose, capture a rest, and go back to it.
