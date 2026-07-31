@@ -5376,6 +5376,20 @@ impl App {
             self.state.settings_open = !self.state.settings_open;
         }
 
+        // ⌘` cycles to the McMaster catalog helper when it is open (#1023). The system
+        // shortcut only cycles windows of one process; the catalog is another process, so
+        // we hand it focus ourselves. The helper sends focus back the same way.
+        #[cfg(target_os = "macos")]
+        if self.mcmaster.is_some()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backtick))
+        {
+            if let Some(session) = &self.mcmaster {
+                let pid = session.pid();
+                crate::diag::log(format!("catalog: ⌘` — focusing helper pid {pid}"));
+                let _ = mcmaster::activate_pid(pid);
+            }
+        }
+
         // Cmd/Ctrl+/ toggles help mode (#672) — the "?" binding without reaching for
         // Shift. On macOS/Windows the native Help-menu accelerator delivers this; the
         // egui handler covers the platforms without a muda menu bar.

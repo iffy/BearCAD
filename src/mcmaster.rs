@@ -467,6 +467,12 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
         .build(&window)
         .map_err(|e| format!("could not open a web view: {e}"))?;
 
+    // ⌘` → focus the main BearCAD window (#1023). Installed as a local NSEvent monitor so
+    // it still fires when the WKWebView is first responder (tao KeyboardInput alone would
+    // not see those). System window cycling is per-process; we bridge the two ourselves.
+    #[cfg(target_os = "macos")]
+    let _cmd_backtick_monitor = install_cmd_backtick_focus_parent();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
@@ -482,6 +488,49 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
             _ => {}
         }
     });
+}
+
+/// Local key monitor: ⌘` focuses the parent BearCAD process even when the web view has
+/// keyboard focus. Keeps the monitor handle alive for the process lifetime.
+#[cfg(target_os = "macos")]
+fn install_cmd_backtick_focus_parent() -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    use std::ptr::NonNull;
+
+    let parent_pid = std::os::unix::process::parent_id();
+    // US-layout keycode for ` / ~; also check charactersIgnoringModifiers for other layouts.
+    const KEYCODE_BACKQUOTE: u16 = 50;
+
+    let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // Safety: AppKit hands a valid event pointer into the monitor.
+        let e = unsafe { event.as_ref() };
+        let mods = e.modifierFlags();
+        let cmd = mods.contains(NSEventModifierFlags::Command);
+        let backtick = e.keyCode() == KEYCODE_BACKQUOTE
+            || e.charactersIgnoringModifiers()
+                .is_some_and(|s| s.to_string() == "`");
+        if cmd && backtick {
+            crate::diag::log(format!(
+                "catalog: ⌘` — focusing parent pid {parent_pid}"
+            ));
+            let _ = activate_pid(parent_pid);
+            // Swallow so the web view does not also handle it.
+            return std::ptr::null_mut();
+        }
+        // Pass through unchanged (return the same pointer AppKit handed us).
+        event.as_ptr()
+    });
+
+    // Safety: the block is retained by AppKit for the monitor's lifetime; we also keep
+    // the returned monitor object so the block is not dropped early.
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block)
+    };
+    if monitor.is_none() {
+        crate::diag::warn("catalog: could not install ⌘` focus monitor");
+    }
+    monitor
 }
 
 /// What the web view's callbacks ask the event loop to do — they run outside it, and the web
@@ -504,6 +553,34 @@ pub struct CatalogSession {
     caught: std::sync::Arc<std::sync::Mutex<Vec<CaughtDownload>>>,
     /// Set by the reader thread when the process's stdout ends — i.e. the window closed.
     finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Bring the process with this PID to the front (#1023).
+///
+/// ⌘` cannot cycle windows across process boundaries (that shortcut is per-`NSApplication`),
+/// so the main app and the catalog helper hand focus to each other with this instead.
+#[cfg(target_os = "macos")]
+pub fn activate_pid(pid: u32) -> bool {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32)
+    else {
+        crate::diag::warn(format!("catalog: no running app for pid {pid}"));
+        return false;
+    };
+    // Bring every window of the target process forward. (Ignoring-other-apps is a no-op
+    // on modern macOS; ActivateAllWindows is what matters for the helper.)
+    let opts = NSApplicationActivationOptions::ActivateAllWindows;
+    let ok = app.activateWithOptions(opts);
+    if !ok {
+        crate::diag::warn(format!("catalog: activate pid {pid} was refused"));
+    }
+    ok
+}
+
+/// No-op off macOS — window cycling is a macOS Dock/menu convention.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
+pub fn activate_pid(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -566,6 +643,11 @@ impl CatalogSession {
     /// Whether the window has closed.
     pub fn finished(&self) -> bool {
         self.finished.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The catalog process's PID — used to hand it focus for ⌘` (#1023).
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     /// Close the window, if it is still open.

@@ -216,6 +216,9 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
             (format!("{cmd},"), "Settings (again closes)".to_string()),
             (format!("{cmd}/"), "Help mode (again turns it off)".to_string()),
             (format!("{cmd}Z"), "Undo".to_string()),
+            // macOS: cycle focus with the McMaster catalog helper when it is open (#1023).
+            // Listed for all platforms; the binding only does work on macOS with a live helper.
+            (format!("{cmd}`"), "Focus McMaster-Carr catalog (when open)".to_string()),
             ("Enter".to_string(), "Commit the in-progress shape/value".to_string()),
             (
                 "Esc".to_string(),
