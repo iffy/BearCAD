@@ -14990,11 +14990,13 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::JointStartC
         | P::JointEndC
         | P::JointMinStop
-        | P::JointMaxStop
-        // Extrude's "Up to" and Repeat's "Distance to" arm through their own pane rows,
-        // which set the tool's pick-mode flag directly.
-        | P::ExtrudeUpTo
-        | P::RepeatDistanceTo => {}
+        | P::JointMaxStop => {}
+        // Extrude's "Up to" and Repeat's "Distance to" are pick *modes* rather than sets: each
+        // has a flag on the tool that the next click reads. Their pane rows set it directly, and
+        // so does this — without which `picker_focus` silently did nothing for them (#988) and
+        // neither could be armed from a script at all, so neither was testable.
+        P::ExtrudeUpTo => state.extrude_target_pick = true,
+        P::RepeatDistanceTo => state.repeat_target_pick = true,
     }
 }
 

@@ -82,6 +82,23 @@ impl UserData for LuaElement {
     }
 }
 
+/// A name for a **face** element, which nothing else distinguishes (#987/#988): every face
+/// reports kind `face` and index `0`, so a hover flickering between a body's near face and the
+/// one hidden behind it — or a fan offering both — read as identical from a script. That is how
+/// both bugs went unnoticed. `None` for anything that isn't a face.
+fn face_element_label(doc: &crate::model::Document, element: &SceneElement) -> Option<String> {
+    match element {
+        SceneElement::SketchFace(face) => Some(crate::face::face_label(doc, face.clone())),
+        SceneElement::BodyFace { body, centroid, .. } => Some(format!(
+            "Body {body} face at ({:.3}, {:.3}, {:.3})",
+            centroid[0] as f32 / 1000.0,
+            centroid[1] as f32 / 1000.0,
+            centroid[2] as f32 / 1000.0
+        )),
+        _ => None,
+    }
+}
+
 fn element_kind_name(element: SceneElement) -> &'static str {
     match element {
         SceneElement::ConstructionPlane(_) => "construction_plane",
@@ -2459,27 +2476,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let entry = lua.create_table()?;
             entry.set("kind", element_kind_name(element.clone()))?;
             entry.set("index", element_index(element.clone()))?;
-            // Faces need a `label` to be told apart at all (#987): every one of them reports
-            // kind "face" and index 0, so a hover flickering between a body's front face and
-            // the hidden face behind it looked identical from a script — which is how it went
-            // unnoticed. The label names the actual face.
             let doc = unsafe { &tick.state().doc };
-            match &element {
-                SceneElement::SketchFace(face) => {
-                    entry.set("label", crate::face::face_label(doc, face.clone()))?;
-                }
-                SceneElement::BodyFace { body, centroid, .. } => {
-                    entry.set(
-                        "label",
-                        format!(
-                            "Body {body} face at ({:.3}, {:.3}, {:.3})",
-                            centroid[0] as f32 / 1000.0,
-                            centroid[1] as f32 / 1000.0,
-                            centroid[2] as f32 / 1000.0
-                        ),
-                    )?;
-                }
-                _ => {}
+            if let Some(label) = face_element_label(doc, &element) {
+                entry.set("label", label)?;
             }
             Ok(Value::Table(entry))
         })?,
@@ -2504,6 +2503,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 if let Some(Some((x, y))) = state.exploder_loupe_positions.get(i) {
                     entry.set("x", *x)?;
                     entry.set("y", *y)?;
+                }
+                // Which face each leaf is (#988) — a fan over a solid offers several, and
+                // `kind`/`index` are identical for all of them.
+                if let Some(label) = face_element_label(&state.doc, element) {
+                    entry.set("label", label)?;
                 }
                 out.set(i + 1, entry)?;
             }

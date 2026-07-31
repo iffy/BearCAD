@@ -5680,14 +5680,20 @@ impl App {
         // the cursor (no held button) until the next click, which finishes the extrude.
         let following = self.extrude_gizmo_drag.is_some();
         let mut gizmo_active = false;
+        // The pull-handle gizmo sees no pointer while the Selection Exploder is open (#986/#988):
+        // `pointer_screen` has been redirected to the hovered leaf's anchor, which is not where
+        // the user is pointing. In a top view that anchor lands right on the handle — everything
+        // on the extrude axis projects to the same spot — so clicking a loupe grabbed the gizmo
+        // instead of setting the "Up to" target it was aimed at.
+        let gizmo_pointer = if self.exploder.is_some() { None } else { pointer_screen };
         if let Some((faces, distance)) = &pending {
             if let Some((origin, normal)) = extrude::faces_anchor(&self.state.doc, faces) {
                 let handle_offset = extrude_gizmo_display_offset(*distance);
-                let hovered = pointer_screen.is_some_and(|pp| {
+                let hovered = gizmo_pointer.is_some_and(|pp| {
                     construction::offset_gizmo_hit(pp, project, origin, normal, handle_offset)
                 });
                 if !following && primary_pressed && hovered {
-                    if let Some(pp) = pointer_screen {
+                    if let Some(pp) = gizmo_pointer {
                         self.extrude_gizmo_drag = Some(ExtrudeGizmoDrag {
                             start_screen: pp,
                             start_distance: *distance,
@@ -5707,7 +5713,7 @@ impl App {
                 // While following, track the cursor every frame (no button required).
                 if let Some(drag) = self.extrude_gizmo_drag {
                     gizmo_active = true;
-                    if let Some(pp) = pointer_screen {
+                    if let Some(pp) = gizmo_pointer {
                         if let Some((target, dist)) = pick_extrude_target(
                             pp,
                             project,
@@ -5774,16 +5780,35 @@ impl App {
                     if let Some((origin, normal)) =
                         extrude::faces_anchor(&self.state.doc, faces)
                     {
-                        if let Some((target, dist)) = pick_extrude_target(
-                            pp,
-                            project,
-                            &self.state.doc,
-                            origin,
-                            normal,
-                            faces,
-                            self.state.cam.eye(),
-                            self.state.creating_extrusion.as_ref().and_then(|ce| ce.edit_index),
-                        ) {
+                        let editing =
+                            self.state.creating_extrusion.as_ref().and_then(|ce| ce.edit_index);
+                        // A hovered fan leaf wins (#988): it is the only way to name a face
+                        // buried behind the solid, and re-resolving it at its anchor would
+                        // find the near face again.
+                        let picked = self
+                            .exploder
+                            .as_ref()
+                            .and_then(|ex| ex.hovered_leaf(viewport, project))
+                            .and_then(|(kind, _)| {
+                                extrude_target_from_pick(&kind, faces, editing)
+                            })
+                            .and_then(|target| {
+                                extrude::target_distance(&self.state.doc, origin, normal, &target)
+                                    .map(|dist| (target, dist))
+                            })
+                            .or_else(|| {
+                                pick_extrude_target(
+                                    pp,
+                                    project,
+                                    &self.state.doc,
+                                    origin,
+                                    normal,
+                                    faces,
+                                    self.state.cam.eye(),
+                                    editing,
+                                )
+                            });
+                        if let Some((target, dist)) = picked {
                             self.state
                                 .apply(Action::SetExtrudeTarget { target: Some(target) });
                             self.state.apply(Action::SetExtrudeDistance { distance: dist });
@@ -5863,6 +5888,22 @@ impl App {
         let id = egui::Id::new(EXTRUDE_DISTANCE_FIELD_ID);
         let mut commit = false;
         let mut flip = false;
+
+        // While the "Up to" picker is armed the next thing to happen is a **click on geometry**,
+        // not a typed depth — and the depth stops being the user's to type at all, since the
+        // target decides it. So the field gives the keyboard up (#988). Holding it swallowed the
+        // **Space** that opens the Selection Exploder (`egui_wants_keyboard_input`, #794), and
+        // the fan is the only way to name a face buried behind the solid — which is exactly what
+        // "up to the bottom of this box" asks for. The field auto-focuses so a depth can be typed
+        // the moment a profile is picked; that convenience must not outrank an armed pick.
+        if self.state.extrude_target_pick {
+            if ctx.memory(|m| m.has_focus(id)) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                ce.pending_focus = false;
+            }
+        }
 
         // Enter commits the extrusion even when the distance field is unfocused (e.g.
         // while driving depth with the pull handle), matching the other sketch tools.
@@ -17754,6 +17795,55 @@ fn extrude_gizmo_display_offset(distance: f32) -> f32 {
     distance + dir * EXTRUDE_GIZMO_LIFT
 }
 
+/// The extrude "Up to" target a face stands for (#584), or `None` when that face can't be one.
+///
+/// Shared by the screen pick and by the Selection Exploder's chosen leaf (#988), so the fan can
+/// never offer a face the click would then refuse.
+fn extrude_target_from_face(
+    face: FaceId,
+    exclude: &[model::ExtrudeFace],
+    editing: Option<usize>,
+) -> Option<model::ExtrudeTarget> {
+    use model::ExtrudeTarget;
+    match face {
+        FaceId::Circle(i) if !exclude.contains(&model::ExtrudeFace::Circle(i)) => {
+            Some(ExtrudeTarget::Face(model::ExtrudeFace::Circle(i)))
+        }
+        FaceId::ConstructionPlane(i) => Some(ExtrudeTarget::Plane(i)),
+        // Another (or, unless it's the extrusion being edited, the same) body's cap/side
+        // wall is a valid snap target (#126) — excluded only when it belongs to the
+        // extrusion currently being pulled, which would be a meaningless self-reference.
+        face_id @ (FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. })
+            if editing != Some(extrusion) =>
+        {
+            Some(ExtrudeTarget::BodyFace(face_id))
+        }
+        _ => None,
+    }
+}
+
+/// The extrude "Up to" target one Selection Exploder leaf stands for (#988).
+///
+/// The fan is the only way to reach a face **buried behind the solid** — the bottom cap of a
+/// box you are looking down at — and `pick_extrude_target` cannot get there: it resolves
+/// through `pick_sketch_face`, which always prefers the face nearest the camera, so
+/// re-resolving at the leaf's anchor just finds the near face again. That is the ambiguity the
+/// fan exists to remove, so the leaf's own target is taken directly, exactly as the
+/// selection-family tools take theirs.
+fn extrude_target_from_pick(
+    kind: &construction::PickTargetKind,
+    exclude: &[model::ExtrudeFace],
+    editing: Option<usize>,
+) -> Option<model::ExtrudeTarget> {
+    use construction::PickTargetKind as PK;
+    match kind {
+        PK::SketchFace(face) => extrude_target_from_face(face.clone(), exclude, editing),
+        PK::ConstructionPlane(i) => Some(model::ExtrudeTarget::Plane(*i)),
+        PK::Point(point) => Some(model::ExtrudeTarget::Vertex(point.clone())),
+        _ => None,
+    }
+}
+
 fn pick_extrude_target(
     pp: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -17783,21 +17873,7 @@ fn pick_extrude_target(
     let target = if let Some((_, t)) = best {
         t
     } else if let Some(face) = pick_sketch_face(pp, project, doc, eye) {
-        match face {
-            FaceId::Circle(i) if !exclude.contains(&model::ExtrudeFace::Circle(i)) => {
-                ExtrudeTarget::Face(model::ExtrudeFace::Circle(i))
-            }
-            FaceId::ConstructionPlane(i) => ExtrudeTarget::Plane(i),
-            // Another (or, unless it's the extrusion being edited, the same) body's cap/side
-            // wall is a valid snap target (#126) — excluded only when it belongs to the
-            // extrusion currently being pulled, which would be a meaningless self-reference.
-            face_id @ (FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. })
-                if editing != Some(extrusion) =>
-            {
-                ExtrudeTarget::BodyFace(face_id)
-            }
-            _ => return None,
-        }
+        extrude_target_from_face(face, exclude, editing)?
     } else {
         // A repeated instance's face (#452): the analytic pick above only knows original
         // positions, so test each repeat instance's translated cap/side faces directly.

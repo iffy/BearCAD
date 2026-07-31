@@ -45,6 +45,10 @@ target shows in the panel's **Up to** picker; you can also focus that picker and
 plane or face directly, or clear it there to go back to a plain distance. Setting a target
 clears the Distance field, since the depth then comes from the target.
 
+For a face you can't see — the far side of the solid you're cutting through — focus **Up to**
+and press **Space** over the body for the [Selection Exploder](/docs/selection-exploder), then
+click that face's loupe.
+
 ## Adding to or cutting a body
 
 Extruding from a face of an existing body offers three choices:

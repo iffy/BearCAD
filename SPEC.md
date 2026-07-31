@@ -614,7 +614,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     only on Enter or the Extrude button** (`context::ExtrudeControl`/`ExtrudeEdit`, wired through
     `App::extrude_target_pick`). Picking a face leaves the distance field holding the
     keyboard with its value selected, so a depth can be typed straight away (#437/#880),
-    and **Enter commits whichever field has it** (#880).
+    and **Enter commits whichever field has it** (#880) — **except while target-pick mode is
+    armed** (#988), when that field **surrenders the keyboard**: the next thing to happen is a
+    click on geometry, not a typed depth, and the target is about to decide the depth anyway.
+    Holding it swallowed the **Space** that opens the Selection Exploder (via
+    `egui_wants_keyboard_input`, #794), and the fan is the only way to name a face **buried
+    behind the solid** — "up to the bottom of this box" being exactly that. Two more things had
+    to stand down for that pick to land: the **pull-handle gizmo** takes no pointer while the fan
+    is open (#986's rule — the redirected anchor lands on the handle in a top view, where
+    everything on the extrude axis projects to one spot), and the hovered leaf's **own target**
+    is applied rather than re-resolving a pick at its anchor, which `pick_sketch_face` would
+    answer with the near face again. `focus_tool_picker` arms it (and Repeat's "Distance to"),
+    which it previously did not — so neither pick mode was reachable from a script at all.
   - **Body target (#32/#35)**: a `Body`'s source is one or more extrusions (`BodySource::Extrusion`
     for one, `BodySource::Extrusions` for several; `BodySource::Solid { add, cut }` once some of
     its extrusions are subtracted rather than added — see §3.3). Extruding from a sketch on an
@@ -3177,7 +3188,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   unnoticed. `face_label` for an analytic face, body-and-centroid for a mesh one.
   **`bearcad.exploder()`** (#968) reports the Selection Exploder's fanned leaves as
   `{ kind, index }`, empty when it's closed — the crowd it is offering, which nothing else
-  exposes. Each leaf the current drill level shows as a loupe of its own also carries
+  exposes, each with a `label` when it is a face (#988), for the same reason `hovered()` has one.
+  Each leaf the current drill level shows as a loupe of its own also carries
   **`x`/`y`** (#986): where the fan put that loupe, in the viewport-local pixels
   `bearcad.ui.click` takes. Without it, *picking through the fan* was unreachable from a
   script — the leaves were readable but there was no way to say where to aim — so the whole
