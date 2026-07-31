@@ -209,6 +209,28 @@ pub fn body_name_for(path: &Path, url: &str) -> String {
     if stem.is_empty() { "McMaster-Carr part".to_string() } else { stem }
 }
 
+/// Whether a URL looks like it will produce a **file** rather than a page (#1023).
+///
+/// This decides what a `window.open` request means. Their site uses new windows for both
+/// things: a CAD download, which has to load in the window whose download handlers we own, and
+/// a help popup, which does not — hijacking the catalog view for that would lose the page the
+/// user was reading. Neither case announces itself, so this reads the URL: a CAD file
+/// extension, or a path that says it is a download.
+///
+/// A wrong guess is now *visible* — both branches log which they took — which is the point:
+/// the failure this replaces was a click that did nothing and said nothing.
+pub fn looks_like_download(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    const FILE_EXTENSIONS: [&str; 8] =
+        [".step", ".stp", ".stl", ".igs", ".iges", ".dxf", ".dwg", ".zip"];
+    if FILE_EXTENSIONS.iter().any(|ext| path.ends_with(ext)) {
+        return true;
+    }
+    const MARKERS: [&str; 4] = ["/cad", "download", "getfile", "/export"];
+    let full = url.to_ascii_lowercase();
+    MARKERS.iter().any(|m| full.contains(m))
+}
+
 /// A filename for a download, from its URL — what names the file when the platform hands the
 /// catalog process a bare URL. Sanitized: the URL never gets to choose a path.
 pub fn download_file_name(url: &str) -> String {
@@ -236,6 +258,12 @@ pub fn download_dir() -> PathBuf {
     std::env::temp_dir().join("bearcad-mcmaster")
 }
 
+/// The catalog process's own log (#1023). Separate from the app's: both run at once, and two
+/// processes rotating one file would each destroy the other's evidence.
+pub fn catalog_log_path() -> PathBuf {
+    std::env::temp_dir().join("bearcad").join("bearcad-mcmaster.log")
+}
+
 // ---------------------------------------------------------------------------------------
 // The catalog process — `bearcad mcmaster [part]`
 // ---------------------------------------------------------------------------------------
@@ -246,15 +274,22 @@ pub fn download_dir() -> PathBuf {
 /// Reports each caught file on stdout as [`CaughtDownload::to_line`]; the app reads them.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
+    // `EventLoop::run` never returns, so neither does this — the signature carries the errors
+    // that can happen *before* the window is up, which are the ones worth reporting.
     use std::io::Write as _;
     use tao::event::{Event, WindowEvent};
-    use tao::event_loop::{ControlFlow, EventLoop};
+    use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::window::WindowBuilder;
 
     let dir = download_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("scratch directory: {e}"))?;
 
-    let event_loop = EventLoop::new();
+    // A `target=_blank` link — which is how a site can offer a download — arrives as a
+    // new-window request, not a navigation. Without somewhere to send it the click does
+    // nothing at all, silently (#1023). These are loaded in the window we already have, so
+    // the download handlers below actually see them.
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
         .with_title("McMaster-Carr — BearCAD")
         .with_inner_size(tao::dpi::LogicalSize::new(1100.0, 800.0))
@@ -263,30 +298,68 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
 
     // A file is reported the moment it lands, so a part imports while the window stays open
     // for the next one.
+    // Reported on stdout, which the app reads. Everything *else* this process has to say
+    // goes to stderr and its own log (#1023) — a stray line on stdout would be read as a
+    // report, and a silent process is what made a failed download impossible to diagnose.
     let report = move |path: &Path, url: &str| {
         let line = CaughtDownload { path: path.to_path_buf(), url: url.to_string() }.to_line();
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{line}");
         let _ = out.flush();
+        crate::diag::log(format!("catalog: reported {line:?}"));
     };
+
+    let start = catalog_url_for(query.unwrap_or_default());
+    crate::diag::info(format!("catalog: opening {start}"));
+    crate::diag::log(format!("catalog: downloads land in {}", dir.display()));
 
     let started_dir = dir.clone();
     let webview = wry::WebViewBuilder::new()
-        .with_url(catalog_url_for(query.unwrap_or_default()))
+        .with_url(start)
         .with_download_started_handler(move |url, path| {
             *path = started_dir.join(download_file_name(&url));
+            crate::diag::info(format!(
+                "catalog: download started — {url} → {}",
+                path.display()
+            ));
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            if let (true, Some(path)) = (success, path) {
-                report(&path, &url);
+            match (success, path) {
+                (true, Some(path)) => {
+                    crate::diag::info(format!("catalog: download finished — {}", path.display()));
+                    report(&path, &url);
+                }
+                (true, None) => crate::diag::warn(format!(
+                    "catalog: a download from {url} finished but landed nowhere"
+                )),
+                (false, _) => {
+                    crate::diag::warn(format!("catalog: the download from {url} did not finish"))
+                }
             }
+        })
+        .with_new_window_req_handler(move |url, _features| {
+            // Their site opens new windows for two unrelated things. A **download** has to
+            // load in this window, because these are the handlers that catch it — that is the
+            // click that used to do nothing at all (#1023). Anything else is a popup like
+            // their help pages, and taking the catalog view for that would lose the page the
+            // user was reading, so it goes to the real browser instead.
+            if looks_like_download(&url) {
+                crate::diag::info(format!("catalog: download opened in a new window — {url}"));
+                let _ = proxy.send_event(UserEvent::Navigate(url));
+            } else {
+                crate::diag::info(format!("catalog: popup handed to the browser — {url}"));
+                let _ = crate::open_in_browser(&url);
+            }
+            wry::NewWindowResponse::Deny
         })
         .with_navigation_handler(|url| {
             if is_mcmaster_url(&url) {
+                crate::diag::log(format!("catalog: navigating to {url}"));
                 return true;
             }
             // This window is McMaster's catalog; anything else is the browser's job.
+            crate::diag::info(format!("catalog: handing off to the browser — {url}"));
             let _ = crate::open_in_browser(&url);
             false
         })
@@ -294,13 +367,29 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("could not open a web view: {e}"))?;
 
     event_loop.run(move |event, _, control_flow| {
-        // The web view has to outlive the loop, and moving it in is what does that.
-        let _ = &webview;
         *control_flow = ControlFlow::Wait;
-        if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
-            *control_flow = ControlFlow::Exit;
+        match event {
+            Event::UserEvent(UserEvent::Navigate(url)) => {
+                if let Err(err) = webview.load_url(&url) {
+                    crate::diag::warn(format!("catalog: could not load {url}: {err}"));
+                }
+            }
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                crate::diag::info("catalog: window closed");
+                *control_flow = ControlFlow::Exit;
+            }
+            _ => {}
         }
     });
+}
+
+/// What the web view's callbacks ask the event loop to do — they run outside it, and the web
+/// view can only be driven from within.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+enum UserEvent {
+    /// Load this URL in the window we already have.
+    Navigate(String),
 }
 
 // ---------------------------------------------------------------------------------------
@@ -326,13 +415,18 @@ impl CatalogSession {
     pub fn open(query: Option<&str>, repaint: egui::Context) -> Result<Self, String> {
         use std::io::{BufRead as _, BufReader};
         let exe = std::env::current_exe().map_err(|e| format!("cannot find myself: {e}"))?;
-        let mut command = std::process::Command::new(exe);
+        let mut command = std::process::Command::new(&exe);
         command.arg(SUBCOMMAND);
         // The query goes through verbatim — a search phrase has to survive as one argument,
         // and it is `catalog_url_for` on the other side that decides what it means.
         if let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) {
             command.arg(query);
         }
+        crate::diag::info(format!(
+            "catalog: starting {} {SUBCOMMAND} {}",
+            exe.display(),
+            query.unwrap_or("(front page)")
+        ));
         let mut child = command
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -352,6 +446,7 @@ impl CatalogSession {
                     }
                 }
                 // Stdout closed: the window is gone.
+                crate::diag::info("catalog: the window closed");
                 finished.store(true, std::sync::atomic::Ordering::Relaxed);
                 repaint.request_repaint();
             });
@@ -468,6 +563,26 @@ mod tests {
         // In-page schemes are the page's own business.
         assert!(is_mcmaster_url("about:blank"));
         assert!(is_mcmaster_url("blob:https://www.mcmaster.com/abc"));
+    }
+
+    /// #1023: a `window.open` means two different things on their site, and telling them
+    /// apart is what makes a download work without stealing the catalog view for a popup.
+    #[test]
+    fn a_download_popup_is_told_from_an_ordinary_one() {
+        // CAD files, by extension and by the path that serves them.
+        assert!(looks_like_download("https://www.mcmaster.com/x/91290A115.STEP"));
+        assert!(looks_like_download("https://www.mcmaster.com/x/part.stp?token=abc"));
+        assert!(looks_like_download("https://www.mcmaster.com/91290A115/cad/"));
+        assert!(looks_like_download("https://www.mcmaster.com/dl?download=91290A115"));
+        assert!(looks_like_download("https://www.mcmaster.com/x/model.zip"));
+        // Their help popup — the one that used to replace the catalog page (#1023).
+        assert!(!looks_like_download(
+            "https://www.mcmaster.com/mv1785267141/mcm/openhelp.asp?browserOK=true&helpContext=order"
+        ));
+        assert!(!looks_like_download("https://www.mcmaster.com/products/?q=screw"));
+        assert!(!looks_like_download("https://www.mcmaster.com/91290A115/"));
+        // A query string mentioning a page doesn't make it a file.
+        assert!(!looks_like_download("https://www.mcmaster.com/help/orderhelp.asp"));
     }
 
     /// #1022: the two processes agree on the wire — a caught file round-trips through its

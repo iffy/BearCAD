@@ -6112,6 +6112,12 @@ Examples:
   bearcad --tutorial bracket
   bearcad --exit --timeout 30
   bearcad install-cli
+
+Diagnostics:
+  Every run writes a log; the path is printed on startup. Warnings and notable
+  events also go to stderr, so a terminal narrates the session.
+  BEARCAD_LOG=1          Put the full trace on stderr too, not just in the log
+  BEARCAD_LOG_FILE=path  Write the log here instead of the default
 "
     );
 }

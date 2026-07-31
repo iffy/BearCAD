@@ -58,6 +58,9 @@ Links that lead off it open in your normal browser.
 The window is a window of its own — move it to a second monitor and keep it open while you
 model. Closing BearCAD closes it too.
 
+If a download doesn't arrive, the log says what the window did with it — see
+[Troubleshooting](/docs/troubleshooting).
+
 ## Importing BearCAD files
 
 **File → Import → BearCAD File…** brings another `.bearcad` document in as a **unit**: a

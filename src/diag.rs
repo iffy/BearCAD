@@ -1,21 +1,32 @@
-//! Startup and frame diagnostics on stderr (#978).
+//! Diagnostics: what the app is doing, on stderr and on disk (#978/#1023).
 //!
 //! A window that comes up **blank grey** — title bar and menu present, nothing drawn — has
 //! several possible causes and no way to tell them apart from the outside: the app might be
 //! wedged before its first frame, painting frames that the GPU viewport then fails to draw
-//! into, or simply never repainting after a resize. This module makes the difference visible.
+//! into, or simply never repainting after a resize. This module makes the difference visible,
+//! and does the same for everything else that goes wrong later.
 //!
-//! Two levels, so an ordinary run stays silent:
+//! Three levels, so a terminal shows what happened without showing everything:
 //!
-//! - [`warn`] always prints. Reserved for things that are wrong however the app was started —
-//!   the GPU viewport failing to install, or no frame reaching the screen at all.
-//! - [`log`] prints only under `BEARCAD_LOG`, and traces the startup sequence frame by frame.
+//! - [`warn`] — something is wrong. Always on stderr.
+//! - [`info`] — something notable happened: a document opened, an import landed, an action
+//!   refused. Always on stderr, so `cargo run` narrates the session.
+//! - [`log`] — the fine-grained trace. On stderr only under `BEARCAD_LOG`, because it is far
+//!   too much to read past; **always** in the file.
+//!
+//! Every level is written to a **log file** as well ([`init`]), so a problem can be debugged
+//! after the fact rather than only while watching. The file is not gated on anything: by the
+//! time you know you wanted logging, the run that broke is over.
 //!
 //! ```text
-//! BEARCAD_LOG=1 cargo run
+//! cargo run                 # warnings + notable events on stderr, everything in the file
+//! BEARCAD_LOG=1 cargo run   # the full trace on stderr too
 //! ```
 
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// Frames whose UI has been built since launch. `0` after a few seconds means the app never
 /// got as far as drawing — a different fault from drawing something that looks empty.
@@ -30,7 +41,8 @@ const FIRST_FRAME_GRACE_SECS: u64 = 8;
 /// first handful — after that a working app just repeats itself.
 const TRACED_FRAMES: u64 = 5;
 
-/// Whether `BEARCAD_LOG` asks for the trace. Any value but the usual negatives turns it on.
+/// Whether `BEARCAD_LOG` asks for the full trace **on stderr**. Any value but the usual
+/// negatives turns it on. The file gets the trace either way.
 pub fn enabled() -> bool {
     match std::env::var("BEARCAD_LOG") {
         Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "off" | "false" | "no"),
@@ -38,17 +50,132 @@ pub fn enabled() -> bool {
     }
 }
 
-/// Trace a step of the startup sequence. Silent unless `BEARCAD_LOG` is set.
+/// The open log file, once [`init`] has opened one. Absent in tests and in the catalog
+/// subprocess, which is what keeps a `cargo test` run from writing thousands of lines to
+/// disk — nothing calls `init`, so nothing has a file.
+static FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+static FILE_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Seconds since [`init`], for the timestamp on each line.
+static STARTED: OnceLock<std::time::Instant> = OnceLock::new();
+
+/// Where the log is written: `$BEARCAD_LOG_FILE` if set, else `bearcad.log` in the system
+/// temp directory. Somewhere predictable and always writable beats somewhere tidy — this file
+/// exists to be found in a hurry.
+pub fn default_log_path() -> PathBuf {
+    match std::env::var_os("BEARCAD_LOG_FILE") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => std::env::temp_dir().join("bearcad").join("bearcad.log"),
+    }
+}
+
+/// The log file in use, once opened.
+pub fn log_path() -> Option<&'static Path> {
+    FILE_PATH.get().map(PathBuf::as_path)
+}
+
+/// Start logging to disk, keeping the previous run's log beside it (#1023).
+///
+/// **Two files, not a rotation series.** The log you want is almost always from the run that
+/// just misbehaved, and the one before it when the app died on startup and you restarted it to
+/// look. A third is archaeology.
+///
+/// Failing to open the file is not worth interrupting a launch over: stderr still works, and
+/// the reason is reported there.
+pub fn init(path: PathBuf, header: impl std::fmt::Display) {
+    if let Some(dir) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            warn(format!("cannot create the log directory {}: {err}", dir.display()));
+            return;
+        }
+    }
+    // Keep the previous run's log as `.prev` — an app that dies at startup is one you restart
+    // immediately, which would otherwise overwrite the evidence.
+    if path.exists() {
+        let _ = std::fs::rename(&path, path.with_extension("prev.log"));
+    }
+    match std::fs::File::create(&path) {
+        Ok(file) => {
+            let _ = STARTED.set(std::time::Instant::now());
+            let _ = FILE.set(Mutex::new(file));
+            let _ = FILE_PATH.set(path.clone());
+            write_line("---", header);
+            // On stderr too, so the terminal says where to look before anything goes wrong.
+            eprintln!("bearcad: logging to {}", path.display());
+        }
+        Err(err) => warn(format!("cannot write the log file {}: {err}", path.display())),
+    }
+}
+
+/// Append one line to the log file, if there is one.
+fn write_line(level: &str, message: impl std::fmt::Display) {
+    let Some(file) = FILE.get() else { return };
+    let elapsed = STARTED
+        .get()
+        .map(|t| t.elapsed().as_secs_f32())
+        .unwrap_or(0.0);
+    if let Ok(mut file) = file.lock() {
+        let _ = writeln!(file, "[{elapsed:8.3}] {level:<5} {message}");
+        let _ = file.flush();
+    }
+}
+
+/// Trace a step in detail. On stderr only under `BEARCAD_LOG`; always in the file.
 pub fn log(message: impl std::fmt::Display) {
     if enabled() {
         eprintln!("bearcad: {message}");
     }
+    write_line("trace", message);
+}
+
+/// Report something notable — a document opened, an import landed, an action refused (#1023).
+/// Always printed, so a terminal running the app narrates the session.
+pub fn info(message: impl std::fmt::Display) {
+    eprintln!("bearcad: {message}");
+    write_line("info", message);
 }
 
 /// Report something wrong. Always printed — a user seeing a broken window shouldn't have to
 /// know about an environment variable to find out why.
 pub fn warn(message: impl std::fmt::Display) {
     eprintln!("bearcad: warning: {message}");
+    write_line("WARN", message);
+}
+
+/// A short name for an action, for the log (#1023): its variant, without the payload.
+///
+/// `{:?}` on the whole action would be unreadable — some carry entire meshes — and the
+/// variant is what a trace is actually read for: the sequence of what was done.
+pub fn action_label(action: &impl std::fmt::Debug) -> String {
+    let text = format!("{action:?}");
+    let end = text
+        .find(|c: char| c == '(' || c == '{' || c == ' ')
+        .unwrap_or(text.len());
+    text[..end].to_string()
+}
+
+/// Send panics to the log as well as to stderr (#1023). A panic is exactly the failure you
+/// cannot reproduce on demand, so it is the one most worth having on disk — along with
+/// everything the run did beforehand, which is already there above it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        write_line("PANIC", format!("{payload} — at {location}"));
+        if let Some(path) = log_path() {
+            eprintln!("bearcad: the log for this run is at {}", path.display());
+        }
+        previous(info);
+    }));
 }
 
 /// Count a frame whose UI was built, and trace the first few with the size they were built at.
@@ -141,6 +268,42 @@ mod tests {
         }
         unsafe { std::env::remove_var("BEARCAD_LOG") };
         assert!(!enabled(), "unset is off");
+    }
+
+    /// #1023: a log line names the action, not its payload — some actions carry whole
+    /// meshes, and what a trace is read for is the *sequence* of what was done.
+    #[test]
+    fn an_action_logs_its_name_without_its_payload() {
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        enum Sample {
+            Plain,
+            Tuple(u32, Vec<u8>),
+            Struct { path: String },
+        }
+        assert_eq!(action_label(&Sample::Plain), "Plain");
+        assert_eq!(action_label(&Sample::Tuple(7, vec![1, 2, 3])), "Tuple");
+        assert_eq!(
+            action_label(&Sample::Struct { path: "/tmp/x".into() }),
+            "Struct"
+        );
+    }
+
+    /// #1023: the log goes somewhere predictable, and `BEARCAD_LOG_FILE` moves it — a run
+    /// whose log you can't find is a run you can't debug.
+    #[test]
+    fn the_log_file_has_a_findable_default_and_an_override() {
+        unsafe { std::env::remove_var("BEARCAD_LOG_FILE") };
+        let default = default_log_path();
+        assert!(default.starts_with(std::env::temp_dir()), "under temp: {default:?}");
+        assert_eq!(default.file_name().unwrap(), "bearcad.log");
+
+        unsafe { std::env::set_var("BEARCAD_LOG_FILE", "/tmp/somewhere-else.log") };
+        assert_eq!(default_log_path(), std::path::PathBuf::from("/tmp/somewhere-else.log"));
+        // An empty value is as good as unset, rather than a log written to "".
+        unsafe { std::env::set_var("BEARCAD_LOG_FILE", "") };
+        assert_eq!(default_log_path().file_name().unwrap(), "bearcad.log");
+        unsafe { std::env::remove_var("BEARCAD_LOG_FILE") };
     }
 
     #[test]

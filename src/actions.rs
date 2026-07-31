@@ -4054,6 +4054,11 @@ impl AppState {
         caught: &crate::mcmaster::CaughtDownload,
     ) -> ActionResult {
         let name = crate::mcmaster::body_name_for(&caught.path, &caught.url);
+        crate::diag::info(format!(
+            "catalog part caught: {} ({} bytes) → {name}",
+            caught.path.display(),
+            std::fs::metadata(&caught.path).map(|m| m.len()).unwrap_or(0)
+        ));
         let cleanup = || {
             let _ = std::fs::remove_file(&caught.path);
         };
@@ -5968,7 +5973,17 @@ impl AppState {
     }
 
     pub fn apply(&mut self, action: Action) -> ActionResult {
+        // The one funnel every action goes through, so it is the one place worth logging
+        // from (#1023). A refusal only ever reached the status bar, where the next action
+        // overwrote it — which is exactly the failure nobody could explain afterwards.
+        let label = crate::diag::action_label(&action);
         let result = self.apply_action(action);
+        match &result {
+            ActionResult::Err(reason) => {
+                crate::diag::info(format!("{label} refused: {reason}"))
+            }
+            ActionResult::Ok | ActionResult::NeedsDialog => crate::diag::log(&label),
+        }
         // A running tutorial advances the moment an action satisfies its step —
         // through the GUI, scripts, or tests alike.
         self.advance_tutorial();

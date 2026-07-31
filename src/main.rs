@@ -315,6 +315,10 @@ fn main() -> eframe::Result<()> {
         // The catalog window (#1022) is this same binary under a subcommand: it owns its own
         // event loop, so it has to run instead of the app, not alongside it.
         script::CliOutcome::McMaster { part } => {
+            // Its own file: the app is running too, and two processes rotating one log would
+            // each destroy the other's evidence (#1023).
+            diag::init(mcmaster::catalog_log_path(), diagnostic_header());
+            diag::install_panic_hook();
             if let Err(err) = mcmaster::run_catalog_process(part.as_deref()) {
                 eprintln!("bearcad mcmaster: {err}");
                 std::process::exit(1);
@@ -424,7 +428,23 @@ fn run_cli_action(result: Result<String, String>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// One line saying what this build is and how it was started — the header of every log, and
+/// the first thing worth knowing when a report arrives without one (#1023).
+fn diagnostic_header() -> String {
+    format!(
+        "BearCAD {} on {} {} — {}",
+        full_version(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        std::env::args().skip(1).collect::<Vec<_>>().join(" ")
+    )
+}
+
 fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
+    // Logging first, so everything that follows — including a panic — lands in the file
+    // (#1023). A problem you can only debug while watching is one you mostly can't.
+    diag::init(diag::default_log_path(), diagnostic_header());
+    diag::install_panic_hook();
     if let Some(secs) = script_opts.timeout_secs {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
@@ -480,7 +500,7 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
             match cc.wgpu_render_state.as_ref() {
                 Some(rs) => {
                     let info = rs.adapter.get_info();
-                    diag::log(format!(
+                    diag::info(format!(
                         "gpu: {:?} on {} ({:?})",
                         info.backend, info.name, info.device_type
                     ));
