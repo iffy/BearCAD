@@ -307,6 +307,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   driving click-select and drags end to end, asserting on geometry via
   `bearcad.line_endpoints`.
   Construction (dashed grey) and projected (dashed teal, #140) styling take precedence.
+  **Construction geometry draws only inside its own sketch (#994):** it is scaffolding — a guide
+  to dimension and constrain against, never model geometry — so a construction line or circle is
+  hidden whenever its sketch isn't the open one (`construction_geometry_visible`). Left visible
+  it stood dashed on the face of the finished part, telling every later view about a decision
+  that belongs to one sketch. Solid geometry is unaffected: it still shows, dimmed, while another
+  sketch is active.
 - **Snapping:** while drawing or dragging sketch geometry, the cursor snaps to nearby
   vertices, line midpoints, lines, the sketch **origin**, and the sketch's two in-plane
   **origin axes** (the X axis `v = 0` and Y axis `u = 0`, #189) — vertices/origin take

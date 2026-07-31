@@ -684,6 +684,9 @@ impl ViewportScene {
                 || !input
                     .element_visibility
                     .effective_visible(input.doc, SceneElement::Circle(ci))
+                // Scaffolding for its own sketch, and noise everywhere else (#994).
+                || (circle.construction
+                    && !construction_geometry_visible(input.sketch_session, circle.sketch))
             {
                 continue;
             }
@@ -1051,6 +1054,9 @@ impl ViewportScene {
                     .element_visibility
                     .effective_visible(input.doc, SceneElement::Line(li))
                 || input.selection.is_selected(SceneElement::Line(li))
+                // Scaffolding for its own sketch, and noise everywhere else (#994).
+                || (line.construction
+                    && !construction_geometry_visible(input.sketch_session, line.sketch))
             {
                 continue;
             }
@@ -1225,6 +1231,9 @@ impl ViewportScene {
                 || !input
                     .element_visibility
                     .effective_visible(input.doc, SceneElement::Circle(ci))
+                // Scaffolding for its own sketch, and noise everywhere else (#994).
+                || (circle.construction
+                    && !construction_geometry_visible(input.sketch_session, circle.sketch))
             {
                 continue;
             }
@@ -4615,6 +4624,20 @@ pub fn sketch_ground_color(color: Color32, in_sketch: bool) -> Color32 {
     }
 }
 
+/// Whether **construction** geometry belonging to `sketch` should be drawn at all (#994).
+///
+/// Construction lines and circles are scaffolding for the sketch that owns them — guides to
+/// dimension and constrain against, never model geometry. Outside that sketch they are noise
+/// standing on a face, indistinguishable from real edges except by being dashed, and they
+/// clutter every view of the finished part. So they draw **only while their own sketch is
+/// open**; solid geometry is unaffected and still dims when another sketch is active.
+fn construction_geometry_visible(
+    session: Option<SketchSession>,
+    sketch: crate::model::SketchId,
+) -> bool {
+    session.is_some_and(|s| s.sketch == sketch)
+}
+
 fn sketch_circle_is_active(
     doc: &Document,
     session: SketchSession,
@@ -7258,6 +7281,111 @@ mod tests {
     /// #174: a selected body's fill shifts to the saturated selection blue — some base-layer
     /// vertex carries the selected hue (flat shading preserves channel ratios), and none does
     /// when unselected.
+    /// #994: construction geometry is scaffolding for the sketch that owns it — a guide to
+    /// dimension against, never model geometry. Outside that sketch it was still drawn, dashed,
+    /// standing on the face of the finished part. It draws only while its own sketch is open;
+    /// solid geometry in the same sketch is untouched.
+    #[test]
+    fn construction_geometry_draws_only_inside_its_own_sketch() {
+        let mut state = state_with_one_body();
+        let sketch = state.doc.lines[0].sketch;
+        // One construction line and one solid line, both in the same sketch.
+        let construction = state.doc.lines.len();
+        state.doc.lines.push(crate::model::Line {
+            construction: true,
+            ..crate::model::Line::from_local_endpoints(sketch, 0.0, 2.0, 10.0, 2.0)
+        });
+        let solid = state.doc.lines.len();
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 3.0, 10.0, 3.0));
+        // …and a construction circle, which follows the same rule.
+        state.doc.circles.push(crate::model::Circle {
+            construction: true,
+            ..crate::model::Circle::from_local_center_radius(sketch, 5.0, 2.5, 1.0, 0.0)
+        });
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |session: Option<SketchSession>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: session,
+                selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        // The construction palette colour is what marks it; flat sketch strokes carry it whole.
+        let c = ViewportPalette::default().construction;
+        let has_construction_hue = |scene: &ViewportScene| {
+            scene.vertices.iter().any(|v| {
+                let [r, g, b, a] = v.color;
+                a > 0.0
+                    && b > 0.02
+                    && (r / b - c.r() as f32 / c.b() as f32).abs() < 0.02
+                    && (g / b - c.g() as f32 / c.b() as f32).abs() < 0.02
+            })
+        };
+        let outside = build(None);
+        assert!(
+            !has_construction_hue(&outside),
+            "construction geometry must not draw outside its sketch"
+        );
+        let inside = build(Some(SketchSession { sketch }));
+        assert!(
+            has_construction_hue(&inside),
+            "…and must draw inside it, or the guides would be unusable"
+        );
+        // The solid line in that same sketch is unaffected either way: only the dashed
+        // scaffolding is hidden, not the sketch.
+        let segment_count = |scene: &ViewportScene| scene.vertices.len();
+        assert!(
+            segment_count(&outside) > 0 && segment_count(&inside) > segment_count(&outside),
+            "hiding construction removes geometry rather than everything"
+        );
+        let _ = (construction, solid);
+    }
+
     /// #992: while a two-sided joint is being made, its two parts wear **different** fills —
     /// green for the one that moves, blue for the one holding it — so which is which is visible
     /// in the 3D view rather than only readable off the pane. The tint outranks the selection

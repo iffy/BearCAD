@@ -18,7 +18,7 @@ geometry draw dashed in their own colors.
 |---|---|---|---|
 | **Unconstrained** — can still move | ![](/img/screenshots/styles/line-normal.png) | ![](/img/screenshots/styles/line-normal-hovered.png) | ![](/img/screenshots/styles/line-normal-selected.png) |
 | **Fully constrained** — dimensioned and immobile | ![](/img/screenshots/styles/line-constrained.png) | ![](/img/screenshots/styles/line-constrained-hovered.png) | ![](/img/screenshots/styles/line-constrained-selected.png) |
-| **Construction** — reference geometry, never part of the solid | ![](/img/screenshots/styles/line-construction.png) | ![](/img/screenshots/styles/line-construction-hovered.png) | ![](/img/screenshots/styles/line-construction-selected.png) |
+| **Construction** — reference geometry, never part of the solid; shows only inside its own sketch | ![](/img/screenshots/styles/line-construction.png) | ![](/img/screenshots/styles/line-construction-hovered.png) | ![](/img/screenshots/styles/line-construction-selected.png) |
 | **Projected** — traced from outside the sketch (press `Y`); follows its source | ![](/img/screenshots/styles/line-projected.png) | ![](/img/screenshots/styles/line-projected-hovered.png) | ![](/img/screenshots/styles/line-projected-selected.png) |
 
 ## Points
