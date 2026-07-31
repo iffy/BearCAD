@@ -8119,6 +8119,7 @@ impl App {
                         axis: Some(existing.axis),
                         path_circle: existing.path_circle,
                         around_axis: existing.around_axis,
+                        flip: existing.flip,
                         mode: existing.mode,
                         count: existing.count,
                         spacing: existing.spacing,
@@ -9324,6 +9325,7 @@ impl App {
             axis: cr.axis?,
             path_circle: cr.path_circle,
             around_axis: cr.around_axis,
+            flip: cr.flip,
             mode: cr.mode,
             count: cr.count.clone(),
             spacing: cr.spacing.clone(),
@@ -12069,6 +12071,7 @@ impl eframe::App for App {
                 });
                 context::RepeatControl {
                     around_axis: cr.is_some_and(|c| c.around_axis),
+                    flip: cr.is_some_and(|c| c.flip),
                     // A curved path is followed, never turned about (#840).
                     can_turn_about_path: cr.is_none_or(|c| {
                         c.axis.is_none_or(|axis| {
@@ -13160,6 +13163,7 @@ impl eframe::App for App {
                                 cr.distance_is_end = !cr.distance_is_end;
                                 cr.recompute_mode();
                             }
+                            context::RepeatEdit::SetFlip(flip) => cr.flip = flip,
                             context::RepeatEdit::SetAroundAxis(around) => {
                                 cr.around_axis = around;
                                 // A sweep has no target to measure to (#839), and the angle
@@ -15991,6 +15995,7 @@ fn build_viewport_scene_input<'a>(
                 axis: c.axis?,
                 path_circle: c.path_circle,
                 around_axis: c.around_axis,
+                flip: c.flip,
                 mode: c.mode,
                 count: c.count.clone(),
                 spacing: c.spacing.clone(),

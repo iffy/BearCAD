@@ -5768,6 +5768,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),

@@ -473,15 +473,15 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditMirrorOp { op, plane, targets, mode })
         }
         "repeat_bodies" => {
-            let (targets, axis, around_axis, mode, count, spacing, length, length_target) =
+            let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 repeat_op_args(o)?;
-            Ok(Instruction::CreateRepeatOp { targets, axis, around_axis, mode, count, spacing, length, length_target })
+            Ok(Instruction::CreateRepeatOp { targets, axis, around_axis, flip, mode, count, spacing, length, length_target })
         }
         "edit_repeat" => {
             let op = req_usize(o, "index", "edit_repeat")?;
-            let (targets, axis, around_axis, mode, count, spacing, length, length_target) =
+            let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 repeat_op_args(o)?;
-            Ok(Instruction::EditRepeatOp { op, targets, axis, around_axis, mode, count, spacing, length, length_target })
+            Ok(Instruction::EditRepeatOp { op, targets, axis, around_axis, flip, mode, count, spacing, length, length_target })
         }
         "slice" => {
             let (targets, cutters, extend_infinite) = slice_op_args(o)?;
@@ -1379,7 +1379,7 @@ fn move_point_from_json(
 fn repeat_op_args(
     o: &Map<String, Value>,
 ) -> Result<
-    (Vec<usize>, RevolveAxis, bool, RepeatMode, String, String, String, Option<ExtrudeTarget>),
+    (Vec<usize>, RevolveAxis, bool, bool, RepeatMode, String, String, String, Option<ExtrudeTarget>),
     String,
 > {
     let targets = usize_list(o, "bodies")?;
@@ -1399,6 +1399,8 @@ fn repeat_op_args(
         axis,
         // `around = true` turns the copies about the axis instead (#839).
         opt_bool(o, "around")?.unwrap_or(false),
+        // `flip = true` runs the pattern the other way along the path (#989).
+        opt_bool(o, "flip")?.unwrap_or(false),
         mode,
         expr_arg(o, "count")?,
         expr_arg(o, "spacing")?,
@@ -2405,6 +2407,7 @@ mod tests {
                 targets: vec![0],
                 axis: RevolveAxis::X,
                 around_axis: false,
+                flip: false,
                 mode: RepeatMode::CountGap,
                 count: "5".into(),
                 spacing: "20".into(),
@@ -2421,6 +2424,7 @@ mod tests {
                 targets: vec![0],
                 axis: RevolveAxis::Y,
                 around_axis: false,
+                flip: false,
                 mode: RepeatMode::FillPitch,
                 count: String::new(),
                 spacing: "12".into(),

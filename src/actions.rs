@@ -743,6 +743,8 @@ pub struct CreatingRepeat {
     pub path_circle: Option<usize>,
     /// Repeat **around** the picked path rather than along it (#839).
     pub around_axis: bool,
+    /// Run the pattern the other way along the picked path (#989).
+    pub flip: bool,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     pub spacing: String,
@@ -771,6 +773,7 @@ impl Default for CreatingRepeat {
             axis: None,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),
@@ -2294,6 +2297,8 @@ pub enum Action {
         path_circle: Option<usize>,
         /// Turn the copies about the axis instead of sliding them along it (#839).
         around_axis: bool,
+        /// Run the pattern the other way along the path (#989).
+        flip: bool,
         mode: crate::model::RepeatMode,
         count: String,
         spacing: String,
@@ -2311,6 +2316,7 @@ pub enum Action {
         axis: crate::model::RevolveAxis,
         path_circle: Option<usize>,
         around_axis: bool,
+        flip: bool,
         mode: crate::model::RepeatMode,
         count: String,
         spacing: String,
@@ -10221,6 +10227,7 @@ label_hidden: false,
                         axis,
                         path_circle: cr.path_circle,
                         around_axis: cr.around_axis,
+                        flip: cr.flip,
                         mode: cr.mode,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
@@ -10235,6 +10242,7 @@ label_hidden: false,
                         axis,
                         path_circle: cr.path_circle,
                         around_axis: cr.around_axis,
+                        flip: cr.flip,
                         mode: cr.mode,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
@@ -10249,7 +10257,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, mode, count, spacing, length, length_target } => {
+            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, flip, mode, count, spacing, length, length_target } => {
                 if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets, &sketch_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -10263,6 +10271,7 @@ label_hidden: false,
                     axis,
                     path_circle,
                     around_axis,
+                    flip,
                     mode,
                     count,
                     spacing,
@@ -10340,7 +10349,7 @@ label_hidden: false,
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, mode, count, spacing, length, length_target } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, flip, mode, count, spacing, length, length_target } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
@@ -10360,6 +10369,7 @@ label_hidden: false,
                     entry.axis = axis;
                     entry.path_circle = path_circle;
                     entry.around_axis = around_axis;
+                    entry.flip = flip;
                     entry.mode = mode;
                     entry.count = count;
                     entry.spacing = spacing;
@@ -20240,6 +20250,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "5".to_string(),
@@ -20283,6 +20294,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::FillMaxPitch,
             count: String::new(),
             spacing: "40".to_string(),
@@ -20310,6 +20322,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
             spacing: "5".to_string(),
@@ -20326,6 +20339,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "5".to_string(),
             spacing: "5".to_string(),
@@ -20352,6 +20366,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "n".to_string(),
             spacing: "5".to_string(),
@@ -21193,6 +21208,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),
@@ -21234,6 +21250,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
             spacing: "10".to_string(),
@@ -21279,6 +21296,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
             spacing: "10".to_string(),
@@ -21295,6 +21313,7 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: crate::model::RepeatMode::CountGap,
             count: "4".to_string(),
             spacing: "10".to_string(),

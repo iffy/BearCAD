@@ -496,6 +496,9 @@ pub struct RepeatControl {
     /// Whether the picked path can be turned about at all (#840): a curved one is only ever
     /// followed, so its "around" option is disabled.
     pub can_turn_about_path: bool,
+    /// Run the pattern the **other way** along the path (#989). A path has two directions and
+    /// picking one says nothing about which you meant, so this is how you say it.
+    pub flip: bool,
     /// Label of the picked distance target (#645), if any — the face/plane/vertex the fill
     /// length is measured to. Empty means the Distance expression governs.
     /// The "Distance to" target (#645) the fill length is measured to, as an element (#955).
@@ -649,6 +652,8 @@ pub enum RepeatEdit {
     ToggleDistanceEnd,
     /// Repeat along the picked path, or around it as an axis of rotation (#839).
     SetAroundAxis(bool),
+    /// Run the pattern the other way along the picked path (#989).
+    SetFlip(bool),
     Commit,
 }
 
@@ -5636,6 +5641,15 @@ pub fn show_pane(
                     }
                 }
             });
+            // Which way along it (#989). Sits with the path because it is a property of the
+            // path, not of the spacing — and it is only answerable once one is picked.
+            let mut flip = control.flip;
+            if ui
+                .add_enabled_ui(controls_enabled, |ui| checkbox_row(ui, "Flip", &mut flip, None))
+                .inner
+            {
+                pending = Some(RepeatEdit::SetFlip(flip));
+            }
         }
         // Along the path, or around it as an axis of rotation (#839) — the same segmented
         // icon pair the other tools' mode choices use.
@@ -7988,6 +8002,7 @@ mod tests {
             open_drawing: None,
             repeat_op: Some(RepeatControl {
                 around_axis: false,
+                flip: false,
                 can_turn_about_path: true,
                 targets: vec![7],
                 plane_targets: Vec::new(),
@@ -8031,6 +8046,7 @@ mod tests {
          -> RepeatControl {
             RepeatControl {
             around_axis: false,
+            flip: false,
             can_turn_about_path: true,
             targets: vec![7],
             plane_targets: Vec::new(),

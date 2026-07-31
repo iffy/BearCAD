@@ -980,6 +980,7 @@ fn parse_repeat_op_args(
     Vec<usize>,
     crate::model::RevolveAxis,
     bool,
+    bool,
     crate::model::RepeatMode,
     String,
     String,
@@ -1036,10 +1037,13 @@ fn parse_repeat_op_args(
     // `around = true` turns the copies about the axis instead of sliding them along it
     // (#839); `spacing`/`length` are then angles in degrees.
     let around_axis: bool = opts.get::<Option<bool>>("around")?.unwrap_or(false);
+    // `flip = true` runs the pattern the other way along the path (#989).
+    let flip: bool = opts.get::<Option<bool>>("flip")?.unwrap_or(false);
     Ok((
         targets,
         axis,
         around_axis,
+        flip,
         mode,
         expr("count")?,
         spacing,
@@ -3898,13 +3902,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "repeat_bodies",
-                &["bodies", "axis", "around", "mode", "count", "spacing", "gap", "length", "to", "name"],
+                &["bodies", "axis", "around", "flip", "mode", "count", "spacing", "gap", "length", "to", "name"],
             )?;
-            let (targets, axis, around_axis, mode, count, spacing, length, length_target) =
+            let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateRepeatOp {
                     around_axis,
+                    flip,
                     targets,
                     axis,
                     mode,
@@ -3929,14 +3934,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_repeat",
-                &["index", "bodies", "axis", "around", "mode", "count", "spacing", "gap", "length", "to"],
+                &["index", "bodies", "axis", "around", "flip", "mode", "count", "spacing", "gap", "length", "to"],
             )?;
             let op: usize = opts.get("index")?;
-            let (targets, axis, around_axis, mode, count, spacing, length, length_target) =
+            let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditRepeatOp {
                     around_axis,
+                    flip,
                     op,
                     targets,
                     axis,
@@ -4133,12 +4139,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let cuts: Vec<usize> = opts.get::<Option<Vec<usize>>>("cuts")?.unwrap_or_default();
-            let (_targets, axis, around_axis, mode, count, spacing, length, length_target) =
+            let (_targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
                     path_circle: None,
                     around_axis,
+                    flip,
                     targets: Vec::new(),
                     plane_targets: Vec::new(),
                     extrusion_targets: cuts,
@@ -4166,12 +4173,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let sketches: Vec<usize> = opts.get::<Option<Vec<usize>>>("sketches")?.unwrap_or_default();
-            let (_targets, axis, around_axis, mode, count, spacing, length, length_target) =
+            let (_targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
                     path_circle: None,
                     around_axis,
+                    flip,
                     targets: Vec::new(),
                     plane_targets: Vec::new(),
                     extrusion_targets: Vec::new(),
@@ -7970,6 +7978,45 @@ mod tests {
         assert!(
             offsets.last().copied().unwrap_or(0.0) <= 40.0 + 1e-3,
             "the pattern stops at the wall, got {offsets:?}"
+        );
+    }
+
+    /// #989: `repeat_bodies{ flip = true }` runs the pattern the other way along the path. A
+    /// path has two directions and picking one says nothing about which you meant, so this is
+    /// how you say it — and the copies really land on the other side.
+    #[test]
+    fn lua_repeat_flip_runs_the_other_way() {
+        let bodies_at = |flip: &str| {
+            let state = run_lua(&format!(
+                r#"
+                bearcad.rect{{ width = 10, height = 10 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+                bearcad.repeat_bodies{{ bodies = {{0}}, axis = "x", count = 3, gap = 5{flip} }}
+                "#
+            ));
+            let op = &state.doc.repeat_ops[0];
+            assert!(op.outputs.len() >= 2, "the repeat made copies");
+            op.outputs
+                .iter()
+                .filter_map(|&bi| crate::extrude::body_solid_mesh(&state.doc, bi))
+                .map(|m| {
+                    m.triangles
+                        .iter()
+                        .flatten()
+                        .map(|p| p.x)
+                        .fold(f32::NEG_INFINITY, f32::max)
+                })
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let plain = bodies_at("");
+        let flipped = bodies_at(", flip = true");
+        assert!(
+            plain > 10.0,
+            "unflipped, the copies march out along +X, got a far edge at {plain}"
+        );
+        assert!(
+            flipped < 0.0,
+            "flipped, they march the other way instead, got a far edge at {flipped}"
         );
     }
 

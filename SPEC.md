@@ -1110,6 +1110,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the **Distance to** picker and the distance drag handle stand down, and the section title
     reads *Rotational repeat*. Scriptable as `bearcad.repeat_bodies{ …, around = true,
     spacing = "60deg" }`.
+  - **Flip (#989):** a **Flip** checkbox sits under the **Path** picker — with it, not with the
+    spacing, because which way to run is a property of the path and is only answerable once one
+    is picked. A path has **two** directions and picking a line, edge or axis says nothing about
+    which one you meant: the direction falls out of how that geometry happens to be stored, so
+    half the time the copies march off the wrong way and there was nothing to say so.
+    `RepeatOperation::flip` reverses all three kinds of step — the slide along a straight axis,
+    the **sense** of the turn when `around_axis`, and which end a curved path is followed from
+    (the polyline is **reversed** rather than stepped backwards off its start, so the copies stay
+    on the path). It is applied in `extrude::repeat_offset_transform` and nowhere else: that is
+    the one place a step becomes a transform, so every preview, ghost, plane/sketch instance and
+    output picks it up for free. Scriptable as `bearcad.repeat_bodies{ …, flip = true }`.
   - **Along a curved path (#840):** when the picked path is a **curved** sketch line, the
     copies follow its bend instead of a straight direction: the path samples to a world
     polyline (`extrude::repeat_path_polyline`) and each instance is offset by the vector from

@@ -36,6 +36,16 @@ A **green lock** marks the computed one; click a grey lock to move it there. Cli
 The originals stay put as the first instance; every copy is a real body nested under the
 repeat element. **Edit repeat** on the element changes anything later.
 
+## Which way along the path
+
+A path runs both ways, and picking one doesn't say which you meant. Tick **Flip** under the
+**Path** picker to send the copies the other way — back along a straight axis, the other way
+round a turn, or from the far end of a curve.
+
+```lua
+bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 4, gap = 5, flip = true }
+```
+
 ## Around the path
 
 Under the **Path** picker, two icons choose how the copies run: **along** the path, or

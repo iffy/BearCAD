@@ -1784,14 +1784,23 @@ pub fn repeat_offset_transform(
     step: f32,
 ) -> Option<glam::Mat4> {
     // A curved path carries the copies along it: each one is offset by the vector from the
-    // path's start to the point that far along it, so the pattern follows the bend.
-    if let Some(points) = repeat_path_polyline_of(doc, op.axis, op.path_circle) {
+    // path's start to the point that far along it, so the pattern follows the bend. Flipped
+    // (#989), it is followed from the other end — reversing the polyline rather than stepping
+    // backwards off the start, so the copies stay on the path.
+    if let Some(mut points) = repeat_path_polyline_of(doc, op.axis, op.path_circle) {
+        if op.flip {
+            points.reverse();
+        }
         let start = *points.first()?;
         return Some(glam::Mat4::from_translation(
             point_along_polyline(&points, step)? - start,
         ));
     }
     let (origin, dir) = axis_world(doc, op.axis)?;
+    // Negating the direction reverses a slide, and — turning about it — the sense of the turn
+    // (#989). This is the one place a step becomes a transform, so it is the only place the
+    // flip has to be applied: every preview, ghost and output goes through here.
+    let dir = if op.flip { -dir } else { dir };
     Some(repeat_step_transform(origin, dir, op.around_axis, step))
 }
 
@@ -6569,6 +6578,7 @@ mod tests {
             axis: RevolveAxis::Line(0),
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: RepeatMode::CountGap,
             count: "4".to_string(),
             spacing: "15".to_string(),
@@ -6622,6 +6632,87 @@ mod tests {
         assert!(
             (circumference - exact).abs() < exact * 0.01,
             "sampled circumference ≈ 2πr, got {circumference}"
+        );
+    }
+
+    /// #989: a path has two directions and picking one says nothing about which you meant, so
+    /// `flip` runs the pattern the other way. It reverses all three kinds of step, and
+    /// `repeat_offset_transform` is the only place it has to be applied — every preview, ghost
+    /// and output goes through there.
+    #[test]
+    fn flip_runs_the_pattern_the_other_way_along_every_kind_of_path() {
+        use crate::model::{Line, RepeatMode, RepeatOperation, RevolveAxis};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let op = |axis: RevolveAxis, around: bool, flip: bool| RepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis,
+            path_circle: None,
+            around_axis: around,
+            flip,
+            mode: RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: if around { "90".to_string() } else { "10".to_string() },
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        let step1 = |doc: &Document, o: &RepeatOperation| {
+            repeat_instance_transform(doc, o, 1)
+                .expect("transform")
+                .transform_point3(Vec3::ZERO)
+        };
+
+        // Sliding along a straight axis: the copies march the opposite way.
+        let along = step1(&doc, &op(RevolveAxis::X, false, false));
+        let along_flipped = step1(&doc, &op(RevolveAxis::X, false, true));
+        assert!(along.x > 0.0, "unflipped runs +X, got {along:?}");
+        assert!(
+            (along_flipped + along).length() < 1e-4,
+            "flipped is the exact negation, got {along_flipped:?} against {along:?}"
+        );
+
+        // Turning about it: the sense of the turn reverses. A point off the axis lands on the
+        // mirrored side.
+        let probe = Vec3::new(10.0, 0.0, 0.0);
+        let turn = |doc: &Document, flip: bool| {
+            repeat_instance_transform(doc, &op(RevolveAxis::Z, true, flip), 1)
+                .expect("transform")
+                .transform_point3(probe)
+        };
+        let (turned, turned_flipped) = (turn(&doc, false), turn(&doc, true));
+        assert!(turned.y > 1.0, "a +90° turn about Z sends +X to +Y, got {turned:?}");
+        assert!(
+            turned_flipped.y < -1.0,
+            "flipped it turns the other way, got {turned_flipped:?}"
+        );
+
+        // A curved path is followed from the other end rather than stepped backwards off its
+        // start — so the copies stay on the path either way.
+        doc.lines.push(Line {
+            bezier: Some([(20.0, 0.0), (40.0, 20.0)]),
+            ..Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 40.0)
+        });
+        let curved = |doc: &Document, flip: bool| {
+            let mut o = op(RevolveAxis::Line(0), false, flip);
+            o.spacing = "15".to_string();
+            step1(doc, &o)
+        };
+        let (curve, curve_flipped) = (curved(&doc, false), curved(&doc, true));
+        assert!(curve.x > 0.0, "unflipped leaves the start along the bend, got {curve:?}");
+        // From the far end the first step heads back toward the origin, so it moves the other
+        // way in Y — and it is a real point on the curve, not an extrapolation past an end.
+        assert!(
+            curve_flipped.y < 0.0 && curve_flipped.x < 0.0,
+            "flipped follows the path back from its far end, got {curve_flipped:?}"
         );
     }
 
@@ -6679,6 +6770,7 @@ mod tests {
             axis: RevolveAxis::Z,
             path_circle: None,
             around_axis: around,
+            flip: false,
             mode: RepeatMode::CountGap,
             count: "6".to_string(),
             spacing: spacing.to_string(),
@@ -6989,6 +7081,7 @@ mod tests {
             axis: RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: RepeatMode::FillPitch,
             count: String::new(),
             spacing: "10".to_string(),
@@ -7311,6 +7404,7 @@ mod tests {
             axis: RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "6".to_string(),
@@ -7357,6 +7451,7 @@ mod tests {
             axis: RevolveAxis::X,
             path_circle: None,
             around_axis: false,
+            flip: false,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),

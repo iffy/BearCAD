@@ -2572,6 +2572,14 @@ pub struct RepeatOperation {
     /// rather than sliding along it, and `spacing`/`length` are read as angles (degrees).
     #[serde(default)]
     pub around_axis: bool,
+    /// Run the pattern the **other way** along the path (#989). A path has two directions and
+    /// nothing about picking a line, edge or axis says which one you meant — the direction
+    /// falls out of how the geometry happens to be stored, so half the time the copies march
+    /// off the wrong way and there was no way to say so. Reverses the slide along a straight
+    /// axis, the sense of the turn when `around_axis`, and which end a curved path is followed
+    /// from.
+    #[serde(default)]
+    pub flip: bool,
     pub mode: RepeatMode,
     /// Instance count expression (count modes).
     #[serde(default)]
