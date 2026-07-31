@@ -2689,6 +2689,41 @@ fn nearest_sketch_edge(
     best
 }
 
+/// Whether the cursor could possibly be inside a world box, judged in screen space (#1026).
+///
+/// The pick path runs every frame the camera moves and used to project **every triangle of
+/// every body** to answer "what is under the cursor". This rejects a whole body — or a whole
+/// face — with eight projections instead, which is what makes hover cheap enough to leave
+/// running during a zoom.
+///
+/// **Conservative by construction.** A box's corners projected to screen bound the projection
+/// of everything inside it, so a cursor outside that rectangle cannot be over the geometry.
+/// Where a corner sits behind the camera it has no projection at all and the box is *accepted*
+/// — a wrong rejection would silently drop a pick, which is far worse than a wasted test.
+pub fn screen_bounds_hit(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    bounds: (Vec3, Vec3),
+    margin: f32,
+) -> bool {
+    let (min, max) = bounds;
+    let mut rect: Option<egui::Rect> = None;
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { min.x } else { max.x },
+            if i & 2 == 0 { min.y } else { max.y },
+            if i & 4 == 0 { min.z } else { max.z },
+        );
+        // Anything we can't project makes the bound unreliable; take the test as passed.
+        let Some(p) = project(corner) else { return true };
+        rect = Some(match rect {
+            Some(r) => r.union(egui::Rect::from_pos(p)),
+            None => egui::Rect::from_pos(p),
+        });
+    }
+    rect.is_none_or(|r| r.expand(margin).contains(screen))
+}
+
 /// Nearest feature edge of any 3D body's solid mesh (#31) — lets a construction plane be
 /// referenced from any edge on any shape, not just 2D sketch geometry.
 /// The cylinder centre line nearest the cursor (#1013), with its world segment and screen
@@ -2699,8 +2734,15 @@ fn nearest_body_axis(
     doc: &Document,
 ) -> Option<(PickTargetKind, Vec3, Vec3, f32)> {
     let mut best: Option<(PickTargetKind, Vec3, Vec3, f32)> = None;
+    let bounds = crate::extrude::body_world_bounds_all(doc);
     for (bi, body) in doc.bodies.iter().enumerate() {
         if body.deleted || body.shadow {
+            continue;
+        }
+        // A body nowhere near the cursor can't own the nearest axis (#1026).
+        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+            screen_bounds_hit(screen, project, b, LINE_PICK_RADIUS_PX)
+        }) {
             continue;
         }
         for cyl in crate::extrude::body_cylinders(doc, bi).iter() {
@@ -2746,8 +2788,15 @@ fn nearest_body_edge(
         }
     };
 
+    let bounds = crate::extrude::body_world_bounds_all(doc);
     for (bi, body) in doc.bodies.iter().enumerate() {
         if body.deleted || body.shadow {
+            continue;
+        }
+        // No edge of a body can be nearer than the body is (#1026).
+        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+            screen_bounds_hit(screen, project, b, LINE_PICK_RADIUS_PX)
+        }) {
             continue;
         }
         // Segments of one smooth chain all carry the chain's canonical segment as their
@@ -2788,8 +2837,15 @@ pub fn nearest_body_vertex_where(
     accept: impl Fn(&PickTargetKind, Vec3) -> bool,
 ) -> Option<(PickTargetKind, f32)> {
     let mut best: Option<(PickTargetKind, f32)> = None;
+    let bounds = crate::extrude::body_world_bounds_all(doc);
     for (bi, body) in doc.bodies.iter().enumerate() {
         if body.deleted || body.shadow {
+            continue;
+        }
+        // Every corner of a body far from the cursor is far from the cursor (#1026).
+        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+            screen_bounds_hit(screen, project, b, POINT_PICK_RADIUS_PX)
+        }) {
             continue;
         }
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {

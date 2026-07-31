@@ -2601,6 +2601,22 @@ modeled on SolveSpace (https://solvespace.com).
   body. A joint additionally marks its **badge**, the one part of it that is in the view. A
   tracing image outlines its quad. The one row that adds no overlay is a **body**, which
   recolours in the main pass instead (#455).
+- **Hover picking rejects on bounds first (#1026).** `resolve_pick_target` runs every frame
+  the camera moves, and used to project **every triangle of every body** to answer what is
+  under the cursor. Orbit and pan hid this because both suppress hover while a mouse button is
+  down (`suppress_viewport_pick_hover`); the wheel doesn't, so zooming over a large document
+  lagged while orbiting the same document did not. Each per-body walk — faces, edges,
+  vertices, cylinder axes — now rejects a body on its **screen-space bounds**
+  (`construction::screen_bounds_hit`, eight projected corners) before touching its mesh, and
+  `pick_body_face` rejects each coplanar group the same way. The test is conservative by
+  construction: a corner that can't be projected (behind the camera) *accepts* the box, since
+  a wrong rejection silently drops a pick.
+  **The bounds are fetched batched** (`extrude::body_world_bounds_all`), and that matters more
+  than the rejection itself: every cached mesh accessor keys on `document_pose_fingerprint`,
+  which **serializes the model to JSON and hashes it**, so asking per body inside a loop costs
+  one full document hash per body per frame. Measured on 20 faceted cylinders (~19k triangles,
+  debug build): 8.5 ms per pick before, 3.4 ms with per-body rejection, **87 µs** once the
+  bounds lookup was hoisted out of the loop.
 - **3D body sub-element selection (#156/#555):** outside sketch mode, the Select tool can select
   a body's **edges, vertices, and faces** (the same feature edges/corners/faces the hover highlight
   shows, #144), not just sketch entities. Shift/⌘-click multi-selects them like any other element.

@@ -3633,6 +3633,12 @@ thread_local! {
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
+/// A finely faceted tube, for tests in other modules that need real mesh bulk (#1026).
+#[cfg(test)]
+pub fn tests_tube(centre: Vec3, radius: f32, height: f32) -> Vec<[Vec3; 3]> {
+    tests::tube(centre, radius, height, CIRCLE_SEGMENTS)
+}
+
 /// A body's coplanar face groups, memoized per document state (#845).
 pub fn body_face_groups(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<[Vec3; 3]>>> {
     let fingerprint = document_pose_fingerprint(doc);
@@ -3850,6 +3856,86 @@ fn fit_circle(points: &[glam::Vec2]) -> Option<(glam::Vec2, f32)> {
         .sum::<f32>())
         / n;
     Some((centre, radius))
+}
+
+thread_local! {
+    /// World bounds per body, and per coplanar face group (#1026). The pick/hover path runs
+    /// every frame the camera moves, and without these it projects **every triangle of every
+    /// body** to answer "what is under the cursor" — which is why zooming over a large
+    /// document lagged while orbiting (which suppresses hover) did not.
+    static BODY_BOUNDS_CACHE: std::cell::RefCell<(u64, std::rc::Rc<Vec<Option<(Vec3, Vec3)>>>)> =
+        std::cell::RefCell::new((0, std::rc::Rc::new(Vec::new())));
+    static BODY_FACE_GROUP_BOUNDS_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// The world bounds of `triangles`, or `None` when there are none.
+pub fn triangle_bounds(triangles: &[[Vec3; 3]]) -> Option<(Vec3, Vec3)> {
+    let mut points = triangles.iter().flat_map(|t| t.iter());
+    let first = *points.next()?;
+    Some(points.fold((first, first), |(min, max), p| (min.min(*p), max.max(*p))))
+}
+
+/// **Every** body's world bounding box at once, indexed by body, memoized per document state
+/// (#1026).
+///
+/// Deliberately batched. Every cached mesh accessor keys on
+/// [`document_pose_fingerprint`], which **serializes the model to JSON and hashes it** — so
+/// asking per body inside a loop costs one full document hash per body per frame, which on a
+/// large document dwarfs the triangle walk this was meant to avoid. The pick walks fetch this
+/// once and then index it.
+pub fn body_world_bounds_all(doc: &Document) -> std::rc::Rc<Vec<Option<(Vec3, Vec3)>>> {
+    let fingerprint = document_pose_fingerprint(doc);
+    {
+        let hit = BODY_BOUNDS_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            (cache.0 == fingerprint).then(|| cache.1.clone())
+        });
+        if let Some(bounds) = hit {
+            return bounds;
+        }
+    }
+    // Built outside the cache's borrow: meshing a body re-enters these caches.
+    let bounds = std::rc::Rc::new(
+        (0..doc.bodies.len())
+            .map(|bi| {
+                doc.bodies
+                    .get(bi)
+                    .filter(|b| !b.deleted)
+                    .and_then(|_| body_solid_mesh(doc, bi))
+                    .and_then(|m| m.bounds())
+            })
+            .collect::<Vec<_>>(),
+    );
+    BODY_BOUNDS_CACHE.with(|cache| {
+        *cache.borrow_mut() = (fingerprint, bounds.clone());
+    });
+    bounds
+}
+
+/// One world bounding box per coplanar face group, in the same order as
+/// [`body_face_groups`], memoized per document state (#1026).
+pub fn body_face_group_bounds(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
+    let fingerprint = document_pose_fingerprint(doc);
+    let groups = body_face_groups(doc, body_index);
+    BODY_FACE_GROUP_BOUNDS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(bounds) = cache.1.get(&body_index) {
+            return bounds.clone();
+        }
+        let bounds = std::rc::Rc::new(
+            groups
+                .iter()
+                .map(|tris| triangle_bounds(tris).unwrap_or((Vec3::ZERO, Vec3::ZERO)))
+                .collect::<Vec<_>>(),
+        );
+        cache.1.insert(body_index, bounds.clone());
+        bounds
+    })
 }
 
 thread_local! {
@@ -6109,7 +6195,7 @@ mod tests {
     use crate::model::{Circle, Document, FaceId, Line};
 
     /// A tessellated tube of `sides` strips about +Z: what a circular extrusion's wall is.
-    fn tube(centre: Vec3, radius: f32, height: f32, sides: usize) -> Vec<[Vec3; 3]> {
+    pub(crate) fn tube(centre: Vec3, radius: f32, height: f32, sides: usize) -> Vec<[Vec3; 3]> {
         let mut tris = Vec::new();
         for i in 0..sides {
             let a = (i as f32) / sides as f32 * std::f32::consts::TAU;

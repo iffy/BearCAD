@@ -1256,11 +1256,28 @@ pub fn pick_body_face(
     eye: Vec3,
 ) -> Option<crate::construction::PickTargetKind> {
     let mut best: Option<(crate::construction::PickTargetKind, f32)> = None;
+    // Reject the whole body, then each face, on screen-space bounds before touching a single
+    // triangle (#1026). This runs every frame the camera moves, and testing every triangle of
+    // every body is what made zooming over a large document lag. The bounds come batched
+    // because the per-body cached accessors each re-hash the whole document.
+    let bounds = crate::extrude::body_world_bounds_all(doc);
     for (bi, body) in doc.bodies.iter().enumerate() {
         if body.deleted || body.shadow {
             continue;
         }
-        for triangles in crate::extrude::body_face_groups(doc, bi).iter().cloned() {
+        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+            crate::construction::screen_bounds_hit(screen, project, b, 0.0)
+        }) {
+            continue;
+        }
+        let group_bounds = crate::extrude::body_face_group_bounds(doc, bi);
+        for (gi, triangles) in crate::extrude::body_face_groups(doc, bi).iter().cloned().enumerate()
+        {
+            if !group_bounds.get(gi).is_some_and(|b| {
+                crate::construction::screen_bounds_hit(screen, project, *b, 0.0)
+            }) {
+                continue;
+            }
             let inside = triangles.iter().any(|tri| {
                 matches!(
                     (project(tri[0]), project(tri[1]), project(tri[2])),
@@ -1687,6 +1704,82 @@ mod tests {
             shadow: false,
         });
         doc
+    }
+
+    /// A closed box's triangles, for tests that need a face to aim at.
+    fn box_triangles(origin: Vec3, size: Vec3) -> Vec<[Vec3; 3]> {
+        let (a, b) = (origin, origin + size);
+        let v = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+        let quad = |p0, p1, p2, p3| vec![[p0, p1, p2], [p0, p2, p3]];
+        let mut t = Vec::new();
+        t.extend(quad(v(a.x, a.y, a.z), v(a.x, b.y, a.z), v(b.x, b.y, a.z), v(b.x, a.y, a.z)));
+        t.extend(quad(v(a.x, a.y, b.z), v(b.x, a.y, b.z), v(b.x, b.y, b.z), v(a.x, b.y, b.z)));
+        t.extend(quad(v(a.x, a.y, a.z), v(b.x, a.y, a.z), v(b.x, a.y, b.z), v(a.x, a.y, b.z)));
+        t.extend(quad(v(a.x, b.y, a.z), v(a.x, b.y, b.z), v(b.x, b.y, b.z), v(b.x, b.y, a.z)));
+        t.extend(quad(v(a.x, a.y, a.z), v(a.x, a.y, b.z), v(a.x, b.y, b.z), v(a.x, b.y, a.z)));
+        t.extend(quad(v(b.x, a.y, a.z), v(b.x, b.y, a.z), v(b.x, b.y, b.z), v(b.x, a.y, b.z)));
+        t
+    }
+
+    /// #1026: hover picking must not touch a body's triangles when the cursor is nowhere
+    /// near it. This runs every frame the camera moves, so its cost has to scale with the
+    /// number of *bodies*, not the number of triangles in the document.
+    #[test]
+    fn a_far_cursor_rejects_bodies_before_their_triangles() {
+        // Twenty finely faceted cylinders spread across the ground.
+        let mut doc = Document::default();
+        for i in 0..20 {
+            let (x, y) = ((i % 5) as f32 * 40.0, (i / 5) as f32 * 40.0);
+            doc.imported_meshes.push(crate::model::ImportedMesh {
+                triangles: crate::extrude::tests_tube(glam::Vec3::new(x, y, 0.0), 8.0, 10.0),
+                source_name: format!("part{i}"),
+            });
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Imported(i),
+                name: None,
+                material: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        // Plus one solid box, whose face is unambiguous to aim at.
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: box_triangles(Vec3::new(300.0, 300.0, 0.0), Vec3::splat(20.0)),
+            source_name: "box".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(doc.imported_meshes.len() - 1),
+            name: None,
+            material: None,
+            deleted: false,
+            shadow: false,
+        });
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let eye = Vec3::new(0.0, 0.0, 500.0);
+
+        // Rejecting on bounds must not reject a real hit: the box's middle still picks it.
+        assert!(
+            pick_body_face(eframe::egui::pos2(310.0, 310.0), &project, &doc, eye).is_some(),
+            "a cursor over a body still picks it"
+        );
+
+        // Far off in empty space: nothing, and — the reason for the change — cheaply.
+        let far = eframe::egui::pos2(5000.0, 5000.0);
+        assert!(
+            pick_body_face(far, &project, &doc, eye).is_none(),
+            "a cursor in empty space picks nothing"
+        );
+        let started = std::time::Instant::now();
+        for _ in 0..200 {
+            let _ = pick_body_face(far, &project, &doc, eye);
+        }
+        let each = started.elapsed() / 200;
+        // Generous by three orders of magnitude against a debug build on a slow machine: the
+        // assertion is "this rejects instead of walking the mesh", not a benchmark.
+        assert!(
+            each < std::time::Duration::from_millis(2),
+            "a far-away pick should reject on bounds, took {each:?} per call"
+        );
     }
 
     #[test]
