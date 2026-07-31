@@ -21955,14 +21955,25 @@ impl App {
             });
         }
 
+        // While the fan is open it owns the pointer (#986): only loupes are hoverable and
+        // clickable, and `pointer_screen` was redirected above to the picked thing's **anchor**
+        // — a spot the user is not pointing at. The positional grab handlers below must see no
+        // pointer at all, the same way the sketch pick/drag handlers stand down. Otherwise
+        // clicking a construction plane's loupe grabs whichever corner grip happens to sit near
+        // that anchor — the plane's anchor is its origin, which lands within a grip's radius
+        // whenever the view is zoomed out far enough — and the press that selected the plane
+        // drags a corner out to where the loupe was. A drag already in hand still finishes:
+        // with no pointer it simply stops tracking and commits on release.
+        let grab_pointer = if exploder_active { None } else { pointer_screen };
+
         // A selected construction plane's corner grips take the pointer before picking does,
         // so grabbing one resizes the plane instead of re-selecting what's under it (#833).
-        let plane_resizing = self.handle_plane_resize(ui, &project, pointer_screen, &cam, viewport, &vp);
+        let plane_resizing = self.handle_plane_resize(ui, &project, grab_pointer, &cam, viewport, &vp);
 
         // Dragging a jointed part with the Select tool (#897): grabbing an already-selected
         // driven part moves it through its joint, taking the pointer before picking does.
         let joint_dragging =
-            self.handle_joint_select_drag(ui, &project, pointer_screen, &cam, pick_occlusion);
+            self.handle_joint_select_drag(ui, &project, grab_pointer, &cam, pick_occlusion);
 
         // Dimension tool also selects in sketch mode (#486/#487): clicks accumulate edges for
         // an angle (or re-click / Enter for a length) instead of immediately locking length.
@@ -24303,6 +24314,30 @@ impl App {
                     .iter()
                     .filter_map(|item| construction::scene_element_from_pick(&item.target))
                     .collect()
+            })
+            .unwrap_or_default();
+        // …and where the fan put each one (#986), so a script can click a loupe. Only the
+        // display items that are single-element **Leaf** loupes at the current drill level have
+        // a spot of their own; a leaf buried in a group does not.
+        self.state.exploder_loupe_positions = self
+            .exploder
+            .as_ref()
+            .map(|ex| {
+                let items = ex.display_items();
+                let centers = ex.display_centers(viewport, &project);
+                let mut out = vec![None; ex.items.len()];
+                for (item, center) in items.iter().zip(centers) {
+                    if !matches!(item.kind, DisplayKind::Leaf) {
+                        continue;
+                    }
+                    if let Some(&leaf) = item.leaves.first() {
+                        if let Some(slot) = out.get_mut(leaf) {
+                            // Viewport-local, the coordinates `bearcad.ui.click` takes.
+                            *slot = Some((center.x - viewport.min.x, center.y - viewport.min.y));
+                        }
+                    }
+                }
+                out
             })
             .unwrap_or_default();
         // Publish what the viewport is hovering (#968) so a script can assert that the

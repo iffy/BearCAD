@@ -2632,7 +2632,16 @@ modeled on SolveSpace (https://solvespace.com).
   cluster is **shifted** to stay inside the viewport (`fit_offset`). Zoom is **clamped** (`max_zoom_mul`) where those rings fill the space, so loupes
   never grow off-screen and, at full zoom, they tile the whole viewport. While
   exploded **only handles** are hoverable/selectable — the raw crowd underneath is suppressed (the
-  positional sketch pick/drag handlers stand down) — and hovering a handle highlights its **exact
+  positional sketch pick/drag handlers stand down), and so do the **positional grab** handlers
+  that act on an already-selected thing: a construction plane's corner grips and the Select
+  tool's joint drag see **no pointer at all** while the fan is open (#986). They must, because
+  the pointer they would see is the *redirected* one, aimed at the picked thing's anchor rather
+  than at the cursor — and a plane's anchor is its **origin**, which falls inside a corner
+  grip's radius whenever the view is zoomed out far enough. Clicking a plane's loupe then
+  selected the plane and, in that same frame, grabbed the grip that had just come live under
+  the redirected pointer; holding the button for the rest of the click dragged that corner out
+  to where the loupe was. A grab already in hand still finishes — with no pointer it stops
+  tracking and commits its extent on release — and hovering a handle highlights its **exact**
   target** (the whole line/edge/face) out in the 3D view, not whatever a re-resolved pick at the
   anchor would catch. **Every** kind the crowd can offer lights up that way (#974); the renderer's
   `PickTargetKind` hover is total, and the only two kinds that draw nothing *there* draw elsewhere
@@ -3155,7 +3164,12 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   a hovered region or curve with no element of its own reports nil, which is itself assertable.
   **`bearcad.exploder()`** (#968) reports the Selection Exploder's fanned leaves as
   `{ kind, index }`, empty when it's closed — the crowd it is offering, which nothing else
-  exposes.
+  exposes. Each leaf the current drill level shows as a loupe of its own also carries
+  **`x`/`y`** (#986): where the fan put that loupe, in the viewport-local pixels
+  `bearcad.ui.click` takes. Without it, *picking through the fan* was unreachable from a
+  script — the leaves were readable but there was no way to say where to aim — so the whole
+  click-a-loupe path went untested. A leaf currently inside a group loupe has no spot of its
+  own and carries neither.
   Write side: **`bearcad.ui.picker_focus(name)`** arms a picker, the scripted equivalent of
   clicking it in the pane.
 - **Absolute camera control (#108):** `bearcad.ui.camera{}` reads the pose

@@ -3089,6 +3089,12 @@ pub struct AppState {
     /// script assert that the fan matches what the focused picker can take (#957), which is
     /// otherwise invisible from outside the renderer.
     pub exploder_leaves: Vec<crate::hierarchy::SceneElement>,
+    /// Where each of those leaves' loupes sits on screen (#986), viewport-local pixels and
+    /// index-aligned with `exploder_leaves`. `None` for a leaf the current drill level does not
+    /// show as a loupe of its own — it is inside a group, or the fan is closed. Parking it is
+    /// what lets a script *click a loupe*: nothing else exposes where the fan put them, so
+    /// selecting through the exploder was unreachable from a test.
+    pub exploder_loupe_positions: Vec<Option<(f32, f32)>>,
     /// The active tool's element pickers as of the last frame (#968). Derived, not authoritative
     /// — the pane rebuilds them every frame — but parked here so a script can read what each
     /// picker accepts and holds, which is otherwise invisible from outside the UI.
@@ -3235,6 +3241,7 @@ impl Default for AppState {
             move_focus_override: None,
             joint_focus_override: None,
             exploder_leaves: Vec::new(),
+            exploder_loupe_positions: Vec::new(),
             pick_single_edge: false,
             hover_element: None,
             tool_pickers: Vec::new(),

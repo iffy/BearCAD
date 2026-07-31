@@ -2477,6 +2477,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 let entry = lua.create_table()?;
                 entry.set("kind", element_kind_name(element.clone()))?;
                 entry.set("index", element_index(element.clone()))?;
+                // Where this leaf's loupe sits, in the viewport-local pixels `bearcad.ui.click`
+                // takes (#986) — absent for a leaf the current level shows inside a group.
+                if let Some(Some((x, y))) = state.exploder_loupe_positions.get(i) {
+                    entry.set("x", *x)?;
+                    entry.set("y", *y)?;
+                }
                 out.set(i + 1, entry)?;
             }
             Ok(out)
