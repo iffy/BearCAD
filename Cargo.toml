@@ -55,12 +55,19 @@ bytemuck = { version = "1", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
-# The McMaster-Carr catalog window (#1022): a platform web view hosted in the app's own
-# window. macOS (WKWebView) and Windows (WebView2) only — wry's Linux backend needs a GTK
-# main loop this app doesn't run and works only on X11, so Linux neither uses nor builds it
-# (and so needs no webkit2gtk system packages).
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-wry = "0.56"
+# The McMaster-Carr catalog window (#1022): a platform web view (WKWebView / WebView2 /
+# WebKitGTK) in a window of its own, run by the `bearcad mcmaster` subcommand — a second
+# process, so its event loop never meets eframe's. `tao` is the windowing wry pairs with,
+# and is what initializes GTK on Linux, which is why that platform works here at all.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.wry]
+version = "0.56"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.tao]
+version = "0.36"
+default-features = false
+# The window handle wry takes (raw-window-handle 0.6), which the default feature set would
+# otherwise bring in alongside a lot the catalog window has no use for.
+features = ["rwh_06"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

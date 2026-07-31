@@ -3,9 +3,9 @@
 //!
 //! McMaster's own site is the catalog: it has the search, the drawings, the sizes and the
 //! CAD downloads, and it is what anyone specifying a screw already uses. So this shows that
-//! site — a real webview, in a window — and catches the CAD download on its way out. Pick
-//! the part the way you always do, choose STEP, and the body lands in the document instead
-//! of in your Downloads folder.
+//! site — a real web view, in a window of its own — and catches the CAD download on its way
+//! out. Pick the part the way you always do, choose STEP, and the body lands in the document
+//! instead of in your Downloads folder.
 //!
 //! Their Product Information API would be the tidier route, but it is gated behind a signed
 //! agreement and a client certificate McMaster issues per account, so it works for almost
@@ -13,19 +13,36 @@
 //! Showing the site and catching what the user themselves downloaded needs no account, no
 //! credentials, and asks nothing of McMaster that a browser doesn't.
 //!
-//! The webview is a native child of the app's own window ([`wry`]: WKWebView on macOS,
-//! WebView2 on Windows, WebKitGTK on Linux), positioned into an egui window's rect each
-//! frame. Native views composite above the wgpu canvas, so the egui window is the frame and
-//! the webview is what fills it.
+//! # Why a second process
+//!
+//! A web view needs an event loop, and so does the app. Hosting one *inside* the app's own
+//! window (wry's `build_as_child`) works on macOS and Windows but leaves the native view
+//! floating over every egui window regardless of z-order, and on Linux it panics outright:
+//! wry's WebKitGTK backend requires `gtk::init` on the calling thread and a GTK loop pumped
+//! alongside it — which eframe/winit never does — and supports X11 only.
+//!
+//! So the window is its own process: **`bearcad mcmaster [part]`**, this same executable
+//! under a subcommand ([`run_catalog_process`]). It owns a `tao` event loop, so it is a real
+//! OS window with real z-order, its own taskbar entry, and — because `tao` initializes GTK
+//! itself — Linux support for free. It reports what it caught on **stdout**, one line per
+//! file ([`CaughtDownload::to_line`]), and the app reads those lines and imports them. No
+//! packaging cost either: the binary already ships.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 /// Where the window starts: McMaster's front page, which is their search.
 pub const CATALOG_URL: &str = "https://www.mcmaster.com/";
 
-/// The product page for a part number — what the window opens at when a part number was
-/// typed, so a known number skips the search.
+/// The subcommand that runs the catalog window.
+pub const SUBCOMMAND: &str = "mcmaster";
+
+/// How the catalog process reports a caught file: `part<TAB>path<TAB>url`. A prefix rather
+/// than a bare path, so the app can tell a report from anything else the platform's web view
+/// decides to print on stdout — which it does.
+pub const CAUGHT_PREFIX: &str = "part";
+
+/// The product page for a part number — what the window opens at when one was given, so a
+/// known number skips the search.
 pub fn part_url(part_number: &str) -> String {
     let part = normalize_part_number(part_number);
     if part.is_empty() {
@@ -71,8 +88,33 @@ pub fn is_mcmaster_url(url: &str) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaughtDownload {
     pub path: PathBuf,
-    /// The URL it came from — the only clue to the part number when the filename has none.
+    /// The URL it came from — the clue to the part number when the filename hasn't got one.
     pub url: String,
+}
+
+impl CaughtDownload {
+    /// The stdout line the catalog process reports this on.
+    pub fn to_line(&self) -> String {
+        format!(
+            "{CAUGHT_PREFIX}\t{}\t{}",
+            self.path.to_string_lossy(),
+            self.url
+        )
+    }
+
+    /// Parse one line of the catalog process's stdout. `None` for anything that isn't a
+    /// report — the platform's web view prints plenty of its own noise on that stream.
+    pub fn from_line(line: &str) -> Option<Self> {
+        let mut parts = line.trim_end().split('\t');
+        if parts.next()? != CAUGHT_PREFIX {
+            return None;
+        }
+        let path = parts.next().filter(|p| !p.is_empty())?;
+        Some(Self {
+            path: PathBuf::from(path),
+            url: parts.next().unwrap_or_default().to_string(),
+        })
+    }
 }
 
 /// What the import should do with a caught file, by its extension. McMaster offers a part's
@@ -94,8 +136,8 @@ impl CadFormat {
     }
 }
 
-/// Whether a string reads as a McMaster part number: their catalog numbers are five or
-/// more characters of digits and letters, and always carry a digit.
+/// Whether a string reads as a McMaster part number: their catalog numbers are five or more
+/// characters of digits and letters, and always carry a digit.
 fn looks_like_part_number(s: &str) -> bool {
     s.len() >= 5
         && s.chars().all(|c| c.is_ascii_alphanumeric())
@@ -103,8 +145,7 @@ fn looks_like_part_number(s: &str) -> bool {
 }
 
 /// The part number a URL carries, wherever along it that sits — a CAD link is
-/// `…/91290A115/cad`, not `…/cad/91290A115`, so the last segment is the wrong thing to
-/// take.
+/// `…/91290A115/cad`, not `…/cad/91290A115`, so the last segment is the wrong thing to take.
 pub fn part_number_in(url: &str) -> Option<String> {
     url.split(['/', '?', '&', '=', '#'])
         .map(|s| s.trim().to_ascii_uppercase())
@@ -129,8 +170,8 @@ pub fn body_name_for(path: &Path, url: &str) -> String {
     if stem.is_empty() { "McMaster-Carr part".to_string() } else { stem }
 }
 
-/// A filename for a download, from its URL — what the started-handler names the file when
-/// the platform hands us a bare URL.
+/// A filename for a download, from its URL — what names the file when the platform hands the
+/// catalog process a bare URL. Sanitized: the URL never gets to choose a path.
 pub fn download_file_name(url: &str) -> String {
     let tail = url
         .split(['?', '#'])
@@ -150,120 +191,158 @@ pub fn download_file_name(url: &str) -> String {
     }
 }
 
-/// Everything the webview's callbacks post back to the frame loop. The handlers run on the
-/// platform's own threads, so this is the seam between them and the document.
-#[derive(Debug, Default)]
-pub struct CatalogInbox {
-    /// Downloads that finished and are waiting to be imported.
-    pub caught: Vec<CaughtDownload>,
-    /// A download started, so the window can say it's working.
-    pub in_flight: usize,
-    /// Links that led off McMaster's site, to hand to the real browser.
-    pub external: Vec<String>,
-    /// The last thing worth telling the user.
-    pub message: String,
+/// Where caught downloads are written: the app's own scratch directory, so a catch never
+/// lands in the user's Downloads folder and never collides with a file already there.
+pub fn download_dir() -> PathBuf {
+    std::env::temp_dir().join("bearcad-mcmaster")
 }
 
-pub type SharedInbox = Arc<Mutex<CatalogInbox>>;
+// ---------------------------------------------------------------------------------------
+// The catalog process — `bearcad mcmaster [part]`
+// ---------------------------------------------------------------------------------------
 
-/// The catalog window: the webview plus the scratch directory its downloads land in.
+/// Run the catalog window. This **is** the process: it owns the event loop and returns when
+/// the window closes, so it runs before any of the app's own startup.
 ///
-/// Native-only, and only where a webview is actually available. Dropping it takes the
-/// webview down with it, which is how closing the window works.
+/// Reports each caught file on stdout as [`CaughtDownload::to_line`]; the app reads them.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct CatalogWindow {
-    webview: wry::WebView,
-    inbox: SharedInbox,
-    /// Where caught downloads are written: our own directory, so a catch never lands in the
-    /// user's Downloads folder and never collides with a file already there.
-    #[allow(dead_code)]
-    download_dir: PathBuf,
+pub fn run_catalog_process(part_number: Option<&str>) -> Result<(), String> {
+    use std::io::Write as _;
+    use tao::event::{Event, WindowEvent};
+    use tao::event_loop::{ControlFlow, EventLoop};
+    use tao::window::WindowBuilder;
+
+    let dir = download_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("scratch directory: {e}"))?;
+
+    let event_loop = EventLoop::new();
+    let window = WindowBuilder::new()
+        .with_title("McMaster-Carr — BearCAD")
+        .with_inner_size(tao::dpi::LogicalSize::new(1100.0, 800.0))
+        .build(&event_loop)
+        .map_err(|e| format!("could not open a window: {e}"))?;
+
+    // A file is reported the moment it lands, so a part imports while the window stays open
+    // for the next one.
+    let report = move |path: &Path, url: &str| {
+        let line = CaughtDownload { path: path.to_path_buf(), url: url.to_string() }.to_line();
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
+    };
+
+    let started_dir = dir.clone();
+    let webview = wry::WebViewBuilder::new()
+        .with_url(part_number.map(part_url).unwrap_or_else(|| CATALOG_URL.to_string()))
+        .with_download_started_handler(move |url, path| {
+            *path = started_dir.join(download_file_name(&url));
+            true
+        })
+        .with_download_completed_handler(move |url, path, success| {
+            if let (true, Some(path)) = (success, path) {
+                report(&path, &url);
+            }
+        })
+        .with_navigation_handler(|url| {
+            if is_mcmaster_url(&url) {
+                return true;
+            }
+            // This window is McMaster's catalog; anything else is the browser's job.
+            let _ = crate::open_in_browser(&url);
+            false
+        })
+        .build(&window)
+        .map_err(|e| format!("could not open a web view: {e}"))?;
+
+    event_loop.run(move |event, _, control_flow| {
+        // The web view has to outlive the loop, and moving it in is what does that.
+        let _ = &webview;
+        *control_flow = ControlFlow::Wait;
+        if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
+            *control_flow = ControlFlow::Exit;
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------------------
+// The app's side — run the catalog process and collect what it catches
+// ---------------------------------------------------------------------------------------
+
+/// A running catalog window, and what it has caught so far.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct CatalogSession {
+    child: std::process::Child,
+    caught: std::sync::Arc<std::sync::Mutex<Vec<CaughtDownload>>>,
+    /// Set by the reader thread when the process's stdout ends — i.e. the window closed.
+    finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl CatalogWindow {
-    /// Build the webview as a child of the app's own window, showing `url`.
-    pub fn open(
-        parent: &impl raw_window_handle::HasWindowHandle,
-        url: &str,
-        bounds: wry::Rect,
-        repaint: egui::Context,
-    ) -> Result<Self, String> {
-        let inbox: SharedInbox = Arc::default();
-        let download_dir = std::env::temp_dir().join("bearcad-mcmaster");
-        std::fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
-
-        let started = {
-            let (inbox, dir, ctx) = (inbox.clone(), download_dir.clone(), repaint.clone());
-            move |url: String, path: &mut PathBuf| {
-                *path = dir.join(download_file_name(&url));
-                if let Ok(mut inbox) = inbox.lock() {
-                    inbox.in_flight += 1;
-                    inbox.message = "Downloading…".to_string();
-                }
-                ctx.request_repaint();
-                true
-            }
-        };
-        let completed = {
-            let (inbox, ctx) = (inbox.clone(), repaint.clone());
-            move |url: String, path: Option<PathBuf>, success: bool| {
-                if let Ok(mut inbox) = inbox.lock() {
-                    inbox.in_flight = inbox.in_flight.saturating_sub(1);
-                    match (success, path) {
-                        (true, Some(path)) => inbox.caught.push(CaughtDownload { path, url }),
-                        _ => inbox.message = "That download didn't finish".to_string(),
+impl CatalogSession {
+    /// Start the catalog window as a child of this process, at `part_number` if given.
+    ///
+    /// The executable is our own ([`std::env::current_exe`]) under the `mcmaster`
+    /// subcommand, so there is no second binary to build, sign or package.
+    pub fn open(part_number: Option<&str>, repaint: egui::Context) -> Result<Self, String> {
+        use std::io::{BufRead as _, BufReader};
+        let exe = std::env::current_exe().map_err(|e| format!("cannot find myself: {e}"))?;
+        let mut command = std::process::Command::new(exe);
+        command.arg(SUBCOMMAND);
+        if let Some(part) = part_number.map(normalize_part_number).filter(|p| !p.is_empty()) {
+            command.arg(part);
+        }
+        let mut child = command
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("could not start the catalog window: {e}"))?;
+        let stdout = child.stdout.take().ok_or("the catalog window has no stdout")?;
+        let caught: std::sync::Arc<std::sync::Mutex<Vec<CaughtDownload>>> = Default::default();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let (caught, finished) = (caught.clone(), finished.clone());
+            std::thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Some(download) = CaughtDownload::from_line(&line) {
+                        if let Ok(mut caught) = caught.lock() {
+                            caught.push(download);
+                        }
+                        repaint.request_repaint();
                     }
                 }
-                ctx.request_repaint();
-            }
-        };
-        let navigation = {
-            let (inbox, ctx) = (inbox.clone(), repaint.clone());
-            move |url: String| {
-                if is_mcmaster_url(&url) {
-                    return true;
-                }
-                // This window is McMaster's catalog; anything else is the browser's job.
-                if let Ok(mut inbox) = inbox.lock() {
-                    inbox.external.push(url);
-                }
-                ctx.request_repaint();
-                false
-            }
-        };
-
-        let webview = wry::WebViewBuilder::new()
-            .with_url(url)
-            .with_bounds(bounds)
-            .with_download_started_handler(started)
-            .with_download_completed_handler(completed)
-            .with_navigation_handler(navigation)
-            .build_as_child(parent)
-            .map_err(|e| format!("could not open a web view: {e}"))?;
-        Ok(Self { webview, inbox, download_dir })
-    }
-
-    /// Keep the webview sitting in the egui window's rect as it moves and resizes.
-    pub fn set_bounds(&self, bounds: wry::Rect) {
-        let _ = self.webview.set_bounds(bounds);
-    }
-
-    pub fn load(&self, url: &str) {
-        let _ = self.webview.load_url(url);
-    }
-
-    /// Take whatever the webview's handlers have posted since the last frame.
-    pub fn drain(&self) -> CatalogInbox {
-        let Ok(mut inbox) = self.inbox.lock() else {
-            return CatalogInbox::default();
-        };
-        CatalogInbox {
-            caught: std::mem::take(&mut inbox.caught),
-            in_flight: inbox.in_flight,
-            external: std::mem::take(&mut inbox.external),
-            message: inbox.message.clone(),
+                // Stdout closed: the window is gone.
+                finished.store(true, std::sync::atomic::Ordering::Relaxed);
+                repaint.request_repaint();
+            });
         }
+        Ok(Self { child, caught, finished })
+    }
+
+    /// Everything caught since the last call.
+    pub fn take_caught(&self) -> Vec<CaughtDownload> {
+        self.caught
+            .lock()
+            .map(|mut c| std::mem::take(&mut *c))
+            .unwrap_or_default()
+    }
+
+    /// Whether the window has closed.
+    pub fn finished(&self) -> bool {
+        self.finished.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Close the window, if it is still open.
+    pub fn close(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Closing the app takes the catalog window with it — an orphaned window with no document to
+/// import into is just a stray browser.
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CatalogSession {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -285,10 +364,10 @@ mod tests {
         assert_eq!(normalize_part_number(""), "");
     }
 
-    /// #1022: a typed part number opens straight at its product page; nothing typed opens
-    /// the catalog's own front page, which is their search.
+    /// #1022: a part number opens straight at its product page; nothing given opens the
+    /// catalog's own front page, which is their search.
     #[test]
-    fn a_typed_part_number_opens_its_product_page() {
+    fn a_part_number_opens_its_product_page() {
         assert_eq!(part_url("91290A115"), "https://www.mcmaster.com/91290A115/");
         assert_eq!(part_url("  91290-a115"), "https://www.mcmaster.com/91290A115/");
         assert_eq!(part_url(""), CATALOG_URL);
@@ -310,8 +389,35 @@ mod tests {
         assert!(is_mcmaster_url("blob:https://www.mcmaster.com/abc"));
     }
 
-    /// #1022: a caught file is imported by what it is — the two CAD formats the app reads
-    /// — and anything else is refused rather than guessed at.
+    /// #1022: the two processes agree on the wire — a caught file round-trips through its
+    /// stdout line, and the platform's own chatter on that stream is ignored rather than
+    /// mistaken for a report.
+    #[test]
+    fn a_caught_file_round_trips_through_stdout() {
+        let caught = CaughtDownload {
+            path: PathBuf::from("/tmp/bearcad-mcmaster/91290A115.STEP"),
+            url: "https://www.mcmaster.com/91290A115/cad".to_string(),
+        };
+        assert_eq!(CaughtDownload::from_line(&caught.to_line()), Some(caught.clone()));
+        // A trailing newline is what the reader actually hands us.
+        assert_eq!(
+            CaughtDownload::from_line(&format!("{}\n", caught.to_line())),
+            Some(caught)
+        );
+        // Web-view noise on the same stream is not a report.
+        assert_eq!(CaughtDownload::from_line(""), None);
+        assert_eq!(CaughtDownload::from_line("[WebKit] some warning"), None);
+        assert_eq!(CaughtDownload::from_line("part"), None);
+        assert_eq!(CaughtDownload::from_line("part\t"), None);
+        // A report with no URL still names its file.
+        assert_eq!(
+            CaughtDownload::from_line("part\t/tmp/x.step"),
+            Some(CaughtDownload { path: PathBuf::from("/tmp/x.step"), url: String::new() })
+        );
+    }
+
+    /// #1022: a caught file is imported by what it is — the two CAD formats the app reads —
+    /// and anything else is refused rather than guessed at.
     #[test]
     fn only_readable_cad_formats_are_imported() {
         assert_eq!(CadFormat::of(Path::new("/tmp/91290A115.STEP")), Some(CadFormat::Step));
@@ -340,10 +446,6 @@ mod tests {
             "91290A115"
         );
         assert_eq!(
-            body_name_for(Path::new("/tmp/cad.step"), "https://www.mcmaster.com/91290A115"),
-            "91290A115"
-        );
-        assert_eq!(
             part_number_in("https://www.mcmaster.com/cad/download?part=91290A115&fmt=step")
                 .as_deref(),
             Some("91290A115")
@@ -353,8 +455,8 @@ mod tests {
         assert_eq!(body_name_for(Path::new(""), "https://example.com"), "McMaster-Carr part");
     }
 
-    /// #1022: a download lands under a name of our choosing, in our own directory — never
-    /// in the user's Downloads folder, and never without an extension to import it by.
+    /// #1022: a download lands under a name of our choosing, in our own directory — never in
+    /// the user's Downloads folder, and never without an extension to import it by.
     #[test]
     fn downloads_get_a_usable_file_name() {
         assert_eq!(
@@ -368,7 +470,9 @@ mod tests {
         // A URL with nothing usable at the end still gets a name the importer can read.
         assert_eq!(download_file_name("https://www.mcmaster.com/download"), "mcmaster-part.step");
         assert_eq!(download_file_name(""), "mcmaster-part.step");
-        // Path separators can't escape the directory we chose.
-        assert!(!download_file_name("https://x/../../etc/passwd").contains('/'));
+        // A URL can't choose a path: no separator survives, so a catch can't escape the
+        // scratch directory.
+        let escaped = download_file_name("https://x/../../etc/passwd");
+        assert!(!escaped.contains('/') && !escaped.contains('\\'), "got {escaped}");
     }
 }

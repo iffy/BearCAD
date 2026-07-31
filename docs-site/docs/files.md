@@ -55,6 +55,9 @@ search.
 Their site does the searching, the sizes and the drawings, so the window is their site.
 Links that lead off it open in your normal browser.
 
+The window is a window of its own — move it to a second monitor and keep it open while you
+model. Closing BearCAD closes it too.
+
 ## Importing BearCAD files
 
 **File → Import → BearCAD File…** brings another `.bearcad` document in as a **unit**: a

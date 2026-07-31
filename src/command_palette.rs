@@ -79,7 +79,7 @@ pub enum PaletteCommandId {
     ShowSettings,
     /// Import another BearCAD document as a unit (#721). Native only (path-based).
     ImportUnit,
-    /// Open the McMaster-Carr catalog window (#1022). Native only: it needs a webview.
+    /// Open the McMaster-Carr catalog window (#1022). Native only: it runs a second process.
     ImportMcMaster,
     ShowHelpMode,
     HideHelpMode,
@@ -636,7 +636,7 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         "Import BearCAD File",
         "import bearcad file unit part assembly library",
     ),
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(not(target_arch = "wasm32"))]
     PaletteCommand::new(
         PaletteCommandId::ImportMcMaster,
         "Import from McMaster-Carr",

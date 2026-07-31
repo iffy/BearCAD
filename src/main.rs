@@ -45,10 +45,6 @@ mod icons;
 mod joint_viewport;
 mod joints;
 mod mate;
-// The catalog window needs a platform web view. macOS and Windows have one that composites
-// over the app's canvas; wry's Linux path needs a GTK main loop this app doesn't run, and
-// works only on X11 (#1022).
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod mcmaster;
 mod kernel;
 mod names;
@@ -314,6 +310,15 @@ fn main() -> eframe::Result<()> {
         }
         script::CliOutcome::UninstallCli => {
             run_cli_action(cli_install::run_uninstall());
+            return Ok(());
+        }
+        // The catalog window (#1022) is this same binary under a subcommand: it owns its own
+        // event loop, so it has to run instead of the app, not alongside it.
+        script::CliOutcome::McMaster { part } => {
+            if let Err(err) = mcmaster::run_catalog_process(part.as_deref()) {
+                eprintln!("bearcad mcmaster: {err}");
+                std::process::exit(1);
+            }
             return Ok(());
         }
         script::CliOutcome::Run(script_opts) => run_app(script_opts),
@@ -3035,8 +3040,8 @@ struct App {
     /// The McMaster-Carr catalog window's live webview (#1022), while it is open. Not on
     /// `AppState` — it owns a native view, so it can't be part of anything cloned or
     /// serialized; the open flag lives there instead.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    mcmaster: Option<mcmaster::CatalogWindow>,
+    #[cfg(not(target_arch = "wasm32"))]
+    mcmaster: Option<mcmaster::CatalogSession>,
     /// The Keyboard Shortcuts window (#434), toggled from the View/Help menus.
     shortcuts_open: bool,
     /// Persisted app settings (#720), loaded at startup and saved when the Settings
@@ -4125,7 +4130,7 @@ impl App {
             },
             #[cfg(not(target_arch = "wasm32"))]
             update_fallback_opened: false,
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(not(target_arch = "wasm32"))]
             mcmaster: None,
             shortcuts_open: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -4285,130 +4290,39 @@ impl App {
         self.state.settings_open = open;
     }
 
-    /// The McMaster-Carr catalog window (#1022): their own site in a webview, with the CAD
-    /// download caught on its way out and imported straight into the document.
+    /// Keep the McMaster-Carr catalog window in step with the app (#1022).
     ///
-    /// The webview is a native child of the app's window, so it composites *above* the wgpu
-    /// canvas — the egui window drawn here is the frame and the chrome, and the webview is
-    /// positioned into its body each frame.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn show_mcmaster_window(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    /// The window is a **second process** — this same binary under `bearcad mcmaster` — so
+    /// there is nothing to draw here: it owns its own OS window, with its own z-order and
+    /// taskbar entry. All this does is start it when asked, stop it when asked, import
+    /// whatever it reports catching, and notice when the user closes it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_mcmaster_window(&mut self, ctx: &egui::Context) {
         if !self.state.mcmaster_open {
-            // Closing the window takes the webview down with it.
+            // Closing the pane flag closes the window: `CatalogSession`'s drop kills it.
             self.mcmaster = None;
             return;
         }
-        let mut open = true;
-        let mut go_to: Option<String> = None;
-        let mut body_rect = None;
-        egui::Window::new("McMaster-Carr")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size(egui::vec2(900.0, 640.0))
-            .default_pos(egui::pos2(80.0, 60.0))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Part");
-                    let typed = ui.add(
-                        egui::TextEdit::singleline(&mut self.state.mcmaster_part)
-                            .desired_width(160.0)
-                            .hint_text("91290A115"),
-                    );
-                    let go = ui.button("Go").clicked()
-                        || (typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    if go {
-                        go_to = Some(mcmaster::part_url(&self.state.mcmaster_part));
-                    }
-                    if ui.button("Catalog").clicked() {
-                        go_to = Some(mcmaster::CATALOG_URL.to_string());
-                    }
-                });
-                // The webview fills whatever is left; reserve it so the egui window sizes
-                // to it and nothing else is drawn underneath.
-                let (rect, _) =
-                    ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-                body_rect = Some(rect);
-            });
-        let Some(rect) = body_rect else {
-            self.state.mcmaster_open = open;
-            return;
-        };
-        // egui lays out in points and so does the webview's logical rect, so the reserved
-        // area maps across directly — no scale factor to get wrong on a HiDPI display.
-        let bounds = wry::Rect {
-            position: wry::dpi::LogicalPosition::new(rect.min.x, rect.min.y).into(),
-            size: wry::dpi::LogicalSize::new(rect.width().max(1.0), rect.height().max(1.0))
-                .into(),
-        };
-        match &self.mcmaster {
-            Some(view) => view.set_bounds(bounds),
-            None => {
-                let start = if self.state.mcmaster_part.trim().is_empty() {
-                    mcmaster::CATALOG_URL.to_string()
-                } else {
-                    mcmaster::part_url(&self.state.mcmaster_part)
-                };
-                match mcmaster::CatalogWindow::open(frame, &start, bounds, ctx.clone()) {
-                    Ok(view) => self.mcmaster = Some(view),
-                    Err(err) => {
-                        self.state.status = format!("McMaster-Carr: {err}");
-                        self.state.mcmaster_open = false;
-                        return;
-                    }
+        if self.mcmaster.is_none() {
+            let part = Some(self.state.mcmaster_part.as_str()).filter(|p| !p.trim().is_empty());
+            match mcmaster::CatalogSession::open(part, ctx.clone()) {
+                Ok(session) => self.mcmaster = Some(session),
+                Err(err) => {
+                    self.state.status = format!("McMaster-Carr: {err}");
+                    self.state.mcmaster_open = false;
+                    return;
                 }
             }
         }
-        if let (Some(view), Some(url)) = (&self.mcmaster, go_to) {
-            view.load(&url);
+        let Some(session) = &self.mcmaster else { return };
+        for caught in session.take_caught() {
+            self.state.import_catalog_part(&caught);
         }
-        // Whatever the webview's handlers posted since last frame: caught CAD downloads to
-        // import, and links that led off McMaster's site for the real browser.
-        if let Some(view) = &self.mcmaster {
-            let inbox = view.drain();
-            for url in inbox.external {
-                let _ = open_in_browser(&url);
-            }
-            for caught in inbox.caught {
-                self.import_caught_part(&caught);
-            }
+        // The user closing the window is the user closing the window.
+        if self.mcmaster.as_ref().is_some_and(|s| s.finished()) {
+            self.mcmaster = None;
+            self.state.mcmaster_open = false;
         }
-        self.state.mcmaster_open = open;
-    }
-
-    /// Import a CAD file the catalog window caught (#1022), through the same paths a
-    /// File → Import goes through — so a catalog part is an ordinary body afterwards.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn import_caught_part(&mut self, caught: &mcmaster::CaughtDownload) {
-        let name = mcmaster::body_name_for(&caught.path, &caught.url);
-        let Some(format) = mcmaster::CadFormat::of(&caught.path) else {
-            self.state.status = format!(
-                "McMaster-Carr sent a {} file — choose STEP or STL on their CAD menu",
-                caught
-                    .path
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_ascii_uppercase())
-                    .unwrap_or_else(|| "different".to_string())
-            );
-            return;
-        };
-        let bytes = match std::fs::read(&caught.path) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                self.state.status = format!("Could not read the downloaded part: {err}");
-                return;
-            }
-        };
-        match format {
-            mcmaster::CadFormat::Step => {
-                self.state.import_step_bytes(&name, &bytes);
-            }
-            mcmaster::CadFormat::Stl => {
-                self.state.import_stl_bytes(&name, &bytes);
-            }
-        }
-        // The scratch copy has served its purpose; the body carries the geometry now.
-        let _ = std::fs::remove_file(&caught.path);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -11425,7 +11339,7 @@ impl eframe::App for App {
                     }
                     // The catalog, in a window (#1022): pick a part on McMaster's own site
                     // and its CAD lands in the document instead of in Downloads.
-                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     {
                         ui.separator();
                         if ui.button("Import from McMaster-Carr…").clicked() {
@@ -11488,11 +11402,10 @@ impl eframe::App for App {
         #[cfg(not(target_arch = "wasm32"))]
         self.show_settings_window(ctx);
 
-        // McMaster-Carr catalog window (#1022): their site in a webview, its CAD download
-        // caught and imported. Drawn last of the windows so its native view, which
-        // composites above the canvas, sits over the frame that hosts it.
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        self.show_mcmaster_window(ctx, frame);
+        // McMaster-Carr catalog window (#1022): a window of its own, in a second process,
+        // whose caught CAD downloads land here.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_mcmaster_window(ctx);
 
         // Keyboard Shortcuts window (#434): a closable, scrollable list of every binding,
         // grouped by where it applies, rendered from shortcuts::all_shortcuts().

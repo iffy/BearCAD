@@ -6063,6 +6063,9 @@ pub enum CliOutcome {
     InstallCli,
     /// Remove the `bearcad` CLI symlink (`bearcad uninstall-cli`).
     UninstallCli,
+    /// Show the McMaster-Carr catalog in a window of its own (`bearcad mcmaster [part]`,
+    /// #1022). The app runs itself under this to host the web view in a second process.
+    McMaster { part: Option<String> },
     Run(ScriptOptions),
 }
 
@@ -6080,6 +6083,8 @@ Commands:
   install-cli           Symlink this executable onto PATH as `bearcad`
                         (default /usr/local/bin; use sudo if it is not writable)
   uninstall-cli         Remove the `bearcad` PATH symlink
+  mcmaster [part]       Browse the McMaster-Carr catalog in a window, printing each CAD
+                        file it downloads. The app runs this itself when you import a part
 
 Options:
   --script <path>       Run a Lua script
@@ -6123,6 +6128,9 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
     match args.get(1).map(String::as_str) {
         Some("install-cli") => return CliOutcome::InstallCli,
         Some("uninstall-cli") => return CliOutcome::UninstallCli,
+        Some(crate::mcmaster::SUBCOMMAND) => {
+            return CliOutcome::McMaster { part: args.get(2).cloned() }
+        }
         _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))

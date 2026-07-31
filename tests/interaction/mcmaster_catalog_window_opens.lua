@@ -1,7 +1,7 @@
--- Interaction regression (#1022): the McMaster-Carr catalog window builds a real webview
--- as a child of the app's window, and closing it takes the view down again. A webview that
--- fails to build closes the window and says why in the status, so a silent status is the
--- assertion: the platform view was actually created.
+-- Interaction regression (#1022): the McMaster-Carr catalog window is a second process —
+-- this same binary under `bearcad mcmaster` — so opening it spawns that process and closing
+-- it kills the process again. A spawn that fails closes the window and says why in the
+-- status, so a status free of that is the assertion: the process really started.
 bearcad.new()
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).
 bearcad.ui.pane("elements", "hide")
@@ -12,20 +12,12 @@ bearcad.ui.wait(5)
 bearcad.ui.mcmaster("show", "91290A115")
 bearcad.ui.wait(60)
 local opened = bearcad.status()
--- The window needs a platform web view: macOS and Windows have one, and wry's Linux path
--- needs a GTK main loop this app doesn't run. Where it isn't available it says so and opens
--- nothing, which is the whole assertion there.
-if opened:find("needs macOS or Windows") then
-  print("ok: the catalog window reports itself unavailable on this platform")
-  bearcad.quit()
-  return
-end
-assert(not opened:find("could not open"),
-  "the catalog window should have built its webview, got: " .. opened)
+assert(not opened:find("could not"),
+  "the catalog window's process should have started, got: " .. opened)
 assert(opened:find("opened"), "the catalog window should report itself open, got: " .. opened)
 
--- Closing drops the webview with the window; re-opening builds a fresh one, which is what
--- would break if the first were leaked.
+-- Closing kills the process; re-opening starts a fresh one, which is what would break if
+-- the first were leaked or left running.
 bearcad.ui.mcmaster("hide")
 bearcad.ui.wait(10)
 assert(bearcad.status():find("closed"),
@@ -33,8 +25,8 @@ assert(bearcad.status():find("closed"),
 
 bearcad.ui.mcmaster("show")
 bearcad.ui.wait(60)
-assert(not bearcad.status():find("could not open"),
-  "re-opening should build a fresh webview, got: " .. bearcad.status())
+assert(not bearcad.status():find("could not"),
+  "re-opening should start a fresh process, got: " .. bearcad.status())
 bearcad.ui.mcmaster("hide")
 bearcad.ui.wait(10)
 

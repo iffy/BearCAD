@@ -2959,11 +2959,6 @@ fn unique_instance_name(doc: &Document, base: &str) -> String {
         n += 1;
     }
 }
-/// Whether this platform can show the McMaster-Carr catalog window (#1022): it needs a
-/// platform web view that composites over the app's canvas. macOS and Windows have one;
-/// wry's Linux path needs a GTK main loop this app doesn't run, and only works on X11.
-pub const MCMASTER_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
-
 
 /// Application state that actions mutate.
 pub struct AppState {
@@ -4021,6 +4016,49 @@ impl AppState {
                 ActionResult::Err(self.status.clone())
             }
         }
+    }
+
+    /// Import a CAD file the McMaster-Carr catalog window caught (#1022), through the same
+    /// paths a File → Import goes through — so a catalog part is an **ordinary body**
+    /// afterwards, with nothing special about it.
+    ///
+    /// The scratch copy is deleted either way: the body carries the geometry now, and a
+    /// file we couldn't read is one we'll never read.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_catalog_part(
+        &mut self,
+        caught: &crate::mcmaster::CaughtDownload,
+    ) -> ActionResult {
+        let name = crate::mcmaster::body_name_for(&caught.path, &caught.url);
+        let cleanup = || {
+            let _ = std::fs::remove_file(&caught.path);
+        };
+        let Some(format) = crate::mcmaster::CadFormat::of(&caught.path) else {
+            cleanup();
+            self.status = format!(
+                "McMaster-Carr sent a {} file — choose STEP or STL on their CAD menu",
+                caught
+                    .path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_ascii_uppercase())
+                    .unwrap_or_else(|| "different".to_string())
+            );
+            return ActionResult::Err(self.status.clone());
+        };
+        let bytes = match std::fs::read(&caught.path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                cleanup();
+                self.status = format!("Could not read the downloaded part: {err}");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        let result = match format {
+            crate::mcmaster::CadFormat::Step => self.import_step_bytes(&name, &bytes),
+            crate::mcmaster::CadFormat::Stl => self.import_stl_bytes(&name, &bytes),
+        };
+        cleanup();
+        result
     }
 
     /// Import a PNG/JPEG from raw bytes as a tracing image on `plane` (default: ground).
@@ -8183,15 +8221,6 @@ impl AppState {
                 }
             }
             Action::SetMcMasterWindow { open, part } => {
-                // The catalog window is a platform web view (#1022). macOS and Windows have
-                // one that composites over the app's canvas; wry's Linux path needs a GTK
-                // main loop this app doesn't run — and would panic rather than degrade — so
-                // there the window says so instead of opening.
-                if !MCMASTER_SUPPORTED {
-                    self.status =
-                        "The McMaster-Carr catalog window needs macOS or Windows".to_string();
-                    return ActionResult::Err(self.status.clone());
-                }
                 if let Some(part) = part {
                     self.mcmaster_part = part;
                 }
@@ -18002,6 +18031,52 @@ mod tests {
         assert_eq!(state.doc.units.len(), 1, "the embedded copy stays");
 
         let _ = std::fs::remove_file(&unit_path);
+    }
+
+    /// #1022: a part the catalog window caught lands as an ordinary body, named after its
+    /// part number, and the scratch copy is cleaned up behind it.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_caught_catalog_part_imports_as_a_body() {
+        let dir = std::env::temp_dir().join("bearcad-mcmaster-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("91290A115.stl");
+        // A one-triangle ASCII STL is enough to make a body.
+        std::fs::write(
+            &path,
+            "solid s\nfacet normal 0 0 1\nouter loop\n\
+             vertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n\
+             endloop\nendfacet\nendsolid s\n",
+        )
+        .unwrap();
+        let mut state = AppState::default();
+        let before = state.doc.bodies.len();
+        let caught = crate::mcmaster::CaughtDownload {
+            path: path.clone(),
+            url: "https://www.mcmaster.com/91290A115/cad".to_string(),
+        };
+        assert!(matches!(state.import_catalog_part(&caught), ActionResult::Ok));
+        assert_eq!(state.doc.bodies.len(), before + 1, "the part became a body");
+        assert_eq!(
+            state.doc.bodies.last().unwrap().name.as_deref(),
+            Some("91290A115"),
+            "the body is named after the part number"
+        );
+        assert!(!path.exists(), "the scratch copy is cleaned up");
+
+        // A format the app can't read is refused by name, and still cleaned up — a file we
+        // couldn't read is one we'll never read.
+        let dxf = dir.join("91290A115.dxf");
+        std::fs::write(&dxf, b"not cad we read").unwrap();
+        let caught = crate::mcmaster::CaughtDownload {
+            path: dxf.clone(),
+            url: String::new(),
+        };
+        assert!(matches!(state.import_catalog_part(&caught), ActionResult::Err(_)));
+        assert!(state.status.contains("DXF"), "says what it got: {}", state.status);
+        assert_eq!(state.doc.bodies.len(), before + 1, "nothing was added");
+        assert!(!dxf.exists(), "the unreadable copy is cleaned up too");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
