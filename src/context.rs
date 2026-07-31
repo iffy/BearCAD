@@ -415,8 +415,8 @@ pub struct JointControl {
 }
 
 /// A line-up row picker's registered name (#1015/#968): rows are numbered so a script can
-/// name one, and the two mate columns don't collide with the part slots above them. Beyond
-/// the numbered few a row keeps the plain name — a mate is fully placed in two or three.
+/// name one, and the mate rows don't collide with the part slots above them. Beyond the
+/// numbered few a row keeps the plain name — a mate is fully placed in two or three.
 fn line_up_heading(row: usize, moving: bool) -> &'static str {
     const MOVING: [&str; 4] = ["Line up 1 moving", "Line up 2 moving", "Line up 3 moving", "Line up 4 moving"];
     const FIXED: [&str; 4] = ["Line up 1 fixed", "Line up 2 fixed", "Line up 3 fixed", "Line up 4 fixed"];
@@ -5474,63 +5474,46 @@ pub fn show_pane(
         // other side rather than letting a wrong one land.
         let tool_pickers = &content.tool_pickers;
         // The **mate** — where the parts start out (#1021): *put this face on that face,
-        // then line this up with that.* Two columns, headed Moving and Fixed with no
-        // left-hand label, because the columns say which side each pick belongs to. The
-        // face pair comes first; the line-up rows below take away what it leaves free, and
-        // simply stop appearing once nothing is left to pin.
+        // then line this up with that.* Alternating labeled rows (#1024), not two columns:
+        // the two-column layout made the pane too wide and re-used one widget id per line-up
+        // row (#1025). Each picker gets a unique id salted by role and row index.
         section_label(ui, "Mate");
-        let column_pair = |ui: &mut egui::Ui,
-                           pending: &mut Option<JointEdit>,
-                           id: &'static str,
-                           left: (PickerTarget, JointEdit, JointEdit),
-                           right: (PickerTarget, JointEdit, JointEdit)| {
-            ui.horizontal_top(|ui| {
-                let width = (ui.available_width() - ui.spacing().item_spacing.x) * 0.5;
-                for (i, (target, on_focus, on_clear)) in [left, right].into_iter().enumerate() {
-                    let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
-                        continue;
-                    };
-                    ui.allocate_ui(egui::vec2(width, 26.0), |ui| {
-                        ui.set_max_width(width);
-                        let cell = if i == 0 { "a" } else { "b" };
-                        if let Some(event) = crate::element_picker::show(
-                            ui,
-                            &view.picker,
-                            doc,
-                            &format!("{id}_{cell}"),
-                        ) {
-                            *pending = Some(match event {
-                                crate::element_picker::PickerEvent::Focus => on_focus.clone(),
-                                _ => on_clear.clone(),
-                            });
-                        }
+        let mate_row = |ui: &mut egui::Ui,
+                        pending: &mut Option<JointEdit>,
+                        label: &'static str,
+                        id: (&str, &str, usize),
+                        target: PickerTarget,
+                        on_focus: JointEdit,
+                        on_clear: JointEdit| {
+            let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                return;
+            };
+            labeled_row_top(ui, label, |ui| {
+                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
+                    *pending = Some(match event {
+                        crate::element_picker::PickerEvent::Focus => on_focus.clone(),
+                        _ => on_clear.clone(),
                     });
                 }
             });
         };
-        ui.horizontal(|ui| {
-            let width = (ui.available_width() - ui.spacing().item_spacing.x) * 0.5;
-            for heading in ["Moving", "Fixed"] {
-                ui.allocate_ui(egui::vec2(width, 14.0), |ui| {
-                    ui.set_max_width(width);
-                    section_label(ui, heading);
-                });
-            }
-        });
-        column_pair(
+        mate_row(
             ui,
             &mut pending,
-            "joint_mate_face",
-            (
-                PickerTarget::JointMovingFace,
-                JointEdit::MovingFaceFocus,
-                JointEdit::ClearMovingFace,
-            ),
-            (
-                PickerTarget::JointFixedFace,
-                JointEdit::FixedFaceFocus,
-                JointEdit::ClearFixedFace,
-            ),
+            "Moving face",
+            ("joint_mate", "moving_face", 0),
+            PickerTarget::JointMovingFace,
+            JointEdit::MovingFaceFocus,
+            JointEdit::ClearMovingFace,
+        );
+        mate_row(
+            ui,
+            &mut pending,
+            "Fixed face",
+            ("joint_mate", "fixed_face", 0),
+            PickerTarget::JointFixedFace,
+            JointEdit::FixedFaceFocus,
+            JointEdit::ClearFixedFace,
         );
         // How the face pair lands: which way round, and the gap it's held off by (#1014).
         if control.moving_face.is_some() || control.fixed_face.is_some() {
@@ -5554,20 +5537,23 @@ pub fn show_pane(
             });
         }
         for i in 0..control.line_up.len() {
-            column_pair(
+            mate_row(
                 ui,
                 &mut pending,
-                "joint_mate_line_up",
-                (
-                    PickerTarget::JointLineUpMoving(i),
-                    JointEdit::LineUpMovingFocus(i),
-                    JointEdit::ClearLineUpMoving(i),
-                ),
-                (
-                    PickerTarget::JointLineUpFixed(i),
-                    JointEdit::LineUpFixedFocus(i),
-                    JointEdit::ClearLineUpFixed(i),
-                ),
+                line_up_heading(i, true),
+                ("joint_mate", "line_up_moving", i),
+                PickerTarget::JointLineUpMoving(i),
+                JointEdit::LineUpMovingFocus(i),
+                JointEdit::ClearLineUpMoving(i),
+            );
+            mate_row(
+                ui,
+                &mut pending,
+                line_up_heading(i, false),
+                ("joint_mate", "line_up_fixed", i),
+                PickerTarget::JointLineUpFixed(i),
+                JointEdit::LineUpFixedFocus(i),
+                JointEdit::ClearLineUpFixed(i),
             );
         }
         // What this kind of joint can do, under its own name (#997): the freedoms it has and

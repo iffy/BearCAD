@@ -1374,9 +1374,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   that kind's own freedoms and the limits on them. Rigid has neither, so it gets no second
   section.
   **The mate (#1021, `model::JointMate`):** *put this face on that face, then line this up with
-  that.* Two columns headed **Moving** and **Fixed** with no left-hand row label — the columns
-  already say which side each pick belongs to. The mate is a **starting placement and nothing
-  more**: it works out to a rigid transform (`mate::placement`) that the kind's freedoms then act
+  that.* Alternating labeled rows — **Moving face** / **Fixed face**, then each line-up as
+  **Line up N moving** / **Line up N fixed** (#1024) — not two side-by-side columns. The mate is a
+  **starting placement and nothing more**: it works out to a rigid transform (`mate::placement`) that the kind's freedoms then act
   on top of, exactly where the frames sat in `joints::joint_transform`, and has no bearing on how
   the joint moves. Anchoring a slider fully and then choosing its slide axis and limits stays
   valid — the two are independent by design.
