@@ -1407,6 +1407,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     is the **mating normal** — a part spun, tilted or screwed on a face turns about the face it
     sits on — except for `slider` and `pin_slot`, whose slide is travel rather than lift: those
     take the first line-up row's direction, because a part flush on a face slides *along* it.
+  - **Holes and shafts (#1013):** a round wall is one element with a **centre line** of its
+    own (`SceneElement::BodyCylinder` / `BodyAxis`, fitted by `extrude::fit_cylinder` from the
+    mesh, so an imported part gets them as readily as a modelled hole). Lining a hole up on a
+    shaft is then one line-up row picking each centre line, rather than a fudge with face
+    centres.
   - **Grounding against the world (#1018):** the fixed side takes a datum plane, a world axis or
     the origin as readily as another part's geometry, which is how the first part of an assembly
     is placed. World-fixed picks don't ride the base's pose; body picks do, so a chain lines up
@@ -2607,6 +2612,22 @@ modeled on SolveSpace (https://solvespace.com).
   their hover highlights (#153). `resolve_pick_target` offers a face as a **priority-1** candidate
   (below edges/vertices at priority 0, via `PickOcclusion::eye`), so clicking near an edge still
   picks the edge and clicking a face **interior** selects the face (#565).
+  **Round walls are cylinders, and have axes (#1013):** a circular profile facets finely
+  enough that its whole wall already merges into one coplanar group, but that group is no
+  plane — calling it a flat face gave it a nonsense normal. `extrude::fit_cylinder` names it
+  for what it is: the axis from the fan of normals, the radius from a least-squares circle
+  through the points projected square to it, and two gates that tell a round wall from a
+  faceted prism — every facet must face straight out from the axis, and consecutive facets
+  must sit close enough round it (a box's four walls fit a circle through their corners
+  perfectly well). It comes back as `SceneElement::BodyCylinder` (its own
+  `ElementKind::Cylinder` — a picker wanting something to sit a part flush on must not be
+  offered one), and its **centre line** as `SceneElement::BodyAxis`, derived geometry with no
+  owning entity like `GlobalAxis`, picked at edge priority and usable anywhere a straight
+  reference is: a mate's line-up row (#1015), a Revolve axis, a Repeat path. Fitted from the
+  mesh, so an imported part gets them as readily as a modelled hole; memoized alongside the
+  face groups (`extrude::body_cylinders`), with an un-posed twin for mate resolution.
+  Scripting: `bearcad.body_cylinders(i)` reports each wall's axis, radius and length, and
+  `bearcad.body_faces(i)` reports the **flat** faces only.
   **Curved edges select as whole curves (#626):** feature segments are partitioned into maximal
   tangent-continuous chains (`solid_mesh_edge_chains`: at every vertex where exactly two feature
   segments meet under a 30° turn — a smooth curve's tessellation — they join one chain; corners

@@ -43,6 +43,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -192,6 +194,8 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -434,6 +438,8 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -735,6 +741,9 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             format!("Corner of {}", body_label(doc, *body))
         }
         SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
+        // A hole, a boss, a shaft (#1013) — and its centre line.
+        SceneElement::BodyCylinder { body, .. } => format!("Cylinder of Body {body}"),
+        SceneElement::BodyAxis { body, .. } => format!("Axis of Body {body}"),
         SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
         // An analytic edge reads as its owner plus where it sits in the profile (#955) — the
         // wording the Chamfer/Fillet picker's own row builder used before it became a picker.

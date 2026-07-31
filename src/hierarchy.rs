@@ -162,6 +162,23 @@ pub enum SceneElement {
         centroid: [i32; 3],
         normal: [i32; 3],
     },
+    /// A **cylindrical** surface of a body's solid mesh (#1013): a hole's wall, a boss, a
+    /// round shaft. Keyed by its fitted axis and radius — quantized like every other
+    /// mesh-derived identity — so clicking a hole picks the hole, not one facet of it.
+    BodyCylinder {
+        body: usize,
+        origin: [i32; 3],
+        dir: [i32; 3],
+        radius: i32,
+    },
+    /// A cylindrical surface's **centre line** (#1013): derived geometry with no owning
+    /// entity, the way [`SceneElement::GlobalAxis`] gave the world axes an identity. This is
+    /// what "put this hole on that shaft" and "slide along this bore" are actually about.
+    BodyAxis {
+        body: usize,
+        origin: [i32; 3],
+        dir: [i32; 3],
+    },
     /// A tracing image (#163/#169).
     Image(usize),
     /// A boolean operation between bodies (Combine tool).
@@ -300,6 +317,11 @@ impl SceneElement {
             MateRef::Edge { body, a, b } => SceneElement::BodyEdge { body: *body, a: *a, b: *b },
             MateRef::Axis(a) => SceneElement::GlobalAxis(*a),
             MateRef::Point(p) => SceneElement::from_move_point(*p),
+            MateRef::HoleAxis { body, origin, dir } => SceneElement::BodyAxis {
+                body: *body,
+                origin: *origin,
+                dir: *dir,
+            },
         }
     }
 
@@ -323,6 +345,12 @@ impl SceneElement {
             }
             SceneElement::Origin => MateRef::Point(MovePointRef::Origin),
             SceneElement::MovePoint(p) => MateRef::Point(*p),
+            // A hole's centre line is what "line these up" usually means (#1013).
+            SceneElement::BodyAxis { body, origin, dir } => MateRef::HoleAxis {
+                body: *body,
+                origin: *origin,
+                dir: *dir,
+            },
             _ => return None,
         })
     }
@@ -404,6 +432,12 @@ impl SceneElement {
                 a: dequantize_body_point(*a),
                 b: dequantize_body_point(*b),
             },
+            // A hole's or a shaft's centre line is a straight reference like any other
+            // (#1013): revolve about it, repeat along it, slide down it.
+            SceneElement::BodyAxis { body, origin, dir } => {
+                let (o, d) = (dequantize_body_point(*origin), dequantize_body_point(*dir));
+                RevolveAxis::BodyEdge { body: *body, a: o - d, b: o + d }
+            }
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X) => RevolveAxis::X,
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::Y) => RevolveAxis::Y,
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z) => RevolveAxis::Z,
@@ -673,7 +707,9 @@ impl ElementVisibility {
             // A body's own edge/vertex/face (#156/#555) is visible exactly when its body is.
             SceneElement::BodyEdge { body, .. }
             | SceneElement::BodyVertex { body, .. }
-            | SceneElement::BodyFace { body, .. } => {
+            | SceneElement::BodyFace { body, .. }
+            | SceneElement::BodyCylinder { body, .. }
+            | SceneElement::BodyAxis { body, .. } => {
                 self.effective_visible(doc, SceneElement::Body(body))
             }
             // An analytic face (#952) has no row of its own; its owner's visibility governs
@@ -1687,6 +1723,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -2696,6 +2734,8 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -2848,6 +2888,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }

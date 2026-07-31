@@ -1275,17 +1275,25 @@ pub fn pick_body_face(
                 triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
             let depth = (centroid - eye).length();
             if best.as_ref().is_none_or(|(_, d)| depth < *d) {
-                let normal = (triangles[0][1] - triangles[0][0])
-                    .cross(triangles[0][2] - triangles[0][0])
-                    .normalize_or_zero();
-                best = Some((
-                    crate::construction::PickTargetKind::BodyFace {
+                // A round wall is a cylinder, not a face (#1013): it has no one normal, so
+                // calling it flat gives it a nonsense plane.
+                let kind = match crate::extrude::fit_cylinder(&triangles) {
+                    Some(cylinder) => crate::construction::PickTargetKind::BodyCylinder {
                         body: bi,
-                        triangles,
-                        normal,
+                        cylinder: Box::new(cylinder),
                     },
-                    depth,
-                ));
+                    None => {
+                        let normal = (triangles[0][1] - triangles[0][0])
+                            .cross(triangles[0][2] - triangles[0][0])
+                            .normalize_or_zero();
+                        crate::construction::PickTargetKind::BodyFace {
+                            body: bi,
+                            triangles,
+                            normal,
+                        }
+                    }
+                };
+                best = Some((kind, depth));
             }
         }
     }

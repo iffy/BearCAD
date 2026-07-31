@@ -115,6 +115,8 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::BodyFace { .. } | SceneElement::SketchFace(_) => "face",
+        SceneElement::BodyCylinder { .. } => "cylinder",
+        SceneElement::BodyAxis { .. } => "body_axis",
         SceneElement::MovePoint(_) => "move_point",
         SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
         SceneElement::RepeatedFace { .. } => "repeated_face",
@@ -189,6 +191,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_) => 0,
         SceneElement::ExtrusionEdge { extrusion, .. } => extrusion,
@@ -941,6 +945,18 @@ fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model:
     };
     if let Some(i) = t.get::<Option<usize>>("plane")? {
         return Ok(Some(crate::model::MateRef::Plane(i)));
+    }
+    // A hole's or a shaft's centre line (#1013).
+    if let Some(v) = t.get::<Option<Vec<f32>>>("hole_axis")? {
+        let body: usize = t.get("body")?;
+        let d: Vec<f32> = t
+            .get("direction")
+            .map_err(|_| mlua::Error::external(format!("`{what}.hole_axis` needs a `direction`")))?;
+        return Ok(Some(crate::model::MateRef::HoleAxis {
+            body,
+            origin: mm(v)?,
+            dir: mm(d)?,
+        }));
     }
     if let Some(name) = t.get::<Option<String>>("axis")? {
         let axis = match name.to_ascii_lowercase().as_str() {
@@ -2522,8 +2538,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, index) else {
                 return Ok(Value::Table(out));
             };
+            // Flat faces only (#1013): a round wall is a cylinder, reported by
+            // `body_cylinders`, and would give a mate a nonsense plane to land on.
             for (i, tris) in crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh)
                 .iter()
+                .filter(|tris| crate::extrude::fit_cylinder(tris).is_none())
                 .enumerate()
             {
                 let face = lua.create_table()?;
@@ -2542,6 +2561,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     )?,
                 )?;
                 out.set(i + 1, face)?;
+            }
+            Ok(Value::Table(out))
+        })?,
+    )?;
+
+    // A body's cylindrical surfaces (#1013): each with its centre line, in the un-posed
+    // body's own coordinates. `axis` is what a mate's `line_up` row takes to put a hole on a
+    // shaft; `cylinder` names the round wall itself.
+    api.set(
+        "body_cylinders",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let out = lua.create_table()?;
+            for (i, cyl) in crate::extrude::body_cylinders(doc, index).iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("body", index)?;
+                entry.set("cylinder", vec3_lua(lua, cyl.origin)?)?;
+                entry.set("direction", vec3_lua(lua, cyl.dir)?)?;
+                entry.set("radius", cyl.radius)?;
+                entry.set("length", cyl.half_length * 2.0)?;
+                let axis = lua.create_table()?;
+                axis.set("body", index)?;
+                axis.set("hole_axis", vec3_lua(lua, cyl.origin)?)?;
+                axis.set("direction", vec3_lua(lua, cyl.dir)?)?;
+                entry.set("axis", axis)?;
+                out.set(i + 1, entry)?;
             }
             Ok(Value::Table(out))
         })?,
@@ -2605,6 +2653,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     SceneElement::Point(_)
                         | SceneElement::FaceEdge(_)
                         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
                 ) {
                     entry.set("index", element_index(element))?;
                 }
@@ -7793,6 +7843,54 @@ mod tests {
         );
         // The status names the joint and both parts.
         assert!(state.status.contains("Revolute"), "{}", state.status);
+    }
+
+    /// #1013: a hole and a shaft have centre lines you can pick, so "put this peg in that
+    /// hole" is one face pair and one line-up row — no fudging with face centres.
+    #[test]
+    fn lua_joint_lines_up_two_hole_axes() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.circle{ x = 20, y = 20, r = 5 }
+            bearcad.extrude{
+              boolean = { op = "difference", a = { polygon = {0,1,2,3} }, b = { circle = 0 } },
+              distance = 6,
+            }
+            bearcad.circle{ x = 100, y = 0, r = 5 }
+            bearcad.extrude{ circle = 1, distance = 20 }
+            bearcad.exit_sketch()
+            local function face_facing(body, n)
+              for _, f in ipairs(bearcad.body_faces(body)) do
+                if math.abs(f.normal[1]-n[1]) < 0.01 and math.abs(f.normal[2]-n[2]) < 0.01
+                   and math.abs(f.normal[3]-n[3]) < 0.01 then return f end
+              end
+            end
+            assert(#bearcad.body_cylinders(0) == 1, "the plate has one hole")
+            assert(#bearcad.body_cylinders(1) == 1, "the peg has one round wall")
+            bearcad.joint{
+              a = 0, b = 1, kind = "cylindrical",
+              face = { moving = face_facing(1, {0,0,-1}), fixed = face_facing(0, {0,0,1}) },
+              line_up = {
+                {
+                  moving = bearcad.body_cylinders(1)[1].axis,
+                  fixed  = bearcad.body_cylinders(0)[1].axis,
+                },
+              },
+            }
+            "#,
+        );
+        assert_eq!(state.doc.joints.len(), 1);
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, 1).expect("the peg meshes");
+        let (min, max) = mesh.bounds().expect("bounds");
+        // The peg stands on the plate's top face (z = 6) and its axis lands on the hole's,
+        // so it is centred on (20, 20).
+        assert!((min.z - 6.0).abs() < 0.05, "peg sits on the plate, got {min}");
+        assert!(
+            ((min.x + max.x) * 0.5 - 20.0).abs() < 0.05
+                && ((min.y + max.y) * 0.5 - 20.0).abs() < 0.05,
+            "peg is concentric with the hole, spans {min}..{max}"
+        );
     }
 
     /// #894: `bearcad.begin_joint` arms the tool with its picks instead of committing.

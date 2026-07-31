@@ -2220,6 +2220,13 @@ pub enum MateRef {
     },
     /// One of the world axes (#952/#1018).
     Axis(crate::construction::GlobalAxis),
+    /// A cylindrical surface's centre line (#1013): a hole's or a shaft's axis, which is what
+    /// "line these two up" usually means. Keyed by the fitted axis, re-found on the live mesh.
+    HoleAxis {
+        body: usize,
+        origin: [i32; 3],
+        dir: [i32; 3],
+    },
     /// A point: a corner, an edge midpoint, a face's middle, or the world origin.
     Point(MovePointRef),
 }
@@ -2229,7 +2236,9 @@ impl MateRef {
     /// world axis, the origin), which no body owns and no joint pose carries.
     pub fn body(&self) -> Option<usize> {
         match self {
-            MateRef::Face { body, .. } | MateRef::Edge { body, .. } => Some(*body),
+            MateRef::Face { body, .. }
+            | MateRef::Edge { body, .. }
+            | MateRef::HoleAxis { body, .. } => Some(*body),
             MateRef::Point(p) => p.body(),
             MateRef::Plane(_) | MateRef::Axis(_) => None,
         }

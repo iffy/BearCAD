@@ -293,6 +293,7 @@ assert(s.bbox.max[3] - s.bbox.min[3] == 10)
 -- A body's faces and edges, spelled the way a joint's mate takes them.
 local f = bearcad.body_faces(0)[1]             -- { body, face = {x,y,z}, normal = {x,y,z} }
 local e2 = bearcad.body_edges(0)[1]            -- { body, edge = { {x,y,z}, {x,y,z} } }
+local c = bearcad.body_cylinders(0)[1]         -- a hole/boss: radius, length, and its axis
 
 bearcad.select{ kind = "line", index = 0 }
 assert(bearcad.selection()[1].kind == "line")  -- current scene selection

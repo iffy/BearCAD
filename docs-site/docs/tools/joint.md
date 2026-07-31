@@ -50,6 +50,9 @@ edge put the point on the line.
 A row appears as soon as there is something for it to pin, and stops appearing once the part
 is fully placed. A face plus two more picks places anything.
 
+A hole, a boss or a shaft has a **centre line** you can pick, so putting a peg in a hole is a
+face pair plus one line-up row.
+
 The fixed side takes a datum plane, a world axis or the origin too, which is how the first
 part of an assembly is grounded.
 
@@ -144,6 +147,18 @@ bearcad.joint{
   position = 90,
   turn_min = 0, turn_max = 110,
   name = "Hinge",
+}
+
+-- Put a peg in a hole: face on face, then line the two centre lines up.
+bearcad.joint{
+  a = 0, b = 1, kind = "cylindrical",
+  face = { moving = bearcad.body_faces(1)[1], fixed = bearcad.body_faces(0)[1] },
+  line_up = {
+    {
+      moving = bearcad.body_cylinders(1)[1].axis,
+      fixed  = bearcad.body_cylinders(0)[1].axis,
+    },
+  },
 }
 
 -- Ground the first part against a datum plane.

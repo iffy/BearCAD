@@ -1916,6 +1916,17 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: None,
         },
+        // A cylinder and its centre line (#1013) are keyed by geometry, not by an index.
+        SceneElement::BodyCylinder { .. } => ElementScriptTokens {
+            kind: "body_cylinder",
+            index: 0,
+            point: None,
+        },
+        SceneElement::BodyAxis { .. } => ElementScriptTokens {
+            kind: "body_axis",
+            index: 0,
+            point: None,
+        },
         SceneElement::Image(i) => ElementScriptTokens {
             kind: "image",
             index: i,
@@ -2826,6 +2837,11 @@ pub fn mate_ref_lua(r: &crate::model::MateRef) -> String {
                 crate::construction::GlobalAxis::Y => "y",
                 crate::construction::GlobalAxis::Z => "z",
             }
+        ),
+        crate::model::MateRef::HoleAxis { body, origin, dir } => format!(
+            "{{ body = {body}, hole_axis = {}, direction = {} }}",
+            mm_point_lua(*origin),
+            mm_point_lua(*dir)
         ),
         crate::model::MateRef::Point(crate::model::MovePointRef::EdgeMidpoint { body, a, b }) => {
             format!(

@@ -44,6 +44,10 @@ pub enum ElementKind {
     Vertex,
     /// An edge of a body/face boundary (as opposed to a free sketch [`Line`](ElementKind::Line)).
     Edge,
+    /// A **cylindrical** surface of a solid body (#1013): a hole's wall, a boss, a shaft. Its
+    /// own kind rather than a [`Face`](ElementKind::Face), because it is no plane — a picker
+    /// that wants something to sit a part flush on must not be offered one.
+    Cylinder,
     /// A flat face of a solid body (#555/#566), distinct from the whole [`Body`](ElementKind::Body):
     /// a picker can accept planes-or-faces without also taking whole bodies. This is the **mesh**
     /// face — a group of coplanar triangles, quantized from the body's geometry.
@@ -83,7 +87,7 @@ impl ElementKind {
     /// walking this list, so a kind left out is one no picker can accept and no summary can
     /// count (which is exactly what happened to `Image`). `every_kind_is_in_the_canonical_order`
     /// guards that.
-    pub const ORDER: [ElementKind; 18] = [
+    pub const ORDER: [ElementKind; 19] = [
         ElementKind::Plane,
         ElementKind::Image,
         ElementKind::Sketch,
@@ -93,6 +97,7 @@ impl ElementKind {
         ElementKind::Vertex,
         ElementKind::Edge,
         ElementKind::Face,
+        ElementKind::Cylinder,
         ElementKind::Profile,
         ElementKind::Constraint,
         ElementKind::Projection,
@@ -142,6 +147,10 @@ impl ElementKind {
             // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
             // accept it without also accepting whole bodies.
             SceneElement::BodyFace { .. } => ElementKind::Face,
+            // A round wall is its own kind (#1013); its centre line is a straight reference,
+            // exactly like a world axis.
+            SceneElement::BodyCylinder { .. } => ElementKind::Cylinder,
+            SceneElement::BodyAxis { .. } => ElementKind::Axis,
             SceneElement::Body(_) => ElementKind::Body,
             SceneElement::Component(_) => ElementKind::Component,
             SceneElement::Joint(_) => ElementKind::Joint,
@@ -177,7 +186,7 @@ impl ElementKind {
             // No dedicated point glyph; the coincident icon reads as "a point".
             ElementKind::Vertex => IconId::Coincident,
             ElementKind::Edge => IconId::Line,
-            ElementKind::Face | ElementKind::Profile => IconId::Face,
+            ElementKind::Face | ElementKind::Profile | ElementKind::Cylinder => IconId::Face,
             ElementKind::Constraint => IconId::Constraint,
             ElementKind::Projection => IconId::Projection,
             ElementKind::Annotation => IconId::Text,
@@ -201,6 +210,7 @@ impl ElementKind {
             ElementKind::Vertex => "vertex",
             ElementKind::Edge => "edge",
             ElementKind::Face => "face",
+            ElementKind::Cylinder => "cylinder",
             ElementKind::Profile => "profile",
             ElementKind::Constraint => "constraint",
             ElementKind::Projection => "projection",
@@ -249,7 +259,7 @@ pub fn default_pick_band(kind: ElementKind) -> usize {
         ElementKind::Dimension => 2,
         ElementKind::Annotation => 3,
         ElementKind::Projection => 5,
-        ElementKind::Face | ElementKind::Profile => 3,
+        ElementKind::Face | ElementKind::Profile | ElementKind::Cylinder => 3,
         ElementKind::Plane | ElementKind::Image => 4,
         ElementKind::Sketch => 5,
         ElementKind::Body => 6,

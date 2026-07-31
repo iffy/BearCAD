@@ -111,10 +111,14 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         | PickTargetKind::BodyEdge { .. }
         | PickTargetKind::GlobalAxis(_)
         | PickTargetKind::Circle(_) => PlaneAnchorSource::Axis,
+        // A cylinder's centre line is a straight reference like any other (#1013).
+        PickTargetKind::BodyAxis { .. } => PlaneAnchorSource::Axis,
         PickTargetKind::BodyFace { .. }
         | PickTargetKind::ConstructionPlane(_)
         | PickTargetKind::Ground(_)
         | PickTargetKind::SketchFace(_) => PlaneAnchorSource::Face,
+        // A round wall is no plane to anchor against; classify it as a point so this is total.
+        PickTargetKind::BodyCylinder { .. } => PlaneAnchorSource::Point,
         // Neither a constraint badge (#568) nor a whole body (#902) is a plane anchor — both only
         // reach the exploder; classify them as a point so the arm is total.
         PickTargetKind::Constraint(_) | PickTargetKind::Body(_) => PlaneAnchorSource::Point,
@@ -779,6 +783,8 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         },
         PickTargetKind::BodyEdge { .. }
         | PickTargetKind::BodyFace { .. }
+        | PickTargetKind::BodyCylinder { .. }
+        | PickTargetKind::BodyAxis { .. }
         | PickTargetKind::BodyVertex { .. }
         | PickTargetKind::Body(_)
         | PickTargetKind::GlobalAxis(_)
@@ -1320,6 +1326,15 @@ pub enum PickTargetKind {
         triangles: Vec<[Vec3; 3]>,
         normal: Vec3,
     },
+    /// A **cylindrical** surface of a 3D body's solid mesh (#1013): a hole's wall, a boss, a
+    /// shaft — the whole round wall, not one facet of it. Boxed because it carries the fitted
+    /// surface's triangles alongside its axis and radius.
+    BodyCylinder {
+        body: usize,
+        cylinder: Box<crate::extrude::BodyCylinder>,
+    },
+    /// A cylindrical surface's centre line (#1013), as the world segment it spans.
+    BodyAxis { body: usize, a: Vec3, b: Vec3 },
     /// A vertex (corner) of a 3D body's solid mesh (#144), for 3D hover/selection.
     BodyVertex {
         body: usize,
@@ -1438,6 +1453,8 @@ impl PickOcclusion {
             }
             PickTargetKind::BodyEdge { body, .. }
             | PickTargetKind::BodyFace { body, .. }
+            | PickTargetKind::BodyCylinder { body, .. }
+            | PickTargetKind::BodyAxis { body, .. }
             | PickTargetKind::BodyVertex { body, .. }
             | PickTargetKind::Body(body) => {
                 doc.bodies.get(*body).is_some_and(|b| !b.shadow)
@@ -1611,6 +1628,23 @@ pub fn resolve_pick_target(
     // so it's only offered when an occlusion context (which carries the eye) is present.
     if let Some(occ) = occlusion {
         if let Some(kind) = crate::face::pick_body_face(screen, project, doc, occ.eye()) {
+            // A round wall (#1013): the hole itself, not the flat face it never was. It
+            // anchors like a face — a plane through its axis pointing at the camera is the
+            // only sensible reference — but keeps its own identity.
+            if let PickTargetKind::BodyCylinder { cylinder, .. } = &kind {
+                if pickable(&kind) {
+                    let (origin, normal) = (cylinder.origin, cylinder.dir);
+                    consider(PickTarget {
+                        kind: kind.clone(),
+                        reference: PlaneReference::Face {
+                            origin,
+                            normal,
+                            label: "Cylinder".to_string(),
+                        },
+                        distance_px: 0.0,
+                    });
+                }
+            }
             if let PickTargetKind::BodyFace { triangles, normal, .. } = &kind {
                 if pickable(&kind) {
                     let n = (triangles.len() * 3).max(1) as f32;
@@ -1628,6 +1662,22 @@ pub fn resolve_pick_target(
                     });
                 }
             }
+        }
+    }
+
+    // A cylinder's **centre line** (#1013), ranked with the edges: the thing "put this hole
+    // on that shaft" and "slide along this bore" are actually about.
+    if let Some((kind, a, b, dist)) = nearest_body_axis(screen, project, doc) {
+        if pickable(&kind) && visible(segment_point_nearest_screen(screen, project, a, b)) {
+            consider(PickTarget {
+                kind,
+                reference: PlaneReference::Axis {
+                    origin: segment_midpoint(a, b),
+                    direction: segment_direction(a, b),
+                    label: "Axis".to_string(),
+                },
+                distance_px: dist,
+            });
         }
     }
 
@@ -1855,6 +1905,20 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
                 normal: crate::hierarchy::quantize_body_point(*normal),
             })
         }
+        // A round wall and its centre line (#1013): keyed by the fitted axis (and radius),
+        // so two picks of the same hole compare equal.
+        PickTargetKind::BodyCylinder { body, cylinder } => {
+            Some(crate::extrude::cylinder_scene_element(*body, cylinder))
+        }
+        PickTargetKind::BodyAxis { body, a, b } => {
+            let q = crate::hierarchy::quantize_body_point;
+            let dir = crate::extrude::canonical_axis_direction(*b - *a);
+            Some(SceneElement::BodyAxis {
+                body: *body,
+                origin: q((*a + *b) * 0.5),
+                dir: q(dir),
+            })
+        }
         PickTargetKind::Constraint(index) => Some(SceneElement::Constraint(*index)),
         // The whole body (#902).
         PickTargetKind::Body(index) => Some(SceneElement::Body(*index)),
@@ -1952,6 +2016,25 @@ pub fn draw_pick_highlight(
             for (a, b) in coplanar_face_boundary(&triangles) {
                 draw_segment_highlight(painter, project, a, b, color);
             }
+        }
+        // A round wall (#1013): its facets filled, like a flat face's.
+        PickTargetKind::BodyCylinder { cylinder, .. } => {
+            let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
+            for tri in &cylinder.triangles {
+                if let (Some(a), Some(b), Some(c)) =
+                    (project(tri[0]), project(tri[1]), project(tri[2]))
+                {
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![a, b, c],
+                        fill,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+        }
+        // Its centre line, drawn as the segment it spans.
+        PickTargetKind::BodyAxis { a, b, .. } => {
+            draw_segment_highlight(painter, project, a, b, color);
         }
         PickTargetKind::BodyVertex { position, .. } => {
             if let Some(sp) = project(position) {
@@ -2608,6 +2691,32 @@ fn nearest_sketch_edge(
 
 /// Nearest feature edge of any 3D body's solid mesh (#31) — lets a construction plane be
 /// referenced from any edge on any shape, not just 2D sketch geometry.
+/// The cylinder centre line nearest the cursor (#1013), with its world segment and screen
+/// distance — the axis twin of [`nearest_body_edge`].
+fn nearest_body_axis(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+) -> Option<(PickTargetKind, Vec3, Vec3, f32)> {
+    let mut best: Option<(PickTargetKind, Vec3, Vec3, f32)> = None;
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted || body.shadow {
+            continue;
+        }
+        for cyl in crate::extrude::body_cylinders(doc, bi).iter() {
+            let a = cyl.origin - cyl.dir * cyl.half_length;
+            let b = cyl.origin + cyl.dir * cyl.half_length;
+            let Some(dist) = segment_pick_distance(screen, project, a, b) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(_, _, _, d)| dist < *d) {
+                best = Some((PickTargetKind::BodyAxis { body: bi, a, b }, a, b, dist));
+            }
+        }
+    }
+    best
+}
+
 fn nearest_body_edge(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,

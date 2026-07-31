@@ -2548,6 +2548,18 @@ impl<'a> SceneMesh<'a> {
                     );
                     self.set_index_layer(restore);
                 }
+                // A selected cylinder or centre line (#1013): the same marks the hover draws.
+                SceneElement::BodyCylinder { .. } | SceneElement::BodyAxis { .. } => {
+                    self.push_element_hover(
+                        doc,
+                        element.clone(),
+                        color,
+                        &[],
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                }
                 // A selected body face (#555/#557): re-find the coplanar-triangle group whose
                 // quantized centroid+normal matches the stored key, then fill + stroke it in the
                 // selection color, depth-test-disabled like the edge/vertex marks above.
@@ -3300,6 +3312,36 @@ impl<'a> SceneMesh<'a> {
                     );
                 }
             }
+            // A hovered cylinder or its centre line (#1013): the round wall's own facets, and
+            // the axis drawn as a line through them.
+            SceneElement::BodyCylinder { body, origin, dir, radius } => {
+                if let Some(cyl) =
+                    crate::extrude::body_cylinder_matching(doc, body, origin, dir, radius)
+                {
+                    self.push_pick_target_highlight(
+                        doc,
+                        &PickTargetKind::BodyCylinder { body, cylinder: Box::new(cyl) },
+                        color,
+                        cam,
+                        viewport,
+                        view_proj,
+                        &project,
+                    );
+                }
+            }
+            SceneElement::BodyAxis { body, origin, dir } => {
+                if let Some((a, b)) = crate::extrude::body_axis_segment(doc, body, origin, dir) {
+                    self.push_pick_target_highlight(
+                        doc,
+                        &PickTargetKind::BodyAxis { body, a, b },
+                        color,
+                        cam,
+                        viewport,
+                        view_proj,
+                        &project,
+                    );
+                }
+            }
             // A hovered sketch text (#307): trace its glyph outlines in the hover color, so
             // the Extrude tool's "click picks the whole string" affordance is visible.
             SceneElement::SketchText(ti) => {
@@ -3470,6 +3512,20 @@ impl<'a> SceneMesh<'a> {
                 for (a, b) in crate::construction::coplanar_face_boundary(triangles) {
                     self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
                 }
+            }
+            // A round wall (#1013): its own facets, lifted toward the camera like a face's.
+            PickTargetKind::BodyCylinder { cylinder, .. } => {
+                let eye = cam.eye();
+                let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
+                for tri in &cylinder.triangles {
+                    let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+                    let lift = |p: Vec3| offset_toward_camera(p, n, eye, HOVER_FILL_DEPTH_BIAS);
+                    self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
+                }
+            }
+            // Its centre line: the segment the surface spans.
+            PickTargetKind::BodyAxis { a, b, .. } => {
+                self.push_segment_hover(*a, *b, color, cam, viewport, view_proj, project);
             }
             PickTargetKind::BodyVertex { position, .. } => {
                 push_screen_disc(self, *position, 5.0, color, cam, viewport, view_proj, project);

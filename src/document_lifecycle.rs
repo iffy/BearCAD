@@ -60,7 +60,9 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         // harmless because it simply stops matching anything).
         SceneElement::BodyEdge { body, .. }
         | SceneElement::BodyVertex { body, .. }
-        | SceneElement::BodyFace { body, .. } => body_alive(doc, body),
+        | SceneElement::BodyFace { body, .. }
+        | SceneElement::BodyCylinder { body, .. }
+        | SceneElement::BodyAxis { body, .. } => body_alive(doc, body),
         // An analytic face (#952) is alive while its plane still resolves — the same check the
         // geometry code makes before using one.
         SceneElement::SketchFace(face) => crate::face::sketch_frame(doc, face).is_some(),
@@ -316,6 +318,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::BodyFace { .. }
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }

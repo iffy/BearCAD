@@ -3363,6 +3363,29 @@ pub fn selection_world_bounds(
                     None => extend(crate::hierarchy::dequantize_body_point(centroid)),
                 }
             }
+            // A cylinder frames its whole round wall; its centre line, the axis segment
+            // that wall spans (#1013).
+            SceneElement::BodyCylinder { body, origin, dir, radius } => {
+                match body_cylinder_matching(doc, body, origin, dir, radius) {
+                    Some(cyl) => {
+                        for tri in &cyl.triangles {
+                            for p in tri {
+                                extend(*p);
+                            }
+                        }
+                    }
+                    None => extend(crate::hierarchy::dequantize_body_point(origin)),
+                }
+            }
+            SceneElement::BodyAxis { body, origin, dir } => {
+                match body_axis_segment(doc, body, origin, dir) {
+                    Some((a, b)) => {
+                        extend(a);
+                        extend(b);
+                    }
+                    None => extend(crate::hierarchy::dequantize_body_point(origin)),
+                }
+            }
             // A unit instance frames its placed evaluated meshes (#723).
             SceneElement::UnitInstance(index) => {
                 for solid in crate::units::placed_instance_meshes(doc, index) {
@@ -3655,6 +3678,298 @@ pub fn body_edge_chains(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Ve
         cache.1.insert(body_index, chains.clone());
         chains
     })
+}
+
+/// A **cylindrical** surface of a body (#1013): a hole's wall, a boss, a round shaft. The
+/// mesher facets a circular profile finely enough (`CIRCLE_SEGMENTS`) that the whole wall
+/// already comes back as one group from `solid_mesh_coplanar_faces` — the strips merge under
+/// the crease threshold — but that group is no plane, and calling it a flat face gives it a
+/// nonsense normal. This names it for what it is, and gives its **centre line** an identity:
+/// the thing "put this hole on that shaft" is actually about.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyCylinder {
+    /// The middle of the axis segment the surface spans.
+    pub origin: Vec3,
+    /// The axis direction, signed canonically so the same surface always keys the same way.
+    pub dir: Vec3,
+    pub radius: f32,
+    /// Half the axial extent, so the drawn axis matches the surface's own length.
+    pub half_length: f32,
+    pub triangles: Vec<[Vec3; 3]>,
+}
+
+/// How far a group's points may stray from the fitted cylinder, as a fraction of the radius.
+const CYLINDER_FIT_TOLERANCE: f32 = 0.03;
+/// How far a group's normals must fan out before it can be a cylinder rather than a plane.
+const CYLINDER_MIN_FAN_COS: f32 = 0.5; // 60°
+/// How closely the surface's normal must follow the direction straight out from its axis.
+/// This is what tells a cylinder from a faceted prism: a box's four walls fit a circle
+/// through their corners perfectly, but across each wall the normal wanders tens of degrees
+/// off radial, where a finely faceted round wall never leaves a few.
+const CYLINDER_RADIAL_COS: f32 = 0.985; // 10°
+/// How far apart consecutive facets may sit round the axis. A round wall only reaches the
+/// mesher as one group because its facets fall inside the 15° crease threshold; anything
+/// coarser is a prism whose walls happen to have their corners on a circle. The single
+/// widest gap is ignored, so a half-round wall is still round where it exists.
+const CYLINDER_MAX_FACET_STEP_DEG: f32 = 20.0;
+
+/// Fit a cylinder to one coplanar-triangle group (#1013), or `None` if the group is flat, too
+/// faceted to be round, or doesn't fit a cylinder at all.
+///
+/// The normals of a cylinder all lie in the plane square to its axis, so two of them that
+/// differ enough give the axis outright; the radius and centre then come from a plain
+/// least-squares circle through the points projected onto that plane.
+pub fn fit_cylinder(tris: &[[Vec3; 3]]) -> Option<BodyCylinder> {
+    if tris.len() < 6 {
+        return None;
+    }
+    let normals: Vec<Vec3> = tris
+        .iter()
+        .map(|t| (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero())
+        .filter(|n| n.length_squared() > 0.5)
+        .collect();
+    let first = *normals.first()?;
+    // The normal furthest from the first one: with a full turn of wall that is the opposite
+    // side, so pair it with a quarter-turn one instead — any two that differ enough do.
+    let mut dir = Vec3::ZERO;
+    let mut best_fan = 1.0f32;
+    for n in &normals {
+        let cos = first.dot(*n);
+        let cross = first.cross(*n);
+        if cross.length() > 0.1 && cos < best_fan {
+            best_fan = cos;
+            dir = cross.normalize();
+        }
+    }
+    if best_fan > CYLINDER_MIN_FAN_COS || dir.length_squared() < 0.5 {
+        return None;
+    }
+    // Every normal must be square to that axis, or the surface isn't a cylinder.
+    if normals.iter().any(|n| n.dot(dir).abs() > 0.05) {
+        return None;
+    }
+    let dir = canonical_axis_direction(dir);
+    let e1 = dir.any_orthonormal_vector();
+    let e2 = dir.cross(e1).normalize_or_zero();
+    let points: Vec<Vec3> = tris.iter().flat_map(|t| t.iter().copied()).collect();
+    let flat: Vec<glam::Vec2> = points
+        .iter()
+        .map(|p| glam::Vec2::new(p.dot(e1), p.dot(e2)))
+        .collect();
+    let (centre, radius) = fit_circle(&flat)?;
+    // Reject anything that isn't actually round — a box's four walls fit a circle through
+    // their corners perfectly well, which is exactly what the tolerance is here to catch.
+    let rms = (flat
+        .iter()
+        .map(|p| ((*p - centre).length() - radius).powi(2))
+        .sum::<f32>()
+        / flat.len() as f32)
+        .sqrt();
+    if radius <= 1e-4 || rms > radius * CYLINDER_FIT_TOLERANCE {
+        return None;
+    }
+    // Every facet must face straight out from the axis, or it's a flat wall of a prism.
+    let axis_point = e1 * centre.x + e2 * centre.y;
+    let mut angles = Vec::with_capacity(tris.len());
+    for (t, n) in tris.iter().zip(&normals) {
+        let c = (t[0] + t[1] + t[2]) / 3.0;
+        let radial = c - axis_point - dir * (c - axis_point).dot(dir);
+        let radial = radial.normalize_or_zero();
+        if radial.length_squared() < 0.5 || radial.dot(*n).abs() < CYLINDER_RADIAL_COS {
+            return None;
+        }
+        angles.push(radial.dot(e2).atan2(radial.dot(e1)).to_degrees());
+    }
+    // ...and the facets must be closely enough spaced round the axis to be round at all.
+    angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut gaps: Vec<f32> = angles
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .chain(std::iter::once(360.0 - (angles[angles.len() - 1] - angles[0])))
+        .collect();
+    gaps.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    if gaps.get(1).copied().unwrap_or(360.0) > CYLINDER_MAX_FACET_STEP_DEG {
+        return None;
+    }
+    let along: Vec<f32> = points.iter().map(|p| p.dot(dir)).collect();
+    let lo = along.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = along.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let origin = axis_point + dir * ((lo + hi) * 0.5);
+    Some(BodyCylinder {
+        origin,
+        dir,
+        radius,
+        half_length: (hi - lo) * 0.5,
+        triangles: tris.to_vec(),
+    })
+}
+
+/// An axis direction with a settled sign, so the same line always keys the same way whichever
+/// way round it was derived.
+pub fn canonical_axis_direction(dir: Vec3) -> Vec3 {
+    let d = dir.normalize_or_zero();
+    let (ax, ay, az) = (d.x.abs(), d.y.abs(), d.z.abs());
+    let lead = if ax >= ay && ax >= az {
+        d.x
+    } else if ay >= az {
+        d.y
+    } else {
+        d.z
+    };
+    if lead < 0.0 { -d } else { d }
+}
+
+/// Least-squares circle through 2-D points (the standard algebraic fit): centre and radius,
+/// or `None` when the points are collinear.
+fn fit_circle(points: &[glam::Vec2]) -> Option<(glam::Vec2, f32)> {
+    let n = points.len() as f32;
+    if n < 3.0 {
+        return None;
+    }
+    let mean = points.iter().copied().sum::<glam::Vec2>() / n;
+    let (mut sxx, mut sxy, mut syy, mut sxz, mut syz) = (0.0f32, 0.0, 0.0, 0.0, 0.0);
+    for p in points {
+        let (u, v) = (p.x - mean.x, p.y - mean.y);
+        let z = u * u + v * v;
+        sxx += u * u;
+        sxy += u * v;
+        syy += v * v;
+        sxz += u * z;
+        syz += v * z;
+    }
+    let det = sxx * syy - sxy * sxy;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let cu = (sxz * syy - syz * sxy) / (2.0 * det);
+    let cv = (syz * sxx - sxz * sxy) / (2.0 * det);
+    let centre = glam::Vec2::new(cu, cv) + mean;
+    let radius = (points
+        .iter()
+        .map(|p| (*p - centre).length())
+        .sum::<f32>())
+        / n;
+    Some((centre, radius))
+}
+
+thread_local! {
+    /// A body's fitted cylinders, keyed like every other mesh analysis (#845/#1013): the
+    /// pick and hover paths ask for these every frame.
+    static BODY_CYLINDER_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<BodyCylinder>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// A body's cylindrical surfaces in its **own** coordinates (#1013), un-posed and uncached —
+/// what a mate resolves against, exactly like the vertex and face keys beside it. The posed
+/// [`body_cylinders`] can't serve here: it goes through the posed mesh cache, which is being
+/// filled by the very joint resolution asking the question.
+pub fn body_cylinders_unposed(doc: &Document, body_index: usize) -> Vec<BodyCylinder> {
+    let Some(mesh) = body_solid_mesh_unposed(doc, body_index) else {
+        return Vec::new();
+    };
+    crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh)
+        .iter()
+        .filter_map(|tris| fit_cylinder(tris))
+        .collect()
+}
+
+/// The world segment a body's cylinder axis spans, in the body's own coordinates (#1013) —
+/// the un-posed twin of [`body_axis_segment`], for mate resolution.
+pub fn body_axis_segment_unposed(
+    doc: &Document,
+    body: usize,
+    origin: [i32; 3],
+    dir: [i32; 3],
+) -> Option<(Vec3, Vec3)> {
+    let q = crate::hierarchy::quantize_body_point;
+    let cyl = body_cylinders_unposed(doc, body)
+        .into_iter()
+        .find(|c| q(c.origin) == origin && q(c.dir) == dir)?;
+    Some((
+        cyl.origin - cyl.dir * cyl.half_length,
+        cyl.origin + cyl.dir * cyl.half_length,
+    ))
+}
+
+/// A body's cylindrical surfaces, memoized per document state (#1013).
+pub fn body_cylinders(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<BodyCylinder>> {
+    let fingerprint = document_pose_fingerprint(doc);
+    let groups = body_face_groups(doc, body_index);
+    BODY_CYLINDER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(found) = cache.1.get(&body_index) {
+            return found.clone();
+        }
+        let found =
+            std::rc::Rc::new(groups.iter().filter_map(|tris| fit_cylinder(tris)).collect());
+        cache.1.insert(body_index, std::rc::Rc::clone(&found));
+        found
+    })
+}
+
+/// Re-find a body's cylindrical surface from a quantized key (#1013) — the round-wall twin of
+/// [`face_group_matching`], so a hole follows its geometry and simply stops resolving when a
+/// rebuild takes it away.
+pub fn body_cylinder_matching(
+    doc: &Document,
+    body: usize,
+    origin: [i32; 3],
+    dir: [i32; 3],
+    radius: i32,
+) -> Option<BodyCylinder> {
+    let q = crate::hierarchy::quantize_body_point;
+    body_cylinders(doc, body)
+        .iter()
+        .find(|c| {
+            q(c.origin) == origin
+                && q(c.dir) == dir
+                && q(Vec3::splat(c.radius))[0] == radius
+        })
+        .cloned()
+}
+
+/// The world segment a body's cylinder axis spans (#1013): the centre line, as long as the
+/// surface it belongs to.
+pub fn body_axis_segment(
+    doc: &Document,
+    body: usize,
+    origin: [i32; 3],
+    dir: [i32; 3],
+) -> Option<(Vec3, Vec3)> {
+    let q = crate::hierarchy::quantize_body_point;
+    let cyl = body_cylinders(doc, body)
+        .iter()
+        .find(|c| q(c.origin) == origin && q(c.dir) == dir)
+        .cloned()?;
+    Some((
+        cyl.origin - cyl.dir * cyl.half_length,
+        cyl.origin + cyl.dir * cyl.half_length,
+    ))
+}
+
+/// The scene element a fitted cylinder is (#1013).
+pub fn cylinder_scene_element(body: usize, cyl: &BodyCylinder) -> crate::hierarchy::SceneElement {
+    let q = crate::hierarchy::quantize_body_point;
+    crate::hierarchy::SceneElement::BodyCylinder {
+        body,
+        origin: q(cyl.origin),
+        dir: q(cyl.dir),
+        radius: q(Vec3::splat(cyl.radius))[0],
+    }
+}
+
+/// A body's **flat** face groups (#1013): the coplanar groups that aren't cylinders, which is
+/// what a face pick, a face key and a mating plane all mean by "a face".
+pub fn body_flat_face_groups(doc: &Document, body_index: usize) -> Vec<Vec<[Vec3; 3]>> {
+    body_face_groups(doc, body_index)
+        .iter()
+        .filter(|tris| fit_cylinder(tris).is_none())
+        .cloned()
+        .collect()
 }
 
 /// A body's feature edges (mesh boundaries and creases), memoized per document state (#845).
@@ -5792,6 +6107,67 @@ fn extrude_profile_with_treatments(
 mod tests {
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
+
+    /// A tessellated tube of `sides` strips about +Z: what a circular extrusion's wall is.
+    fn tube(centre: Vec3, radius: f32, height: f32, sides: usize) -> Vec<[Vec3; 3]> {
+        let mut tris = Vec::new();
+        for i in 0..sides {
+            let a = (i as f32) / sides as f32 * std::f32::consts::TAU;
+            let b = ((i + 1) as f32) / sides as f32 * std::f32::consts::TAU;
+            let p = |ang: f32, z: f32| {
+                centre + Vec3::new(radius * ang.cos(), radius * ang.sin(), z)
+            };
+            tris.push([p(a, 0.0), p(b, 0.0), p(b, height)]);
+            tris.push([p(a, 0.0), p(b, height), p(a, height)]);
+        }
+        tris
+    }
+
+    /// #1013: a round wall reads as a cylinder — its axis, radius and length recovered from
+    /// the mesh alone, so an imported part gets one as readily as a modelled hole.
+    #[test]
+    fn a_round_wall_fits_a_cylinder() {
+        let tris = tube(Vec3::new(3.0, -2.0, 5.0), 4.0, 12.0, CIRCLE_SEGMENTS);
+        let cyl = fit_cylinder(&tris).expect("a tessellated tube is a cylinder");
+        assert!((cyl.dir - Vec3::Z).length() < 1e-3, "axis is {}", cyl.dir);
+        assert!((cyl.radius - 4.0).abs() < 0.02, "radius is {}", cyl.radius);
+        assert!((cyl.half_length - 6.0).abs() < 1e-3, "half length is {}", cyl.half_length);
+        // The axis runs through the middle of the wall it was fitted to.
+        assert!(
+            (cyl.origin - Vec3::new(3.0, -2.0, 11.0)).length() < 0.02,
+            "axis passes through {}",
+            cyl.origin
+        );
+    }
+
+    /// #1013: what isn't round isn't a cylinder — a box's walls fit a circle through their
+    /// corners perfectly well, and a faceted prism is a set of flat faces, not a hole.
+    #[test]
+    fn flat_and_faceted_walls_are_not_cylinders() {
+        // Four walls of a box, as one group: the corners lie on a circle, the walls don't.
+        let box_walls = tube(Vec3::ZERO, 5.0, 10.0, 4);
+        assert!(fit_cylinder(&box_walls).is_none(), "a box is not a cylinder");
+        let octagon = tube(Vec3::ZERO, 5.0, 10.0, 8);
+        assert!(fit_cylinder(&octagon).is_none(), "an octagonal prism is not a cylinder");
+        // A single flat face has no fan of normals at all.
+        let flat = vec![
+            [Vec3::ZERO, Vec3::X, Vec3::Y],
+            [Vec3::X, Vec3::new(1.0, 1.0, 0.0), Vec3::Y],
+        ];
+        assert!(fit_cylinder(&flat).is_none(), "a flat face is not a cylinder");
+    }
+
+    /// #1013: the axis direction keys the same way whichever end it was derived from, so two
+    /// picks of the same hole compare equal.
+    #[test]
+    fn a_cylinder_axis_has_a_settled_sign() {
+        let up = tube(Vec3::ZERO, 4.0, 10.0, CIRCLE_SEGMENTS);
+        let down: Vec<[Vec3; 3]> = up.iter().map(|t| [t[0], t[2], t[1]]).collect();
+        let a = fit_cylinder(&up).unwrap();
+        let b = fit_cylinder(&down).unwrap();
+        assert!((a.dir - b.dir).length() < 1e-5, "{} vs {}", a.dir, b.dir);
+        assert!((a.origin - b.origin).length() < 1e-3);
+    }
 
     /// #669: the optional B pair turns the bodies about end point A so that start B lands on
     /// end B, and end B is confined to the sphere start B can actually reach.

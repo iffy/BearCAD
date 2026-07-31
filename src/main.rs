@@ -1477,14 +1477,14 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
     match kind {
         // Whole bodies first (#902): the coarsest thing under the cursor, ahead of its faces.
         K::Body(_) => 0,
-        K::BodyFace { .. } | K::SketchFace(_) => 1,
+        K::BodyFace { .. } | K::SketchFace(_) | K::BodyCylinder { .. } => 1,
         // Edges: sketch line segments and body feature edges are one "edges" group — a sketch line
         // and a shape edge are the same kind of thing for the exploder's grouping.
         K::BodyEdge { .. } | K::Line(_) => 2,
         K::Circle(_) => 3,
         K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
         K::ConstructionPlane(_) => 5,
-        K::GlobalAxis(_) => 6,
+        K::GlobalAxis(_) | K::BodyAxis { .. } => 6,
         K::Ground(_) => 7,
         K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
     }
@@ -1966,6 +1966,12 @@ fn pick_target_loupe_wireframe(
         PK::BodyFace { triangles, .. } => {
             (construction::coplanar_face_boundary(triangles), Vec::new())
         }
+        // A round wall's outline is its own rims; its centre line is one segment (#1013).
+        PK::BodyCylinder { cylinder, .. } => (
+            construction::coplanar_face_boundary(&cylinder.triangles),
+            Vec::new(),
+        ),
+        PK::BodyAxis { a, b, .. } => (vec![(*a, *b)], Vec::new()),
         PK::GlobalAxis(axis) => (
             vec![construction::global_axis_segment(*axis)],
             Vec::new(),
@@ -2192,6 +2198,14 @@ fn draw_pick_target_loupe(
                 dot(*position, width + 1.5);
             }
         }
+        // A round wall reads in the loupe by its rims, and its centre line as a segment
+        // (#1013) — both drawn through the same stroke every edge kind uses.
+        PK::BodyCylinder { cylinder, .. } => {
+            for (a, b) in construction::coplanar_face_boundary(&cylinder.triangles) {
+                seg(a, b);
+            }
+        }
+        PK::BodyAxis { a, b, .. } => seg(*a, *b),
         PK::BodyFace { body, triangles, .. } => {
             // A **highlighted** face reads as a shaded fill alone — no boundary edges, so it doesn't
             // look like its edges are also highlighted (#564). A **context** face is outline-only so
@@ -9044,6 +9058,19 @@ impl App {
                     }
                     construction::PickTargetKind::GlobalAxis(axis) if world_ok => {
                         return Some(model::MateRef::Axis(axis));
+                    }
+                    // A hole's or a shaft's centre line (#1013): what "line these up"
+                    // usually means, and a direct pick rather than a fudge.
+                    construction::PickTargetKind::BodyAxis { body, a, b }
+                        if bodies.contains(&body) =>
+                    {
+                        let m = unpose(body);
+                        let (a, b) = (m.transform_point3(a), m.transform_point3(b));
+                        return Some(model::MateRef::HoleAxis {
+                            body,
+                            origin: q((a + b) * 0.5),
+                            dir: q(extrude::canonical_axis_direction(b - a)),
+                        });
                     }
                     _ => {}
                 }

@@ -75,6 +75,15 @@ pub fn resolve(doc: &Document, r: &MateRef) -> Option<MateGeom> {
             origin: Vec3::ZERO,
             dir: a.direction(),
         }),
+        // A hole's or a shaft's centre line (#1013) — what "line these up" usually means.
+        MateRef::HoleAxis { body, origin, dir } => {
+            let (a, b) = crate::extrude::body_axis_segment_unposed(doc, *body, *origin, *dir)?;
+            let d = (b - a).normalize_or_zero();
+            (d.length_squared() > 0.5).then_some(MateGeom::Line {
+                origin: (a + b) * 0.5,
+                dir: d,
+            })
+        }
         MateRef::Point(p) => crate::extrude::move_point_world(doc, p).map(MateGeom::Point),
     }
 }

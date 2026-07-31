@@ -74,6 +74,8 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::BodyFace { .. } => "body_face",
+        SceneElement::BodyCylinder { .. } => "cylinder",
+        SceneElement::BodyAxis { .. } => "body_axis",
         SceneElement::SketchFace(_) => "face",
         SceneElement::MovePoint(_) => "move_point",
         SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
@@ -118,6 +120,9 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyFace { .. }
+        // A cylinder and its centre line are keyed by geometry, not by an index (#1013).
+        | SceneElement::BodyCylinder { .. }
+        | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_) => None,
         SceneElement::ExtrusionEdge { extrusion, .. } => Some(*extrusion),
@@ -1361,6 +1366,17 @@ fn mate_ref_from_json(
     };
     if let Some(i) = t.get("plane").and_then(Value::as_u64) {
         return Ok(Some(crate::model::MateRef::Plane(i as usize)));
+    }
+    if let Some(v) = t.get("hole_axis").filter(|v| !v.is_null()) {
+        let d = t
+            .get("direction")
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| format!("`{what}.hole_axis` needs a `direction`"))?;
+        return Ok(Some(crate::model::MateRef::HoleAxis {
+            body: req_usize(t, "body", what)?,
+            origin: point(v)?,
+            dir: point(d)?,
+        }));
     }
     if let Some(name) = t.get("axis").and_then(Value::as_str) {
         return Ok(Some(crate::model::MateRef::Axis(match name {
