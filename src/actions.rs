@@ -1170,6 +1170,61 @@ impl CreatingJoint {
         }
     }
 
+    /// The **mobile** (driven) side of a two-sided joint (#991) — the member that isn't the
+    /// base. `None` until one is picked.
+    ///
+    /// Every kind but Rigid joins exactly two parts, and which is held and which moves is the
+    /// whole meaning of the joint — so the pane picks them as two named slots rather than as a
+    /// list plus a swap button. `members`/`base` stay the model's shape: `base` is the index of
+    /// the held side, so the mobile one is simply the other. With a single member picked, a
+    /// `base` past the end says that member is the mobile one and nothing is held yet.
+    pub fn mobile_member(&self) -> Option<crate::model::JointRef> {
+        (0..self.members.len())
+            .find(|i| *i != self.base)
+            .map(|i| self.members[i])
+    }
+
+    /// The **fixed** (held) side — the base.
+    pub fn fixed_member(&self) -> Option<crate::model::JointRef> {
+        self.members.get(self.base).copied()
+    }
+
+    /// Put `part` in the mobile slot (or empty it). Keeps `base` pointing at the held side.
+    pub fn set_mobile(&mut self, part: Option<crate::model::JointRef>) {
+        match (part, (0..self.members.len()).find(|i| *i != self.base)) {
+            (Some(part), Some(i)) => self.members[i] = part,
+            // Nothing mobile yet: either no members at all, or the one held member. Inserting
+            // ahead of it keeps the held one addressable — it just shifts to index 1.
+            (Some(part), None) => {
+                self.members.insert(0, part);
+                self.base = 1;
+            }
+            (None, Some(i)) => {
+                self.members.remove(i);
+                // Only the held member is left, at index 0.
+                self.base = 0;
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// Put `part` in the fixed slot (or empty it).
+    pub fn set_fixed(&mut self, part: Option<crate::model::JointRef>) {
+        match part {
+            Some(part) if self.base < self.members.len() => self.members[self.base] = part,
+            Some(part) => {
+                self.members.push(part);
+                self.base = self.members.len() - 1;
+            }
+            None if self.base < self.members.len() => {
+                self.members.remove(self.base);
+                // Whatever is left is the mobile one, so nothing is held: point past the end.
+                self.base = if self.members.is_empty() { 0 } else { 1 };
+            }
+            None => {}
+        }
+    }
+
     /// Load a committed joint back into the tool (#894): frames unpack into the pairs,
     /// base-side frames as the end points.
     pub fn from_joint(joint: &crate::model::Joint, editing: usize) -> Self {
@@ -14981,6 +15036,9 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::SketchMirrorShapes
         // The Joint tool's members: its focus is the chain's, not a stored flag.
         | P::JointMembers
+        // The two side slots step themselves: whichever is empty takes the next click (#991).
+        | P::JointMobile
+        | P::JointFixed
         // The plane's anchor is the only thing that tool picks, so it is always the focused
         // one; there is nothing to arm (#955).
         | P::PlaneAnchor => {}
@@ -15230,6 +15288,30 @@ pub fn apply_pick(
         // A joint member is a whole part, which the body routing below handles (it maps a
         // unit's materialized body to its instance and enforces the two-part cap).
         (P::JointMembers, SceneElement::Body(bi)) => toggle_body_in_active_tool(state, *bi),
+        // The two named sides of a non-Rigid joint (#991): each slot takes one part, and
+        // clicking the part already in it empties it — the same toggle every picker has.
+        (P::JointMobile | P::JointFixed, element) => {
+            let Some(part) = element.as_joint_ref(&state.doc) else { return false };
+            let cj = state.creating_joint.get_or_insert_with(CreatingJoint::default);
+            let fixed_slot = target == P::JointFixed;
+            let current = if fixed_slot { cj.fixed_member() } else { cj.mobile_member() };
+            let next = (current != Some(part)).then_some(part);
+            // A part can only be one side of its own joint, so taking it for this slot gives
+            // it up from the other.
+            if next.is_some() {
+                if fixed_slot && cj.mobile_member() == Some(part) {
+                    cj.set_mobile(None);
+                } else if !fixed_slot && cj.fixed_member() == Some(part) {
+                    cj.set_fixed(None);
+                }
+            }
+            if fixed_slot {
+                cj.set_fixed(next);
+            } else {
+                cj.set_mobile(next);
+            }
+            true
+        }
         // Everything else the pane can route is a whole body, which the existing per-tool
         // routing already handles — including the unit-instance remapping and the Joint tool's
         // two-part cap.
@@ -15611,6 +15693,60 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #991: a two-sided joint's parts are picked as two named slots — the **mobile** part and
+    /// the **fixed** one it is held against — which `members`/`base` already encode: `base` is
+    /// the index of the held side, so the mobile one is the other. The slots must survive
+    /// being filled in either order, and being cleared.
+    #[test]
+    fn a_joints_mobile_and_fixed_slots_fill_in_either_order() {
+        use crate::model::JointRef;
+        let (a, b) = (JointRef::Body(0), JointRef::Body(1));
+
+        // Mobile first, then fixed.
+        let mut cj = CreatingJoint::default();
+        cj.set_mobile(Some(a));
+        assert_eq!(cj.mobile_member(), Some(a));
+        assert_eq!(cj.fixed_member(), None, "nothing is held yet");
+        cj.set_fixed(Some(b));
+        assert_eq!(cj.mobile_member(), Some(a));
+        assert_eq!(cj.fixed_member(), Some(b));
+        assert_eq!(cj.members.len(), 2, "exactly the two sides");
+        assert_eq!(cj.members[cj.base], b, "base names the held side");
+
+        // Fixed first, then mobile — the same joint either way round.
+        let mut cj = CreatingJoint::default();
+        cj.set_fixed(Some(b));
+        assert_eq!(cj.fixed_member(), Some(b));
+        assert_eq!(cj.mobile_member(), None);
+        cj.set_mobile(Some(a));
+        assert_eq!(cj.mobile_member(), Some(a));
+        assert_eq!(cj.fixed_member(), Some(b));
+        assert_eq!(cj.members[cj.base], b);
+
+        // Replacing one side leaves the other alone.
+        let c = JointRef::Body(2);
+        cj.set_mobile(Some(c));
+        assert_eq!(cj.mobile_member(), Some(c));
+        assert_eq!(cj.fixed_member(), Some(b));
+        cj.set_fixed(Some(a));
+        assert_eq!(cj.mobile_member(), Some(c));
+        assert_eq!(cj.fixed_member(), Some(a));
+
+        // Clearing either side leaves the other still readable in its own slot.
+        let mut cleared = cj.clone();
+        cleared.set_fixed(None);
+        assert_eq!(cleared.mobile_member(), Some(c));
+        assert_eq!(cleared.fixed_member(), None);
+        cleared.set_mobile(None);
+        assert_eq!(cleared.mobile_member(), None);
+        assert!(cleared.members.is_empty());
+
+        let mut cleared = cj.clone();
+        cleared.set_mobile(None);
+        assert_eq!(cleared.fixed_member(), Some(a));
+        assert_eq!(cleared.mobile_member(), None);
+    }
 
     /// #218: while a body-gathering tool is active, clicking a body (Elements pane / `select`)
     /// toggles it into the tool's set instead of the persistent selection — you can pick bodies

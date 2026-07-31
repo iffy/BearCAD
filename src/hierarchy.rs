@@ -313,6 +313,23 @@ impl SceneElement {
         }
     }
 
+    /// The joint member this element stands for (#991) — the inverse of [`Self::from_joint_ref`].
+    ///
+    /// A unit's materialized body joins as its **instance**: the joint poses the placement, not
+    /// the generated solid (#894). `None` for anything a joint can't hold.
+    pub fn as_joint_ref(&self, doc: &Document) -> Option<crate::model::JointRef> {
+        use crate::model::JointRef;
+        match self {
+            SceneElement::Body(index) => match doc.bodies.get(*index).map(|b| &b.source) {
+                Some(crate::model::BodySource::UnitInstance(i)) => Some(JointRef::UnitInstance(*i)),
+                _ => Some(JointRef::Body(*index)),
+            },
+            SceneElement::Component(index) => Some(JointRef::Component(*index)),
+            SceneElement::UnitInstance(index) => Some(JointRef::UnitInstance(*index)),
+            _ => None,
+        }
+    }
+
     /// The element for a straight reference axis (#952/#955): a sketch line, a body's feature
     /// edge, or one of the world axes. What the Revolve axis and Repeat path pickers hold.
     pub fn from_revolve_axis(axis: crate::model::RevolveAxis) -> SceneElement {

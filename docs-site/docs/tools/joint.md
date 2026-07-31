@@ -18,9 +18,11 @@ poses the moving part; it never changes any shape.
 ## How to use it
 
 1. Pick the **Joint** tool. Parts already selected come along as the joint's parts.
-2. Click the **two parts** to join.
-3. Choose the **Type**: rigid, slider, revolute, cylindrical, planar, ball, pin-slot, or
+2. Choose the **Type**: rigid, slider, revolute, cylindrical, planar, ball, pin-slot, or
    screw — each with its own icon in the dropdown, or press `J` again to step through them.
+3. Click the part that **moves**, then the part that **holds** it. They fill the **Mobile**
+   and **Fixed** slots in that order. (Rigid takes any number of parts in one list instead —
+   nothing moves.)
 4. Snap the mating points: **Start point A** on the moving part, **End point A** on the
    held one. The **B** pair aims the axis, the **C** pair pins the spin.
 5. **Enter** (or the blue button) commits.

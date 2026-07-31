@@ -8030,7 +8030,32 @@ impl App {
         let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
             return;
         };
-        if actions::toggle_body_in_active_tool(&mut self.state, bi) {
+        // Which slot the part lands in (#991): every kind but Rigid names its two sides, and
+        // the empty one is what's armed — mobile first, then the part holding it. Rigid has one
+        // list and just toggles into it.
+        let side = (!matches!(
+            self.state.creating_joint.as_ref().map(|cj| &cj.kind),
+            None | Some(model::JointKind::Rigid)
+        ))
+        .then(|| {
+            let cj = self
+                .state
+                .creating_joint
+                .get_or_insert_with(actions::CreatingJoint::default);
+            if cj.mobile_member().is_none() {
+                context::PickerTarget::JointMobile
+            } else {
+                context::PickerTarget::JointFixed
+            }
+        });
+        let took = match side {
+            Some(target) => {
+                let element = SceneElement::Body(bi);
+                actions::apply_pick(&mut self.state, target, &element)
+            }
+            None => actions::toggle_body_in_active_tool(&mut self.state, bi),
+        };
+        if took {
             if let Some(cj) = self.state.creating_joint.as_ref() {
                 self.state.status = format!("Joint: {} part(s) picked", cj.members.len());
             }
@@ -11955,9 +11980,22 @@ impl eframe::App for App {
                 let members: Vec<model::JointRef> =
                     cj.map(|c| c.members.clone()).unwrap_or_default();
                 let base = cj.map(|c| c.base).filter(|&b| b < members.len()).unwrap_or(0);
+                let (mobile, fixed) = (
+                    cj.and_then(|c| c.mobile_member()),
+                    cj.and_then(|c| c.fixed_member()),
+                );
                 context::JointControl {
                     members: members.clone(),
                     members_focused: joint_focus == JointFocus::Members,
+                    mobile,
+                    fixed,
+                    // One ring at a time (#991): while the parts step is what's armed, it is
+                    // the **empty** side that takes the next click — mobile first, since that
+                    // is the one the joint is really about, then the part holding it.
+                    mobile_focused: joint_focus == JointFocus::Members && mobile.is_none(),
+                    fixed_focused: joint_focus == JointFocus::Members
+                        && mobile.is_some()
+                        && fixed.is_none(),
                     // Which bodies each side of the joint owns (#953): start points mate
                     // on the driven part, end points on the base.
                     driven_bodies: members
@@ -12950,8 +12988,22 @@ impl eframe::App for App {
             if let Some(edit) = joint_edit {
                 // Clicking a picker overrides the automatic step-through, like Move (#656).
                 match &edit {
-                    context::JointEdit::MembersFocus => {
+                    context::JointEdit::MembersFocus
+                    // The two side slots share the parts step (#991): arming either just puts
+                    // the focus back on that step, and it hands the ring to whichever is empty.
+                    | context::JointEdit::MobileFocus
+                    | context::JointEdit::FixedFocus => {
                         self.state.joint_focus_override = Some(JointFocus::Members)
+                    }
+                    context::JointEdit::ClearMobile => {
+                        if let Some(cj) = self.state.creating_joint.as_mut() {
+                            cj.set_mobile(None);
+                        }
+                    }
+                    context::JointEdit::ClearFixed => {
+                        if let Some(cj) = self.state.creating_joint.as_mut() {
+                            cj.set_fixed(None);
+                        }
                     }
                     context::JointEdit::StartAFocus => {
                         self.state.joint_focus_override = Some(JointFocus::StartPointA)
@@ -13082,6 +13134,12 @@ impl eframe::App for App {
                                 cj.limits.slide_max_target = None
                             }
                             context::JointEdit::MembersFocus
+                            // Handled in the outer match, which owns the focus override and
+                            // the two side slots (#991).
+                            | context::JointEdit::MobileFocus
+                            | context::JointEdit::FixedFocus
+                            | context::JointEdit::ClearMobile
+                            | context::JointEdit::ClearFixed
                             | context::JointEdit::StartAFocus
                             | context::JointEdit::EndAFocus
                             | context::JointEdit::StartBFocus
@@ -13709,6 +13767,22 @@ impl eframe::App for App {
                                 if cj.base >= cj.members.len() {
                                     cj.base = 0;
                                 }
+                            }
+                        }
+                    }
+                    // The two named sides of a non-Rigid joint (#991): a one-slot picker's ✕
+                    // empties its own side and leaves the other alone.
+                    context::PickerTarget::JointMobile => {
+                        if edit != context::ToolPickerAction::Focus {
+                            if let Some(cj) = self.state.creating_joint.as_mut() {
+                                cj.set_mobile(None);
+                            }
+                        }
+                    }
+                    context::PickerTarget::JointFixed => {
+                        if edit != context::ToolPickerAction::Focus {
+                            if let Some(cj) = self.state.creating_joint.as_mut() {
+                                cj.set_fixed(None);
                             }
                         }
                     }

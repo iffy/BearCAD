@@ -1327,6 +1327,19 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `ball` (three turns, no travel), `pin_slot` (slide along the primary axis, turn about
   the secondary), and `screw { lead }` (turn coupled to travel by a mm-per-turn lead
   expression).
+  **Picking the two sides (#991):** the pane leads with the **Type** dropdown, because which
+  kind it is decides what the rest of the section even asks for. Every kind but `rigid` joins
+  exactly two parts, and which one *moves* is the whole meaning of the joint — so those are
+  picked as two named single-slot pickers, **Mobile** first and **Fixed** second, instead of one
+  two-slot list plus a "swap which side is held" button that made you read the joint backwards to
+  check it. They **replace** the Parts list rather than sitting beside it: two pickers claiming
+  the same picks would put two focus rings on the pane and hand the click to whichever was
+  registered first. `rigid` keeps the plain **Parts** list and its Base swap — it ties any number
+  of members and none of them moves. The model is unchanged: `members` plus `base`, the index of
+  the held side, so the mobile one is simply the other; a single member with a `base` past the
+  end reads as "mobile picked, nothing holding it yet". The empty slot is what the next click
+  fills (`CreatingJoint::set_mobile`/`set_fixed`), so the parts step still runs mobile → fixed
+  off one `JointFocus::Members`.
   **Frames (#892/#894, `model::JointFrame`):** each side carries a mating frame — an
   origin, an axis point, and a spin-pinning point — picked with the Move tool's snap
   pairs (start points on the driven part, end points on the base;

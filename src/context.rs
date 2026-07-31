@@ -368,6 +368,14 @@ pub struct JointControl {
     /// The picked parts, in pick order (#955).
     pub members: Vec<crate::model::JointRef>,
     pub members_focused: bool,
+    /// The two sides of a non-Rigid joint (#991), picked as named slots rather than as a list
+    /// plus a swap button: which part moves and which holds it *is* the joint. Rigid keeps the
+    /// plain Parts list — it joins any number of parts and none of them moves.
+    pub mobile: Option<crate::model::JointRef>,
+    pub fixed: Option<crate::model::JointRef>,
+    /// Which of the two side slots the next click fills. Only one is ever armed.
+    pub mobile_focused: bool,
+    pub fixed_focused: bool,
     pub kind: crate::model::JointKind,
     /// The held side's label, shown on the Base row; clicking swaps sides.
     pub base_label: String,
@@ -416,6 +424,11 @@ pub enum JointEdit {
     Lead(String),
     /// Swap which side is held.
     SwapBase,
+    /// Arm / clear the two side slots of a non-Rigid joint (#991).
+    MobileFocus,
+    ClearMobile,
+    FixedFocus,
+    ClearFixed,
     Position(String),
     Position2(String),
     Position3(String),
@@ -1232,6 +1245,10 @@ pub enum PickerTarget {
     LoftSections,
     /// The Joint tool's member parts (`CreatingJoint::members`, #894/#955).
     JointMembers,
+    /// The **mobile** (driven) side of a two-sided joint (#991).
+    JointMobile,
+    /// The **fixed** (held) side — the base.
+    JointFixed,
     /// The Move tool's six mating-point pickers (#649/#650/#958). Rendered inline among the
     /// tool's other controls, but registered like every other picker.
     MoveStartA,
@@ -1949,27 +1966,67 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // The Joint tool's two parts (#894/#955). It renders in the Joint block (between the
         // Base row and the kind dropdown), but it belongs here so focus, hover, the handoff
         // and `bearcad.pickers()` can see it (#958).
-        let mut members = ElementPicker::new(
-            ElementFilter::kinds(&[
-                ElementKind::Body,
-                ElementKind::Component,
-                ElementKind::Joint,
-            ])
-            .rule(PickRule::LiveBody),
-            PickLimit::Finite(2),
-        );
-        members.set_focused(j.members_focused);
-        members.set_picked(
-            input.doc,
-            j.members.iter().map(|m| SceneElement::from_joint_ref(*m)),
-        );
-        tool_pickers.push(ToolPickerView {
-            heading: "Parts",
-            picker: members,
-            target: PickerTarget::JointMembers,
-            separator_above: true,
-            render: PickerRender::Inline,
-        });
+        // **Rigid** joins any number of parts and none of them moves, so it keeps a plain list.
+        if matches!(j.kind, crate::model::JointKind::Rigid) {
+            let mut members = ElementPicker::new(
+                ElementFilter::kinds(&[
+                    ElementKind::Body,
+                    ElementKind::Component,
+                    ElementKind::Joint,
+                ])
+                .rule(PickRule::LiveBody),
+                PickLimit::Finite(2),
+            );
+            members.set_focused(j.members_focused);
+            members.set_picked(
+                input.doc,
+                j.members.iter().map(|m| SceneElement::from_joint_ref(*m)),
+            );
+            tool_pickers.push(ToolPickerView {
+                heading: "Parts",
+                picker: members,
+                target: PickerTarget::JointMembers,
+                separator_above: true,
+                render: PickerRender::Inline,
+            });
+        }
+        // Every other kind joins exactly **two** parts, and which one moves is the whole
+        // meaning of the joint — so those are picked as two named single-slot inputs (#991),
+        // the mobile part first and the part it is held against second. They **replace** the
+        // Parts list rather than sitting beside it: two pickers claiming the same picks would
+        // put two focus rings on the pane and send the click to whichever was registered first.
+        // Registered like every other picker so focus, hover, the handoff and
+        // `bearcad.pickers()` see them (#958).
+        else {
+            let side = |focused: bool, part: Option<crate::model::JointRef>| {
+                let mut p = ElementPicker::new(
+                    ElementFilter::kinds(&[
+                        ElementKind::Body,
+                        ElementKind::Component,
+                        ElementKind::Joint,
+                    ])
+                    .rule(PickRule::LiveBody),
+                    PickLimit::Finite(1),
+                );
+                p.set_focused(focused);
+                p.set_picked(input.doc, part.map(SceneElement::from_joint_ref));
+                p
+            };
+            tool_pickers.push(ToolPickerView {
+                heading: "Mobile",
+                picker: side(j.mobile_focused, j.mobile),
+                target: PickerTarget::JointMobile,
+                separator_above: false,
+                render: PickerRender::Inline,
+            });
+            tool_pickers.push(ToolPickerView {
+                heading: "Fixed",
+                picker: side(j.fixed_focused, j.fixed),
+                target: PickerTarget::JointFixed,
+                separator_above: false,
+                render: PickerRender::Inline,
+            });
+        }
     }
     if let Some(e) = input.extrude.as_ref() {
         // Extrude's "Up to" (#584/#958): a single plane, face or vertex the depth runs to.
@@ -5210,25 +5267,6 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         let mut pending: Option<JointEdit> = None;
-        // The two parts, in pick order (#894/#955). Built with the other tool pickers so the
-        // rest of the app can see it (#958); drawn here, where it belongs in the Joint block.
-        let members = content
-            .tool_pickers
-            .iter()
-            .find(|v| v.target == PickerTarget::JointMembers);
-        if let Some(members) = members {
-        labeled_row_top(ui, "Parts", |ui| {
-            if let Some(event) =
-                crate::element_picker::show(ui, &members.picker, doc, "joint_members")
-            {
-                pending = Some(match event {
-                    crate::element_picker::PickerEvent::Focus => JointEdit::MembersFocus,
-                    crate::element_picker::PickerEvent::Remove(i) => JointEdit::RemoveMember(i),
-                    crate::element_picker::PickerEvent::Clear => JointEdit::ClearMembers,
-                });
-            }
-        });
-        }
         // The joint-type dropdown (#894).
         {
             use crate::model::JointKind as K;
@@ -5283,6 +5321,69 @@ pub fn show_pane(
                 pending = Some(JointEdit::Kind(kind));
             }
         }
+        // Which parts, and which of them moves. Every kind but Rigid joins exactly **two**, and
+        // which is held is the whole meaning of the joint — so those are two named slots (#991),
+        // the mobile part first and the part holding it second. Rigid keeps the plain list: it
+        // joins any number and nothing moves.
+        let side_row = |ui: &mut egui::Ui,
+                        pending: &mut Option<JointEdit>,
+                        target: PickerTarget,
+                        label: &'static str,
+                        id: &'static str,
+                        on_focus: JointEdit,
+                        on_clear: JointEdit| {
+            let Some(view) = content.tool_pickers.iter().find(|v| v.target == target) else {
+                return;
+            };
+            labeled_row_top(ui, label, |ui| {
+                if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
+                    *pending = Some(match event {
+                        crate::element_picker::PickerEvent::Focus => on_focus.clone(),
+                        _ => on_clear.clone(),
+                    });
+                }
+            });
+        };
+        if matches!(control.kind, crate::model::JointKind::Rigid) {
+            let members = content
+                .tool_pickers
+                .iter()
+                .find(|v| v.target == PickerTarget::JointMembers);
+            if let Some(members) = members {
+                labeled_row_top(ui, "Parts", |ui| {
+                    if let Some(event) =
+                        crate::element_picker::show(ui, &members.picker, doc, "joint_members")
+                    {
+                        pending = Some(match event {
+                            crate::element_picker::PickerEvent::Focus => JointEdit::MembersFocus,
+                            crate::element_picker::PickerEvent::Remove(i) => {
+                                JointEdit::RemoveMember(i)
+                            }
+                            crate::element_picker::PickerEvent::Clear => JointEdit::ClearMembers,
+                        });
+                    }
+                });
+            }
+        } else {
+            side_row(
+                ui,
+                &mut pending,
+                PickerTarget::JointMobile,
+                "Mobile",
+                "joint_mobile",
+                JointEdit::MobileFocus,
+                JointEdit::ClearMobile,
+            );
+            side_row(
+                ui,
+                &mut pending,
+                PickerTarget::JointFixed,
+                "Fixed",
+                "joint_fixed",
+                JointEdit::FixedFocus,
+                JointEdit::ClearFixed,
+            );
+        }
         // The screw's lead (#894): mm of travel per full turn.
         if let crate::model::JointKind::Screw { lead } = &control.kind {
             labeled_row(ui, "Lead", |ui| {
@@ -5298,8 +5399,10 @@ pub fn show_pane(
                 }
             });
         }
-        // Which side is held (#894): the base. Clicking swaps it.
-        if control.members.len() >= 2 {
+        // Which side is held (#894): the base. Clicking swaps it. Only for **Rigid** now — the
+        // other kinds name their two sides outright in the Mobile/Fixed slots above (#991), so
+        // a swap button would be a second, vaguer way to say the same thing.
+        if control.members.len() >= 2 && matches!(control.kind, crate::model::JointKind::Rigid) {
             labeled_row(ui, "Base", |ui| {
                 if ui
                     .button(&control.base_label)
@@ -8090,6 +8193,105 @@ mod tests {
         // With no axis yet, the Bodies picker defers to the Axis picker either way.
         assert!(!pane(control(false, None)).tool_pickers[0].picker.is_focused());
         assert!(!pane(control(true, None)).tool_pickers[0].picker.is_focused());
+    }
+
+    /// #991: every joint kind but Rigid joins exactly **two** parts, and which one moves is the
+    /// whole meaning of the joint — so those are two named single-slot pickers, the **mobile**
+    /// part first and the **fixed** one it is held against second. Rigid keeps the plain Parts
+    /// list: it joins any number and nothing moves.
+    #[test]
+    fn a_two_sided_joint_picks_its_mobile_and_fixed_parts_separately() {
+        use crate::model::{JointKind, JointRef};
+        // A real body: the side pickers carry `PickRule::LiveBody`, so a part that isn't there
+        // is refused — as it should be.
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let doc = doc;
+        let selection = SceneSelection::default();
+        let control = |kind: JointKind,
+                       mobile: Option<JointRef>,
+                       fixed: Option<JointRef>|
+         -> JointControl {
+            JointControl {
+                members: [mobile, fixed].into_iter().flatten().collect(),
+                members_focused: true,
+                mobile,
+                fixed,
+                mobile_focused: mobile.is_none(),
+                fixed_focused: mobile.is_some() && fixed.is_none(),
+                kind,
+                base_label: String::new(),
+                driven_bodies: Vec::new(),
+                base_bodies: Vec::new(),
+                start_a: None, start_a_focused: false,
+                end_a: None, end_a_focused: false,
+                start_b: None, start_b_focused: false,
+                end_b: None, end_b_focused: false,
+                start_c: None, start_c_focused: false,
+                end_c: None, end_c_focused: false,
+                position: String::new(),
+                position2: String::new(),
+                position3: String::new(),
+                slide_min: String::new(),
+                slide_max: String::new(),
+                turn_min: String::new(),
+                turn_max: String::new(),
+                slide_min_stop: None,
+                slide_min_stop_focused: false,
+                slide_max_stop: None,
+                slide_max_stop_focused: false,
+                editing: false,
+                can_commit: false,
+                animate: true,
+            }
+        };
+        let pickers = |c: JointControl| {
+            context_pane_content(&ContextInput {
+                tool: Tool::Joint,
+                joint: Some(c),
+                ..input(&doc, &selection)
+            })
+            .tool_pickers
+        };
+
+        // Rigid: one Parts list, and no side slots at all.
+        let rigid = pickers(control(JointKind::Rigid, None, None));
+        assert!(rigid.iter().any(|v| v.target == PickerTarget::JointMembers));
+        assert!(
+            !rigid.iter().any(|v| matches!(
+                v.target,
+                PickerTarget::JointMobile | PickerTarget::JointFixed
+            )),
+            "a rigid group has no moving side to name"
+        );
+
+        // A slider names both sides, mobile before fixed.
+        let slider = pickers(control(JointKind::Slider, None, None));
+        let mobile_at = slider.iter().position(|v| v.target == PickerTarget::JointMobile);
+        let fixed_at = slider.iter().position(|v| v.target == PickerTarget::JointFixed);
+        let (Some(mobile_at), Some(fixed_at)) = (mobile_at, fixed_at) else {
+            panic!("a slider should offer both side pickers");
+        };
+        assert!(mobile_at < fixed_at, "the mobile part is picked first");
+        assert!(
+            slider[mobile_at].picker.limit().is_single()
+                && slider[fixed_at].picker.limit().is_single(),
+            "each side takes exactly one part"
+        );
+
+        // One ring at a time, and it steps mobile → fixed as they fill.
+        assert!(slider[mobile_at].picker.is_focused() && !slider[fixed_at].picker.is_focused());
+        let half = pickers(control(JointKind::Slider, Some(JointRef::Body(0)), None));
+        let m = half.iter().find(|v| v.target == PickerTarget::JointMobile).unwrap();
+        let f = half.iter().find(|v| v.target == PickerTarget::JointFixed).unwrap();
+        assert_eq!(m.picker.picked().len(), 1, "the mobile slot holds its part");
+        assert!(!m.picker.is_focused() && f.picker.is_focused(), "the ring moves on to Fixed");
     }
 
     #[test]
