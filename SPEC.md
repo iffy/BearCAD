@@ -2685,6 +2685,15 @@ modeled on SolveSpace (https://solvespace.com).
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
   `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
   in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.
+  - **The crowd's order is total, and nearest-the-camera first (#987):** `(screen distance,
+    depth from the eye, crowd key)`. The cursor sits *inside* every face it is over, so all of
+    them tie at distance 0 and only depth can separate them — which is what makes the ordinary
+    pick take the face you can see and leaves the one buried behind it to the fan. The dedupe
+    is a `BTreeMap`: with a `HashMap` its randomly-seeded per-instance iteration order survived
+    the stable sort, so the same crowd came back differently ordered on every call and a hover
+    over two stacked faces flickered between them frame after frame. This only **orders** the
+    crowd — nothing is pruned, so the fan still offers every buried face (#556), which is the
+    only way to reach one.
   - **Hierarchical loupe grouping (#559/#563):** a level never shows more than **12 loupes**
     (`exploder::MAX_LOUPES`). When the crowd already fits within that cap it is **not grouped at all**
     (#571) — every item is its own leaf. Only a larger crowd is grouped so the level stays within it (a mix of
@@ -3162,6 +3171,10 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   asserting a `PickRule` (#953) needs it. **`bearcad.hovered()`** (#968) reports what the
   viewport is hover-highlighting as `{ kind, index }` — the pick a click would take — or nil;
   a hovered region or curve with no element of its own reports nil, which is itself assertable.
+  A hovered **face** also carries a **`label`** (#987), because every face reports kind `face`
+  and index `0`: without a name for the face itself, a hover flickering between a body's near
+  face and the one hidden behind it read as *unchanged* from a script, which is how it went
+  unnoticed. `face_label` for an analytic face, body-and-centroid for a mesh one.
   **`bearcad.exploder()`** (#968) reports the Selection Exploder's fanned leaves as
   `{ kind, index }`, empty when it's closed — the crowd it is offering, which nothing else
   exposes. Each leaf the current drill level shows as a loupe of its own also carries

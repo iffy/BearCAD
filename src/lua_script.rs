@@ -2458,7 +2458,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             let entry = lua.create_table()?;
             entry.set("kind", element_kind_name(element.clone()))?;
-            entry.set("index", element_index(element))?;
+            entry.set("index", element_index(element.clone()))?;
+            // Faces need a `label` to be told apart at all (#987): every one of them reports
+            // kind "face" and index 0, so a hover flickering between a body's front face and
+            // the hidden face behind it looked identical from a script — which is how it went
+            // unnoticed. The label names the actual face.
+            let doc = unsafe { &tick.state().doc };
+            match &element {
+                SceneElement::SketchFace(face) => {
+                    entry.set("label", crate::face::face_label(doc, face.clone()))?;
+                }
+                SceneElement::BodyFace { body, centroid, .. } => {
+                    entry.set(
+                        "label",
+                        format!(
+                            "Body {body} face at ({:.3}, {:.3}, {:.3})",
+                            centroid[0] as f32 / 1000.0,
+                            centroid[1] as f32 / 1000.0,
+                            centroid[2] as f32 / 1000.0
+                        ),
+                    )?;
+                }
+                _ => {}
+            }
             Ok(Value::Table(entry))
         })?,
     )?;

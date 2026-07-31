@@ -2740,9 +2740,10 @@ pub fn collect_pick_candidates(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
-    // Retained for call-site symmetry with `resolve_pick_target`; the crowd no longer
-    // depth-orders faces by eye distance (it enumerates every near face, #556).
-    _eye: Vec3,
+    // Breaks ties in the crowd's order (#987): every face the cursor is inside sits at screen
+    // distance 0, and the nearest of those to the eye is the one you can actually see. It only
+    // *orders* — the crowd still enumerates every near face, buried ones included (#556).
+    eye: Vec3,
     occlusion: Option<&PickOcclusion>,
 ) -> Vec<CrowdCandidate> {
     // The exploder exists to reach *buried* geometry, so — unlike `resolve_pick_target` — no
@@ -2962,8 +2963,14 @@ pub fn collect_pick_candidates(
     }
 
     // Dedupe per distinct thing (keeping the nearest touch), then order nearest-first.
-    let mut best: std::collections::HashMap<String, (PickTargetKind, Vec3, f32)> =
-        std::collections::HashMap::new();
+    //
+    // A **`BTreeMap`**, not a `HashMap` (#987): `HashMap`'s iteration order is randomly seeded
+    // per instance, so the same crowd came out in a different order on every call — and since
+    // the sort below is stable, candidates tied on screen distance kept that random order. The
+    // normal pick takes the first of them, so hovering a spot inside two faces thrashed
+    // between them frame after frame.
+    let mut best: std::collections::BTreeMap<String, (PickTargetKind, Vec3, f32)> =
+        std::collections::BTreeMap::new();
     for (kind, anchor, dist) in raw {
         let key = crowd_key(&kind);
         best.entry(key)
@@ -2978,7 +2985,19 @@ pub fn collect_pick_candidates(
         .into_values()
         .map(|(kind, anchor, dist_px)| CrowdCandidate { kind, anchor, dist_px })
         .collect();
-    out.sort_by(|a, b| a.dist_px.partial_cmp(&b.dist_px).unwrap_or(std::cmp::Ordering::Equal));
+    // Nearest the cursor first; ties broken by **depth**, so the face you can see beats the one
+    // hidden behind it and the ordinary pick takes the near one (#987). The cursor sits *inside*
+    // every face it is over, all of them at distance 0, so screen distance alone cannot separate
+    // them. This orders the crowd without pruning it: the exploder still fans every buried face,
+    // which is the only way to reach one (#556). The key is the final tiebreak, so the order is
+    // total and no two runs can disagree.
+    out.sort_by(|a, b| {
+        let depth = |c: &CrowdCandidate| (c.anchor - eye).length();
+        a.dist_px
+            .total_cmp(&b.dist_px)
+            .then_with(|| depth(a).total_cmp(&depth(b)))
+            .then_with(|| crowd_key(&a.kind).cmp(&crowd_key(&b.kind)))
+    });
     out
 }
 
@@ -4157,6 +4176,44 @@ mod tests {
             faces.len() >= 2,
             "the crowd must fan out multiple distinct faces, got {}: {faces:?}",
             faces.len()
+        );
+    }
+
+    /// #987: the crowd's order must be **deterministic** and put the face nearest the camera
+    /// first. The dedupe used a `HashMap`, whose iteration order is randomly seeded per
+    /// instance, and the sort by screen distance is stable — so two faces the cursor sits
+    /// inside of (both at distance 0) came back in a different order every single call. The
+    /// normal pick takes the first, so the hover thrashed frame to frame between the front
+    /// face and the hidden one behind it.
+    #[test]
+    fn the_crowd_is_ordered_nearest_the_camera_and_never_varies() {
+        let doc = box_body_doc();
+        // Looking straight down -Z from high above: the top (z=5) and bottom (z=0) faces
+        // project onto the same square, so the cursor is inside both and neither is nearer in
+        // *screen* terms. The top is nearer the eye and must win, every time.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(5.0, 5.0, 1000.0);
+        let first_keys: Vec<String> = {
+            let cands = collect_pick_candidates(Pos2::new(5.0, 5.0), &project, &doc, eye, None);
+            cands.iter().map(|c| crowd_key(&c.kind)).collect()
+        };
+        // Every call agrees, order included — a fresh HashMap seed must not be observable.
+        for _ in 0..12 {
+            let cands = collect_pick_candidates(Pos2::new(5.0, 5.0), &project, &doc, eye, None);
+            let keys: Vec<String> = cands.iter().map(|c| crowd_key(&c.kind)).collect();
+            assert_eq!(keys, first_keys, "the crowd's order must not vary between calls");
+        }
+        // And the first face in it is the one facing the camera, not the one behind it.
+        let cands = collect_pick_candidates(Pos2::new(5.0, 5.0), &project, &doc, eye, None);
+        let top_face = cands
+            .iter()
+            .filter(|c| matches!(c.kind, PickTargetKind::BodyFace { .. }))
+            .map(|c| c.anchor.z)
+            .next()
+            .expect("the crowd holds the box's faces");
+        assert!(
+            top_face > 4.0,
+            "the nearest face to the eye (the z=5 cap) must come first, got anchor z = {top_face}"
         );
     }
 
