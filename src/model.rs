@@ -4014,6 +4014,25 @@ pub struct Document {
     /// and placement transform.
     #[serde(default)]
     pub unit_instances: Vec<UnitInstance>,
+    /// Geometry generation for mesh caches (#1027). Bumped when geometry-affecting state
+    /// changes. Not serialized — loads start at 0, first mutation bumps to 1. An integer
+    /// compare is the cache key instead of serializing the whole document to JSON.
+    #[serde(skip)]
+    pub mesh_rev: u64,
+}
+
+impl Document {
+    /// Bump [`mesh_rev`](Self::mesh_rev) so every mesh cache keyed on it misses (#1027).
+    ///
+    /// The value is taken from a process-wide counter, not `self.mesh_rev + 1`, so two
+    /// documents that have each been edited the same number of times never share a key —
+    /// thread-local mesh caches would otherwise hand the first document's triangles to the
+    /// second.
+    pub fn bump_mesh_rev(&mut self) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        self.mesh_rev = NEXT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// A component (#423): a named, nestable group of top-level elements in the Elements pane.
@@ -4187,6 +4206,7 @@ impl Default for Document {
             component_members: Vec::new(),
             units: Vec::new(),
             unit_instances: Vec::new(),
+            mesh_rev: 0,
         }
     }
 }

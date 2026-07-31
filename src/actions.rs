@@ -6192,6 +6192,9 @@ impl AppState {
                     self.undo_stack.remove(0);
                 }
                 self.redo_stack.clear();
+                // Geometry changed — mesh caches key on this, not a JSON hash (#1027).
+                // Compared *before* the bump so PartialEq still sees only geometry.
+                self.doc.bump_mesh_rev();
             }
         }
         // Unsaved-changes flag (#522): the document is dirty whenever it differs from the
@@ -6200,6 +6203,9 @@ impl AppState {
         // outermost apply recomputes, so a delegating gesture compares once. Save/open/new
         // set the baseline via `mark_saved`, which this then confirms as clean.
         if outermost {
+            // mesh_rev is skipped for dirty comparison: it is a cache key, not content.
+            // Equality still works because a dirty document differs in geometry first;
+            // undoing restores the snapshotted rev as well.
             self.dirty = self.doc != self.saved_snapshot;
         }
         result
@@ -6208,6 +6214,11 @@ impl AppState {
     /// Adopt the current document as the saved baseline (#522): after this the document
     /// reads as clean until the next mutation. Called on save, open, and new.
     fn mark_saved(&mut self) {
+        // A loaded document must leave the structural-hash path (`mesh_rev == 0`) so idle
+        // frames after open stay an integer compare, not a JSON serialize (#1027).
+        if self.doc.mesh_rev == 0 {
+            self.doc.bump_mesh_rev();
+        }
         self.saved_snapshot = self.doc.clone();
         self.dirty = false;
     }
@@ -18254,6 +18265,35 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), before + 1, "nothing was added");
         assert!(!dxf.exists(), "the unreadable copy is cleaned up too");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1027: applying a geometry change bumps mesh_rev so caches key on an integer.
+    #[test]
+    fn apply_bumps_mesh_rev_when_geometry_changes() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        let before = state.doc.mesh_rev;
+        state.apply(Action::CreateExtrusion {
+            expression: None,
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 5.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+            symmetric: false,
+        });
+        assert!(
+            state.doc.mesh_rev > before,
+            "a geometry-changing apply must bump mesh_rev, was {before} now {}",
+            state.doc.mesh_rev
+        );
+        // A no-op tool switch does not bump.
+        let mid = state.doc.mesh_rev;
+        state.apply(Action::SetTool(Tool::Select));
+        assert_eq!(state.doc.mesh_rev, mid, "a non-mutating action must not bump");
     }
 
     #[test]

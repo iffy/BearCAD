@@ -608,6 +608,8 @@ pub fn open(path: &str) -> Result<Document> {
         component_members,
         units,
         unit_instances,
+        // Cache generation starts at 0; open/save bumps it so idle frames stay cheap (#1027).
+        mesh_rev: 0,
     };
     super::fixup_loaded_document(&mut doc)?;
     crate::model::validate_units(&doc, Some(std::path::Path::new(path)))?;

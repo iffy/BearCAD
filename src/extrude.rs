@@ -3482,12 +3482,26 @@ pub fn selection_world_bounds(
     bounds
 }
 
-/// Fingerprint of every document input body meshing reads (#162): sketch geometry, planes,
-/// extrusions, and body sources are hashed structurally (via their serde encodings, streamed
-/// straight into a hasher — no allocation of the encoded form); imported meshes are
-/// append-only after load, so their name + triangle count suffices. Two documents with equal
-/// fingerprints mesh identically, which keys [`body_solid_mesh`]'s cache.
+/// Fingerprint of every document input body meshing reads (#162/#1027).
+///
+/// An integer on the document, bumped by [`Document::bump_mesh_rev`] whenever an
+/// `AppState::apply` changes geometry. Cache probes are an integer compare — not a full
+/// document JSON serialize.
+///
+/// A freshly loaded document has `mesh_rev == 0` until the first edit; open/load set it to
+/// a non-zero baseline so idle frames after open stay cheap. Tests that build documents
+/// without going through `apply` leave it at 0 and fall back to the structural hash so
+/// their direct field writes still invalidate caches.
 pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
+    if doc.mesh_rev == 0 {
+        return structural_mesh_fingerprint(doc);
+    }
+    doc.mesh_rev
+}
+
+/// Structural hash of geometry — the path this counter replaced. Only used while
+/// `mesh_rev` is still 0 (test fixtures that never go through `apply`).
+fn structural_mesh_fingerprint(doc: &Document) -> u64 {
     use std::hash::Hasher;
     struct HashWriter(std::collections::hash_map::DefaultHasher);
     impl std::io::Write for HashWriter {
@@ -3509,13 +3523,6 @@ pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.construction_planes,
             &doc.extrusions,
             &doc.bodies,
-            // Every downstream feature whose output body geometry is a function of its inputs must
-            // be in the fingerprint, so editing an ancestor (or a parameter one of them evaluates
-            // live) invalidates the descendant's cached mesh and forces a rebuild. Ops that
-            // evaluate expressions on the fly — moves (`move_op_transform` reads `tx`/angle),
-            // repeats (`repeat_offsets`), etc. — otherwise leave stale caches, since their input
-            // parameters live in `doc.parameters` (not the op struct) and the op's expression
-            // *string* doesn't change when a parameter it references does.
             &doc.parameters,
             &doc.repeat_ops,
             &doc.move_ops,
@@ -3524,8 +3531,6 @@ pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.revolutions,
             &doc.sweeps,
             &doc.lofts,
-            // Imported units (#724): an override/placement edit or a sync that replaces an
-            // embedded copy must invalidate the materialized unit bodies' cached meshes.
             &doc.units,
             &doc.unit_instances,
         ),
@@ -3534,7 +3539,6 @@ pub(crate) fn document_mesh_fingerprint(doc: &Document) -> u64 {
     for mesh in &doc.imported_meshes {
         std::io::Write::write_all(&mut writer, mesh.source_name.as_bytes()).ok();
         writer.0.write_usize(mesh.triangles.len());
-        // STEP imports keep their BREP (#1029); a body with/without it must not share a cache key.
         writer.0.write_usize(mesh.step_bytes.as_ref().map(|b| b.len()).unwrap_or(0));
     }
     writer.0.finish()
@@ -3554,28 +3558,39 @@ thread_local! {
 /// the joints themselves (their positions change per drag frame) and component
 /// membership (a joint can drive a whole component). Kept separate from
 /// [`document_mesh_fingerprint`] so dragging a joint never invalidates the expensive
-/// kernel meshes — only the cheap posed copies.
+/// kernel meshes — only the cheap posed copies. Joint fields are hashed directly
+/// (no JSON) so a drag frame stays cheap (#1027).
 pub(crate) fn document_pose_fingerprint(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     document_mesh_fingerprint(doc).hash(&mut h);
-    struct HashWriter(std::collections::hash_map::DefaultHasher);
-    impl std::io::Write for HashWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.write(buf);
-            Ok(buf.len())
+    for j in &doc.joints {
+        j.deleted.hash(&mut h);
+        j.base.hash(&mut h);
+        j.position.hash(&mut h);
+        j.position2.hash(&mut h);
+        j.position3.hash(&mut h);
+        j.rest.hash(&mut h);
+        j.rest2.hash(&mut h);
+        j.rest3.hash(&mut h);
+        // Members and kind: who moves, and how.
+        std::mem::discriminant(&j.kind).hash(&mut h);
+        for m in &j.members {
+            // JointRef is a small enum of indices.
+            format!("{m:?}").hash(&mut h);
         }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+        // Mate placement affects posed presentation of an in-progress joint.
+        format!("{:?}", j.mate).hash(&mut h);
     }
-    let mut writer = HashWriter(h);
-    serde_json::to_writer(
-        &mut writer,
-        &(&doc.joints, &doc.components, &doc.component_members),
-    )
-    .ok();
-    writer.0.finish()
+    for (i, c) in doc.components.iter().enumerate() {
+        i.hash(&mut h);
+        c.deleted.hash(&mut h);
+        c.parent.hash(&mut h);
+    }
+    for entry in &doc.component_members {
+        format!("{entry:?}").hash(&mut h);
+    }
+    h.finish()
 }
 
 /// The cached **un-posed** mesh when the cache is free, else a fresh uncached build —
@@ -3913,7 +3928,7 @@ pub fn triangle_bounds(triangles: &[[Vec3; 3]]) -> Option<(Vec3, Vec3)> {
 /// (#1026).
 ///
 /// Deliberately batched. Every cached mesh accessor keys on
-/// [`document_pose_fingerprint`], which **serializes the model to JSON and hashes it** — so
+/// [`document_pose_fingerprint`] (an integer revision plus a cheap joint hash, #1027) — so
 /// asking per body inside a loop costs one full document hash per body per frame, which on a
 /// large document dwarfs the triangle walk this was meant to avoid. The pick walks fetch this
 /// once and then index it.

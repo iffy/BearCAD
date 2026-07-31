@@ -2612,8 +2612,11 @@ modeled on SolveSpace (https://solvespace.com).
   construction: a corner that can't be projected (behind the camera) *accepts* the box, since
   a wrong rejection silently drops a pick.
   **The bounds are fetched batched** (`extrude::body_world_bounds_all`), and that matters more
-  than the rejection itself: every cached mesh accessor keys on `document_pose_fingerprint`,
-  which **serializes the model to JSON and hashes it**, so asking per body inside a loop costs
+  than the rejection itself: every cached mesh accessor keys on `document_pose_fingerprint` /
+  `document_mesh_fingerprint`. Geometry caches use a process-wide **revision counter**
+  (`Document::mesh_rev`, #1027) bumped on each mutating `apply` — an integer compare, not a
+  JSON serialize of the model. Pose caches still hash joint positions cheaply on top. Asking
+  per body inside a loop used to cost
   one full document hash per body per frame. Measured on 20 faceted cylinders (~19k triangles,
   debug build): 8.5 ms per pick before, 3.4 ms with per-body rejection, **87 µs** once the
   bounds lookup was hoisted out of the loop.
