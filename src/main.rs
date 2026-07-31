@@ -3095,6 +3095,10 @@ struct App {
     /// serialized; the open flag lives there instead.
     #[cfg(not(target_arch = "wasm32"))]
     mcmaster: Option<mcmaster::CatalogSession>,
+    /// The query the running catalog process was started with (#1028). When the palette
+    /// (or anything else) asks for a different part/search, the process is restarted.
+    #[cfg(not(target_arch = "wasm32"))]
+    mcmaster_launched_part: Option<String>,
     /// The Keyboard Shortcuts window (#434), toggled from the View/Help menus.
     shortcuts_open: bool,
     /// Persisted app settings (#720), loaded at startup and saved when the Settings
@@ -4186,6 +4190,8 @@ impl App {
             update_fallback_opened: false,
             #[cfg(not(target_arch = "wasm32"))]
             mcmaster: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            mcmaster_launched_part: None,
             shortcuts_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             settings,
@@ -4350,20 +4356,34 @@ impl App {
     /// there is nothing to draw here: it owns its own OS window, with its own z-order and
     /// taskbar entry. All this does is start it when asked, stop it when asked, import
     /// whatever it reports catching, and notice when the user closes it.
+    ///
+    /// A new search from the palette while the window is already open restarts the process
+    /// with that query (#1028) — otherwise the running window would ignore the new terms.
     #[cfg(not(target_arch = "wasm32"))]
     fn sync_mcmaster_window(&mut self, ctx: &egui::Context) {
         if !self.state.mcmaster_open {
             // Closing the pane flag closes the window: `CatalogSession`'s drop kills it.
             self.mcmaster = None;
+            self.mcmaster_launched_part = None;
             return;
         }
+        let want = Some(self.state.mcmaster_part.as_str())
+            .filter(|p| !p.trim().is_empty())
+            .map(|s| s.to_string());
+        // Restart when the user asks for a different part/search than the running window.
+        if self.mcmaster.is_some() && self.mcmaster_launched_part != want {
+            self.mcmaster = None;
+        }
         if self.mcmaster.is_none() {
-            let part = Some(self.state.mcmaster_part.as_str()).filter(|p| !p.trim().is_empty());
-            match mcmaster::CatalogSession::open(part, ctx.clone()) {
-                Ok(session) => self.mcmaster = Some(session),
+            match mcmaster::CatalogSession::open(want.as_deref(), ctx.clone()) {
+                Ok(session) => {
+                    self.mcmaster = Some(session);
+                    self.mcmaster_launched_part = want;
+                }
                 Err(err) => {
                     self.state.status = format!("McMaster-Carr: {err}");
                     self.state.mcmaster_open = false;
+                    self.mcmaster_launched_part = None;
                     return;
                 }
             }
@@ -4376,6 +4396,7 @@ impl App {
         if self.mcmaster.as_ref().is_some_and(|s| s.finished()) {
             self.mcmaster = None;
             self.state.mcmaster_open = false;
+            self.mcmaster_launched_part = None;
         }
     }
 

@@ -431,16 +431,16 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
             report(&landed, &url);
         })
         .with_new_window_req_handler(move |url, _features| {
-            // Their site opens new windows for two unrelated things. A **download** has to
-            // load in this window, because these are the handlers that catch it — that is the
-            // click that used to do nothing at all (#1023). Anything else is a popup like
-            // their help pages, and taking the catalog view for that would lose the page the
-            // user was reading, so it goes to the real browser instead.
-            if looks_like_download(&url) {
-                crate::diag::info(format!("catalog: download opened in a new window — {url}"));
+            // Their site opens new windows for three things. A **download** has to load in
+            // this window so the handlers below catch it (#1023). A **same-site** navigation
+            // (search results, product pages) must stay here too — handing those to the
+            // system browser is exactly what made palette search open Safari instead of the
+            // catalog (#1028). Only a true off-site popup goes to the real browser.
+            if looks_like_download(&url) || is_mcmaster_url(&url) {
+                crate::diag::info(format!("catalog: new-window kept in catalog — {url}"));
                 let _ = proxy.send_event(UserEvent::Navigate(url));
             } else {
-                crate::diag::info(format!("catalog: popup handed to the browser — {url}"));
+                crate::diag::info(format!("catalog: off-site popup handed to the browser — {url}"));
                 let _ = crate::open_in_browser(&url);
             }
             wry::NewWindowResponse::Deny
@@ -675,6 +675,11 @@ mod tests {
         assert!(!looks_like_download("https://www.mcmaster.com/91290A115/"));
         // A query string mentioning a page doesn't make it a file.
         assert!(!looks_like_download("https://www.mcmaster.com/help/orderhelp.asp"));
+        // #1028: search results and product pages are same-site — they must stay in the
+        // catalog window (the new-window handler keeps anything `is_mcmaster_url` accepts).
+        assert!(is_mcmaster_url("https://www.mcmaster.com/products/?q=socket+head+screw"));
+        assert!(is_mcmaster_url("https://www.mcmaster.com/products/socket-head-cap-screws/"));
+        assert!(!is_mcmaster_url("https://help.example.com/mcmaster"));
     }
 
     /// #1022: the two processes agree on the wire — a caught file round-trips through its
