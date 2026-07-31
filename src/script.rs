@@ -977,7 +977,9 @@ impl Instruction {
                         ExtrudeFace::Polygon(lines) => polygons.push(lines),
                         // Boolean regions aren't loftable sections (no interactive path
                         // constructs one), so nothing to render.
-                        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => {}
+                        ExtrudeFace::Boolean { .. }
+                        | ExtrudeFace::TextGlyph { .. }
+                        | ExtrudeFace::SketchRegion { .. } => {}
                     }
                 }
                 let mut parts = Vec::new();
@@ -3003,8 +3005,9 @@ fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
                 boolean.get_or_insert((*op, a.as_ref(), b.as_ref()));
             }
             // Text glyphs aren't reconstructable from a flat script arg (they reference baked
-            // outlines); the script round-trip skips them.
-            ExtrudeFace::TextGlyph { .. } => {}
+            // outlines); nor is a plane region, whose seed the flat arg shape has nowhere to
+            // put (#993). The script round-trip skips both.
+            ExtrudeFace::TextGlyph { .. } | ExtrudeFace::SketchRegion { .. } => {}
         };
     }
     let index_list = |indices: &[usize]| -> String {
@@ -3061,6 +3064,12 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
         ExtrudeFace::TextGlyph { text, glyph } => {
             format!("{{text_glyph = {{text = {text}, glyph = {glyph}}}}}")
         }
+        // A plane region (#993) names its sketch and the seed point that picks it out.
+        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
+            "{{region = {{sketch = {sketch}, u = {}, v = {}}}}}",
+            *seed_u as f32 / crate::model::SKETCH_REGION_SEED_SCALE,
+            *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
+        ),
     }
 }
 
@@ -3455,6 +3464,11 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
         ExtrudeFace::Boolean { op, a, b } => format!(
             "profile = \"boolean\", boolean = {}",
             boolean_face_lua_table(*op, a, b)
+        ),
+        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
+            "profile = \"region\", profile_index = {sketch}, seed = {{{}, {}}}",
+            *seed_u as f32 / crate::model::SKETCH_REGION_SEED_SCALE,
+            *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
         ),
         ExtrudeFace::TextGlyph { text, glyph } => {
             format!("profile = \"text_glyph\", profile_index = {text}, glyph = {glyph}")

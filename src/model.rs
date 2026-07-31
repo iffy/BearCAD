@@ -1133,6 +1133,24 @@ pub enum ExtrudeFace {
     /// indexes the grouped glyph regions (`text::group_glyphs`) — an outer loop plus its counters
     /// (holes). Extruding a whole text toggles one of these per glyph into `Extrusion::faces`.
     TextGlyph { text: usize, glyph: usize },
+    /// One region of a **hosted sketch's plane** (#993): the sketch's own lines together with the
+    /// boundary of the face it is drawn on divide that face into regions, and this names the one
+    /// containing `(seed_u, seed_v)` — a point in sketch-local coordinates.
+    ///
+    /// Named by a seed rather than by its boundary because the boundary is *derived*: it runs
+    /// partly along lines the sketch owns and partly along the host face's own outline, which has
+    /// no line indices to point at. The region is recomputed from the live sketch every time
+    /// (`polygon::sketch_plane_regions`), so it follows edits the way every other profile does;
+    /// if the cuts change enough that no region contains the seed any more, the profile simply
+    /// stops resolving, which is what `document_health` already reports for a face gone missing.
+    ///
+    /// The seed is in **thousandths** of a sketch unit, so a profile stays `Eq`/`Hash` — which
+    /// the pickers and the extrude face set rely on to tell one profile from another.
+    SketchRegion {
+        sketch: SketchId,
+        seed_u: i32,
+        seed_v: i32,
+    },
 }
 
 impl ExtrudeFace {
@@ -1149,6 +1167,9 @@ impl ExtrudeFace {
             // `extrude_face_sketch(doc, ..)` (which resolves the text's sketch) rather than a
             // FaceId, so this placeholder is never used to look up geometry.
             ExtrudeFace::TextGlyph { .. } => FaceId::Polygon(Vec::new()),
+            // Nor does a plane region (#993) — like `Boolean`, it is computed rather than stored.
+            // Its plane is the sketch's, which `extrude_face_sketch` resolves.
+            ExtrudeFace::SketchRegion { .. } => FaceId::Polygon(Vec::new()),
         }
     }
 }
@@ -4558,4 +4579,23 @@ mod tests {
         assert_eq!(effective_length_unit(&doc, 99), LengthUnit::Mm);
         assert_eq!(effective_angle_unit(&doc, 99), AngleUnit::Deg);
     }
+}
+/// Scale for [`ExtrudeFace::SketchRegion`]'s seed point: thousandths of a sketch unit, which
+/// keeps a profile `Eq`/`Hash` while staying far finer than any region it has to tell apart.
+pub const SKETCH_REGION_SEED_SCALE: f32 = 1000.0;
+
+/// Quantize a sketch-local point into a [`ExtrudeFace::SketchRegion`] seed.
+pub fn sketch_region_seed(u: f32, v: f32) -> (i32, i32) {
+    (
+        (u * SKETCH_REGION_SEED_SCALE).round() as i32,
+        (v * SKETCH_REGION_SEED_SCALE).round() as i32,
+    )
+}
+
+/// The sketch-local point a [`ExtrudeFace::SketchRegion`] seed stands for.
+pub fn sketch_region_seed_point(seed_u: i32, seed_v: i32) -> (f32, f32) {
+    (
+        seed_u as f32 / SKETCH_REGION_SEED_SCALE,
+        seed_v as f32 / SKETCH_REGION_SEED_SCALE,
+    )
 }

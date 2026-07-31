@@ -28,6 +28,9 @@ adjusting the distance or target first.
 - With two **concentric circles**, click between them to extrude just the **ring**.
 - Click any **flat face of a solid** — an extrusion's cap or side wall, or a revolved
   body's flat end — to pull it straight out or push it in, no separate sketch needed.
+- Sketch lines drawn **across** a face divide it: two lines ruled over a box's top make three
+  regions, and each extrudes on its own. The lines have to reach all the way across — one that
+  stops short divides nothing.
 - Double-click a finished extrusion (or right-click → **Edit**) to change its faces or
   depth later.
 - Typing a digit jumps straight into the distance field.

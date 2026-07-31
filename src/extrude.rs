@@ -3067,7 +3067,10 @@ pub fn extrude_face_scene_elements(
         ExtrudeFace::Circle(ci) => vec![SceneElement::Circle(*ci)],
         ExtrudeFace::Polygon(lines) => lines.iter().map(|li| SceneElement::Line(*li)).collect(),
         ExtrudeFace::TextGlyph { text, .. } => vec![SceneElement::SketchText(*text)],
-        ExtrudeFace::Boolean { .. } => Vec::new(),
+        // Neither a boolean combination nor a plane region (#993) is bounded by geometry the
+        // sketch owns outright — a region runs partly along the host face's own outline — so
+        // there is nothing to fold into the selection.
+        ExtrudeFace::Boolean { .. } | ExtrudeFace::SketchRegion { .. } => Vec::new(),
     }
 }
 
@@ -4319,7 +4322,9 @@ fn face_center_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec3, Vec3)>
             let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
             Some((centroid, normal))
         }
-        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => {
+        ExtrudeFace::Boolean { .. }
+        | ExtrudeFace::TextGlyph { .. }
+        | ExtrudeFace::SketchRegion { .. } => {
             let (profile, normal) = face_profile_world(doc, face)?;
             let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
             Some((centroid, normal))
@@ -4464,6 +4469,17 @@ pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec
             let profile = outer.into_iter().map(|(u, v)| local_to_world(&frame, u, v)).collect();
             Some((profile, frame.normal))
         }
+        // A plane region (#993) is recomputed from the live sketch every time, so it follows
+        // edits like any other profile — and stops resolving if the cuts move out from under it.
+        ExtrudeFace::SketchRegion { sketch, .. } => {
+            let frame = sketch_geometry_frame(doc, *sketch)?;
+            let region = sketch_region_uv(doc, face)?;
+            let profile = region
+                .into_iter()
+                .map(|(u, v)| local_to_world(&frame, u, v))
+                .collect();
+            Some((profile, frame.normal))
+        }
     }
 }
 
@@ -4508,6 +4524,10 @@ pub fn extrude_face_uv_loop(
                     })
                     .collect(),
             )
+        }
+        ExtrudeFace::SketchRegion { sketch: s, .. } => {
+            // A plane region (#993) is already a sketch-local loop.
+            (*s == sketch).then(|| sketch_region_uv(doc, face)).flatten()
         }
         ExtrudeFace::Polygon(lines) => {
             let first = doc.lines.get(*lines.first()?)?;
@@ -4790,6 +4810,9 @@ pub fn side_face_count(profile: &ExtrudeFace) -> usize {
         // walls above) — the extrusion mesh itself is unaffected (`extrusion_mesh` walks the
         // resolved profile loop directly, not through this count).
         ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => 0,
+        // A region's boundary is derived, not a fixed list of profile lines, so its side walls
+        // are not analytically addressable — the same limitation `Boolean` has.
+        ExtrudeFace::SketchRegion { .. } => 0,
     }
 }
 
@@ -9219,3 +9242,16 @@ mod tests {
 }
 
 
+
+/// The sketch-local loop of an [`ExtrudeFace::SketchRegion`] (#993): the region of the hosted
+/// sketch's plane that contains the profile's seed point. `None` when the sketch's lines no
+/// longer divide the face, or none of the regions they make still contains the seed.
+pub fn sketch_region_uv(doc: &Document, face: &ExtrudeFace) -> Option<Vec<(f32, f32)>> {
+    let ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } = face else {
+        return None;
+    };
+    let seed = crate::model::sketch_region_seed_point(*seed_u, *seed_v);
+    crate::polygon::sketch_plane_regions(doc, *sketch)
+        .into_iter()
+        .find(|region| crate::polygon::point_in_polygon_2d(seed, region))
+}

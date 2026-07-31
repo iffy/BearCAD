@@ -4842,6 +4842,8 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
         // so either side resolves it.
         ExtrudeFace::Boolean { a, .. } => extrude_face_sketch(doc, a),
         ExtrudeFace::TextGlyph { text, .. } => doc.sketch_texts.get(*text).map(|t| t.sketch),
+        // A plane region names its sketch outright (#993).
+        ExtrudeFace::SketchRegion { sketch, .. } => Some(*sketch),
     }
 }
 

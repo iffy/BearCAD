@@ -630,7 +630,7 @@ pub(crate) fn point_in_triangle_2d(
 
 /// Even-odd (ray-casting) point-in-polygon test; winding-independent. Used both by tests and,
 /// at runtime, to resolve which atomic boolean region (#16/#62) a click landed in.
-pub(crate) fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
+pub fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
     let mut inside = false;
     let n = vertices.len();
     for i in 0..n {
@@ -650,6 +650,71 @@ pub(crate) fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> boo
 mod tests {
     use super::*;
     use crate::model::{Constraint, ConstraintEntity, ConstraintKind, Line};
+
+    /// #993: the reported case. A square face ruled by two lines across it reads as three
+    /// regions to anyone looking at it, and neither line closes a loop with anything — the
+    /// regions are bounded by the *face's own outline*, which the sketch never drew.
+    #[test]
+    fn two_lines_across_a_face_make_three_regions() {
+        // A 10x10 outline, cut by two horizontal lines at y = 3 and y = 7.
+        let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let mut segments: Vec<((f32, f32), (f32, f32))> = (0..4)
+            .map(|i| (square[i], square[(i + 1) % 4]))
+            .collect();
+        segments.push(((0.0, 3.0), (10.0, 3.0)));
+        segments.push(((0.0, 7.0), (10.0, 7.0)));
+
+        let regions = planar_regions(&segments);
+        assert_eq!(regions.len(), 3, "two cuts across a face make three regions");
+        let areas: Vec<f32> = regions.iter().map(|r| signed_area(r)).collect();
+        assert!(
+            areas.iter().all(|a| *a > 0.0),
+            "every region is wound counter-clockwise, got {areas:?}"
+        );
+        let total: f32 = areas.iter().sum();
+        assert!(
+            (total - 100.0).abs() < 0.01,
+            "the regions tile the face exactly, got {total}"
+        );
+        // Sorted by lowest corner, so they come out bottom-to-top: 30, 40, 30.
+        for (got, want) in areas.iter().zip([30.0, 40.0, 30.0]) {
+            assert!((got - want).abs() < 0.01, "region areas {areas:?}");
+        }
+    }
+
+    /// A cut that stops short of the far side divides nothing — it leaves one region, and a
+    /// dangling edge must not spawn a degenerate sliver.
+    #[test]
+    fn a_cut_that_does_not_reach_across_divides_nothing() {
+        let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let mut segments: Vec<((f32, f32), (f32, f32))> = (0..4)
+            .map(|i| (square[i], square[(i + 1) % 4]))
+            .collect();
+        segments.push(((0.0, 5.0), (6.0, 5.0)));
+        let regions = planar_regions(&segments);
+        assert_eq!(regions.len(), 1, "a partial cut leaves the face whole, got {regions:?}");
+        assert!((signed_area(&regions[0]) - 100.0).abs() < 0.01);
+    }
+
+    /// Crossing cuts make four quadrants — the split has to happen at the crossing, not just
+    /// where a line meets the outline.
+    #[test]
+    fn crossing_cuts_make_four_regions() {
+        let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let mut segments: Vec<((f32, f32), (f32, f32))> = (0..4)
+            .map(|i| (square[i], square[(i + 1) % 4]))
+            .collect();
+        segments.push(((0.0, 5.0), (10.0, 5.0)));
+        segments.push(((5.0, 0.0), (5.0, 10.0)));
+        let regions = planar_regions(&segments);
+        assert_eq!(regions.len(), 4, "a cross makes quadrants");
+        let total: f32 = regions.iter().map(|r| signed_area(r)).sum();
+        assert!((total - 100.0).abs() < 0.01, "and they tile the face");
+        assert!(
+            regions.iter().all(|r| (signed_area(r) - 25.0).abs() < 0.01),
+            "each quadrant is a quarter"
+        );
+    }
 
     /// #268: a square with a square hole triangulates to the annulus area (outer − hole), and no
     /// triangle covers the hole's interior.
@@ -921,4 +986,242 @@ mod tests {
             );
         }
     }
+}
+
+/// The regions a hosted sketch's plane is divided into (#993), each as a closed polygon in
+/// **sketch-local** coordinates, wound counter-clockwise.
+///
+/// A sketch drawn *on a face* has a boundary it did not draw: the face's own outline. Two lines
+/// ruled across a box's top cap read to anyone as three regions, but neither line closes a loop
+/// with anything, so `closed_line_loops` — which only ever sees the sketch's own lines — finds
+/// none, and the whole cap stays the only thing to extrude.
+///
+/// This builds the **planar arrangement** of the host face's boundary together with the sketch's
+/// own solid lines: every segment is split wherever another crosses it, and the minimal faces of
+/// the resulting graph are the regions. Returns empty for a sketch with no host face, and for one
+/// whose lines divide nothing — a single undivided region is not a division, and offering it
+/// would just duplicate the face itself.
+///
+/// Construction geometry is scaffolding and never bounds a region; nor do shadow or dead lines.
+pub fn sketch_plane_regions(doc: &Document, sketch: SketchId) -> Vec<Vec<(f32, f32)>> {
+    let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
+        return Vec::new();
+    };
+    let Some(host) = doc.sketch_face(sketch) else {
+        return Vec::new();
+    };
+    let Some(boundary) = crate::extrude::face_boundary_loop_world(doc, &host) else {
+        return Vec::new();
+    };
+    // The host outline, brought into the sketch's own frame.
+    let outline: Vec<(f32, f32)> = boundary
+        .iter()
+        .map(|p| crate::face::world_to_local(&frame, *p))
+        .collect();
+    if outline.len() < 3 {
+        return Vec::new();
+    }
+    let mut segments: Vec<((f32, f32), (f32, f32))> = Vec::new();
+    for i in 0..outline.len() {
+        segments.push((outline[i], outline[(i + 1) % outline.len()]));
+    }
+    // The sketch's own lines, curves sampled to polylines so a bend bounds a region like
+    // anything else.
+    let mut cutters = 0usize;
+    for (li, line) in doc.lines.iter().enumerate() {
+        if line.sketch != sketch || line.construction || line.shadow || !line_alive(doc, li) {
+            continue;
+        }
+        let points = line.sample_local(crate::model::BEZIER_SEGMENTS);
+        for w in points.windows(2) {
+            segments.push((w[0], w[1]));
+        }
+        cutters += 1;
+    }
+    if cutters == 0 {
+        return Vec::new();
+    }
+    let regions = planar_regions(&segments);
+    // One region is just the face over again.
+    if regions.len() < 2 {
+        return Vec::new();
+    }
+    regions
+}
+
+/// How close two points must be to count as the same vertex of an arrangement, in sketch units.
+const ARRANGEMENT_EPS: f32 = 1e-4;
+
+/// The minimal faces of the planar graph `segments` make, each wound counter-clockwise.
+///
+/// Segments are split at every crossing first, so they only ever meet at endpoints; the faces
+/// then fall out of the standard "walk the most-clockwise turn at each vertex" traversal. The
+/// unbounded outer face comes out wound the other way, which is how it's told from the rest.
+fn planar_regions(segments: &[((f32, f32), (f32, f32))]) -> Vec<Vec<(f32, f32)>> {
+    let split = split_at_crossings(segments);
+    // Weld coincident endpoints into shared vertices.
+    let mut points: Vec<(f32, f32)> = Vec::new();
+    let index_of = |p: (f32, f32), points: &mut Vec<(f32, f32)>| -> usize {
+        for (i, q) in points.iter().enumerate() {
+            if (p.0 - q.0).abs() <= ARRANGEMENT_EPS && (p.1 - q.1).abs() <= ARRANGEMENT_EPS {
+                return i;
+            }
+        }
+        points.push(p);
+        points.len() - 1
+    };
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for (a, b) in split {
+        let (ia, ib) = (index_of(a, &mut points), index_of(b, &mut points));
+        if ia != ib && !edges.contains(&(ia, ib)) && !edges.contains(&(ib, ia)) {
+            edges.push((ia, ib));
+        }
+    }
+    if edges.is_empty() {
+        return Vec::new();
+    }
+    // Two directed half-edges per edge; `2i` runs a→b and `2i+1` runs b→a.
+    let half = |e: usize, rev: bool| e * 2 + usize::from(rev);
+    let from = |h: usize| {
+        let (a, b) = edges[h / 2];
+        if h % 2 == 0 { a } else { b }
+    };
+    let to = |h: usize| {
+        let (a, b) = edges[h / 2];
+        if h % 2 == 0 { b } else { a }
+    };
+    let angle = |h: usize| {
+        let (p, q) = (points[from(h)], points[to(h)]);
+        (q.1 - p.1).atan2(q.0 - p.0)
+    };
+    // Half-edges leaving each vertex, sorted by direction.
+    let mut out_of: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
+    for e in 0..edges.len() {
+        out_of[edges[e].0].push(half(e, false));
+        out_of[edges[e].1].push(half(e, true));
+    }
+    for outs in out_of.iter_mut() {
+        outs.sort_by(|a, b| angle(*a).total_cmp(&angle(*b)));
+    }
+    let mut visited = vec![false; edges.len() * 2];
+    let mut faces: Vec<Vec<(f32, f32)>> = Vec::new();
+    for start in 0..edges.len() * 2 {
+        if visited[start] {
+            continue;
+        }
+        let mut loop_points: Vec<(f32, f32)> = Vec::new();
+        let mut h = start;
+        loop {
+            if visited[h] {
+                break;
+            }
+            visited[h] = true;
+            loop_points.push(points[from(h)]);
+            // Turn as sharply clockwise as possible at the far end: step onto the twin, then
+            // take the outgoing half-edge just before it in angle order. That is what walks the
+            // face on one consistent side and makes the faces minimal.
+            let twin = h ^ 1;
+            let v = from(twin);
+            let outs = &out_of[v];
+            let at = outs.iter().position(|&x| x == twin).unwrap_or(0);
+            h = outs[(at + outs.len() - 1) % outs.len()];
+            if h == start {
+                break;
+            }
+        }
+        if loop_points.len() >= 3 && signed_area(&loop_points) > ARRANGEMENT_EPS {
+            faces.push(loop_points);
+        }
+    }
+    // Deterministic order: by the lowest corner each region reaches.
+    faces.sort_by(|a, b| {
+        let key = |f: &Vec<(f32, f32)>| {
+            f.iter().fold((f32::MAX, f32::MAX), |acc, p| {
+                (acc.0.min(p.0), acc.1.min(p.1))
+            })
+        };
+        let (ka, kb) = (key(a), key(b));
+        ka.0.total_cmp(&kb.0).then(ka.1.total_cmp(&kb.1))
+    });
+    faces
+}
+
+/// Twice the signed area of a closed polygon — positive when wound counter-clockwise.
+fn signed_area(poly: &[(f32, f32)]) -> f32 {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum::<f32>()
+        / 2.0
+}
+
+/// Split every segment wherever another crosses or touches it, so the pieces meet only at
+/// endpoints — the precondition the face walk needs.
+fn split_at_crossings(
+    segments: &[((f32, f32), (f32, f32))],
+) -> Vec<((f32, f32), (f32, f32))> {
+    let mut out = Vec::new();
+    for (i, &(a, b)) in segments.iter().enumerate() {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len_sq = dx * dx + dy * dy;
+        if len_sq <= ARRANGEMENT_EPS * ARRANGEMENT_EPS {
+            continue;
+        }
+        // Parameters along this segment where something touches it, ends included.
+        let mut ts: Vec<f32> = vec![0.0, 1.0];
+        for (j, &(c, d)) in segments.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            for t in crossing_params(a, b, c, d) {
+                if t > ARRANGEMENT_EPS && t < 1.0 - ARRANGEMENT_EPS {
+                    ts.push(t);
+                }
+            }
+        }
+        ts.sort_by(f32::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() <= ARRANGEMENT_EPS);
+        for w in ts.windows(2) {
+            let p = (a.0 + dx * w[0], a.1 + dy * w[0]);
+            let q = (a.0 + dx * w[1], a.1 + dy * w[1]);
+            if (p.0 - q.0).abs() > ARRANGEMENT_EPS || (p.1 - q.1).abs() > ARRANGEMENT_EPS {
+                out.push((p, q));
+            }
+        }
+    }
+    out
+}
+
+/// Where segment `cd` meets segment `ab`, as parameters along `ab`. Collinear overlaps
+/// contribute `cd`'s own endpoints, so a segment lying along another still splits it.
+fn crossing_params(
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+    d: (f32, f32),
+) -> Vec<f32> {
+    let (rx, ry) = (b.0 - a.0, b.1 - a.1);
+    let (sx, sy) = (d.0 - c.0, d.1 - c.1);
+    let denom = rx * sy - ry * sx;
+    let (qpx, qpy) = (c.0 - a.0, c.1 - a.1);
+    if denom.abs() > 1e-9 {
+        let t = (qpx * sy - qpy * sx) / denom;
+        let u = (qpx * ry - qpy * rx) / denom;
+        if (-ARRANGEMENT_EPS..=1.0 + ARRANGEMENT_EPS).contains(&u) {
+            return vec![t];
+        }
+        return Vec::new();
+    }
+    // Parallel: only a collinear one can touch, and then its endpoints are the split points.
+    if (qpx * ry - qpy * rx).abs() > 1e-6 {
+        return Vec::new();
+    }
+    let len_sq = rx * rx + ry * ry;
+    [c, d]
+        .iter()
+        .map(|p| ((p.0 - a.0) * rx + (p.1 - a.1) * ry) / len_sq)
+        .collect()
 }

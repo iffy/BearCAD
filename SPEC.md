@@ -392,6 +392,20 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   diagonal) yields multiple selectable polygon faces. Scriptable via
   `bearcad.extrude{ polygon = {line_index, ...} }`, which takes an explicit ordered line list
   rather than relying on auto-detection.
+- **Regions of a hosted face (#993):** a sketch drawn *on a face* has a boundary it never drew —
+  the face's own outline — so lines ruled across a box's cap read as separate faces even though
+  neither line closes a loop with anything. `polygon::sketch_plane_regions` builds the **planar
+  arrangement** of that outline together with the sketch's own solid lines (curves sampled,
+  construction geometry excluded — it is scaffolding and bounds nothing): every segment is split
+  where another crosses it, and the minimal faces of the resulting graph are the regions, wound
+  counter-clockwise. It reports nothing when the lines divide nothing, since a single region is
+  just the face over again. Clicking one gives `ExtrudeFace::SketchRegion { sketch, seed_u,
+  seed_v }`, which names the region by a **seed point** (thousandths of a sketch unit, so the
+  profile stays `Eq`/`Hash`) rather than by its boundary — the boundary is derived, running
+  partly along the host's own outline, which has no line indices to point at. The region is
+  recomputed from the live sketch on every resolve, so it follows edits like any other profile;
+  if the cuts move out from under the seed it simply stops resolving, which `document_health`
+  already reports as a face gone missing. Like `Boolean`, it has no `FaceId` of its own.
 - **Bezier curves (#54):** a curve is a `Line` with an optional pair of cubic tangent-handle
   control points (`[0]` near `(x0,y0)`, `[1]` near `(x1,y1)`) — its two endpoints stay ordinary
   constrainable vertices, so coincidence/distance constraints, dragging, undo, and persistence

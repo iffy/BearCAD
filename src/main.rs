@@ -17655,13 +17655,17 @@ fn pick_extrude_face(
     let base = match pick_sketch_face(pp, project, doc, eye)? {
         FaceId::Circle(i) => model::ExtrudeFace::Circle(i),
         FaceId::Polygon(lines) => model::ExtrudeFace::Polygon(lines),
-        FaceId::ConstructionPlane(_)
+        host @ (FaceId::ConstructionPlane(_)
         | FaceId::ExtrudeCap { .. }
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
-        | FaceId::UnitFace { .. } => {
-            return None;
+        | FaceId::UnitFace { .. }) => {
+            // A sketch drawn on this face may have ruled it into regions (#993) — lines across
+            // a box's cap read as separate faces to anyone looking at them. Offer the one under
+            // the cursor; with no such division there is nothing here but the face itself, and
+            // the bare-body-face path takes it.
+            return pick_sketch_region(pp, doc, &host, cam, viewport, vp);
         }
     };
     if let Some(resolved) = resolve_boolean_extrude_face(doc, &base, pp, cam, viewport, vp) {
@@ -30457,4 +30461,48 @@ mod tests {
         assert_eq!(swap.swap_to, Some(1), "swaps into the other group (parent node 1)");
         assert_eq!(swap.leaves, vec![2, 3], "shows group 1's members");
     }
+}
+/// The region of a sketch drawn on `host` that the cursor is inside (#993).
+///
+/// A sketch hosted on a face has a boundary it never drew — the face's own outline — so lines
+/// ruled across it bound regions even though they close no loop of their own. This finds the
+/// region under the cursor and names it by a seed point at its centroid, which is stable across
+/// re-picks and survives the edits that move a boundary without reshaping the region.
+fn pick_sketch_region(
+    pp: egui::Pos2,
+    doc: &model::Document,
+    host: &FaceId,
+    cam: &camera::Camera,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+) -> Option<model::ExtrudeFace> {
+    for sketch in 0..doc.sketches.len() {
+        if doc.sketches.get(sketch).is_none_or(|s| s.deleted)
+            || doc.sketch_face(sketch).as_ref() != Some(host)
+        {
+            continue;
+        }
+        let Some(frame) = face::sketch_geometry_frame(doc, sketch) else {
+            continue;
+        };
+        let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal) else {
+            continue;
+        };
+        let cursor = face::world_to_local(&frame, hit);
+        for region in polygon::sketch_plane_regions(doc, sketch) {
+            if !polygon::point_in_polygon_2d(cursor, &region) {
+                continue;
+            }
+            // The centroid names the region more stably than wherever the cursor happened to
+            // be; it falls back to the cursor for a shape whose centroid lies outside it.
+            let n = region.len() as f32;
+            let c = region
+                .iter()
+                .fold((0.0, 0.0), |acc, p| (acc.0 + p.0 / n, acc.1 + p.1 / n));
+            let seed = if polygon::point_in_polygon_2d(c, &region) { c } else { cursor };
+            let (seed_u, seed_v) = model::sketch_region_seed(seed.0, seed.1);
+            return Some(model::ExtrudeFace::SketchRegion { sketch, seed_u, seed_v });
+        }
+    }
+    None
 }
