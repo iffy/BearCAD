@@ -6838,8 +6838,21 @@ impl AppState {
                 }
             }
             Action::ImportStep { path } => {
-                let file = std::path::PathBuf::from(&path);
-                self.import_step_file(&path, &file)
+                // Native reads the file through the kernel's path-based STEP reader. The web
+                // build has no filesystem to resolve a path against — it imports through
+                // `import_step_bytes` from a file picker instead — so a path can only arrive
+                // there by mistake, and says so rather than failing to compile.
+                #[cfg(not(target_arch = "wasm32"))]
+                let result = {
+                    let file = std::path::PathBuf::from(&path);
+                    self.import_step_file(&path, &file)
+                };
+                #[cfg(target_arch = "wasm32")]
+                let result = {
+                    self.status = format!("Import failed: no filesystem to read {path} from");
+                    ActionResult::Err(self.status.clone())
+                };
+                result
             }
             Action::ImportUnit { path, link, name } => self.import_unit(&path, link, name),
             Action::Clear => {

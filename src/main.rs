@@ -474,6 +474,10 @@ fn diagnostic_header() -> String {
     )
 }
 
+/// Native only: everything it reaches for — the log file, the panic hook, `eframe`'s
+/// windowed entry point, the CLI's script runner — is itself native only, and the wasm
+/// build has its own `main` that starts the app on a canvas instead.
+#[cfg(not(target_arch = "wasm32"))]
 fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
     // Logging first, so everything that follows — including a panic — lands in the file
     // (#1023). A problem you can only debug while watching is one you mostly can't.
