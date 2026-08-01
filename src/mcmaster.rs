@@ -356,6 +356,9 @@ pub fn run_catalog_process(query: Option<&str>) -> Result<(), String> {
     // new-window request, not a navigation. Without somewhere to send it the click does
     // nothing at all, silently. These are loaded in the window we already have, so the
     // download handlers below actually see them.
+    // Only the macOS block below mutates it (activation policy and Dock visibility), so
+    // off macOS the binding is never mutated.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     // Helper, not peer (#1023): no Dock tile on macOS. Same multi-process shape as a
     // browser content process — its own event loop and window, not a second app identity.
@@ -577,12 +580,6 @@ pub fn activate_pid(pid: u32) -> bool {
     ok
 }
 
-/// No-op off macOS — window cycling is a macOS Dock/menu convention.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
-pub fn activate_pid(_pid: u32) -> bool {
-    false
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 impl CatalogSession {
     /// Start the catalog window as a child of this process, showing `query` — a search
@@ -645,7 +642,9 @@ impl CatalogSession {
         self.finished.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The catalog process's PID — used to hand it focus for ⌘` (#1023).
+    /// The catalog process's PID — used to hand it focus for ⌘` (#1023), which is a macOS
+    /// convention, so nothing off macOS asks for it.
+    #[cfg(target_os = "macos")]
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
