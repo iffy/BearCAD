@@ -58,12 +58,24 @@
     document.addEventListener("dblclick", (e) => e.preventDefault(), { passive: false });
   </script>
   <script type="module">
+    // Every asset carries the build it belongs to. wasm-bindgen mangles each imported JS
+    // function's name with a content hash, so a cached bearcad.js paired with a freshly
+    // fetched bearcad_bg.wasm (or the reverse) fails instantiation outright with
+    // "LinkError: import object field '__wbg_...' is not a Function". Without a version in
+    // the URL the browser is free to expire the two independently and produce exactly that
+    // (#1049). scripts/build-web.sh substitutes the stamp; unsubstituted it is harmless.
+    const BUILD = "__BEARCAD_BUILD__";
+    const v = (path) => BUILD.startsWith("__") ? path : path + "?v=" + BUILD;
+    // The Emscripten modules fetch their own .wasm relative to themselves, so they need the
+    // stamp passed in rather than only on the import.
+    const emscriptenOpts = { locateFile: (p) => v(p) };
+
     // The OCCT geometry kernel is a second wasm module (Emscripten); load it first so
     // the app's kernel bridge finds it. If it fails, the app still runs — with the
     // lean-build fallbacks (no solid cuts) and a status note in Help > About.
     try {
-      const { default: BearcadKernel } = await import("./kernel.js");
-      globalThis.bearcadKernel = await BearcadKernel();
+      const { default: BearcadKernel } = await import(v("./kernel.js"));
+      globalThis.bearcadKernel = await BearcadKernel(emscriptenOpts);
     } catch (err) {
       console.warn("BearCAD: geometry kernel failed to load; running lean:", err);
     }
@@ -71,23 +83,32 @@
     // Script can run .lua files. If it fails, the app still runs — scripting is just
     // unavailable, reported when you try to load a script.
     try {
-      const { default: BearcadLua } = await import("./lua.js");
-      globalThis.bearcadLua = await BearcadLua();
+      const { default: BearcadLua } = await import(v("./lua.js"));
+      globalThis.bearcadLua = await BearcadLua(emscriptenOpts);
     } catch (err) {
       console.warn("BearCAD: Lua interpreter failed to load; scripting disabled:", err);
     }
-    const { default: init } = await import("./bearcad.js");
-    init()
+    const { default: init } = await import(v("./bearcad.js"));
+    // The glue defaults to fetching bearcad_bg.wasm unversioned; hand it the stamped URL so
+    // the pair can only ever come from one build.
+    init({ module_or_path: new URL(v("./bearcad_bg.wasm"), import.meta.url) })
       .then(() => document.getElementById("loading")?.remove())
       .catch((err) => {
         const el = document.getElementById("loading");
         // eframe throws a benign "Using exceptions for control flow" on startup in
         // some builds; anything else is a real failure worth showing.
         if (el && !String(err).includes("control flow")) {
+          const text = String(err);
+          // A LinkError is a mismatched pair of cached assets, not a missing GPU — saying
+          // "you need WebGPU" there sends people to check the one thing that is fine.
+          const advice = text.includes("LinkError")
+            ? "This build's files don't match — a stale copy is cached. A hard reload " +
+              "(Shift-Reload) should fix it."
+            : "A browser with WebGPU or WebGL2 is required.";
           el.innerHTML =
             "<div><strong>BearCAD couldn't start.</strong></div>" +
-            "<div>" + String(err) + "</div>" +
-            "<div>A browser with WebGPU or WebGL2 is required.</div>";
+            "<div>" + text + "</div>" +
+            "<div>" + advice + "</div>";
         } else {
           el?.remove();
         }

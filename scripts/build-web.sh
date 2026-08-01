@@ -40,7 +40,17 @@ mkdir -p web/dist
 wasm-bindgen target/wasm32-unknown-unknown/release/bearcad.wasm \
   --out-dir web/dist --out-name bearcad --target web --no-typescript
 
-cp web/index.html web/dist/
+# Stamp the build into index.html so every asset URL carries it (#1049). wasm-bindgen
+# mangles imported function names with a content hash, so a cached bearcad.js served
+# alongside a fresh bearcad_bg.wasm fails to instantiate at all; versioning the URLs is what
+# stops the browser expiring the two independently. The wasm's own hash is the stamp, so it
+# changes exactly when the artifacts do and repeat builds stay byte-identical.
+BUILD_STAMP="$(shasum -a 256 web/dist/bearcad_bg.wasm 2>/dev/null | cut -c1-12)"
+if [[ -z "$BUILD_STAMP" ]]; then
+  BUILD_STAMP="$(sha256sum web/dist/bearcad_bg.wasm | cut -c1-12)"
+fi
+sed "s/__BEARCAD_BUILD__/${BUILD_STAMP}/g" web/index.html > web/dist/index.html
+echo "==> build stamp ${BUILD_STAMP}"
 cp web/favicon.ico web/dist/ 2>/dev/null || true
 cp web/kernel/kernel.js web/kernel/kernel.wasm web/dist/
 cp web/lua/lua.js web/lua/lua.wasm web/dist/

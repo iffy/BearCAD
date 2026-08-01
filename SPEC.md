@@ -1784,8 +1784,21 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   the file), as do STL/STEP/image import and STL/STEP export (byte-level `AppState`
   helpers: `open_document_bytes`, `import_*_bytes`, `export_*_bytes`).
 - **Entry point**: `eframe::WebRunner` into the `bearcad_canvas` element of
-  `web/index.html`; `web-time` stands in for `std::time::Instant`; wgpu's `webgl` feature
-  provides the fallback for browsers without WebGPU.
+  `web/index.html`; `web-time` stands in for `std::time::Instant` (which panics outright on
+  wasm — see #1048); wgpu's `webgl` feature provides the fallback for browsers without
+  WebGPU.
+- **Every asset URL carries the build it belongs to (#1049).** wasm-bindgen mangles each
+  imported JS function's name with a content hash, so a cached `bearcad.js` served alongside
+  a freshly fetched `bearcad_bg.wasm` does not merely misbehave — instantiation fails with
+  `LinkError: import object field '__wbg_…' is not a Function`, and the app never starts.
+  Unversioned URLs let a browser expire the two independently, which is exactly how that
+  happens after a deploy. `scripts/build-web.sh` substitutes a `__BEARCAD_BUILD__`
+  placeholder in `index.html` with the wasm's own content hash — so it changes precisely
+  when the artifacts do — and every import, the `init({module_or_path})` wasm URL, and the
+  Emscripten modules' `locateFile` all carry it. The two Emscripten modules need it passed
+  in rather than only on their import, since they fetch their own `.wasm` themselves.
+  A `LinkError` also reports itself as a stale cache rather than as a missing GPU: the
+  startup error box previously told everyone to check WebGPU support whatever went wrong.
 
 ### 3.5 Advanced features
 - **Create Shape tool** *(#909)* — `Tool::Shape`, 3D only (picking it from a sketch leaves
