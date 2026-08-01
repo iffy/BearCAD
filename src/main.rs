@@ -11359,6 +11359,17 @@ impl eframe::App for App {
                 self.tool_button(ui, icons::IconId::Rectangle, Tool::Rectangle, "Rectangle");
                 self.tool_button(ui, icons::IconId::Line, Tool::Line, "Line");
                 self.tool_button(ui, icons::IconId::Circle, Tool::Circle, "Circle");
+                // The Shape tool shows the shape it will place (#909).
+                self.tool_button(
+                    ui,
+                    match self.state.shape_kind {
+                        model::PrimitiveKind::Cuboid => icons::IconId::ShapeCuboid,
+                        model::PrimitiveKind::Cylinder => icons::IconId::ShapeCylinder,
+                        model::PrimitiveKind::Sphere => icons::IconId::ShapeSphere,
+                    },
+                    Tool::Shape,
+                    names::primitive_kind_label(self.state.shape_kind),
+                );
                 self.tool_button(ui, icons::IconId::Fillet, Tool::Fillet, "Fillet");
                 self.tool_button(ui, icons::IconId::Chamfer, Tool::Chamfer, "Chamfer");
                 self.tool_button(ui, icons::IconId::Offset, Tool::Offset, "Offset");
@@ -11382,17 +11393,6 @@ impl eframe::App for App {
                 self.tool_button(ui, icons::IconId::Sweep, Tool::Sweep, "Sweep");
                 self.tool_button(ui, icons::IconId::Loft, Tool::Loft, "Loft");
                 self.tool_button(ui, icons::IconId::Revolve, Tool::Revolve, "Revolve");
-                // The Shape tool shows the shape it will place (#909).
-                self.tool_button(
-                    ui,
-                    match self.state.shape_kind {
-                        model::PrimitiveKind::Cuboid => icons::IconId::ShapeCuboid,
-                        model::PrimitiveKind::Cylinder => icons::IconId::ShapeCylinder,
-                        model::PrimitiveKind::Sphere => icons::IconId::ShapeSphere,
-                    },
-                    Tool::Shape,
-                    names::primitive_kind_label(self.state.shape_kind),
-                );
                 self.tool_button(ui, icons::IconId::Combine, Tool::Combine, "Combine");
                 self.tool_button(ui, icons::IconId::Move, Tool::Move, "Move");
                 self.tool_button(ui, icons::IconId::Mirror, Tool::Mirror, "Mirror");

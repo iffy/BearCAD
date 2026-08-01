@@ -1,5 +1,5 @@
 ---
-sidebar_position: 12.5
+sidebar_position: 7
 title: Shape
 ---
 
@@ -11,6 +11,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Shape places a solid straight into 3D: a cuboid, a cylinder, or a sphere. No sketch, no
 profile. The toolbar button shows the shape you used last.
+
+![The three shapes the tool places: a cuboid, a cylinder, and a sphere](/img/screenshots/shape.png)
 
 ## The shapes
 
