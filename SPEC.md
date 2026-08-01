@@ -4399,6 +4399,18 @@ The model in one place:
   is a test-only mirror, and `realistic_terms_match_the_shader` pins the shared constants to
   the WGSL source so the two cannot drift.
 
+  **Lighting is done in linear space and tonemapped (#1038).** The viewport's render target
+  is a plain UNORM format, so nothing encodes on our behalf: the shader decodes each base
+  colour from sRGB, does its arithmetic in linear light, applies a filmic tonemap, and
+  re-encodes. The specular is *added* light rather than a lerp toward white, so a highlight
+  keeps the material's colour underneath and the tonemap's shoulder rolls off the overshoot
+  instead of clipping to a flat white disc. The tonemap is Narkowicz's ACES fit normalized
+  by `aces(1.0)` (`ACES_WHITE`), so adopting it does not darken the whole image.
+  The ambient/diffuse weights are therefore **linear-space** values: `SOLID_AMBIENT`/
+  `SOLID_DIFFUSE` and `REALISTIC_AMBIENT`/`REALISTIC_DIFFUSE` re-encode to roughly the
+  sRGB-space weights the pre-#1038 maths used, so the change reads as better-lit rather than
+  uniformly brighter.
+
   The normals themselves are **derived from the mesh**, not read off the kernel
   (`extrude::smooth_normals`): each corner averages the area-weighted normals of every
   triangle meeting at that position, but only those within `CREASE_ANGLE_DEG` (30°) of its

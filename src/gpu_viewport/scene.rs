@@ -4718,18 +4718,6 @@ fn scale_color(color: Color32, factor: f32) -> Color32 {
     )
 }
 
-/// Blend `color` toward white by `amount` (0 = unchanged, 1 = white) — used to add a specular
-/// highlight on top of the already-lit base color in [`realistic_shade`].
-#[cfg(test)]
-fn lighten_color(color: Color32, amount: f32) -> Color32 {
-    let t = amount.clamp(0.0, 1.0);
-    Color32::from_rgba_unmultiplied(
-        (color.r() as f32 + (255.0 - color.r() as f32) * t) as u8,
-        (color.g() as f32 + (255.0 - color.g() as f32) * t) as u8,
-        (color.b() as f32 + (255.0 - color.b() as f32) * t) as u8,
-        color.a(),
-    )
-}
 
 /// Ambient/diffuse/specular weights for `ShadingMode::Realistic` (#83) — a fixed matte/satin
 /// "painted object" look; no per-material tuning yet.
@@ -4742,9 +4730,9 @@ fn lighten_color(color: Color32, amount: f32) -> Color32 {
 pub const SCENE_LIGHT_DIR: Vec3 = Vec3::new(0.35, 0.45, 0.82);
 
 #[cfg(test)]
-const REALISTIC_AMBIENT: f32 = 0.30;
+const REALISTIC_AMBIENT: f32 = 0.0707;
 #[cfg(test)]
-const REALISTIC_DIFFUSE: f32 = 0.55;
+const REALISTIC_DIFFUSE: f32 = 0.6287;
 #[cfg(test)]
 const REALISTIC_SPECULAR: f32 = 0.35;
 #[cfg(test)]
@@ -4771,10 +4759,45 @@ fn realistic_shade(base: Color32, normal: Vec3, light: Vec3, view: Vec3) -> Colo
     let diffuse = fixed_diffuse.max(headlight_diffuse);
     let half = (light + view).normalize_or_zero();
     let specular = n.dot(half).max(0.0).powf(REALISTIC_SHININESS);
-    let intensity = REALISTIC_AMBIENT + REALISTIC_DIFFUSE * diffuse;
-    let shaded = scale_color(base, intensity.min(1.0));
-    lighten_color(shaded, REALISTIC_SPECULAR * specular)
+    let lit = |channel: u8| -> u8 {
+        let linear = srgb_to_linear(channel as f32 / 255.0);
+        let shaded = linear * (REALISTIC_AMBIENT + REALISTIC_DIFFUSE * diffuse)
+            + REALISTIC_SPECULAR * specular;
+        (linear_to_srgb(tonemap(shaded)) * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgba_unmultiplied(lit(base.r()), lit(base.g()), lit(base.b()), base.a())
 }
+
+/// sRGB transfer function and its inverse, and the tonemap — the CPU mirror of the same
+/// three functions in `shader.wgsl` (#1038).
+#[cfg(test)]
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[cfg(test)]
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Narkowicz's ACES fit, normalized so full white maps back to full white.
+#[cfg(test)]
+fn tonemap(x: f32) -> f32 {
+    let aces = |v: f32| (v * (2.51 * v + 0.03)) / (v * (2.43 * v + 0.59) + 0.14);
+    (aces(x.max(0.0)) / ACES_WHITE).clamp(0.0, 1.0)
+}
+
+/// `aces(1.0)`; see the shader constant of the same name.
+#[cfg(test)]
+const ACES_WHITE: f32 = 0.8037036;
 
 pub fn sketch_ground_color(color: Color32, in_sketch: bool) -> Color32 {
     if in_sketch {
@@ -5158,6 +5181,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{name}` in shader.wgsl is not a plain number"))
         };
         for (name, rust) in [
+            ("ACES_WHITE", ACES_WHITE),
             ("REALISTIC_AMBIENT", REALISTIC_AMBIENT),
             ("REALISTIC_DIFFUSE", REALISTIC_DIFFUSE),
             ("REALISTIC_SPECULAR", REALISTIC_SPECULAR),
@@ -5233,10 +5257,51 @@ mod tests {
     #[test]
     fn realistic_shade_never_darkens_below_ambient() {
         let base = Color32::from_rgb(180, 90, 40);
-        // Facing directly away from both light and camera: diffuse and specular are both zero.
+        // Facing directly away from both light and camera: diffuse and specular are both zero,
+        // so the surface sits on the ambient floor.
         let shaded = realistic_shade(base, Vec3::new(0.0, 1.0, 0.0), Vec3::Z, Vec3::Z);
-        let ambient_only = scale_color(base, REALISTIC_AMBIENT);
-        assert_eq!(shaded, ambient_only);
+        let lit = realistic_shade(base, Vec3::Z, Vec3::Z, Vec3::Z);
+        // Dimmer than the same face turned to the light, but nowhere near black — an
+        // unlit face still has to read as its own material.
+        assert!(shaded.r() < lit.r(), "{shaded:?} vs {lit:?}");
+        assert!(shaded.r() > 40, "the ambient floor is too dark: {shaded:?}");
+        // #1038: the floor is `REALISTIC_AMBIENT` of the base's **linear** luminance, which
+        // re-encodes brighter than a naive 0.30 of the sRGB byte — that is the whole point
+        // of lighting in linear space.
+        let expect = |c: u8| -> u8 {
+            let v = tonemap(srgb_to_linear(c as f32 / 255.0) * REALISTIC_AMBIENT);
+            (linear_to_srgb(v) * 255.0).round() as u8
+        };
+        assert_eq!(
+            (shaded.r(), shaded.g(), shaded.b()),
+            (expect(180), expect(90), expect(40))
+        );
+    }
+
+    /// #1038: the tonemap is normalized so adopting it does not darken the whole image —
+    /// full white still comes out full white, and the curve is monotonic below it.
+    #[test]
+    fn the_tonemap_preserves_white_and_is_monotonic() {
+        assert!((tonemap(1.0) - 1.0).abs() < 1e-3, "white became {}", tonemap(1.0));
+        assert_eq!(tonemap(0.0), 0.0);
+        let mut prev = 0.0;
+        for i in 1..=50 {
+            let v = tonemap(i as f32 / 25.0);
+            assert!(v >= prev, "tonemap dipped at {i}: {v} after {prev}");
+            assert!(v <= 1.0, "tonemap overshot at {i}: {v}");
+            prev = v;
+        }
+    }
+
+    /// #1038: the sRGB transfer function and its inverse actually round-trip, so decoding
+    /// for lighting and re-encoding afterwards is not itself a colour shift.
+    #[test]
+    fn srgb_round_trips_through_linear() {
+        for i in 0..=255u32 {
+            let c = i as f32 / 255.0;
+            let back = linear_to_srgb(srgb_to_linear(c));
+            assert!((back - c).abs() < 1e-4, "{c} round-tripped to {back}");
+        }
     }
 
     #[test]
