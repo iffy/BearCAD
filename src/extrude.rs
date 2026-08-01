@@ -2236,6 +2236,54 @@ pub fn precompute_boolean(
         .ok_or_else(|| "Boolean failed — one of the bodies may not be kernel-representable".into())
 }
 
+thread_local! {
+    /// The Combine tool's live result preview (#1033), keyed by (document, picked sides).
+    /// One entry: there is at most one preview at a time, and the picks only change on a
+    /// click — so every frame between clicks is free rather than another kernel boolean.
+    static PREVIEW_BOOLEAN_CACHE: std::cell::RefCell<Option<((u64, u64), Option<Vec<SolidMesh>>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Live preview of what the Combine tool would produce from the bodies picked so far
+/// (#1033) — the same solids a commit builds, so the hole a cut takes out is visible
+/// before committing it. `None` until each side the operation needs is populated, or when
+/// the kernel can't build the result. Cached per (document, kind, sides).
+pub fn preview_boolean_meshes(
+    doc: &Document,
+    kind: crate::model::BooleanOpKind,
+    a: &[usize],
+    b: &[usize],
+) -> Option<Vec<SolidMesh>> {
+    use std::hash::{Hash, Hasher};
+    // Combine unions one picked set; the two-sided operations need both sides.
+    let ready = match kind {
+        crate::model::BooleanOpKind::Combine => a.len() >= 2,
+        _ => !a.is_empty() && !b.is_empty(),
+    };
+    if !ready {
+        return None;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (kind as u8).hash(&mut h);
+    a.hash(&mut h);
+    b.hash(&mut h);
+    let key = (document_mesh_fingerprint(doc), h.finish());
+    PREVIEW_BOOLEAN_CACHE.with(|cache| {
+        if let Some((cached_key, meshes)) = cache.borrow().as_ref() {
+            if *cached_key == key {
+                return meshes.clone();
+            }
+        }
+        // `keep_b` only decides whether the B inputs survive as their own bodies; it
+        // doesn't change the result solids, so the preview doesn't need it.
+        let meshes = precompute_boolean(doc, kind, a, b, false)
+            .ok()
+            .filter(|ms| ms.iter().any(|m| !m.triangles.is_empty()));
+        *cache.borrow_mut() = Some((key, meshes.clone()));
+        meshes
+    })
+}
+
 /// Seed the per-thread mesh cache with a precomputed body mesh so the first paint after a
 /// background boolean does not re-run the kernel (#1031).
 pub fn warm_body_mesh_cache(doc: &Document, body_index: usize, mesh: SolidMesh) {

@@ -17117,6 +17117,52 @@ mod tests {
         assert_eq!(state.doc.boolean_ops[0].outputs.len(), n.max(1));
     }
 
+    /// #1033: the Combine tool previews its result — once the sides the operation needs
+    /// are picked, the preview is the same geometry a commit would build, so the hole a cut
+    /// takes out is visible beforehand. Nothing is committed to get it.
+    #[test]
+    fn combine_previews_its_result_before_commit() {
+        let state = two_box_state(true);
+        let kind = crate::model::BooleanOpKind::Cut;
+
+        // A half-picked cut has no result to show yet.
+        assert!(
+            crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0], &[]).is_none(),
+            "a cut with no B side previews nothing"
+        );
+
+        let preview = crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0], &[1])
+            .expect("a fully picked cut previews");
+        let committed =
+            crate::extrude::precompute_boolean(&state.doc, kind, &[0], &[1], false)
+                .expect("the same cut commits");
+        let tris = |ms: &[crate::extrude::SolidMesh]| -> usize {
+            ms.iter().map(|m| m.triangles.len()).sum()
+        };
+        assert_eq!(
+            tris(&preview),
+            tris(&committed),
+            "the preview is what the commit builds"
+        );
+        // Box A is [0,10]², box B starts at x = 5, so the cut leaves [0,5]².
+        let (min, max) = preview[0].bounds().expect("the preview has geometry");
+        assert!(min.x.abs() < 1e-3 && (max.x - 5.0).abs() < 1e-3, "{min} {max}");
+
+        // Previewing is not committing.
+        assert!(state.doc.boolean_ops.is_empty());
+        assert_eq!(state.doc.bodies.len(), 2);
+    }
+
+    /// #1033: a Combine (union) needs two bodies before there is anything to preview —
+    /// one picked body would just preview itself.
+    #[test]
+    fn a_half_picked_combine_previews_nothing() {
+        let state = two_box_state(true);
+        let kind = crate::model::BooleanOpKind::Combine;
+        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0], &[]).is_none());
+        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0, 1], &[]).is_some());
+    }
+
     /// #214: the revolve angle (rotate, radians) and construction-plane offset (mm) gizmos are
     /// enumerated and driven the same way.
     #[test]

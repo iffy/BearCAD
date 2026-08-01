@@ -16437,7 +16437,7 @@ fn build_viewport_scene_input<'a>(
             deleted: false,
         })
     });
-    let preview_cut_solids: Vec<(usize, extrude::SolidMesh)> = creating_sweep
+    let preview_replacement: gpu_viewport::PreviewReplacement = creating_sweep
         .zip(sweep_probe.as_ref())
         .filter(|(cf, _)| {
             cf.body_choice == actions::RevolveBodyChoice::Cut && !cf.cut_bodies.is_empty()
@@ -16445,11 +16445,14 @@ fn build_viewport_scene_input<'a>(
         .map(|(cf, probe)| {
             let mut cut = probe.clone();
             cut.mode = model::SweepMode::Cut(cf.cut_bodies.clone());
-            extrude::preview_sweep_cut_meshes(doc, &cut)
+            let (bodies, solids) = extrude::preview_sweep_cut_meshes(doc, &cut)
+                .into_iter()
+                .unzip();
+            gpu_viewport::PreviewReplacement { bodies, solids }
         })
         .unwrap_or_default();
     let preview_solid = preview_solid.or_else(|| {
-        if !preview_cut_solids.is_empty() {
+        if !preview_replacement.solids.is_empty() {
             return None;
         }
         extrude::sweep_mesh(doc, sweep_probe.as_ref()?)
@@ -16762,7 +16765,7 @@ fn build_viewport_scene_input<'a>(
         repeat_ghosts,
         editing_extrusion,
         preview_cut_body,
-        preview_cut_solids,
+        preview_replacement,
         highlighted_bezier_handles,
         plane_preview,
         active_sketch_face,
@@ -25080,6 +25083,22 @@ impl App {
         // while the Move tool is up.
         if let Some(sphere) = move_surface_solid {
             scene_input.preview_solid = Some(sphere);
+        }
+        // Combine's live result preview (#1033): once both sides the operation needs are
+        // picked, the A-side bodies give way to the solids a commit would build — so the
+        // hole a cut takes out is visible before committing it. The B side keeps its red
+        // cut highlight, standing in for the tool, exactly as an extrude cut previews.
+        if self.state.tool == Tool::Combine && self.state.boolean_job.is_none() {
+            if let Some(cb) = self.state.creating_boolean.as_ref() {
+                if let Some(solids) =
+                    extrude::preview_boolean_meshes(doc, cb.kind, &cb.a, &cb.b)
+                {
+                    scene_input.preview_replacement = gpu_viewport::PreviewReplacement {
+                        bodies: cb.a.clone(),
+                        solids,
+                    };
+                }
+            }
         }
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         // Always underpaint the viewport with the theme background (#1032). If the GPU

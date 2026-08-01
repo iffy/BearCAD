@@ -4672,6 +4672,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Arm the Combine tool with picked sides without committing them, so a script can show
+    // the tool's live result preview (#1033) — the counterpart begin_move gives Move.
+    api.set(
+        "begin_combine",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "begin_combine", &["op", "a", "b", "keep_b"])?;
+            let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::BeginBooleanOp { kind, a, b, keep_b })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "edit_boolean",
         lua.create_function(|lua, opts: Table| {

@@ -35,6 +35,9 @@ After — the cutting body is carved away:
    shadow bodies).
 4. Press **Enter**.
 
+Once every side the operation needs is picked, the result previews in the viewport —
+the side-A bodies give way to a translucent ghost of what committing would build.
+
 A cut that severs a body into separate pieces gives one body per piece.
 
 ## Help
@@ -61,6 +64,9 @@ bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
 bearcad.combine{ op = "combine", a = {0, 1, 2} }
 bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
 bearcad.edit_boolean{ index = 0, op = "difference", a = {0}, b = {1} }
+-- `begin_combine` takes the same arguments but leaves the tool armed rather than
+-- committing, so the result preview is on screen for a screenshot.
+bearcad.begin_combine{ op = "cut", a = {0}, b = {1} }
 ```
 
 ## Good to know

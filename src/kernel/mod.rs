@@ -698,4 +698,51 @@ mod tests {
         assert!((cut - 4.0).abs() < 1e-4, "cut {cut}");
         assert!((common - 4.0).abs() < 1e-4, "common {common}");
     }
+
+    /// #1033: a cutter whose surface passes exactly through a corner of the body it cuts —
+    /// what snapping a sphere onto a box corner with the Move tool produces — still cuts.
+    /// OCCT's default tolerance finds no intersection at all in that tangency and hands
+    /// back the uncut body; the fuzzy retry is what recovers the cut.
+    #[test]
+    fn a_cutter_touching_a_corner_exactly_still_cuts() {
+        // A 40×40×40 box, and a sphere centred above its top face whose radius is exactly
+        // the distance to the box's (40, 40, 40) corner — so its surface passes through it.
+        let boxy = Shape::prism(&square(0.0, 0.0, 40.0, 40.0), Vec3::new(0.0, 0.0, 40.0)).unwrap();
+        let centre = Vec3::new(20.0, 20.0, 55.0);
+        let corner = Vec3::new(40.0, 40.0, 40.0);
+        let radius = (corner - centre).length() as f64;
+
+        let sphere = Shape::sphere(centre, radius).unwrap();
+        let cut = boxy.boolean(&sphere, BoolOp::Cut).unwrap().volume().unwrap();
+        let intact = boxy.volume().unwrap();
+
+        // The sphere reaches 15 mm below the top face, so it must take a real bite.
+        assert!(
+            cut < intact - 1.0,
+            "the cut removed nothing: {cut} vs the intact {intact}"
+        );
+        // And what it removes is the part of the sphere inside the box, nothing more.
+        let common = boxy.boolean(&sphere, BoolOp::Common).unwrap().volume().unwrap();
+        assert!(
+            ((intact - cut) - common).abs() < intact * 1e-6,
+            "removed {} but the overlap is {common}",
+            intact - cut
+        );
+    }
+
+    /// The fuzzy retry must not invent an intersection between solids that really are
+    /// apart: a cut by a cutter that misses returns the body whole, not a failure.
+    #[test]
+    fn a_cutter_that_misses_leaves_the_body_whole() {
+        let boxy = Shape::prism(&square(0.0, 0.0, 40.0, 40.0), Vec3::new(0.0, 0.0, 40.0)).unwrap();
+        // Centred 60 mm above the top face with a 15 mm radius: nowhere near it.
+        let sphere = Shape::sphere(Vec3::new(20.0, 20.0, 100.0), 15.0).unwrap();
+
+        let cut = boxy.boolean(&sphere, BoolOp::Cut).unwrap().volume().unwrap();
+        let intact = boxy.volume().unwrap();
+        assert!((cut - intact).abs() < 1e-6, "cut {cut} vs intact {intact}");
+
+        let common = boxy.boolean(&sphere, BoolOp::Common).unwrap().volume().unwrap();
+        assert!(common < 1e-6, "disjoint solids share no volume, got {common}");
+    }
 }

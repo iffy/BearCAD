@@ -26,6 +26,8 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <NCollection_List.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -269,6 +271,85 @@ extern "C" BearcadShape* bearcad_shape_sweep(const double* profile_xyz, unsigned
     }
 }
 
+namespace {
+
+double shape_volume(const TopoDS_Shape& s) {
+    if (s.IsNull()) {
+        return 0.0;
+    }
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(s, props);
+    return std::fabs(props.Mass());
+}
+
+// Whether the two shapes' axis-aligned bounding boxes meet at all — the cheap test for
+// "these could possibly intersect", so solids that are plainly far apart never pay for the
+// volume comparison below.
+bool boxes_overlap(const TopoDS_Shape& a, const TopoDS_Shape& b) {
+    Bnd_Box ba;
+    Bnd_Box bb;
+    BRepBndLib::Add(a, ba);
+    BRepBndLib::Add(b, bb);
+    if (ba.IsVoid() || bb.IsVoid()) {
+        return false;
+    }
+    return !ba.IsOut(bb);
+}
+
+// One boolean attempt. `fuzzy > 0` widens OCCT's coincidence tolerance. Returns false when
+// the algorithm reports a failure; `out` is the result shape otherwise.
+bool run_boolean(const TopoDS_Shape& a, const TopoDS_Shape& b, int op, double fuzzy,
+                 TopoDS_Shape& out) {
+    BRepAlgoAPI_Fuse fuse;
+    BRepAlgoAPI_Cut cut;
+    BRepAlgoAPI_Common common;
+    BRepAlgoAPI_BooleanOperation* algo = nullptr;
+    switch (op) {
+        case 0: algo = &fuse; break;
+        case 1: algo = &cut; break;
+        case 2: algo = &common; break;
+        default: return false;
+    }
+    NCollection_List<TopoDS_Shape> args;
+    NCollection_List<TopoDS_Shape> tools;
+    args.Append(a);
+    tools.Append(b);
+    algo->SetArguments(args);
+    algo->SetTools(tools);
+    if (fuzzy > 0.0) {
+        algo->SetFuzzyValue(fuzzy);
+    }
+    algo->Build();
+    if (!algo->IsDone() || algo->HasErrors()) {
+        return false;
+    }
+    out = algo->Shape();
+    return !out.IsNull();
+}
+
+// Whether a completed boolean silently did nothing — the failure mode a tangential
+// coincidence provokes (#1033: a snapped sphere whose surface passes exactly through the
+// box corner it was snapped to, so OCCT finds no intersection at all and hands back A).
+// Only meaningful when the operands' bounding boxes actually overlap.
+bool boolean_is_a_no_op(const TopoDS_Shape& a, const TopoDS_Shape& b,
+                        const TopoDS_Shape& result, int op) {
+    const double va = shape_volume(a);
+    const double vb = shape_volume(b);
+    const double vr = shape_volume(result);
+    // Relative to the larger operand, so the test scales with the model.
+    const double eps = std::max(va, vb) * 1e-9;
+    switch (op) {
+        // A union can never be smaller than either operand, and can only equal the larger
+        // one when the smaller sits wholly inside it.
+        case 0: return vr < std::max(va, vb) - eps;
+        case 1: return std::fabs(vr - va) <= eps;
+        case 2: return vr <= eps;
+        default: return false;
+    }
+}
+
+}  // namespace
+
 extern "C" BearcadShape* bearcad_shape_boolean(const BearcadShape* a, const BearcadShape* b,
                                                int op) {
     if (a == nullptr || b == nullptr) {
@@ -276,13 +357,44 @@ extern "C" BearcadShape* bearcad_shape_boolean(const BearcadShape* a, const Bear
     }
     try {
         TopoDS_Shape result;
-        switch (op) {
-            case 0: result = BRepAlgoAPI_Fuse(a->shape, b->shape).Shape(); break;
-            case 1: result = BRepAlgoAPI_Cut(a->shape, b->shape).Shape(); break;
-            case 2: result = BRepAlgoAPI_Common(a->shape, b->shape).Shape(); break;
-            default: return nullptr;
+        const bool built = run_boolean(a->shape, b->shape, op, 0.0, result);
+        // A clean result stands; so does a no-op between solids that genuinely don't meet.
+        if (built) {
+            if (!boxes_overlap(a->shape, b->shape) ||
+                !boolean_is_a_no_op(a->shape, b->shape, result, op)) {
+                return new BearcadShape{result};
+            }
         }
-        return new BearcadShape{result};
+        // Retry with a widening fuzzy value (#1033). The escalation is relative to the
+        // model's own size, and tops out far below anything a CAD user could see: for a
+        // 200 mm part the widest attempt treats points 0.02 µm apart as coincident.
+        Bnd_Box whole;
+        BRepBndLib::Add(a->shape, whole);
+        BRepBndLib::Add(b->shape, whole);
+        double diagonal = 1.0;
+        if (!whole.IsVoid()) {
+            double xa, ya, za, xb, yb, zb;
+            whole.Get(xa, ya, za, xb, yb, zb);
+            const double dx = xb - xa;
+            const double dy = yb - ya;
+            const double dz = zb - za;
+            diagonal = std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        for (const double scale : {1e-9, 1e-8, 1e-7}) {
+            TopoDS_Shape retry;
+            if (!run_boolean(a->shape, b->shape, op, diagonal * scale, retry)) {
+                continue;
+            }
+            if (!boolean_is_a_no_op(a->shape, b->shape, retry, op)) {
+                return new BearcadShape{retry};
+            }
+        }
+        // Every attempt agrees the operation changes nothing: report the first result
+        // rather than failing, so a genuinely empty cut still yields its input.
+        if (built) {
+            return new BearcadShape{result};
+        }
+        return nullptr;
     } catch (const Standard_Failure&) {
         return nullptr;
     } catch (...) {

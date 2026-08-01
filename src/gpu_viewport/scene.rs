@@ -526,6 +526,17 @@ pub struct ViewportPlaneGizmo {
     pub hover: Option<AxisGizmoHit>,
 }
 
+/// A tool's live result preview standing in for committed geometry: the bodies it hides
+/// and the translucent solids it draws instead. The two lists are independent — a Combine
+/// turns any number of picked bodies into any number of result solids.
+#[derive(Clone, Debug, Default)]
+pub struct PreviewReplacement {
+    /// Bodies hidden while the preview is up, because it shows what becomes of them.
+    pub bodies: Vec<usize>,
+    /// The solids drawn in their place, in the shared translucent preview style.
+    pub solids: Vec<crate::extrude::SolidMesh>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ViewportSceneInput<'a> {
     pub doc: &'a Document,
@@ -576,10 +587,11 @@ pub struct ViewportSceneInput<'a> {
     /// like the finished cut. `None` for add/new-body extrudes (block preview) or when the
     /// kernel can't build the cut result.
     pub preview_cut_body: Option<usize>,
-    /// Sweep cut preview: `(body, mesh)` replacement solids — each listed body
-    /// renders this translucent cut-result mesh in place of its intact self, like
-    /// `preview_cut_body` does for the in-progress extrusion.
-    pub preview_cut_solids: Vec<(usize, crate::extrude::SolidMesh)>,
+    /// Bodies a tool's live result preview stands in for, and the solids drawn in their
+    /// place — what `preview_cut_body` does for one in-progress extrusion, generalized to
+    /// the tools whose result isn't one-mesh-per-body: a Sweep cut (one solid per carved
+    /// body) and a Combine (#1033, where N picked inputs become M result solids).
+    pub preview_replacement: PreviewReplacement,
     /// Bezier tangent handles to draw in the gold pick-highlight color (#472): the
     /// hovered, dragged, and/or selected `(line, near_start)` handles.
     pub highlighted_bezier_handles: Vec<(usize, bool)>,
@@ -826,7 +838,7 @@ impl ViewportScene {
             // The cut target is drawn as the translucent cut-result preview instead of its
             // intact committed solid.
             if preview_cut.as_ref().is_some_and(|(cut_bi, _)| *cut_bi == bi)
-                || input.preview_cut_solids.iter().any(|(cut_bi, _)| *cut_bi == bi)
+                || input.preview_replacement.bodies.contains(&bi)
             {
                 continue;
             }
@@ -989,7 +1001,7 @@ impl ViewportScene {
         if let Some(solid) = input.preview_solid.as_ref() {
             mesh.push_solid_translucent(solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
         }
-        for (_, solid) in &input.preview_cut_solids {
+        for solid in &input.preview_replacement.solids {
             mesh.push_solid_translucent(solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
         }
         // Repeat-tool instance ghosts (#223): each would-be copy, translucent like other previews.
@@ -4888,7 +4900,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts,
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -5410,7 +5422,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -5457,7 +5469,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: Some(ViewportPlanePreview {
@@ -5552,7 +5564,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -5825,7 +5837,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -5916,7 +5928,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -5973,7 +5985,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -6031,7 +6043,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -6119,7 +6131,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -6186,7 +6198,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -6363,7 +6375,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: editing,
                 plane_preview: None,
@@ -6554,7 +6566,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             editing_extrusion: None,
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             plane_preview: None,
             active_sketch_face: None,
@@ -6691,7 +6703,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -6813,7 +6825,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -6881,7 +6893,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -7058,7 +7070,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -7104,7 +7116,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -7194,7 +7206,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -7274,7 +7286,7 @@ mod tests {
                 preview_solid: None,
                 repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -7383,7 +7395,7 @@ mod tests {
                 preview_solid: None,
                 repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -7478,7 +7490,7 @@ mod tests {
                 preview_solid: None,
                 repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -7579,7 +7591,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -7655,7 +7667,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
@@ -7750,7 +7762,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -7796,7 +7808,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -7985,7 +7997,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -8035,7 +8047,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -8152,7 +8164,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -8200,7 +8212,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -8246,7 +8258,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
@@ -8346,7 +8358,7 @@ mod perf_probe {
             repeat_ghosts: Vec::new(),
                 editing_extrusion: None,
                 preview_cut_body: None,
-                preview_cut_solids: Vec::new(),
+                preview_replacement: PreviewReplacement::default(),
                 highlighted_bezier_handles: Vec::new(),
                 plane_preview: None,
                 active_sketch_face: None,
@@ -8439,7 +8451,7 @@ mod cut_preview_tests {
             repeat_ghosts: Vec::new(),
             editing_extrusion: None,
             preview_cut_body: None,
-            preview_cut_solids: Vec::new(),
+            preview_replacement: PreviewReplacement::default(),
             highlighted_bezier_handles: Vec::new(),
             plane_preview: None,
             active_sketch_face: None,

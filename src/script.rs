@@ -358,6 +358,15 @@ pub enum Instruction {
         b: Vec<usize>,
         keep_b: bool,
     },
+    /// Arm the Combine tool with picked sides **without committing** them, so the tool's
+    /// live result preview (#1033) can be driven from a script. `bearcad.combine` is the
+    /// committing counterpart.
+    BeginBooleanOp {
+        kind: crate::model::BooleanOpKind,
+        a: Vec<usize>,
+        b: Vec<usize>,
+        keep_b: bool,
+    },
     /// Re-point an existing boolean operation.
     EditBooleanOp {
         op: usize,
@@ -1197,6 +1206,9 @@ impl Instruction {
             }
             Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.combine", None, *kind, a, b, *keep_b)
+            }
+            Instruction::BeginBooleanOp { kind, a, b, keep_b } => {
+                boolean_op_lua("bearcad.begin_combine", None, *kind, a, b, *keep_b)
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
@@ -5031,6 +5043,18 @@ impl ScriptRunner {
                     solid_count: None,
                 });
                 self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::BeginBooleanOp { kind, a, b, keep_b } => {
+                state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Combine));
+                state.creating_boolean = Some(crate::actions::CreatingBoolean {
+                    kind,
+                    a,
+                    b,
+                    picking_b: kind != crate::model::BooleanOpKind::Combine,
+                    keep_b,
+                    editing: None,
+                });
                 StepResult::Continue
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
