@@ -1820,7 +1820,13 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   cursor is really pointing at — the candidate **nearest the eye** (#932, `nearest_anchor`):
   the analytic face or construction plane under it (which brings its own frame), or any
   body's flat **mesh** face (how a shape lands on another shape — primitives have no analytic
-  faces of their own), else the ground; the shape then grows along that plane's normal. What
+  faces of their own), else the ground; the shape then grows along that plane's normal. A
+  mesh face brings no frame of its own, so its in-plane axis comes from
+  `primitives::plane_u_axis` — the world axis least aligned with the normal, projected into
+  the plane — rather than `Vec3::any_orthonormal_vector`, which is free to answer differently
+  for the same plane. Without that, a body's horizontal top face and the ground beneath it
+  disagreed, and a cuboid dropped on the face landed rotated 90° against one dropped on the
+  ground beside it (#1050). What
   the next clicks set is per kind — cuboid: the opposite base corner, then the height;
   cylinder: the radius, then the height; sphere: the radius (and it's done). Each phase
   focuses its own ValueInput, so the size can be typed the moment the click lands, and a typed

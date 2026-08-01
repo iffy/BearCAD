@@ -57,7 +57,7 @@ pub fn resolve(doc: &Document, shape: &Primitive) -> Option<Resolved> {
     let raw_u = Vec3::from_array(shape.u_axis);
     let mut u = (raw_u - normal * raw_u.dot(normal)).normalize_or_zero();
     if u.length_squared() < 0.5 {
-        u = normal.any_orthonormal_vector();
+        u = plane_u_axis(normal);
     }
     let v = normal.cross(u).normalize_or_zero();
     let resolved = Resolved {
@@ -195,7 +195,7 @@ pub fn field_anchors(doc: &Document, shape: &Primitive) -> Vec<(crate::actions::
     let raw_u = Vec3::from_array(shape.u_axis);
     let mut u = (raw_u - normal * raw_u.dot(normal)).normalize_or_zero();
     if u.length_squared() < 0.5 {
-        u = normal.any_orthonormal_vector();
+        u = plane_u_axis(normal);
     }
     let v = normal.cross(u).normalize_or_zero();
     let (w, d, h, r) = (
@@ -257,6 +257,33 @@ pub fn sphere_mesh(center: Vec3, radius: f32) -> SolidMesh {
         radius,
     };
     SolidMesh { triangles: sphere_triangles(&r) }
+}
+
+/// A **stable** in-plane axis for a face's frame (#1050).
+///
+/// `Vec3::any_orthonormal_vector` is free to return any perpendicular, and does not agree
+/// with itself across normals that describe the same plane. Two horizontal surfaces — the
+/// ground, whose frame is explicitly world `X`, and a body's top face — would then disagree,
+/// so a shape placed on the face landed rotated 90° against one placed on the ground beside
+/// it. This picks the world axis least aligned with `normal` and projects it into the plane,
+/// which gives `X` for a `+Z` face, matching the ground.
+pub fn plane_u_axis(normal: Vec3) -> Vec3 {
+    let n = normal.normalize_or_zero();
+    let reference = [Vec3::X, Vec3::Y, Vec3::Z]
+        .into_iter()
+        .min_by(|a, b| {
+            n.dot(*a)
+                .abs()
+                .partial_cmp(&n.dot(*b).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(Vec3::X);
+    let u = (reference - n * reference.dot(n)).normalize_or_zero();
+    if u.length_squared() < 0.5 {
+        n.any_orthonormal_vector()
+    } else {
+        u
+    }
 }
 
 /// A shape's kernel solid, for booleans, edge treatments and STEP export. `None` without a
@@ -325,6 +352,38 @@ mod tests {
         let volume = crate::extrude::mesh_signed_volume(&mesh).abs();
         let exact = std::f32::consts::PI * 25.0 * 20.0;
         assert!((volume - exact).abs() / exact < 0.01, "{volume} vs {exact}");
+    }
+
+    /// #1050: two surfaces with the same normal must give the same in-plane frame. The
+    /// ground's is explicitly world X; `any_orthonormal_vector` used to hand a body's top
+    /// face Y instead, so a cuboid dropped on the face landed rotated 90 degrees against one
+    /// dropped on the ground beside it.
+    #[test]
+    fn a_horizontal_face_gets_the_same_axis_as_the_ground() {
+        assert!((plane_u_axis(Vec3::Z) - Vec3::X).length() < 1e-5);
+        // Upside down is still a horizontal plane.
+        assert!((plane_u_axis(-Vec3::Z) - Vec3::X).length() < 1e-5);
+    }
+
+    /// #1050: the axis stays in the plane, stays unit length, and is stable for any normal —
+    /// including the vertical faces where X itself is unusable.
+    #[test]
+    fn the_plane_axis_is_always_a_unit_vector_in_the_plane() {
+        let normals = [
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Z,
+            -Vec3::Y,
+            Vec3::new(1.0, 1.0, 0.0).normalize(),
+            Vec3::new(0.3, -0.7, 0.5).normalize(),
+        ];
+        for n in normals {
+            let u = plane_u_axis(n);
+            assert!((u.length() - 1.0).abs() < 1e-4, "{n} gave {u}");
+            assert!(u.dot(n).abs() < 1e-4, "{u} is not in the plane of {n}");
+            // Stable: the same normal always answers the same way.
+            assert_eq!(u, plane_u_axis(n));
+        }
     }
 
     /// A sphere sits **on** its anchor: the click point is the bottom, the centre one

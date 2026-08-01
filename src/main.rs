@@ -10531,7 +10531,7 @@ impl App {
             Some(construction::PickTargetKind::BodyFace { triangles, normal, .. }) => {
                 let center = extrude::face_group_center(&triangles);
                 cam.ray_plane_hit(pp, viewport, vp, center, normal)
-                    .map(|hit| (hit, normal, normal.any_orthonormal_vector()))
+                    .map(|hit| (hit, normal, primitives::plane_u_axis(normal)))
             }
             _ => None,
         };
