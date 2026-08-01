@@ -353,6 +353,7 @@ fn main() -> eframe::Result<()> {
             // each destroy the other's evidence (#1023).
             diag::init(mcmaster::catalog_log_path(), diagnostic_header());
             diag::install_panic_hook();
+            diag::install_log_bridge();
             if let Err(err) = mcmaster::run_catalog_process(part.as_deref()) {
                 eprintln!("bearcad mcmaster: {err}");
                 std::process::exit(1);
@@ -483,6 +484,9 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
     // (#1023). A problem you can only debug while watching is one you mostly can't.
     diag::init(diag::default_log_path(), diagnostic_header());
     diag::install_panic_hook();
+    // wgpu/winit/eframe report surface faults through the `log` crate and nowhere else;
+    // without this they go nowhere at all (#1032).
+    diag::install_log_bridge();
     if let Some(secs) = script_opts.timeout_secs {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
@@ -11176,6 +11180,23 @@ impl eframe::App for App {
         {
             let size = ui.max_rect().size();
             diag::frame((size.x, size.y), self.gpu_viewport);
+            // What the window believes about itself, left where the watchdog can find it
+            // (#1032). A grey window whose own inner rect is zero, or which the platform
+            // reports as minimized or on a monitor that isn't there, says so only here.
+            ui.ctx().input(|i| {
+                let vp = &i.viewport();
+                diag::note_window_state(format!(
+                    "inner {:?}, outer {:?}, scale {:.2}, monitor {:?}, \
+                     focused {}, minimized {:?}, maximized {:?}",
+                    vp.inner_rect.map(|r| r.size()),
+                    vp.outer_rect.map(|r| r.size()),
+                    i.pixels_per_point,
+                    vp.monitor_size,
+                    i.focused,
+                    vp.minimized,
+                    vp.maximized,
+                ));
+            });
         }
         // Everything below still works off the context, so clone it out once.
         let ctx = &ui.ctx().clone();
@@ -25123,11 +25144,15 @@ impl App {
         // Frames being built while nothing reaches the screen is the other half of the
         // blank-window question (#978) — the watchdog only sees whether frames happen at all.
         if self.gpu_viewport && !gpu_drawn {
+            // Counted as well as warned: one line at the first failure cannot say whether
+            // the viewport then recovered or never drew again (#1032).
+            diag::gpu_blit_missed();
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             diag::warn_once(
                 &WARNED,
-                "the 3D viewport built a scene but could not paint it — its GPU resources are                  missing. The viewport will stay empty.",
+                "the 3D viewport built a scene but could not paint it — its GPU resources \
+                 are missing. The viewport will stay empty.",
             );
         }
 

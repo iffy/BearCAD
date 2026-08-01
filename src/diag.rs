@@ -182,7 +182,57 @@ pub fn install_panic_hook() {
 ///
 /// A run that prints frames but shows nothing is a *painting* problem; a run that prints none
 /// is a *scheduling* one. That is the distinction the blank-window report needs.
+/// The last painted size, quantized to whole logical pixels and packed as `(w << 32) | h`,
+/// so a change is a single atomic compare. `u64::MAX` until the first frame.
+static LAST_FRAME_SIZE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Size changes reported so far, capped by [`TRACED_RESIZES`] — a live drag-resize would
+/// otherwise write a line per frame.
+static RESIZES_LOGGED: AtomicU64 = AtomicU64::new(0);
+const TRACED_RESIZES: u64 = 24;
+
+/// Frames whose GPU viewport blit did not happen. A window that looks grey while frames are
+/// being built is asking exactly this question, and one warning at the first failure cannot
+/// say whether it then recovered.
+static FRAMES_GPU_MISSED: AtomicU64 = AtomicU64::new(0);
+
+/// What the window believed about itself on the most recent frame, for [`watch_first_frame`]
+/// to report. The watchdog runs on its own thread and cannot touch egui, so the UI thread
+/// leaves this behind for it (#1032).
+static WINDOW_STATE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Record the GPU viewport failing to paint a frame it built.
+pub fn gpu_blit_missed() {
+    FRAMES_GPU_MISSED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Publish what the window says about itself this frame — size, scale, and whatever state
+/// flags the platform reports. Cheap enough to call every frame; only read on failure.
+pub fn note_window_state(state: impl std::fmt::Display) {
+    if let Ok(mut slot) = WINDOW_STATE.lock() {
+        *slot = Some(state.to_string());
+    }
+}
+
 pub fn frame(size: (f32, f32), gpu_viewport: bool) {
+    // A window that maximizes after launch, or one whose surface never follows a resize,
+    // both look like "frame 1 — 960×640" and then silence. Report the size *changing*, not
+    // just the first few frames (#1032).
+    let packed = ((size.0.round().max(0.0) as u64) << 32) | (size.1.round().max(0.0) as u64);
+    let previous = LAST_FRAME_SIZE.swap(packed, Ordering::Relaxed);
+    if previous != packed && previous != u64::MAX {
+        let n = RESIZES_LOGGED.fetch_add(1, Ordering::Relaxed);
+        if n < TRACED_RESIZES {
+            info(format!(
+                "frame size {}×{} → {:.0}×{:.0}",
+                previous >> 32,
+                previous & 0xffff_ffff,
+                size.0,
+                size.1
+            ));
+        } else if n == TRACED_RESIZES {
+            log("frame size changes: further ones not traced");
+        }
+    }
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     if n < TRACED_FRAMES {
         let line = format!(
@@ -202,6 +252,57 @@ pub fn frame(size: (f32, f32), gpu_viewport: bool) {
 /// Whether any frame has been built yet.
 pub fn frames_drawn() -> u64 {
     FRAMES.load(Ordering::Relaxed)
+}
+
+/// Forward `log` crate records — wgpu's, winit's, eframe's — into this module (#1032).
+///
+/// Nothing installed a logger before, so everything those crates had to say was dropped on
+/// the floor. That is precisely the wrong thing to discard when a window comes up grey: a
+/// failed surface acquisition, a lost or outdated swapchain, a surface reconfigured to a
+/// size the window no longer has, are all reported there and nowhere else.
+///
+/// `Warn` and above by default, since wgpu at `Info` narrates every resource it makes.
+/// `BEARCAD_GPU_LOG=1` opens it up to `Debug` for a run that needs the whole conversation.
+struct LogBridge;
+
+impl ::log::Log for LogBridge {
+    fn enabled(&self, metadata: &::log::Metadata<'_>) -> bool {
+        metadata.level() <= ::log::max_level()
+    }
+
+    fn log(&self, record: &::log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let line = format!("{}: {}", record.target(), record.args());
+        match record.level() {
+            ::log::Level::Error | ::log::Level::Warn => warn(line),
+            // Info from these crates is trace as far as BearCAD is concerned — it is about
+            // adapters and buffers, not about what the user did.
+            _ => log(line),
+        }
+    }
+
+    fn flush(&self) {
+        // Nothing to do: `write_line` flushes the file on every record, precisely so a crash
+        // cannot swallow the line that explains it.
+    }
+}
+
+/// Route wgpu/winit/eframe logging into the diagnostics file. Call once, early.
+pub fn install_log_bridge() {
+    let verbose = matches!(
+        std::env::var("BEARCAD_GPU_LOG").as_deref().map(str::trim),
+        Ok("1") | Ok("on") | Ok("true") | Ok("yes")
+    );
+    let level = if verbose {
+        ::log::LevelFilter::Debug
+    } else {
+        ::log::LevelFilter::Warn
+    };
+    if ::log::set_logger(&LogBridge).is_ok() {
+        ::log::set_max_level(level);
+    }
 }
 
 /// Report something once per process, however many times it happens. For a per-frame fault
@@ -249,12 +350,50 @@ pub fn watch_first_frame() {
             // A verdict either way, on stderr: at this point the interesting question is
             // whether the app is drawing at all, and only one of the two answers being
             // visible leaves the other looking like silence (#1023).
+            // A verdict, plus everything the UI thread knows that the outside of the window
+            // does not (#1032). "It is painting" alone leaves the next question — *what* is
+            // it painting, and at what size — with nowhere to look.
             n => info(format!(
                 "watchdog: {n} frames drawn — the app is painting. A window that still looks \
-                 blank is a presentation fault, not a scheduling one."
+                 blank is a presentation fault, not a scheduling one.{}",
+                presentation_snapshot()
             )),
         }
     });
+}
+
+/// Everything the UI thread knows about how the last frame reached the screen: the size it
+/// painted at, whether the GPU viewport blit landed, and what the window says about itself.
+/// Appended to the watchdog's verdict, where "it is painting" is otherwise a dead end.
+fn presentation_snapshot() -> String {
+    let mut out = String::new();
+    let packed = LAST_FRAME_SIZE.load(Ordering::Relaxed);
+    if packed != u64::MAX {
+        out.push_str(&format!(
+            " Last frame {}×{}.",
+            packed >> 32,
+            packed & 0xffff_ffff
+        ));
+    }
+    let missed = FRAMES_GPU_MISSED.load(Ordering::Relaxed);
+    let drawn = FRAMES.load(Ordering::Relaxed);
+    if missed == 0 {
+        out.push_str(" The 3D viewport blit landed on every frame.");
+    } else if missed >= drawn {
+        out.push_str(&format!(
+            " The 3D viewport blit failed on all {missed} frame(s) — the viewport is \
+             building scenes it never draws."
+        ));
+    } else {
+        out.push_str(&format!(
+            " The 3D viewport blit failed on {missed} of {drawn} frame(s)."
+        ));
+    }
+    if let Some(state) = WINDOW_STATE.lock().ok().and_then(|s| s.clone()) {
+        out.push_str(&format!(" Window: {state}."));
+    }
+    out.push_str(&where_to_look());
+    out
 }
 
 /// Where the whole story is, for a message that has only told part of it.

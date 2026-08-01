@@ -19,6 +19,10 @@ winres = "0.1"
 cc = "1"
 
 [dependencies]
+# wgpu, eframe and friends report through the `log` crate — surface acquisition failures,
+# lost or outdated swapchains, reconfigurations. Nothing installed a logger, so all of that
+# was dropped; `diag::install_log_bridge` now forwards it into the diagnostics file (#1032).
+log = "0.4"
 # Pre-validates font faces before they're handed to egui's glyph atlas (#392): egui panics
 # on a face it can't parse, so the font-chooser preview only registers faces ab_glyph (the
 # same parser egui uses) accepts. Already in the tree via epaint.
