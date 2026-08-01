@@ -42,6 +42,86 @@ impl SolidMesh {
     }
 }
 
+/// Above this angle between two adjacent triangles, the edge between them is a **crease** —
+/// a real edge of the model — and their normals are not averaged across it (#1037). Below it
+/// the edge is an artefact of tessellating a curved surface and gets smoothed away.
+///
+/// A 64-segment cylinder bends ~5.6° per facet and a chamfer meets its faces at 45° or more,
+/// so 30° smooths every curved wall while leaving box corners, chamfers, and extrusion caps
+/// crisp.
+pub const CREASE_ANGLE_DEG: f32 = 30.0;
+
+/// Per-vertex normals for smooth shading (#1037): three normals per triangle, parallel to
+/// `mesh.triangles`.
+///
+/// For each corner, the normals of every triangle meeting at that position are averaged —
+/// but only those within [`CREASE_ANGLE_DEG`] of the corner's own triangle, so smoothing
+/// never rounds a real edge. The contributions are the raw cross products, which weights
+/// each triangle by its area and keeps a sliver from swinging the result.
+///
+/// Deriving normals this way rather than reading them off OCCT's `Poly_Triangulation` means
+/// analytic primitive meshes, the hand-rolled fallbacks, and kernel output all get the same
+/// treatment through one code path. At the 0.05 mm deflection this app tessellates to, the
+/// difference from true surface normals is not visible.
+pub fn smooth_normals(mesh: &SolidMesh) -> Vec<[Vec3; 3]> {
+    // Weld corners that coincide to within a micrometre. Adjacent kernel faces share exact
+    // node positions, but the analytic meshers close their seams by recomputation, so an
+    // exact bit compare would leave a visible stripe down every cylinder.
+    let key = |p: Vec3| {
+        (
+            (p.x * 1000.0).round() as i64,
+            (p.y * 1000.0).round() as i64,
+            (p.z * 1000.0).round() as i64,
+        )
+    };
+    // Un-normalized face normals: direction plus twice the area, which is exactly the
+    // weighting the averaging wants.
+    let face_normals: Vec<Vec3> = mesh
+        .triangles
+        .iter()
+        .map(|[a, b, c]| (*b - *a).cross(*c - *a))
+        .collect();
+    let mut at_position: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    for (fi, tri) in mesh.triangles.iter().enumerate() {
+        for corner in tri {
+            at_position.entry(key(*corner)).or_default().push(fi);
+        }
+    }
+    let crease_cos = CREASE_ANGLE_DEG.to_radians().cos();
+    mesh.triangles
+        .iter()
+        .enumerate()
+        .map(|(fi, tri)| {
+            let own = face_normals[fi].normalize_or_zero();
+            let mut corners = [own; 3];
+            for (ci, corner) in tri.iter().enumerate() {
+                let Some(sharing) = at_position.get(&key(*corner)) else {
+                    continue;
+                };
+                let mut sum = Vec3::ZERO;
+                for &other in sharing {
+                    let n = face_normals[other];
+                    // Two-sided: a neighbour wound the other way describes the same
+                    // surface, so compare (and accumulate) it flipped rather than
+                    // discarding it as a crease.
+                    let unit = n.normalize_or_zero();
+                    let aligned = if unit.dot(own) < 0.0 { -n } else { n };
+                    if aligned.normalize_or_zero().dot(own) >= crease_cos {
+                        sum += aligned;
+                    }
+                }
+                let smoothed = sum.normalize_or_zero();
+                corners[ci] = if smoothed.length_squared() > 0.0 {
+                    smoothed
+                } else {
+                    own
+                };
+            }
+            corners
+        })
+        .collect()
+}
+
 /// Signed volume of a closed mesh via the divergence theorem
 /// (`sum(dot(a, cross(b, c))) / 6`). Negative when the winding is inward; callers that want
 /// a physical volume take the absolute value. Used by the treatment tests as an independent
@@ -3726,6 +3806,47 @@ pub(crate) fn body_solid_mesh_unposed(doc: &Document, body_index: usize) -> Opti
 }
 
 thread_local! {
+    /// Per-thread memo for smooth vertex normals (#1037), keyed by the pose fingerprint so
+    /// it invalidates exactly when [`body_solid_mesh`] does. Normals cost a hash of every
+    /// corner to compute, which is fine once per edit and far too much once per frame.
+    static BODY_NORMALS_CACHE: std::cell::RefCell<(u64, HashMap<usize, Option<std::rc::Rc<Vec<[Vec3; 3]>>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// Smooth per-vertex normals for a body's current mesh (#1037), memoized per document state.
+/// `None` for a body with no mesh. Keyed off the posed fingerprint, so a jointed body that
+/// moves gets normals for where it actually is.
+/// Shared rather than cloned: the viewport asks for these every frame, and a large
+/// imported mesh's normals are megabytes.
+pub fn body_smooth_normals(
+    doc: &Document,
+    body_index: usize,
+) -> Option<std::rc::Rc<Vec<[Vec3; 3]>>> {
+    let fingerprint = document_pose_fingerprint(doc);
+    let cached = BODY_NORMALS_CACHE.with(|cache| match cache.try_borrow_mut() {
+        Ok(mut cache) => {
+            if cache.0 != fingerprint {
+                cache.0 = fingerprint;
+                cache.1.clear();
+            }
+            // `Some(value)` is a hit — the value itself may legitimately be `None`.
+            cache.1.get(&body_index).cloned()
+        }
+        Err(_) => None,
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let normals = body_solid_mesh(doc, body_index).map(|m| std::rc::Rc::new(smooth_normals(&m)));
+    BODY_NORMALS_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            cache.1.insert(body_index, normals.clone());
+        }
+    });
+    normals
+}
+
+thread_local! {
     /// Per-thread memo for the **posed** meshes (#893/#897): keyed by the pose
     /// fingerprint, whose misses cost one rigid transform of the cached un-posed mesh —
     /// never a kernel rebuild. This is what makes dragging a joint through its motion
@@ -6369,6 +6490,80 @@ mod tests {
             tris.push([p(a, 0.0), p(b, height), p(a, height)]);
         }
         tris
+    }
+
+    /// #1037: a tessellated cylinder wall smooths — every corner normal points radially
+    /// outward from the axis, not along its own flat facet, so the wall shades as a curve.
+    #[test]
+    fn a_round_wall_gets_radial_smooth_normals() {
+        let centre = Vec3::new(3.0, -2.0, 0.0);
+        let mesh = SolidMesh {
+            triangles: tube(centre, 4.0, 12.0, CIRCLE_SEGMENTS),
+        };
+        let normals = smooth_normals(&mesh);
+        assert_eq!(normals.len(), mesh.triangles.len());
+        for (tri, ns) in mesh.triangles.iter().zip(normals.iter()) {
+            for (corner, n) in tri.iter().zip(ns.iter()) {
+                // The true normal of a cylinder wall is the radial direction, z-free.
+                let radial = Vec3::new(corner.x - centre.x, corner.y - centre.y, 0.0)
+                    .normalize_or_zero();
+                assert!(
+                    n.dot(radial) > 0.999,
+                    "corner {corner} got {n}, expected the radial {radial}"
+                );
+            }
+        }
+    }
+
+    /// #1037: the corollary — smoothing must not round the edges that are really there.
+    /// A cube's corner normals stay on their own faces, because neighbouring faces meet at
+    /// 90°, well past the crease angle.
+    #[test]
+    fn a_cube_keeps_its_edges_sharp() {
+        let (mut doc, sketch) = sketch_doc();
+        let face = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        doc.extrusions.push(extrusion(sketch, vec![face], 10.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            material: None,
+            deleted: false,
+            shadow: false,
+        });
+        let mesh = body_solid_mesh(&doc, 0).expect("the cube meshes");
+        let normals = smooth_normals(&mesh);
+        for (tri, ns) in mesh.triangles.iter().zip(normals.iter()) {
+            let flat = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+            for n in ns {
+                assert!(
+                    n.dot(flat).abs() > 0.999,
+                    "a cube corner should keep its face normal {flat}, got {n}"
+                );
+            }
+        }
+        // And every normal is axis-aligned — nothing got averaged around an edge.
+        for n in normals.iter().flatten() {
+            let axis_aligned = [Vec3::X, Vec3::Y, Vec3::Z]
+                .iter()
+                .any(|a| n.dot(*a).abs() > 0.999);
+            assert!(axis_aligned, "{n} is not a box face normal");
+        }
+    }
+
+    /// #1037: normals are always three per triangle, so the renderer can index them
+    /// positionally without bounds checks per corner.
+    #[test]
+    fn smooth_normals_are_unit_length_and_parallel_to_the_triangles() {
+        let mesh = SolidMesh {
+            triangles: tube(Vec3::ZERO, 5.0, 8.0, 16),
+        };
+        let normals = smooth_normals(&mesh);
+        assert_eq!(normals.len(), mesh.triangles.len());
+        for n in normals.iter().flatten() {
+            assert!((n.length() - 1.0).abs() < 1e-4, "{n} is not unit length");
+        }
+        // A degenerate mesh yields no normals rather than panicking.
+        assert!(smooth_normals(&SolidMesh::default()).is_empty());
     }
 
     /// #1013: a round wall reads as a cylinder — its axis, radius and length recovered from

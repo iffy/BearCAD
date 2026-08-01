@@ -4387,10 +4387,27 @@ The model in one place:
       camera-dependent specular highlight. The diffuse term is the stronger of a fixed scene
       light (above-ish, dominant, so form still reads) and a camera "headlight" (#102), so a
       face square to the camera is always clearly lit — roughly as bright as `Solid` — instead
-      of dropping to the ambient floor when the fixed light misses it. Still flat-shaded per
-      triangle (no shared vertex normals exist on the mesh), so it reads as faceted rather than
-      smoothly lit. No materials/textures yet — every body renders with the same fixed gloss;
-      per-body/per-face materials are future work.
+      of dropping to the ambient floor when the fixed light misses it. No materials/textures
+      yet — every body renders with the same fixed gloss; per-body/per-face materials are
+      future work.
+
+  **Lighting runs per pixel, on smooth normals (#1037).** Solids carry a world-space normal
+  and a lighting-model tag per vertex (`GpuVertex::normal`, whose `w` is a `ShadingModel`);
+  `shader.wgsl` lights them in the fragment stage. Everything that is not a body — lines,
+  fills, text, gizmos, the grid — is tagged `Unlit` and its colour passes through untouched.
+  The shader is the single source of truth for the lighting maths; the CPU `realistic_shade`
+  is a test-only mirror, and `realistic_terms_match_the_shader` pins the shared constants to
+  the WGSL source so the two cannot drift.
+
+  The normals themselves are **derived from the mesh**, not read off the kernel
+  (`extrude::smooth_normals`): each corner averages the area-weighted normals of every
+  triangle meeting at that position, but only those within `CREASE_ANGLE_DEG` (30°) of its
+  own. Curved walls smooth; box corners, chamfers, and extrusion caps stay crisp. Deriving
+  them this way means analytic primitive meshes, the hand-rolled fallbacks, and OCCT output
+  all go through one code path. They are memoized per document state
+  (`extrude::body_smooth_normals`, keyed off the pose fingerprint like the mesh caches) and
+  shared by `Rc`, so a frame costs a refcount bump rather than a rebuild. A preview or ghost
+  mesh with no normals falls back to its per-triangle geometric normal.
 
   Both rows are backed by `Camera` state (a viewport display preference, alongside
   projection mode — not saved model geometry) and are fully scriptable:

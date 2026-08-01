@@ -235,6 +235,29 @@ const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
 pub struct GpuVertex {
     pub position: [f32; 3],
     pub color: [f32; 4],
+    /// World-space normal in `xyz` and the lighting model in `w` (#1037) — see
+    /// [`ShadingModel`]. Everything that isn't a solid body (lines, fills, text, gizmos,
+    /// the grid) is `ShadingModel::Unlit`, and the shader hands its colour straight
+    /// through, exactly as before per-pixel lighting existed.
+    pub normal: [f32; 4],
+}
+
+/// Which lighting the fragment shader applies to a vertex (#1037), passed in
+/// [`GpuVertex::normal`]`.w`. Kept in step with the `MODE_*` constants in `shader.wgsl`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadingModel {
+    /// Colour passes through untouched — 2D chrome, lines, fills, text, gizmos.
+    Unlit = 0,
+    /// Two-sided ambient + diffuse, the `Solid` mode look.
+    Lambert = 1,
+    /// Ambient + diffuse + Blinn-Phong specular, the `Realistic` mode look (#83).
+    Realistic = 2,
+}
+
+impl ShadingModel {
+    fn as_w(self) -> f32 {
+        self as u8 as f32
+    }
 }
 
 use crate::gpu_viewport::dim_labels::GpuTextVertex;
@@ -263,6 +286,9 @@ pub struct ViewportScene {
     /// (depth-tested, no depth write) so bodies in front occlude them.
     pub images: Vec<ViewportImageQuad>,
     pub view_proj: Mat4,
+    /// Camera eye in world space — the fragment shader's view-dependent lighting terms
+    /// need it, and it can't be recovered from `view_proj` cheaply enough per pixel (#1037).
+    pub eye: Vec3,
     pub clear_color: [f32; 4],
 }
 
@@ -652,6 +678,7 @@ impl ViewportScene {
         let vp = input.cam.view_proj(input.viewport);
         let mut scene = Self {
             view_proj: vp,
+            eye: input.cam.eye(),
             clear_color: color32_to_gpu(input.palette.background),
             ..Default::default()
         };
@@ -827,6 +854,22 @@ impl ViewportScene {
                 }
             })
             .collect();
+        // Smooth per-vertex normals for the shaded modes (#1037), shared out of the same
+        // kind of per-document cache the meshes use, so this is a refcount bump per frame
+        // rather than a rebuild.
+        let shaded = matches!(
+            input.cam.shading_mode(),
+            crate::camera::ShadingMode::Solid
+                | crate::camera::ShadingMode::SolidWireframe
+                | crate::camera::ShadingMode::Realistic
+        );
+        let body_normals: Vec<Option<std::rc::Rc<Vec<[Vec3; 3]>>>> = (0..input.doc.bodies.len())
+            .map(|bi| {
+                (shaded && body_meshes[bi].is_some())
+                    .then(|| crate::extrude::body_smooth_normals(input.doc, bi))
+                    .flatten()
+            })
+            .collect();
 
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter().enumerate() {
@@ -845,6 +888,7 @@ impl ViewportScene {
             let Some(solid) = body_meshes[bi].as_ref() else {
                 continue;
             };
+            let normals = body_normals[bi].as_deref().map(|n| n.as_slice());
             // Shadow bodies render as a translucent ghost with a wireframe, whatever the
             // shading mode — visually distinct from every real body.
             if body.shadow {
@@ -952,7 +996,7 @@ impl ViewportScene {
             // gizmos draw through bodies — depth-test disabled, see `MeshIndexLayer::Wireframe`).
             match input.cam.shading_mode() {
                 crate::camera::ShadingMode::Solid => {
-                    mesh.push_solid(solid, fill, input.cam, cap_plane);
+                    mesh.push_solid(solid, normals, fill, input.cam, cap_plane);
                 }
                 crate::camera::ShadingMode::TransparentSolid => {
                     mesh.push_solid_translucent(solid, fill, TRANSPARENT_SOLID_OPACITY);
@@ -967,7 +1011,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::SolidWireframe => {
-                    mesh.push_solid(solid, fill, input.cam, cap_plane);
+                    mesh.push_solid(solid, normals, fill, input.cam, cap_plane);
                     mesh.push_solid_wireframe(
                         solid,
                         line_color,
@@ -977,7 +1021,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::Realistic => {
-                    mesh.push_solid_realistic(solid, fill, input.cam, cap_plane);
+                    mesh.push_solid_realistic(solid, normals, fill, input.cam, cap_plane);
                 }
             }
         }
@@ -1738,9 +1782,22 @@ impl<'a> SceneMesh<'a> {
     }
 
     fn push_vertex(&mut self, position: Vec3, color: Color32) {
+        self.push_lit_vertex(position, color, Vec3::ZERO, ShadingModel::Unlit);
+    }
+
+    /// A vertex the fragment shader lights itself (#1037): `normal` is world-space, and
+    /// `model` picks which lighting it gets.
+    fn push_lit_vertex(
+        &mut self,
+        position: Vec3,
+        color: Color32,
+        normal: Vec3,
+        model: ShadingModel,
+    ) {
         self.scene.vertices.push(GpuVertex {
             position: position.to_array(),
             color: color32_to_gpu(color),
+            normal: [normal.x, normal.y, normal.z, model.as_w()],
         });
     }
 
@@ -1749,6 +1806,22 @@ impl<'a> SceneMesh<'a> {
         self.push_vertex(a, color);
         self.push_vertex(b, color);
         self.push_vertex(c, color);
+        self.indices_mut()
+            .extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
+    /// A triangle the shader lights per pixel, with its own normal per corner (#1037).
+    fn push_lit_triangle(
+        &mut self,
+        verts: [Vec3; 3],
+        normals: [Vec3; 3],
+        color: Color32,
+        model: ShadingModel,
+    ) {
+        let base = self.scene.vertices.len() as u32;
+        for (v, n) in verts.iter().zip(normals.iter()) {
+            self.push_lit_vertex(*v, color, *n, model);
+        }
         self.indices_mut()
             .extend_from_slice(&[base, base + 1, base + 2]);
     }
@@ -1766,49 +1839,52 @@ impl<'a> SceneMesh<'a> {
     fn push_solid(
         &mut self,
         solid: &crate::extrude::SolidMesh,
+        normals: Option<&[[Vec3; 3]]>,
         base: Color32,
         cam: &Camera,
         cap_plane: Option<(Vec3, Vec3)>,
     ) {
-        let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
-        let eye = cam.eye();
-        for tri in &solid.triangles {
-            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
-            // Two-sided: faces are lit regardless of winding direction.
-            let shade = 0.4 + 0.6 * normal.dot(light).abs();
-            let verts = match cap_plane {
-                Some((origin, plane_normal)) if triangle_on_plane(tri, origin, plane_normal) => [
-                    offset_toward_camera(tri[0], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
-                    offset_toward_camera(tri[1], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
-                    offset_toward_camera(tri[2], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
-                ],
-                _ => *tri,
-            };
-            self.push_triangle(verts[0], verts[1], verts[2], scale_color(base, shade));
-        }
+        self.push_shaded_solid(solid, normals, base, cam, cap_plane, ShadingModel::Lambert);
     }
 
-    /// Push a solid mesh with flat (per-triangle) ambient + diffuse + specular shading — a
-    /// matte/satin "painted object" look, for `ShadingMode::Realistic` (#83). Unlike `push_solid`
-    /// (a single Lambert-ish term), this adds a camera-dependent Blinn-Phong specular highlight
-    /// via [`realistic_shade`]. Still flat-shaded per triangle (no shared vertex normals exist
-    /// on `SolidMesh`), so it reads as faceted rather than smoothly lit — a known, accepted
-    /// limitation given this app's flat-shaded mesh architecture. No materials/textures yet:
-    /// every body uses the same fixed gloss.
+    /// Push a solid mesh lit as `ShadingMode::Realistic` (#83): ambient + diffuse plus a
+    /// camera-dependent Blinn-Phong specular. No materials/textures yet — every body uses
+    /// the same fixed gloss.
     fn push_solid_realistic(
         &mut self,
         solid: &crate::extrude::SolidMesh,
+        normals: Option<&[[Vec3; 3]]>,
         base: Color32,
         cam: &Camera,
         cap_plane: Option<(Vec3, Vec3)>,
     ) {
-        let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+        self.push_shaded_solid(solid, normals, base, cam, cap_plane, ShadingModel::Realistic);
+    }
+
+    /// Push a solid mesh for the fragment shader to light per pixel (#1037).
+    ///
+    /// `normals` are the body's smooth per-vertex normals; without them each corner falls
+    /// back to its triangle's own geometric normal, which is the pre-#1037 faceted look.
+    /// `cap_plane`, when the extrusion targets a face/plane, nudges triangles lying exactly
+    /// on that plane (the top cap) toward the camera by a hair so they don't z-fight with
+    /// the target plane's own fill at grazing angles (#29) — geometry used for
+    /// export/measurement is untouched, this only biases what gets rasterized.
+    fn push_shaded_solid(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        normals: Option<&[[Vec3; 3]]>,
+        base: Color32,
+        cam: &Camera,
+        cap_plane: Option<(Vec3, Vec3)>,
+        model: ShadingModel,
+    ) {
         let eye = cam.eye();
-        for tri in &solid.triangles {
-            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
-            let centroid = (tri[0] + tri[1] + tri[2]) / 3.0;
-            let view = (eye - centroid).normalize_or_zero();
-            let color = realistic_shade(base, normal, light, view);
+        // Stale normals would shade the wrong geometry, so a length mismatch drops back to
+        // flat rather than indexing into whatever is there.
+        let normals = normals.filter(|n| n.len() == solid.triangles.len());
+        for (ti, tri) in solid.triangles.iter().enumerate() {
+            let flat = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+            let corner_normals = normals.map(|n| n[ti]).unwrap_or([flat; 3]);
             let verts = match cap_plane {
                 Some((origin, plane_normal)) if triangle_on_plane(tri, origin, plane_normal) => [
                     offset_toward_camera(tri[0], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
@@ -1817,7 +1893,7 @@ impl<'a> SceneMesh<'a> {
                 ],
                 _ => *tri,
             };
-            self.push_triangle(verts[0], verts[1], verts[2], color);
+            self.push_lit_triangle(verts, corner_normals, base, model);
         }
     }
 
@@ -2016,6 +2092,7 @@ impl<'a> SceneMesh<'a> {
             self.scene.vertices.push(GpuVertex {
                 position: p.to_array(),
                 color: gpu,
+                normal: [0.0, 0.0, 0.0, ShadingModel::Unlit.as_w()],
             });
         }
         self.indices_mut()
@@ -4643,6 +4720,7 @@ fn scale_color(color: Color32, factor: f32) -> Color32 {
 
 /// Blend `color` toward white by `amount` (0 = unchanged, 1 = white) — used to add a specular
 /// highlight on top of the already-lit base color in [`realistic_shade`].
+#[cfg(test)]
 fn lighten_color(color: Color32, amount: f32) -> Color32 {
     let t = amount.clamp(0.0, 1.0);
     Color32::from_rgba_unmultiplied(
@@ -4655,9 +4733,21 @@ fn lighten_color(color: Color32, amount: f32) -> Color32 {
 
 /// Ambient/diffuse/specular weights for `ShadingMode::Realistic` (#83) — a fixed matte/satin
 /// "painted object" look; no per-material tuning yet.
+///
+/// Since #1037 the lighting itself runs per pixel in `shader.wgsl`, which is the single
+/// source of truth. These, and [`realistic_shade`] below, are the CPU mirror the tests
+/// exercise — `realistic_terms_match_the_shader` asserts the two stay in step.
+/// The scene's one fixed light direction. The fragment shader lights solids against this
+/// (passed through the uniforms), and [`realistic_shade`] uses it on the CPU for tests.
+pub const SCENE_LIGHT_DIR: Vec3 = Vec3::new(0.35, 0.45, 0.82);
+
+#[cfg(test)]
 const REALISTIC_AMBIENT: f32 = 0.30;
+#[cfg(test)]
 const REALISTIC_DIFFUSE: f32 = 0.55;
+#[cfg(test)]
 const REALISTIC_SPECULAR: f32 = 0.35;
+#[cfg(test)]
 const REALISTIC_SHININESS: f32 = 24.0;
 /// Weight of the camera-attached "headlight" diffuse term (#102). The fixed light sits
 /// above-ish the scene, so from horizontal views a camera-facing wall got no diffuse at all
@@ -4665,6 +4755,7 @@ const REALISTIC_SHININESS: f32 = 24.0;
 /// headlight guarantees a face square to the camera reaches ambient + 0.7·diffuse ≈ 0.69
 /// total, on par with `Solid`'s ~0.67 for the same face. Combined with `max()` (not summed)
 /// so the fixed light still dominates wherever it lands, preserving per-face contrast/shape.
+#[cfg(test)]
 const REALISTIC_HEADLIGHT: f32 = 0.70;
 
 /// Blinn-Phong-ish flat shading for one triangle face, two-sided (the normal is flipped to
@@ -4672,6 +4763,7 @@ const REALISTIC_HEADLIGHT: f32 = 0.70;
 /// a camera-dependent specular highlight, instead of `push_solid`'s single Lambert-ish term.
 /// The diffuse term takes the stronger of the fixed scene light and a camera headlight
 /// (#102), so surfaces the user is looking at are always reasonably lit.
+#[cfg(test)]
 fn realistic_shade(base: Color32, normal: Vec3, light: Vec3, view: Vec3) -> Color32 {
     let n = if normal.dot(view) < 0.0 { -normal } else { normal };
     let fixed_diffuse = n.dot(light).max(0.0);
@@ -5047,6 +5139,65 @@ mod tests {
             realistic.wireframe_indices.is_empty(),
             "realistic mode should not populate the wireframe overlay layer"
         );
+    }
+
+    /// #1037: lighting moved into `shader.wgsl`, so the CPU `realistic_shade` above is a
+    /// mirror rather than the implementation. The two can drift silently — nothing compiles
+    /// the WGSL against the Rust — so pin every shared constant to the shader source.
+    #[test]
+    fn realistic_terms_match_the_shader() {
+        let wgsl = include_str!("shader.wgsl");
+        let shader_const = |name: &str| -> f32 {
+            let line = wgsl
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("const {name}:")))
+                .unwrap_or_else(|| panic!("shader.wgsl declares no `{name}`"));
+            line.split('=')
+                .nth(1)
+                .and_then(|v| v.trim().trim_end_matches(';').parse::<f32>().ok())
+                .unwrap_or_else(|| panic!("`{name}` in shader.wgsl is not a plain number"))
+        };
+        for (name, rust) in [
+            ("REALISTIC_AMBIENT", REALISTIC_AMBIENT),
+            ("REALISTIC_DIFFUSE", REALISTIC_DIFFUSE),
+            ("REALISTIC_SPECULAR", REALISTIC_SPECULAR),
+            ("REALISTIC_SHININESS", REALISTIC_SHININESS),
+            ("REALISTIC_HEADLIGHT", REALISTIC_HEADLIGHT),
+        ] {
+            assert_eq!(shader_const(name), rust, "{name} drifted from the shader");
+        }
+        // The lighting-model discriminants the shader branches on ride in normal.w.
+        for (name, model) in [
+            ("MODE_UNLIT", ShadingModel::Unlit),
+            ("MODE_LAMBERT", ShadingModel::Lambert),
+            ("MODE_REALISTIC", ShadingModel::Realistic),
+        ] {
+            assert_eq!(shader_const(name), model.as_w(), "{name} drifted");
+        }
+    }
+
+    /// #1037: geometry that isn't a body — lines, fills, text, gizmos, the grid — must stay
+    /// unlit, or the shader would light 2D chrome against a 3D normal it doesn't have.
+    #[test]
+    fn only_body_solids_are_lit() {
+        let state = state_with_one_body();
+        let scene = build_scene_with_shading(&state, crate::camera::ShadingMode::Solid);
+        let lit = scene
+            .vertices
+            .iter()
+            .filter(|v| v.normal[3] != ShadingModel::Unlit.as_w())
+            .count();
+        assert!(lit > 0, "the body should contribute lit vertices");
+        // Every lit vertex carries a usable normal; an unlit one is never lit by accident.
+        for v in &scene.vertices {
+            if v.normal[3] != ShadingModel::Unlit.as_w() {
+                let n = Vec3::from_slice(&v.normal[..3]);
+                assert!(n.length() > 0.5, "a lit vertex needs a unit normal, got {n}");
+            }
+        }
+        // The ground grid alone is far more geometry than one box, so plenty stays unlit.
+        let unlit = scene.vertices.len() - lit;
+        assert!(unlit > 0, "chrome and the grid should stay unlit");
     }
 
     #[test]

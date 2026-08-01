@@ -20,7 +20,32 @@ pub const VIEWPORT_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Dept
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuUniforms {
     view_proj: [[f32; 4]; 4],
+    /// Scene light direction (xyz, normalized); `w` is padding for std140 alignment.
+    light_dir: [f32; 4],
+    /// Camera eye in world space (xyz), for the view-dependent lighting terms in
+    /// `fs_main`; `w` is padding.
+    eye: [f32; 4],
 }
+
+/// Vertex layout shared by every scene-geometry pipeline: position, colour, and the
+/// normal + lighting-model pair the fragment shader lights with (#1037).
+const SCENE_VERTEX_ATTRS: [wgpu::VertexAttribute; 3] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 28,
+        shader_location: 2,
+    },
+];
 
 pub struct ViewportGpuResources {
     target_format: wgpu::TextureFormat,
@@ -122,7 +147,7 @@ impl ViewportGpuResources {
                 label: Some("bearcad_viewport_uniform_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -136,6 +161,8 @@ impl ViewportGpuResources {
             label: Some("bearcad_viewport_uniform"),
             contents: bytemuck::bytes_of(&GpuUniforms {
                 view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+                light_dir: [0.0, 0.0, 1.0, 0.0],
+                eye: [0.0, 0.0, 0.0, 0.0],
             }),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
         });
@@ -165,18 +192,7 @@ impl ViewportGpuResources {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GpuVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                    ],
+                    attributes: &SCENE_VERTEX_ATTRS,
                 }],
                 compilation_options: Default::default(),
             },
@@ -219,18 +235,7 @@ impl ViewportGpuResources {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GpuVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                    ],
+                    attributes: &SCENE_VERTEX_ATTRS,
                 }],
                 compilation_options: Default::default(),
             },
@@ -277,18 +282,7 @@ impl ViewportGpuResources {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GpuVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                    ],
+                    attributes: &SCENE_VERTEX_ATTRS,
                 }],
                 compilation_options: Default::default(),
             },
@@ -339,18 +333,7 @@ impl ViewportGpuResources {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GpuVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                    ],
+                    attributes: &SCENE_VERTEX_ATTRS,
                 }],
                 compilation_options: Default::default(),
             },
@@ -405,18 +388,7 @@ impl ViewportGpuResources {
                     buffers: &[wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<GpuVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 0,
-                                shader_location: 0,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 12,
-                                shader_location: 1,
-                            },
-                        ],
+                        attributes: &SCENE_VERTEX_ATTRS,
                     }],
                     compilation_options: Default::default(),
                 },
@@ -958,6 +930,11 @@ impl ViewportGpuResources {
             0,
             bytemuck::bytes_of(&GpuUniforms {
                 view_proj: scene.view_proj.to_cols_array_2d(),
+                light_dir: {
+                    let l = super::scene::SCENE_LIGHT_DIR.normalize_or_zero();
+                    [l.x, l.y, l.z, 0.0]
+                },
+                eye: [scene.eye.x, scene.eye.y, scene.eye.z, 0.0],
             }),
         );
         if !scene.vertices.is_empty() {
