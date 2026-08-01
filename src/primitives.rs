@@ -401,6 +401,58 @@ mod tests {
         assert!((volume - exact).abs() / exact < 0.02, "{volume} vs {exact}");
     }
 
+    /// #1050: a cuboid placed on a face rests **on** that face and grows along its normal,
+    /// on any plane — not just the ground. The bottom corner is the cursor, every base corner
+    /// lies in the anchor plane, and the whole solid is on the normal's side of it.
+    #[test]
+    fn a_cuboid_rests_on_its_anchor_plane_and_grows_along_the_normal() {
+        for normal in [
+            Vec3::Z,
+            -Vec3::Z,
+            Vec3::X,
+            Vec3::new(0.3, -0.7, 0.5).normalize(),
+        ] {
+            let u = plane_u_axis(normal);
+            let v = normal.cross(u).normalize();
+            let cursor = Vec3::new(19.2, 19.8, 20.0);
+            let (w, d, h) = (12.0, 8.0, 30.0);
+            let centre = ghost_origin(K::Cuboid, cursor, u, v, w, d);
+
+            let mut shape = sized(K::Cuboid, "12", "8", "30", "");
+            shape.origin = centre.to_array();
+            shape.normal = normal.to_array();
+            shape.u_axis = u.to_array();
+            let doc = doc_with(shape.clone());
+            let r = resolve(&doc, &shape).unwrap();
+
+            // The bottom corner is exactly where the cursor was.
+            assert!(
+                r.cuboid_base().iter().any(|c| (*c - cursor).length() < 1e-3),
+                "on {normal} the cursor is not a base corner: {:?}",
+                r.cuboid_base()
+            );
+            // The base lies in the anchor plane — nothing dips below the face.
+            for c in r.cuboid_base() {
+                assert!(
+                    (c - cursor).dot(normal).abs() < 1e-3,
+                    "base corner {c} is off the plane of {normal}"
+                );
+            }
+            // And the solid is entirely on the normal's side, reaching exactly its height.
+            let mesh = mesh(&doc, &shape).expect("a sized cuboid meshes");
+            let heights: Vec<f32> = mesh
+                .triangles
+                .iter()
+                .flatten()
+                .map(|p| (*p - cursor).dot(normal))
+                .collect();
+            let lo = heights.iter().cloned().fold(f32::INFINITY, f32::min);
+            let hi = heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            assert!(lo > -1e-3, "on {normal} the cuboid dips {lo} below its base");
+            assert!((hi - h).abs() < 1e-3, "on {normal} it reaches {hi}, not {h}");
+        }
+    }
+
     /// #929: a cuboid's ghost hangs its **corner** on the cursor — its first click places a
     /// corner — while a cylinder and a sphere are placed by their centre.
     #[test]
