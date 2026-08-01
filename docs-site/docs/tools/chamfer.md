@@ -15,12 +15,26 @@ it off flat. Everything else works the same way —
 - **In a sketch:** click a corner where two lines meet, drag the handle or type a cut
   distance, **Enter**.
 
-![A rectangle profile with its top-right corner chamfered flat](/img/screenshots/chamfer-sketch.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/chamfer-sketch.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/chamfer-sketch.png")} alt="A rectangle profile with its top-right corner chamfered flat" />
+</a>
 
 - **On a solid:** click an edge (Shift+click for several), set the distance, **Enter**.
   The Context pane mirrors the **Distance**, with a ✓ to commit.
 
-![A box with its two long top edges chamfered](/img/screenshots/chamfer.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/chamfer.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/chamfer.png")} alt="A box with its two long top edges chamfered" />
+</a>
 
 ## Help
 

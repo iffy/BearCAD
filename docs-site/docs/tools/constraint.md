@@ -15,7 +15,14 @@ constraints pin *relationships*.
 
 Select the geometry, then click a constraint button or press its number key:
 
-![A profile squared up by parallel and perpendicular constraints, with the constraint pane open](/img/screenshots/constraint.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/constraint.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/constraint.png")} alt="A profile squared up by parallel and perpendicular constraints, with the constraint pane open" />
+</a>
 
 | Constraint | Select first | Key |
 |---|---|---|

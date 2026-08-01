@@ -11,7 +11,14 @@ Construction planes are invisible flat surfaces to sketch on — for building at
 from a face, or at an angle. Click a reference, position the plane, then press the blue
 **Create plane** button (or **Enter**):
 
-![A construction plane offset above a block, holding a circle sketch](/img/screenshots/construction-plane.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/construction-plane.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/construction-plane.png")} alt="A construction plane offset above a block, holding a circle sketch" />
+</a>
 
 - **Click a face** (the ground, another plane, or a body's face): the new plane sits
   parallel to it. Drag the arrow handle, or type an **Offset** in the context pane.

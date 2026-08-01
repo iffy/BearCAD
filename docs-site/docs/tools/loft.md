@@ -10,7 +10,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Loft blends a solid through two or more closed cross-section profiles on different planes —
 horns, hulls, funnels, transitions between shapes.
 
-![Two circle sections on offset planes blended into a horn](/img/screenshots/loft.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/loft.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/loft.png")} alt="Two circle sections on offset planes blended into a horn" />
+</a>
 
 ## How to use it
 

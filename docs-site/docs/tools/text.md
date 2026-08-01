@@ -10,7 +10,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Text places engraving-ready lettering in a sketch as glyph outlines you can edit, rotate,
 and extrude or cut like any other profile.
 
-![A selected wrapped text in a sketch: glyph outlines, the dashed wrap box with width handles, and anchor points](/img/screenshots/text.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/text.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/text.png")} alt="A selected wrapped text in a sketch: glyph outlines, the dashed wrap box with width handles, and anchor points" />
+</a>
 
 ## How to use it
 

@@ -33,6 +33,9 @@ bearcad.ui.zoom_fit()
 bearcad.ui.wait(1)
 -- Before: the block and the overlapping cutting body.
 bearcad.ui.screenshot(dir .. "/combine-before.png")
+-- The document behind this picture, so the docs page can link the screenshot into
+-- the web app with `?open=` pointing here.
+bearcad.save(dir .. "/combine-before.bearcad.json")
 
 bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
 bearcad.ui.wait(2)
@@ -40,5 +43,6 @@ bearcad.ui.zoom_fit()
 bearcad.ui.wait(1)
 -- After: the notched result.
 bearcad.ui.screenshot(dir .. "/combine.png")
+bearcad.save(dir .. "/combine.bearcad.json")
 
 bearcad.quit()

@@ -9,7 +9,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Revolve spins a flat profile around an axis into a solid — rings, shafts, vases, grooves.
 
-![A rectangular profile revolved 270 degrees into a partial ring](/img/screenshots/revolve.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/revolve.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/revolve.png")} alt="A rectangular profile revolved 270 degrees into a partial ring" />
+</a>
 
 ## How to use it
 

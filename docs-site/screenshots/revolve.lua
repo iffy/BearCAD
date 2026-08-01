@@ -30,5 +30,8 @@ bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(1)
 bearcad.ui.screenshot(out)
+-- The document behind this picture, so the docs page can link the screenshot into
+-- the web app with `?open=` pointing here (#1049 pattern, from joint-kinds.lua).
+bearcad.save((out:gsub("%.png$", ".bearcad.json")))
 
 bearcad.quit()

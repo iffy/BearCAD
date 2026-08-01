@@ -3,6 +3,8 @@ sidebar_position: 25
 title: Tracing images
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Tracing images
 
 Import a photo, scan, or datasheet drawing, tell BearCAD its real-world scale, and trace
@@ -35,7 +37,14 @@ editable in the context pane. **Drag** either point to move it (the field re-syn
 measured span — apply the real length again to rescale), or **click** a point and press
 **Delete** to remove it, then click to re-place it.
 
-![A calibrated tracing image on the ground plane with sketch lines traced over the plate outline](/img/screenshots/tracing.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/tracing.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/tracing.png")} alt="A calibrated tracing image on the ground plane with sketch lines traced over the plate outline" />
+</a>
 
 ## Moving and constraining
 

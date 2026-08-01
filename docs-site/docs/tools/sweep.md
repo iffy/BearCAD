@@ -10,7 +10,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Sweep pulls a flat profile along a path of sketch lines into a solid — pipes,
 rails, handles, curved channels.
 
-![A circular profile swept along a curved path into a tube](/img/screenshots/sweep.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/sweep.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/sweep.png")} alt="A circular profile swept along a curved path into a tube" />
+</a>
 
 ## How to use it
 

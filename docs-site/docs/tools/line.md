@@ -14,7 +14,14 @@ Click to start, move the mouse, click to finish a segment — or type a length a
 draw an outline with successive clicks. Closing back onto the starting point (snapping
 grabs it) finishes the shape — and any closed outline becomes a face you can extrude.
 
-![A capital letter "B", traced as a closed outline and extruded into a solid](/img/screenshots/letter-b.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/letter-b.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/letter-b.png")} alt="A capital letter &quot;B&quot;, traced as a closed outline and extruded into a solid" />
+</a>
 
 *An extruded letter "B": outline drawn with the Line tool, extruded, and its two holes cut
 through.*

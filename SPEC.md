@@ -4763,8 +4763,12 @@ document is millimeters, so the player is person-scale: eye height
   the app normally.
 - **`?open=<url>`**: the web build also fetches a document URL (percent-decoded,
   `main::open_url_from_query`) and opens it at boot through the same queue the browser
-  open dialog feeds — so a docs page can link a screenshot straight into the live model
-  (the Joint page's all-kinds shot does). The document is the web JSON codec
+  open dialog feeds — so a docs page can link a screenshot straight into the live model.
+  **Every model screenshot on the tool pages is such a link**: each screenshot script saves
+  its scene as `<name>.bearcad.json` beside the PNG, and the page wraps the image in an
+  anchor to `/app/?open=<that url>`. The convention is stated once on the Modeling Tools
+  index rather than captioned under each picture. Annotated `pane-*` shots are excluded —
+  their subject is the callouts, not the model. The document is the web JSON codec
   (`storage::to_json_bytes`); `bearcad.save("….json")` writes it, which is how a
   screenshot scene publishes the model beside its PNG. A failed fetch lands as a status
   line, not a broken app.

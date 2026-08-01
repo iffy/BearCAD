@@ -11,7 +11,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Move slides whole bodies to a new place, producing moved copies.
 
-![A box moved into a second position](/img/screenshots/move.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/move.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/move.png")} alt="A box moved into a second position" />
+</a>
 
 ## How to use it
 
@@ -59,17 +66,38 @@ travels.
 
 **A alone** — start A lands on end A. The slab slides; it faces exactly as it did.
 
-![The Move preview with only the A pair picked: a ghost slid onto the plate, facing as the slab does](/img/screenshots/snap-pairs-a.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/snap-pairs-a.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/snap-pairs-a.png")} alt="The Move preview with only the A pair picked: a ghost slid onto the plate, facing as the slab does" />
+</a>
 
 **A and B** — it also turns about end A until start B points at end B. It can still roll
 about the line between the two end points.
 
-![The same preview with the B pair added, the ghost turned so its far corner points at end B](/img/screenshots/snap-pairs-ab.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/snap-pairs-ab.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/snap-pairs-ab.png")} alt="The same preview with the B pair added, the ghost turned so its far corner points at end B" />
+</a>
 
 **A, B and C** — it also spins about that line until start C points at end C, standing it
 on its long edge. Nothing is left to choose.
 
-![The same preview with the C pair added, the ghost spun up onto its long edge](/img/screenshots/snap-pairs-abc.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/snap-pairs-abc.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/snap-pairs-abc.png")} alt="The same preview with the C pair added, the ghost spun up onto its long edge" />
+</a>
 
 The tool moves you along as you go: pick a body and it's ready for the start point, then the
 end point, then straight on to **Start point B** in case you want the turn too, and then to

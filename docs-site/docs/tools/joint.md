@@ -13,7 +13,14 @@ Joint connects two parts — bodies, components, or imported units — with a ki
 relationship: a hinge swings, a slider slides, a screw turns and advances. The joint
 poses the moving part; it never changes any shape.
 
-![A revolute joint mid-swing](/img/screenshots/joint-kinds-revolute.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/joint-kinds-revolute.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/joint-kinds-revolute.png")} alt="A revolute joint mid-swing" />
+</a>
 
 ## How to use it
 
@@ -76,8 +83,6 @@ commit. **Animate** turns that sweep off — one switch for every joint.
     alt="All eight joint kinds, each pair posed through its joint — click to open the model in BearCAD"
   />
 </a>
-
-*Click the picture to open this model in BearCAD.*
 
 | | Kind | Motion |
 |---|---|---|

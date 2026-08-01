@@ -71,6 +71,8 @@ local function shoot(name)
   bearcad.ui.camera{ target = { 27, 10, 6 }, distance = 115 }
   bearcad.ui.wait(3)
   bearcad.ui.screenshot(out .. "/" .. name .. ".png")
+  -- The document behind each picture, for the docs page to link into the web app.
+  bearcad.save(out .. "/" .. name .. ".bearcad.json")
 end
 
 -- A alone: the ghost sits where start A meets end A, facing exactly as the slab does.

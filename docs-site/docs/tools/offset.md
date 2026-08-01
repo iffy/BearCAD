@@ -10,7 +10,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Offset makes a parallel copy of sketch edges a constant distance away — wall
 thicknesses, clearances, insets.
 
-![A rectangle offset outward and a circle offset inward as construction](/img/screenshots/offset.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/offset.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/offset.png")} alt="A rectangle offset outward and a circle offset inward as construction" />
+</a>
 
 ## How to use it
 

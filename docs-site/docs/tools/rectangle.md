@@ -18,7 +18,14 @@ click is the centre, and the rectangle grows out symmetrically as you pick a cor
 **R** again while the tool is already active to toggle between the two. Either way, the width
 and height you type are the full size of the rectangle.
 
-![An 80 x 50 mm rectangle on the ground plane](/img/screenshots/rectangle.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/rectangle.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/rectangle.png")} alt="An 80 x 50 mm rectangle on the ground plane" />
+</a>
 
 A rectangle is really four lines joined at right angles, so everything that works on lines
 — dimensions, constraints, fillets on its corners — works on a rectangle's sides too. Its

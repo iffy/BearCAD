@@ -12,7 +12,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Shape places a solid straight into 3D: a cuboid, a cylinder, or a sphere. No sketch, no
 profile. The toolbar button shows the shape you used last.
 
-![The three shapes the tool places: a cuboid, a cylinder, and a sphere](/img/screenshots/shape.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/shape.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/shape.png")} alt="The three shapes the tool places: a cuboid, a cylinder, and a sphere" />
+</a>
 
 ## The shapes
 

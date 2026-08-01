@@ -19,7 +19,14 @@ diametrically opposite point — the two clicks span a diameter). Press **O** ag
 tool is already active to toggle between the two. You can still type a **diameter** to
 constrain it in either mode.
 
-![A plate with a construction bolt circle and a dimensioned bolt hole](/img/screenshots/circle.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/circle.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/circle.png")} alt="A plate with a construction bolt circle and a dimensioned bolt hole" />
+</a>
 
 A circle is a face: extrude it to get a cylinder, or extrude it **into** a body as a
 [cut](./extrude.md#adding-to-or-cutting-a-body) to drill a round hole.

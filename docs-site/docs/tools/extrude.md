@@ -13,7 +13,14 @@ Extrude turns a flat sketch face into a solid — or carves into an existing one
 or more faces in the same sketch plane, set a depth, and press **Enter** (or the **Extrude**
 button in the panel).
 
-![An 80 x 50 mm rectangle extruded 20 mm into a solid block](/img/screenshots/extrude.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/extrude.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/extrude.png")} alt="An 80 x 50 mm rectangle extruded 20 mm into a solid block" />
+</a>
 
 Set the depth any of these ways:
 

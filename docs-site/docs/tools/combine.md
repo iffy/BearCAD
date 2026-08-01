@@ -10,11 +10,25 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Combine performs boolean operations on whole bodies. Before a **Cut** — the block and
 the overlapping cutting body:
 
-![Two overlapping bodies before the cut](/img/screenshots/combine-before.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/combine-before.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/combine-before.png")} alt="Two overlapping bodies before the cut" />
+</a>
 
 After — the cutting body is carved away:
 
-![The notched result after the cut](/img/screenshots/combine.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/combine.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/combine.png")} alt="The notched result after the cut" />
+</a>
 
 ## The four operations
 

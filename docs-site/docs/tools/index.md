@@ -12,6 +12,9 @@ The viewport always has one active **tool**; **Select** is the default. These ma
 toolbar in the **3D modeling** workbench (the default one — opening a drawing switches to
 the [Drawing Tools](/docs/drawing-tools)).
 
+**Every model picture on these pages opens in BearCAD when you click it**, so you can take
+any of them apart yourself.
+
 | | Tool | Shortcut | What it does |
 |---|---|---|---|
 | <img src={useBaseUrl("/img/icons/select.svg")} width="22" /> | [Select](/docs/tools/select) | — | Look around and pick geometry; the default tool. |

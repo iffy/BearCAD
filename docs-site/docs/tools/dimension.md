@@ -13,7 +13,14 @@ Dimensions make geometry exact — and keep it that way. Click a line (or a rect
 or a circle): the dimension appears straight away and **follows your cursor**. Click again
 to drop it where you want it, then type the value and press **Enter**.
 
-![Two lines with length dimensions and the angle between them dimensioned](/img/screenshots/dimension.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/dimension.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/dimension.png")} alt="Two lines with length dimensions and the angle between them dimensioned" />
+</a>
 
 - **Shift+click** a second line for the **angle** between them.
 - A plain click re-targets; **double-click** an already-dimensioned thing to change its value.

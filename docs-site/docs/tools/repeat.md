@@ -10,7 +10,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Repeat lays out copies of bodies along a straight line — bolt patterns, studs along a
 wall, teeth on a rack.
 
-![A block repeated four times along the X axis](/img/screenshots/repeat.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/repeat.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/repeat.png")} alt="A block repeated four times along the X axis" />
+</a>
 
 ## How to use it
 

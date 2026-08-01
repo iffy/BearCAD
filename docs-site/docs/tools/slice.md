@@ -10,7 +10,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Slice cuts whole bodies apart with flat cutters — halving a part, or splitting a model
 into printable pieces.
 
-![A box sliced by a plane into two fragments](/img/screenshots/slice.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/slice.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/slice.png")} alt="A box sliced by a plane into two fragments" />
+</a>
 
 ## How to use it
 

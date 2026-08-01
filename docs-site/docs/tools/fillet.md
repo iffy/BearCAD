@@ -15,7 +15,14 @@ Fillet rounds corners. It works in two places:
 radius; **Enter** commits. A live preview shows the rounded corner as you adjust it. This
 is how you round a profile *before* extruding.
 
-![A rectangle profile with its top-right corner rounded](/img/screenshots/fillet-sketch.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/fillet-sketch.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/fillet-sketch.png")} alt="A rectangle profile with its top-right corner rounded" />
+</a>
 
 **On a solid:** with no sketch open, click an edge of a body — a vertical corner edge, an
 edge where a wall meets the top or bottom face, or the **round rim** of a cylinder or a
@@ -25,7 +32,14 @@ and press **Enter** — like the rounded bend in the
 The Context pane lists the picked edges (each removable) and the **Radius**, with a ✓ to
 commit.
 
-![A box with its four vertical edges rounded](/img/screenshots/fillet.png)
+<a
+  href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/fillet.bearcad.json"))}
+  target="_blank"
+  rel="noopener noreferrer"
+  title="Open this model in BearCAD"
+>
+  <img src={useBaseUrl("/img/screenshots/fillet.png")} alt="A box with its four vertical edges rounded" />
+</a>
 
 Committing creates a **Fillet operation** in the Elements pane: the original body becomes a
 faded input and a new rounded body appears as the operation's output, with the input feeding

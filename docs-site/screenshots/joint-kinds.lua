@@ -114,6 +114,7 @@ for _, spec in ipairs(kinds) do
   bearcad.ui.zoom_fit()
   bearcad.ui.wait(2)
   bearcad.ui.screenshot(out .. "-" .. spec.kind .. ".png")
+  bearcad.save(out .. "-" .. spec.kind .. ".bearcad.json")
 end
 
 -- The combined shot: every kind in one document, laid out four across in the table's
