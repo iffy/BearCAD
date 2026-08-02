@@ -291,11 +291,8 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
         }
     }
     // A calibrated image's reference points (#425), for images on this sketch's plane.
-    for (index, img) in doc.tracing_images.iter().enumerate() {
-        if img.deleted
-            || doc.sketch_face(sketch)
-                != Some(crate::model::FaceId::ConstructionPlane(img.plane))
-        {
+    for (index, img) in doc.tracing_images.iter() {
+        if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane)) {
             continue;
         }
         for i in 0..2 {

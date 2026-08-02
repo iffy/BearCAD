@@ -307,8 +307,11 @@ pub struct ViewportImageQuad {
 /// A tracing image's four world corners, in UV order: (0,0), (1,0), (1,1), (0,1) — v flipped,
 /// since image v grows downward and plane-local v grows up. One definition (#977), shared by the
 /// textured quad and by the hover outline its Elements-pane row draws.
-fn tracing_image_corners(doc: &Document, image: usize) -> Option<[Vec3; 4]> {
-    let img = doc.tracing_images.get(image).filter(|i| !i.deleted)?;
+fn tracing_image_corners(
+    doc: &Document,
+    image: crate::model::TracingImageKey,
+) -> Option<[Vec3; 4]> {
+    let img = doc.tracing_images.get(image)?;
     let frame = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))?;
     let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
     let (x0, y0) = img.origin;
@@ -682,11 +685,10 @@ impl ViewportScene {
             ..Default::default()
         };
         // Tracing images (#170): a textured quad per visible image on its host plane.
-        for (ii, img) in input.doc.tracing_images.iter().enumerate() {
-            if img.deleted
-                || !input
-                    .element_visibility
-                    .effective_visible(input.doc, SceneElement::Image(ii))
+        for (ii, img) in input.doc.tracing_images.iter() {
+            if !input
+                .element_visibility
+                .effective_visible(input.doc, SceneElement::Image(ii))
             {
                 continue;
             }
@@ -5893,7 +5895,7 @@ mod tests {
         });
 
         // A tracing image on the XY plane — its quad's outline is what its row lights.
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "trace".to_string(),
             plane: 0,
@@ -5902,7 +5904,6 @@ mod tests {
             width_mm: 40.0,
             height_mm: 30.0,
             name: None,
-            deleted: false,
             calibration: None,
         });
 
@@ -5914,7 +5915,7 @@ mod tests {
             SceneElement::Body(0),
             SceneElement::Component(state.doc.components.len() - 1),
             SceneElement::Joint(0),
-            SceneElement::Image(0),
+            SceneElement::Image(image),
             SceneElement::Line(0),
             SceneElement::Sketch(sketch),
             SceneElement::ConstructionPlane(0),

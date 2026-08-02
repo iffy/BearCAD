@@ -387,7 +387,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let image = doc
                 .tracing_images
                 .get_mut(index)
-                .ok_or_else(|| format!("image {index} not found"))?;
+                .ok_or_else(|| format!("image {index:?} not found"))?;
             image.name = stored;
         }
         SceneElement::UnitInstance(index) => {
@@ -518,7 +518,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             .tracing_images
             .get(i)
             .map(|img| img.source_name.clone())
-            .unwrap_or_else(|| format!("Image {i}")),
+            .unwrap_or_else(|| format!("Image {}", i.index())),
         HierarchyNode::BooleanOp(i) => {
             let kind = doc
                 .boolean_ops
@@ -788,7 +788,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             }
             None => "Origin".to_string(),
         },
-        SceneElement::Image(i) => format!("Image {i}"),
+        SceneElement::Image(i) => format!("Image {}", i.index()),
         SceneElement::BooleanOp(i) => format!("Boolean {i}"),
         SceneElement::MoveOp(i) => format!("Move {i}"),
         SceneElement::MirrorOp(i) => format!("Mirror {i}"),

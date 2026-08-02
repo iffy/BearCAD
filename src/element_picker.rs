@@ -1306,7 +1306,8 @@ mod tests {
     fn plane_filter_also_accepts_images() {
         let f = ElementFilter::kind(ElementKind::Plane);
         assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
-        assert!(f.accepts(&Document::default(), &SceneElement::Image(0)));
+        let image = SceneElement::Image(crate::arena::Key::from_bits(0));
+        assert!(f.accepts(&Document::default(), &image));
     }
 
     #[test]
@@ -1314,7 +1315,8 @@ mod tests {
         // Image was missing from `ORDER`, so `kinds()` dropped it and an images-only picker
         // accepted nothing at all.
         let f = ElementFilter::kind(ElementKind::Image);
-        assert!(f.accepts(&Document::default(), &SceneElement::Image(0)));
+        let image = SceneElement::Image(crate::arena::Key::from_bits(0));
+        assert!(f.accepts(&Document::default(), &image));
         assert!(!f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
     }
 
@@ -1322,7 +1324,7 @@ mod tests {
     fn a_picked_image_shows_in_the_summary() {
         // Same root cause: `summary()` walks `ORDER`, so a picked image counted as nothing.
         let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
-        p.pick(&Document::default(), SceneElement::Image(0));
+        p.pick(&Document::default(), SceneElement::Image(crate::arena::Key::from_bits(0)));
         assert_eq!(p.summary().len(), 1, "one chip for the picked image");
         assert_eq!(p.summary()[0].1, 1);
     }
@@ -1837,7 +1839,7 @@ mod tests {
         // is a kind no picker can accept and no summary can count.
         for element in [
             SceneElement::ConstructionPlane(0),
-            SceneElement::Image(0),
+            SceneElement::Image(crate::arena::Key::from_bits(0)),
             SceneElement::Sketch(0),
             SceneElement::Line(0),
             SceneElement::Circle(0),

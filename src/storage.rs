@@ -243,7 +243,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
     save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
-    save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
+    save_arena_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
     save_indexed_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
@@ -582,7 +582,7 @@ pub fn open(path: &str) -> Result<Document> {
     // Materials (#834) — empty for files saved before they existed.
     let materials = load_arena_entities(&conn, "material")?;
     let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
-    let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
+    let tracing_images = load_arena_entities(&conn, "tracing_image")?;
     let lofts = load_arena_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
     let primitives = load_indexed_entities(&conn, "primitive")?;
@@ -863,6 +863,48 @@ mod tests {
             assert!(
                 loaded.lofts.get(doomed).is_none(),
                 "{suffix}: a key to a removed loft does not come back to life"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: the same for tracing images, whose keys are held by move-op targets and by
+    /// the calibration constraints on them — a renumbering reload would point those at the
+    /// wrong image.
+    #[test]
+    fn tracing_image_keys_survive_a_save_and_reload() {
+        let image = |name: &str| crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: name.to_string(),
+            plane: 0,
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            name: None,
+            calibration: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.tracing_images.insert(image("doomed"));
+        let kept = doc.tracing_images.insert(image("kept"));
+        assert!(doc.tracing_images.remove(doomed).is_some());
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_image_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.tracing_images.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.tracing_images.get(kept).map(|i| i.source_name.as_str()),
+                Some("kept"),
+                "{suffix}: the surviving image did not shift into the hole"
+            );
+            assert!(
+                loaded.tracing_images.get(doomed).is_none(),
+                "{suffix}: a key to a removed image does not come back to life"
             );
             let _ = std::fs::remove_file(&path);
         }

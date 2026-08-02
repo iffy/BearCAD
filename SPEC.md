@@ -1633,7 +1633,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the saved JSON, so files stay self-contained like imported meshes) and places it on a
   construction plane (default: plane 0), centered on the plane origin at an initial scale
   of **1 px = 1 mm**. The image is an Elements-pane row nested under its host plane —
-  renamable, hideable, deletable, undoable.
+  renamable, hideable, deletable, undoable. `Document::tracing_images` is an
+  `arena::Arena` (#1055): an image is named by a `TracingImageKey` — by the move ops that
+  target it and the calibration constraints on it — and deleting one **removes** it, so a
+  key to it stops resolving instead of naming whichever image slid into its place. A
+  script still names an image by its **ordinal** among the live ones, resolved to a key at
+  the script boundary (`lua_script::scene_element_from_kind`/`element_index`).
 - **Rendering (#170):** each image draws as a **textured quad** on its host plane at 85%
   opacity — depth-tested (bodies in front occlude it) but never writing depth, so sketch
   geometry and fills always read on top. Decoded pixels and GPU textures are cached by

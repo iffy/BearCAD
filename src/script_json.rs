@@ -114,8 +114,14 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
 /// The index reported for a selected element (mirrors the `selection` query): the element's
 /// index, or `None` for the point/edge selectors that name a sub-feature of another element
 /// rather than a whole element (`Point`/`FaceEdge`).
-pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
+pub fn scene_element_selection_index(
+    doc: &crate::model::Document,
+    element: &SceneElement,
+) -> Option<usize> {
     match element {
+        // An arena-backed element reports its **ordinal** among the live ones of its kind
+        // (#1055) — the same integer `scene_element_from_kind` takes back.
+        SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
         // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -149,7 +155,6 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
         | SceneElement::Body(i)
-        | SceneElement::Image(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
@@ -2738,7 +2743,7 @@ mod tests {
         {
             let el = scene_element_from_kind(kind, idx).unwrap();
             assert_eq!(scene_element_kind_name(&el), Some((kind, idx)));
-            assert_eq!(scene_element_selection_index(&el), Some(idx));
+            assert_eq!(scene_element_selection_index(&Document::default(), &el), Some(idx));
         }
         // Full kind name covers non-round-tripping variants too.
         assert_eq!(
@@ -2746,7 +2751,10 @@ mod tests {
             "body"
         );
         assert_eq!(scene_element_full_kind_name(&SceneElement::Origin), "origin");
-        assert_eq!(scene_element_selection_index(&SceneElement::Origin), Some(0));
+        assert_eq!(
+            scene_element_selection_index(&Document::default(), &SceneElement::Origin),
+            Some(0)
+        );
         assert!(scene_element_from_kind("nope", 0).is_none());
         // The `construction_plane` alias resolves to the `plane` element.
         assert_eq!(

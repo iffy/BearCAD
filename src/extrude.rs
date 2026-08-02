@@ -4963,7 +4963,7 @@ pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoi
         }
         crate::model::ConstraintPoint::ImageCalibrationPoint { image, index } => {
             // The image lives on a plane, not in a sketch: resolve directly in world space.
-            let img = doc.tracing_images.get(*image).filter(|i| !i.deleted)?;
+            let img = doc.tracing_images.get(*image)?;
             let (u, v) = crate::model::image_calibration_point_uv(img, *index)?;
             let frame = crate::face::sketch_frame(
                 doc,

@@ -3111,9 +3111,9 @@ struct App {
     exploder_palette_request: bool,
     /// A selected calibration reference point (#424): `(image, point index)`; Delete
     /// removes it so a click can re-place it.
-    selected_calibration_point: Option<(usize, usize)>,
+    selected_calibration_point: Option<(model::TracingImageKey, usize)>,
     /// An in-progress drag of a calibration reference point (#424).
-    calibration_point_drag: Option<(usize, usize)>,
+    calibration_point_drag: Option<(model::TracingImageKey, usize)>,
     /// Auto-update state (#427): background release check + staged update progress.
     #[cfg(not(target_arch = "wasm32"))]
     update_state: updater::SharedUpdateState,
@@ -7622,7 +7622,7 @@ impl App {
     }
 
     /// The single selected tracing image (#424), if the selection is exactly one image.
-    fn single_selected_tracing_image(&self) -> Option<usize> {
+    fn single_selected_tracing_image(&self) -> Option<model::TracingImageKey> {
         let mut only = None;
         for element in self.state.scene_selection.iter() {
             match element {
@@ -7630,7 +7630,7 @@ impl App {
                 _ => return None,
             }
         }
-        only.filter(|&i| self.state.doc.tracing_images.get(i).is_some_and(|t| !t.deleted))
+        only.filter(|&i| self.state.doc.tracing_images.contains(i))
     }
 
     /// The single selected sketch text (#286), if the selection is exactly one text: what the
@@ -8871,14 +8871,13 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
         cam: &camera::Camera,
-    ) -> Option<usize> {
-        let mut best: Option<(f32, usize)> = None;
-        for (ii, img) in self.state.doc.tracing_images.iter().enumerate() {
-            if img.deleted
-                || !self
-                    .state
-                    .element_visibility
-                    .effective_visible(&self.state.doc, SceneElement::Image(ii))
+    ) -> Option<model::TracingImageKey> {
+        let mut best: Option<(f32, model::TracingImageKey)> = None;
+        for (ii, img) in self.state.doc.tracing_images.iter() {
+            if !self
+                .state
+                .element_visibility
+                .effective_visible(&self.state.doc, SceneElement::Image(ii))
             {
                 continue;
             }
@@ -12302,7 +12301,6 @@ impl eframe::App for App {
                         .doc
                         .tracing_images
                         .get(image)
-                        .filter(|img| !img.deleted)
                         .zip(self.state.doc.lines.get(li).filter(|l| !l.deleted))
                         .filter(|(img, line)| {
                             self.state.doc.sketch_face(line.sketch)
@@ -12971,9 +12969,7 @@ impl eframe::App for App {
                         _ => return None,
                     }
                 }
-                only_image.filter(|&i| {
-                    self.state.doc.tracing_images.get(i).is_some_and(|img| !img.deleted)
-                })
+                only_image.filter(|&i| self.state.doc.tracing_images.contains(i))
             }).flatten(),
             calibrate_pending: self
                 .state
@@ -13043,7 +13039,7 @@ impl eframe::App for App {
             let mut tool_picker_edit: Option<(context::PickerTarget, context::ToolPickerAction)> =
                 None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
-            let mut calibrate_begin: Option<usize> = None;
+            let mut calibrate_begin: Option<model::TracingImageKey> = None;
             let mut dimension_derive_edit: Option<context::DimensionDeriveEdit> = None;
             let mut dimension_edit: Option<context::DimensionEditEdit> = None;
             let mut treatment_edit: Option<context::TreatmentEdit> = None;
@@ -22273,7 +22269,7 @@ impl App {
         // flow) or with a calibrated image selected, the reference points and their span
         // draw on the image's host plane; points drag to move, click to select (Delete
         // removes), and during placement a dot under the cursor previews the click.
-        let calibration_target: Option<(usize, Vec<(f32, f32)>, bool)> =
+        let calibration_target: Option<(model::TracingImageKey, Vec<(f32, f32)>, bool)> =
             if let Some(cal) = self.state.creating_calibration.clone() {
                 Some((cal.image, cal.points, true))
             } else {
@@ -22298,7 +22294,6 @@ impl App {
                 .doc
                 .tracing_images
                 .get(image)
-                .filter(|img| !img.deleted)
                 .map(|img| img.plane)
                 .and_then(|pi| face::sketch_frame(&self.state.doc, model::FaceId::ConstructionPlane(pi)));
             if let Some(frame) = frame {

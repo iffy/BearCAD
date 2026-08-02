@@ -145,7 +145,7 @@ pub struct ContextInput<'a> {
     pub sweep_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
-    pub calibrate_start: Option<usize>,
+    pub calibrate_start: Option<crate::model::TracingImageKey>,
     /// Guided calibration in progress with fewer than two points placed: how many are
     /// placed so far (renders the click-two-points hint).
     pub calibrate_pending: Option<usize>,
@@ -276,7 +276,7 @@ pub struct MoveControl {
     /// **one** Bodies picker rather than getting rows of their own — a Move takes "the things
     /// that move", and splitting them by kind would be three near-empty inputs (#963).
     pub plane_targets: Vec<usize>,
-    pub image_targets: Vec<usize>,
+    pub image_targets: Vec<crate::model::TracingImageKey>,
     /// Snap (default) or free translation (#648) — the Translate dropdown.
     pub translate_mode: crate::model::MoveTranslateMode,
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
@@ -883,7 +883,7 @@ pub enum SweepEdit {
 /// segment's plane-local endpoints (a line the user drew over a known image feature).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CalibrateImageControl {
-    pub image: usize,
+    pub image: crate::model::TracingImageKey,
     pub a: (f32, f32),
     pub b: (f32, f32),
 }
@@ -1046,7 +1046,7 @@ pub struct ContextPaneContent {
     /// "Edit sweep" button target.
     pub sweep_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
-    pub calibrate_start: Option<usize>,
+    pub calibrate_start: Option<crate::model::TracingImageKey>,
     /// Guided-calibration hint: points placed so far (of 2).
     pub calibrate_pending: Option<usize>,
 }
@@ -1207,7 +1207,7 @@ pub struct ContextPaneState {
     /// Which calibration span the draft was last pre-filled for (#424): the control's
     /// image + quantized endpoints. When the span changes (a point placed or dragged) the
     /// draft re-syncs to the span's current measured length.
-    pub calibrate_synced: Option<(usize, [i32; 4])>,
+    pub calibrate_synced: Option<(crate::model::TracingImageKey, [i32; 4])>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4257,7 +4257,7 @@ pub fn show_pane(
     on_slice_edit_start: &mut impl FnMut(usize),
     on_revolve_edit_start: &mut impl FnMut(usize),
     on_sweep_edit_start: &mut impl FnMut(usize),
-    on_calibrate_start: &mut impl FnMut(usize),
+    on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
     on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),
     on_dimension_edit: &mut impl FnMut(DimensionEditEdit),

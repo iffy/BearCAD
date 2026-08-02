@@ -40,7 +40,7 @@ pub enum HierarchyNode {
     Extrusion(usize),
     Body(usize),
     /// A tracing image (#163/#169).
-    Image(usize),
+    Image(crate::model::TracingImageKey),
     /// A boolean operation between bodies (Combine tool); its output bodies nest under it.
     BooleanOp(usize),
     /// A move operation on bodies (Move tool); its output bodies nest under it.
@@ -180,7 +180,7 @@ pub enum SceneElement {
         dir: [i32; 3],
     },
     /// A tracing image (#163/#169).
-    Image(usize),
+    Image(crate::model::TracingImageKey),
     /// A boolean operation between bodies (Combine tool).
     BooleanOp(usize),
     /// A move operation on bodies (Move tool).
@@ -1815,8 +1815,8 @@ pub fn build_hierarchy(
         let face = FaceId::ConstructionPlane(i);
         let mut children = build_face_sketches(doc, face, sketch_session);
         // Tracing images (#169) nest under their host plane.
-        for (ii, image) in doc.tracing_images.iter().enumerate() {
-            if !image.deleted && image.plane == i {
+        for (ii, image) in doc.tracing_images.iter() {
+            if image.plane == i {
                 children.push(HierarchyEntry {
                     node: HierarchyNode::Image(ii),
                     children: Vec::new(),

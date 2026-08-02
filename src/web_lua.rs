@@ -370,7 +370,7 @@ fn selection_json(state: &AppState) -> Value {
         .map(|el| {
             let mut m = serde_json::Map::new();
             m.insert("kind".into(), json!(script_json::scene_element_full_kind_name(&el)));
-            if let Some(index) = script_json::scene_element_selection_index(&el) {
+            if let Some(index) = script_json::scene_element_selection_index(&state.doc, &el) {
                 m.insert("index".into(), json!(index));
             }
             Value::Object(m)

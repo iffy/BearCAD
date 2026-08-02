@@ -1956,9 +1956,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: None,
         },
+        // The image's **slot**, not its ordinal (#1055): `as_lua` has no document to count
+        // live images against. The two agree until an image is deleted.
         SceneElement::Image(i) => ElementScriptTokens {
             kind: "image",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::BooleanOp(i) => ElementScriptTokens {
@@ -2085,6 +2087,22 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A tracing image's ordinal among the live ones — what a script writes (#1055).
+fn image_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::TracingImageKey,
+) -> Option<usize> {
+    doc.tracing_images.keys().position(|k| k == key)
+}
+
+/// The image an ordinal names — the inverse of [`image_ordinal`].
+fn image_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::TracingImageKey> {
+    doc.tracing_images.keys().nth(ordinal)
+}
+
 pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) -> Option<Instruction> {
     use crate::actions::dim_label_axis_for_target;
     match action {
@@ -2240,17 +2258,20 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         Action::SetCalibrationPoint { image, index, x, y } => {
             Some(Instruction::SetCalibrationPoint {
-                image: *image,
+                image: image_ordinal(doc, *image)?,
                 index: *index,
                 x: *x,
                 y: *y,
             })
         }
         Action::RemoveCalibrationPoint { image, index } => {
-            Some(Instruction::RemoveCalibrationPoint { image: *image, index: *index })
+            Some(Instruction::RemoveCalibrationPoint {
+                image: image_ordinal(doc, *image)?,
+                index: *index,
+            })
         }
         Action::CalibrateImage { image, a, b, length } => Some(Instruction::CalibrateImage {
-            image: *image,
+            image: image_ordinal(doc, *image)?,
             a: *a,
             b: *b,
             length: *length,
@@ -3417,7 +3438,7 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
         }
         // #425: mirrors the `"image"` + `point` shape.
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
-            format!("kind = \"image\", index = {image}, point = {index}")
+            format!("kind = \"image\", index = {}, point = {index}", image.index())
         }
     }
 }
@@ -4575,16 +4596,28 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetCalibrationPoint { image, index, x, y } => {
+                let Some(image) = image_key(&state.doc, image) else {
+                    self.last_action_error = Some(format!("Image {image} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::SetCalibrationPoint { image, index, x, y });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::RemoveCalibrationPoint { image, index } => {
+                let Some(image) = image_key(&state.doc, image) else {
+                    self.last_action_error = Some(format!("Image {image} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::RemoveCalibrationPoint { image, index });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CalibrateImage { image, a, b, length } => {
+                let Some(image) = image_key(&state.doc, image) else {
+                    self.last_action_error = Some(format!("Image {image} not found"));
+                    return StepResult::Continue;
+                };
                 let r = state.apply(Action::CalibrateImage { image, a, b, length });
                 self.record_action_error(r);
                 StepResult::Continue

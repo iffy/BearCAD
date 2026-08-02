@@ -664,7 +664,7 @@ impl CreatingVertexTreatment {
 /// length in the context pane to rescale the image.
 #[derive(Clone, Debug)]
 pub struct CreatingCalibration {
-    pub image: usize,
+    pub image: crate::model::TracingImageKey,
     /// Placed reference points in host-plane-local mm (0..=2).
     pub points: Vec<(f32, f32)>,
 }
@@ -1165,7 +1165,7 @@ pub struct CreatingMove {
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
-    pub image_targets: Vec<usize>,
+    pub image_targets: Vec<crate::model::TracingImageKey>,
     /// Unit instances being moved (#735): the placement itself moves.
     pub instance_targets: Vec<usize>,
     pub tx: String,
@@ -1605,7 +1605,7 @@ pub enum Action {
     /// a known feature) is assigned the real `length`; the image rescales uniformly about
     /// the segment midpoint so that span measures `length`.
     CalibrateImage {
-        image: usize,
+        image: crate::model::TracingImageKey,
         a: (f32, f32),
         b: (f32, f32),
         length: f32,
@@ -1614,7 +1614,7 @@ pub enum Action {
     /// in-progress point; on a calibrated image it moves the stored marker (no rescale —
     /// re-apply the length to rescale). Coordinates are host-plane-local mm.
     SetCalibrationPoint {
-        image: usize,
+        image: crate::model::TracingImageKey,
         index: usize,
         x: f32,
         y: f32,
@@ -1622,10 +1622,10 @@ pub enum Action {
     /// Delete one calibration reference point (#424): the guided flow drops it; on a
     /// calibrated image the calibration re-opens with only the other point, so the next
     /// click re-places the deleted one.
-    RemoveCalibrationPoint { image: usize, index: usize },
+    RemoveCalibrationPoint { image: crate::model::TracingImageKey, index: usize },
     /// Start the guided image calibration (#163): the user will click two points on the
     /// image over a feature of known size, then type its real length.
-    BeginImageCalibration { image: usize },
+    BeginImageCalibration { image: crate::model::TracingImageKey },
     /// Place one calibration reference point (host-plane-local mm).
     AddCalibrationPoint { x: f32, y: f32 },
     /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
@@ -2278,7 +2278,7 @@ pub enum Action {
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
         #[allow(dead_code)]
-        image_targets: Vec<usize>,
+        image_targets: Vec<crate::model::TracingImageKey>,
         /// Unit instances whose placement this op moves (#735).
         instance_targets: Vec<usize>,
         tx: String,
@@ -2301,7 +2301,7 @@ pub enum Action {
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
         #[allow(dead_code)]
-        image_targets: Vec<usize>,
+        image_targets: Vec<crate::model::TracingImageKey>,
         /// Unit instances whose placement this op moves (#735).
         instance_targets: Vec<usize>,
         tx: String,
@@ -4305,7 +4305,7 @@ impl AppState {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "image".to_string());
-        self.doc.tracing_images.push(crate::model::TracingImage {
+        self.doc.tracing_images.insert(crate::model::TracingImage {
             bytes,
             source_name: source_name.clone(),
             plane,
@@ -4313,7 +4313,6 @@ impl AppState {
             width_mm: dims.0,
             height_mm: dims.1,
             name: None,
-            deleted: false,
             calibration: None,
             base_origin: None,
         });
@@ -5962,7 +5961,8 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::MovePoint(_) => "Point".to_string(),
         SceneElement::ExtrusionEdge { extrusion, .. } => format!("Edge of extrusion {extrusion}"),
         SceneElement::RepeatedFace { instance, .. } => format!("Repeated face (copy {instance})"),
-        SceneElement::Image(i) => format!("Image {i}"),
+        // The slot number, which is what the ordinal was before anything was removed (#1055).
+        SceneElement::Image(i) => format!("Image {}", i.index()),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
         SceneElement::MirrorOp(i) => format!("Mirror operation {i}"),
@@ -6614,13 +6614,8 @@ impl AppState {
                 }
             }
             Action::CalibrateImage { image, a, b, length } => {
-                let Some(img) = self
-                    .doc
-                    .tracing_images
-                    .get(image)
-                    .filter(|img| !img.deleted)
-                else {
-                    return ActionResult::Err(format!("Image {image} not found"));
+                let Some(img) = self.doc.tracing_images.get(image) else {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
                 };
                 let span = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
                 if span < 1e-6 {
@@ -6672,13 +6667,8 @@ impl AppState {
                     *p = (x, y);
                     return ActionResult::Ok;
                 }
-                let Some(img) = self
-                    .doc
-                    .tracing_images
-                    .get_mut(image)
-                    .filter(|img| !img.deleted)
-                else {
-                    return ActionResult::Err(format!("Image {image} not found"));
+                let Some(img) = self.doc.tracing_images.get_mut(image) else {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
                 };
                 let (ox, oy) = img.origin;
                 let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
@@ -6702,13 +6692,8 @@ impl AppState {
                     self.status = "Calibrate: click to place the point".to_string();
                     return ActionResult::Ok;
                 }
-                let Some(img) = self
-                    .doc
-                    .tracing_images
-                    .get_mut(image)
-                    .filter(|img| !img.deleted)
-                else {
-                    return ActionResult::Err(format!("Image {image} not found"));
+                let Some(img) = self.doc.tracing_images.get_mut(image) else {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
                 };
                 let Some(cal) = img.calibration.take() else {
                     return ActionResult::Err("Image has no calibration".to_string());
@@ -6732,14 +6717,8 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::BeginImageCalibration { image } => {
-                if self
-                    .doc
-                    .tracing_images
-                    .get(image)
-                    .filter(|img| !img.deleted)
-                    .is_none()
-                {
-                    return ActionResult::Err(format!("Image {image} not found"));
+                if !self.doc.tracing_images.contains(image) {
+                    return ActionResult::Err(format!("Image {image:?} not found"));
                 }
                 // Calibration point-placing takes over viewport clicks, so make sure no
                 // drawing tool is armed underneath it.
@@ -6796,7 +6775,7 @@ impl AppState {
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| "image".to_string());
-                self.doc.tracing_images.push(crate::model::TracingImage {
+                self.doc.tracing_images.insert(crate::model::TracingImage {
                     bytes,
                     source_name: source_name.clone(),
                     plane,
@@ -6805,7 +6784,6 @@ impl AppState {
                     width_mm: dims.0,
                     height_mm: dims.1,
                     name: None,
-                    deleted: false,
                     calibration: None,
                     base_origin: None,
                 });
@@ -13745,10 +13723,10 @@ label_hidden: false,
 }
 
 /// Two index lists as equal sets (order-independent), for coalescing detection.
-fn same_move_set(a: &[usize], b: &[usize]) -> bool {
+fn same_move_set<T: Copy + Ord>(a: &[T], b: &[T]) -> bool {
     a.len() == b.len() && {
-        let mut a: Vec<usize> = a.to_vec();
-        let mut b: Vec<usize> = b.to_vec();
+        let mut a: Vec<T> = a.to_vec();
+        let mut b: Vec<T> = b.to_vec();
         a.sort_unstable();
         b.sort_unstable();
         a == b
@@ -13877,7 +13855,7 @@ pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
 /// Must run *after* [`recompute_moved_planes`], so the host plane frame is up to date.
 pub fn recompute_moved_images(doc: &mut crate::model::Document) {
     use std::collections::BTreeSet;
-    let targeted: BTreeSet<usize> = doc
+    let targeted: BTreeSet<crate::model::TracingImageKey> = doc
         .move_ops
         .iter()
         .filter(|o| !o.deleted)
@@ -13893,12 +13871,13 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
                 .flatten()
         })
         .collect();
-    // (image index, new origin, new base_origin).
-    let mut updates: Vec<(usize, (f32, f32), Option<(f32, f32)>)> = Vec::new();
-    for (i, img) in doc.tracing_images.iter().enumerate() {
-        if img.deleted {
-            continue;
-        }
+    // (image, new origin, new base_origin).
+    let mut updates: Vec<(
+        crate::model::TracingImageKey,
+        (f32, f32),
+        Option<(f32, f32)>,
+    )> = Vec::new();
+    for (i, img) in doc.tracing_images.iter() {
         if targeted.contains(&i) {
             // Lock in the pristine base the first time the image is targeted (its `origin`
             // has no move applied yet at that moment), then always recompute from it.
@@ -16802,7 +16781,7 @@ mod tests {
     #[test]
     fn moving_a_tracing_image_shifts_its_plane_local_origin() {
         let mut state = AppState::default();
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "trace".to_string(),
             plane: 0,
@@ -16810,7 +16789,6 @@ mod tests {
             width_mm: 100.0,
             height_mm: 60.0,
             name: None,
-            deleted: false,
             calibration: None,
             base_origin: None,
         });
@@ -16826,14 +16804,14 @@ mod tests {
             end_point_c: None,
             targets: vec![],
             plane_targets: vec![],
-            image_targets: vec![0],
+            image_targets: vec![image],
             instance_targets: Vec::new(),
             tx: "25mm".to_string(),
             ty: String::new(),
             tz: "7mm".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
-        let img = &state.doc.tracing_images[0];
+        let img = &state.doc.tracing_images[image];
         assert!(
             (img.origin.0 - 25.0).abs() < 1e-3 && img.origin.1.abs() < 1e-3,
             "origin should shift +25 in plane x only, got {:?}",
@@ -16854,13 +16832,13 @@ mod tests {
             op,
             targets: vec![],
             plane_targets: vec![],
-            image_targets: vec![0],
+            image_targets: vec![image],
             instance_targets: Vec::new(),
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
         });
-        assert!(state.doc.tracing_images[0].origin.0.abs() < 1e-3);
+        assert!(state.doc.tracing_images[image].origin.0.abs() < 1e-3);
 
         // Dropping the image from the op restores its authored base and forgets it.
         state.apply(Action::EditMoveOperation {
@@ -16880,7 +16858,7 @@ mod tests {
             ty: String::new(),
             tz: String::new(),
         });
-        let img = &state.doc.tracing_images[0];
+        let img = &state.doc.tracing_images[image];
         assert_eq!(img.origin, (0.0, 0.0), "image snaps back to authored base");
         assert_eq!(img.base_origin, None, "base is forgotten once untargeted");
     }
@@ -16889,7 +16867,7 @@ mod tests {
     #[test]
     fn consecutive_image_moves_coalesce() {
         let mut state = AppState::default();
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "trace".to_string(),
             plane: 0,
@@ -16897,7 +16875,6 @@ mod tests {
             width_mm: 100.0,
             height_mm: 60.0,
             name: None,
-            deleted: false,
             calibration: None,
             base_origin: None,
         });
@@ -16910,7 +16887,7 @@ mod tests {
                 end_point_b: None,
                 start_point_c: None,
                 end_point_c: None,
-                image_targets: vec![0],
+                image_targets: vec![image],
             instance_targets: Vec::new(),
                 tx: tx.to_string(),
                 ..Default::default()
@@ -16925,9 +16902,9 @@ mod tests {
             "second move on the same image coalesces into the first op"
         );
         assert!(
-            (state.doc.tracing_images[0].origin.0 - 30.0).abs() < 1e-3,
+            (state.doc.tracing_images[image].origin.0 - 30.0).abs() < 1e-3,
             "translations add up to +30, got {:?}",
-            state.doc.tracing_images[0].origin
+            state.doc.tracing_images[image].origin
         );
     }
 
@@ -23012,7 +22989,7 @@ mod tests {
     #[test]
     fn guided_calibration_flow_places_points_then_commits() {
         let mut state = AppState::default();
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
             plane: 0,
@@ -23020,13 +22997,17 @@ mod tests {
             width_mm: 100.0,
             height_mm: 60.0,
             name: None,
-            deleted: false,
             calibration: None,
             base_origin: None,
         });
-        // Out-of-range image is rejected; a point without a session is rejected.
+        // A key to a removed image is rejected; a point without a session is rejected.
+        let stale = {
+            let key = state.doc.tracing_images.insert(state.doc.tracing_images[image].clone());
+            state.doc.tracing_images.remove(key);
+            key
+        };
         assert!(matches!(
-            state.apply(Action::BeginImageCalibration { image: 3 }),
+            state.apply(Action::BeginImageCalibration { image: stale }),
             ActionResult::Err(_)
         ));
         assert!(matches!(
@@ -23036,7 +23017,7 @@ mod tests {
 
         state.tool = Tool::Line;
         assert!(matches!(
-            state.apply(Action::BeginImageCalibration { image: 0 }),
+            state.apply(Action::BeginImageCalibration { image }),
             ActionResult::Ok
         ));
         // Point placement takes over clicks, so the tool falls back to Select.
@@ -23053,17 +23034,17 @@ mod tests {
 
         // Committing rescales and ends the session.
         let result = state.apply(Action::CalibrateImage {
-            image: 0,
+            image,
             a: (-20.0, 0.0),
             b: (20.0, 0.0),
             length: 80.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert!(state.creating_calibration.is_none());
-        assert!((state.doc.tracing_images[0].width_mm - 200.0).abs() < 1e-3);
+        assert!((state.doc.tracing_images[image].width_mm - 200.0).abs() < 1e-3);
 
         // Esc cancels a fresh session.
-        state.apply(Action::BeginImageCalibration { image: 0 });
+        state.apply(Action::BeginImageCalibration { image });
         state.apply(Action::CancelOperation);
         assert!(state.creating_calibration.is_none());
     }
@@ -23073,7 +23054,7 @@ mod tests {
     #[test]
     fn calibration_points_move_and_delete_then_replace() {
         let mut state = AppState::default();
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
             plane: 0,
@@ -23081,33 +23062,32 @@ mod tests {
             width_mm: 100.0,
             height_mm: 60.0,
             name: None,
-            deleted: false,
             calibration: None,
             base_origin: None,
         });
-        state.apply(Action::BeginImageCalibration { image: 0 });
+        state.apply(Action::BeginImageCalibration { image });
         state.apply(Action::AddCalibrationPoint { x: -20.0, y: 0.0 });
         // Moving an in-progress point relocates it.
-        state.apply(Action::SetCalibrationPoint { image: 0, index: 0, x: -25.0, y: 0.0 });
+        state.apply(Action::SetCalibrationPoint { image, index: 0, x: -25.0, y: 0.0 });
         assert_eq!(
             state.creating_calibration.as_ref().unwrap().points,
             vec![(-25.0, 0.0)]
         );
         state.apply(Action::AddCalibrationPoint { x: 25.0, y: 0.0 });
         state.apply(Action::CalibrateImage {
-            image: 0,
+            image,
             a: (-25.0, 0.0),
             b: (25.0, 0.0),
             length: 100.0,
         });
-        let img = &state.doc.tracing_images[0];
+        let img = &state.doc.tracing_images[image];
         assert!((img.width_mm - 200.0).abs() < 1e-3);
         let cal = img.calibration.clone().unwrap();
 
         // Moving a stored marker point updates the uv and never rescales.
-        let width_before = state.doc.tracing_images[0].width_mm;
-        state.apply(Action::SetCalibrationPoint { image: 0, index: 1, x: 60.0, y: 10.0 });
-        let img = &state.doc.tracing_images[0];
+        let width_before = state.doc.tracing_images[image].width_mm;
+        state.apply(Action::SetCalibrationPoint { image, index: 1, x: 60.0, y: 10.0 });
+        let img = &state.doc.tracing_images[image];
         assert_eq!(img.width_mm, width_before, "moving a marker never rescales");
         let moved = img.calibration.clone().unwrap();
         assert_ne!((moved.u1, moved.v1), (cal.u1, cal.v1));
@@ -23117,8 +23097,8 @@ mod tests {
         assert!((oy + moved.v1 * h - 10.0).abs() < 1e-3);
 
         // Deleting point 0 re-opens the guided flow holding point 1's position.
-        state.apply(Action::RemoveCalibrationPoint { image: 0, index: 0 });
-        assert!(state.doc.tracing_images[0].calibration.is_none());
+        state.apply(Action::RemoveCalibrationPoint { image, index: 0 });
+        assert!(state.doc.tracing_images[image].calibration.is_none());
         let creating = state.creating_calibration.as_ref().expect("re-opened");
         assert_eq!(creating.points.len(), 1);
         assert!((creating.points[0].0 - 60.0).abs() < 1e-3);
@@ -23133,7 +23113,7 @@ mod tests {
     fn image_calibration_points_constrain_and_translate_the_image() {
         use crate::model::{ConstraintEntity, ConstraintKind, ConstraintPoint};
         let mut state = AppState::default();
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
             plane: 0,
@@ -23141,7 +23121,6 @@ mod tests {
             width_mm: 100.0,
             height_mm: 60.0,
             name: None,
-            deleted: false,
             calibration: Some(crate::model::ImageCalibration {
                 u0: 0.25,
                 v0: 0.5,
@@ -23160,7 +23139,7 @@ mod tests {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::ImageCalibrationPoint {
-                    image: 0,
+                    image,
                     index: 0,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -23174,7 +23153,7 @@ mod tests {
             deleted: false,
         });
         crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
-        let img = &state.doc.tracing_images[0];
+        let img = &state.doc.tracing_images[image];
         // Point 0 sits at origin + (0.25, 0.5) * size; it must land on (30, 40).
         let (u, v) = crate::model::image_calibration_point_uv(img, 0).unwrap();
         assert!((u - 30.0).abs() < 1e-2 && (v - 40.0).abs() < 1e-2, "point at ({u}, {v})");
@@ -23186,13 +23165,13 @@ mod tests {
         // Origin coincidence works the same way through the generic entity.
         state.doc.constraints[0].kind = ConstraintKind::Coincident {
             a: ConstraintEntity::Point(ConstraintPoint::ImageCalibrationPoint {
-                image: 0,
+                image,
                 index: 1,
             }),
             b: ConstraintEntity::Origin,
         };
         crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
-        let img = &state.doc.tracing_images[0];
+        let img = &state.doc.tracing_images[image];
         let (u, v) = crate::model::image_calibration_point_uv(img, 1).unwrap();
         assert!(u.abs() < 1e-2 && v.abs() < 1e-2, "point 1 at ({u}, {v})");
     }
@@ -23200,7 +23179,7 @@ mod tests {
     #[test]
     fn calibrate_image_rescales_about_the_reference_segment() {
         let mut state = AppState::default();
-        state.doc.tracing_images.push(crate::model::TracingImage {
+        let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
             plane: 0,
@@ -23208,19 +23187,18 @@ mod tests {
             width_mm: 100.0,
             height_mm: 60.0,
             name: None,
-            deleted: false,
             calibration: None,
             base_origin: None,
         });
         // A feature spanning 40 mm on screen is declared to really be 80 mm → 2x.
         let result = state.apply(Action::CalibrateImage {
-            image: 0,
+            image,
             a: (-20.0, 0.0),
             b: (20.0, 0.0),
             length: 80.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let img = &state.doc.tracing_images[0];
+        let img = &state.doc.tracing_images[image];
         assert!((img.width_mm - 200.0).abs() < 1e-3);
         assert!((img.height_mm - 120.0).abs() < 1e-3);
         // Scaled about the segment midpoint (0, 0): origin doubles away from it.
@@ -23230,10 +23208,22 @@ mod tests {
         // UV of the reference points on the pre-scale quad: x -20 → u 0.3, x 20 → u 0.7.
         assert!((cal.u0 - 0.3).abs() < 1e-3 && (cal.u1 - 0.7).abs() < 1e-3);
 
-        // Degenerate inputs error.
-        let r = state.apply(Action::CalibrateImage { image: 0, a: (0.0, 0.0), b: (0.0, 0.0), length: 10.0 });
+        // Degenerate inputs error, and so does a key to an image that is gone.
+        let degenerate =
+            Action::CalibrateImage { image, a: (0.0, 0.0), b: (0.0, 0.0), length: 10.0 };
+        let r = state.apply(degenerate);
         assert!(matches!(r, ActionResult::Err(_)));
-        let r = state.apply(Action::CalibrateImage { image: 5, a: (0.0, 0.0), b: (1.0, 0.0), length: 10.0 });
+        let stale = {
+            let key = state.doc.tracing_images.insert(state.doc.tracing_images[image].clone());
+            state.doc.tracing_images.remove(key);
+            key
+        };
+        let r = state.apply(Action::CalibrateImage {
+            image: stale,
+            a: (0.0, 0.0),
+            b: (1.0, 0.0),
+            length: 10.0,
+        });
         assert!(matches!(r, ActionResult::Err(_)));
     }
 
@@ -23256,7 +23246,8 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
         assert_eq!(state.doc.tracing_images.len(), 1);
-        let img = &state.doc.tracing_images[0];
+        let key = state.doc.tracing_images.keys().next().expect("the imported image");
+        let img = &state.doc.tracing_images[key];
         assert_eq!(img.source_name, "swatch");
         assert_eq!(img.plane, 0);
         assert_eq!((img.width_mm, img.height_mm), (4.0, 2.0));
@@ -23266,7 +23257,7 @@ mod tests {
         let json = serde_json::to_string(&state.doc).unwrap();
         assert!(json.contains("\"bytes\""));
         let doc2: crate::model::Document = serde_json::from_str(&json).unwrap();
-        assert_eq!(doc2.tracing_images[0].bytes, state.doc.tracing_images[0].bytes);
+        assert_eq!(doc2.tracing_images[key].bytes, state.doc.tracing_images[key].bytes);
 
         state.apply(Action::UndoLast);
         assert!(state.doc.tracing_images.is_empty(), "undo removes the import");

@@ -2337,7 +2337,7 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
             Some(local_to_world(&frame, u, v))
         }
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
-            let img = doc.tracing_images.get(image).filter(|i| !i.deleted)?;
+            let img = doc.tracing_images.get(image)?;
             let (u, v) = crate::model::image_calibration_point_uv(img, index)?;
             let frame =
                 crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))?;
@@ -2416,10 +2416,8 @@ pub fn nearest_sketch_point_in_sketch(
         }
     }
     // A calibrated image's two reference points (#425), for images on this sketch's plane.
-    for (ii, img) in doc.tracing_images.iter().enumerate() {
-        if img.deleted
-            || doc.sketch_face(sketch) != Some(FaceId::ConstructionPlane(img.plane))
-        {
+    for (ii, img) in doc.tracing_images.iter() {
+        if doc.sketch_face(sketch) != Some(FaceId::ConstructionPlane(img.plane)) {
             continue;
         }
         if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
@@ -2619,10 +2617,7 @@ fn nearest_sketch_point(
         }
     }
     // A calibrated image's two reference points (#425).
-    for (ii, img) in doc.tracing_images.iter().enumerate() {
-        if img.deleted {
-            continue;
-        }
+    for (ii, img) in doc.tracing_images.iter() {
         let Some(frame) =
             crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))
         else {
@@ -2964,10 +2959,7 @@ pub fn collect_pick_candidates(
             }
         }
     }
-    for (ii, img) in doc.tracing_images.iter().enumerate() {
-        if img.deleted {
-            continue;
-        }
+    for (ii, img) in doc.tracing_images.iter() {
         if let Some(frame) = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane)) {
             for index in 0..2 {
                 if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {

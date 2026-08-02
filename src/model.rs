@@ -880,7 +880,7 @@ pub enum ConstraintPoint {
     /// One of a tracing image's two calibration reference points (#425). Solving moves the
     /// image's `origin` (the whole image translates rigidly); its scale never changes from
     /// constraints. Only valid in sketches hosted on the image's plane.
-    ImageCalibrationPoint { image: usize, index: usize },
+    ImageCalibrationPoint { image: TracingImageKey, index: usize },
 }
 
 /// A calibration reference point's host-plane-local position (#425).
@@ -2144,7 +2144,7 @@ pub struct MoveOperation {
     /// Tracing images moved by this op (#217): their plane-local origin is transformed in
     /// place at recompute (projected onto the host plane), like a plane. No output bodies.
     #[serde(default)]
-    pub image_targets: Vec<usize>,
+    pub image_targets: Vec<TracingImageKey>,
     /// Unit instances moved by this op (#735): like a plane, the instance itself moves —
     /// its placement transform composes with this op at evaluation, no output bodies.
     #[serde(default)]
@@ -3060,6 +3060,10 @@ mod font_bytes_base64 {
     }
 }
 
+/// How anything names a tracing image (#1055): a key, so deleting one never slides another
+/// image into the plane, calibration point or move target the deleted one held.
+pub type TracingImageKey = crate::arena::Key<TracingImage>;
+
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
 /// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
 /// self-contained, like imported meshes.
@@ -3085,8 +3089,6 @@ pub struct TracingImage {
     pub height_mm: f32,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
     /// Last applied scale calibration (#171), kept for re-editing: the reference segment in
     /// image-UV space (0..1 across the displayed quad) and the real length it was assigned.
     #[serde(default)]
@@ -3924,7 +3926,7 @@ pub struct Document {
     pub imported_meshes: Vec<ImportedMesh>,
     /// Reference images imported for tracing (#163/#169).
     #[serde(default)]
-    pub tracing_images: Vec<TracingImage>,
+    pub tracing_images: crate::arena::Arena<TracingImage>,
     /// Loft features (solids blended through cross sections).
     #[serde(default)]
     pub lofts: crate::arena::Arena<Loft>,
@@ -4183,7 +4185,7 @@ impl Default for Document {
             bodies: Vec::new(),
             materials: Material::defaults(),
             imported_meshes: Vec::new(),
-            tracing_images: Vec::new(),
+            tracing_images: crate::arena::Arena::new(),
             lofts: crate::arena::Arena::new(),
             revolutions: Vec::new(),
             primitives: Vec::new(),

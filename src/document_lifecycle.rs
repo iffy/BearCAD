@@ -146,10 +146,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sweeps
             .get(index)
             .is_some_and(|fp| !fp.deleted),
-        SceneElement::Image(index) => doc
-            .tracing_images
-            .get(index)
-            .is_some_and(|img| !img.deleted),
+        SceneElement::Image(index) => doc.tracing_images.contains(index),
         SceneElement::SketchText(index) => doc
             .sketch_texts
             .get(index)
@@ -188,7 +185,6 @@ fn point_owner_alive(
         ConstraintPoint::ImageCalibrationPoint { image, index } => doc
             .tracing_images
             .get(*image)
-            .filter(|i| !i.deleted)
             .is_some_and(|i| crate::model::image_calibration_point_uv(i, *index).is_some()),
     }
 }
@@ -649,13 +645,11 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                 }
             }
         }
+        // A tracing image is removed outright (#1055): its key stops resolving, so the
+        // calibration constraints and move targets that named it read as gone rather than
+        // sliding onto whichever image took its place.
         SceneElement::Image(index) => {
-            if let Some(image) = doc.tracing_images.get_mut(index) {
-                if !image.deleted {
-                    image.deleted = true;
-                    changed = true;
-                }
-            }
+            changed = doc.tracing_images.remove(index).is_some();
         }
         SceneElement::SketchText(index) => {
             if let Some(t) = doc.sketch_texts.get_mut(index) {
@@ -977,7 +971,6 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
         ConstraintPoint::ImageCalibrationPoint { image, index } => doc
             .tracing_images
             .get(*image)
-            .filter(|i| !i.deleted)
             .is_some_and(|i| crate::model::image_calibration_point_uv(i, *index).is_some()),
     }
 }
@@ -1025,6 +1018,39 @@ fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: usize)
 mod tests {
     use super::*;
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line};
+
+    /// #1055: deleting a tracing image removes it rather than tombstoning it, and the
+    /// image beside it keeps its identity — the whole reason positional identity had to go.
+    #[test]
+    fn deleting_a_tracing_image_removes_it_and_leaves_its_neighbour_alone() {
+        let image = |name: &str| crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: name.to_string(),
+            plane: 0,
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            name: None,
+            calibration: None,
+        };
+        let mut doc = Document::default();
+        let first = doc.tracing_images.insert(image("first"));
+        let second = doc.tracing_images.insert(image("second"));
+
+        assert!(tombstone_element(&mut doc, SceneElement::Image(first)));
+        assert_eq!(doc.tracing_images.len(), 1, "gone, not marked");
+        assert_eq!(
+            doc.tracing_images.get(second).map(|i| i.source_name.as_str()),
+            Some("second"),
+            "the survivor did not slide into the hole"
+        );
+        assert!(!element_alive(&doc, SceneElement::Image(first)));
+        assert!(
+            !tombstone_element(&mut doc, SceneElement::Image(first)),
+            "deleting it twice changes nothing"
+        );
+    }
 
     fn push_test_body(doc: &mut Document) -> usize {
         doc.bodies.push(crate::model::Body {

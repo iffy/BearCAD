@@ -73,12 +73,15 @@ impl ScriptTickData {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LuaElement {
     pub element: SceneElement,
+    /// The integer `index()` reports, resolved when the reference is made — a userdata
+    /// method has no document to resolve an arena key's ordinal against (#1055).
+    pub index: usize,
 }
 
 impl UserData for LuaElement {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("kind", |_, this, ()| Ok(element_kind_name(this.element.clone())));
-        methods.add_method("index", |_, this, ()| Ok(element_index(this.element.clone())));
+        methods.add_method("index", |_, this, ()| Ok(this.index));
     }
 }
 
@@ -151,8 +154,15 @@ fn element_kind_name(element: SceneElement) -> &'static str {
     }
 }
 
-fn element_index(element: SceneElement) -> usize {
+/// The integer a script sees for an element (#1055). For a `Vec`-backed collection that is
+/// still the stored index; for an arena-backed one it is the element's **ordinal** among the
+/// live elements of its kind, in document order — a key is not something a hand-written
+/// script can spell, and every example and doc page uses the ordinal.
+fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
     match element {
+        SceneElement::Image(key) => {
+            doc.tracing_images.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
@@ -160,7 +170,6 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
         | SceneElement::Body(i)
-        | SceneElement::Image(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
@@ -209,7 +218,13 @@ fn element_index(element: SceneElement) -> usize {
     }
 }
 
-pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement> {
+/// The element a script's `(kind, index)` names (#1055) — the inverse of [`element_index`],
+/// so an arena-backed kind resolves its ordinal to the key that element actually holds.
+pub fn scene_element_from_kind(
+    doc: &crate::model::Document,
+    kind: &str,
+    index: usize,
+) -> Option<SceneElement> {
     match kind.to_ascii_lowercase().as_str() {
         "plane" | "construction_plane" | "constructionplane" => {
             Some(SceneElement::ConstructionPlane(index))
@@ -229,7 +244,9 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         }
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
-        "image" | "tracing_image" => Some(SceneElement::Image(index)),
+        "image" | "tracing_image" => {
+            Some(SceneElement::Image(doc.tracing_images.keys().nth(index)?))
+        }
         "joint" => Some(SceneElement::Joint(index)),
         "shape" | "primitive" => Some(SceneElement::Shape(index)),
         // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.
@@ -278,7 +295,12 @@ fn parse_bool(value: Value, label: &str) -> mlua::Result<bool> {
 }
 
 fn make_element(lua: &Lua, element: SceneElement) -> mlua::Result<Value> {
-    Ok(Value::UserData(lua.create_userdata(LuaElement { element })?))
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let index = element_index(unsafe { &tick.state().doc }, element.clone());
+    drop(tick);
+    Ok(Value::UserData(lua.create_userdata(LuaElement { element, index })?))
 }
 
 /// A `#rrggbb` (or bare `rrggbb`) colour string (#834).
@@ -350,7 +372,7 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         if table.get::<Option<bool>>("edge")?.unwrap_or(false) {
             return Ok(SceneElement::FaceEdge(parse_constraint_line_table(table)?));
         }
-        return Ok(SceneElement::Point(parse_constraint_point_table(table)?));
+        return Ok(SceneElement::Point(parse_constraint_point_table(lua, table)?));
     }
     // A sketch origin axis (#189): `{ kind = "axis", axis = "x" | "y" }`, selectable so a
     // point can be constrained onto it.
@@ -373,9 +395,12 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         || table.contains_key("anchor")?
         || point_flagged
     {
-        return Ok(SceneElement::Point(parse_constraint_point_table(table)?));
+        return Ok(SceneElement::Point(parse_constraint_point_table(lua, table)?));
     }
-    scene_element_from_kind(&kind, index)
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index)
         .ok_or_else(|| mlua::Error::external(format!("unknown element kind '{kind}'")))
 }
 
@@ -551,7 +576,10 @@ fn parse_boolean_face_table(table: &Table) -> mlua::Result<crate::model::Extrude
 /// shape `parse_face_id_table`/`begin_sketch` use, distinguished from the flat-profile shape
 /// by the presence of a `kind`/`type` key), or `{vertex = <point table>}` (the plane through
 /// that vertex). Mirrors `extrude_target_lua_table` in src/script.rs.
-fn parse_extrude_target_table(table: &Table) -> mlua::Result<crate::model::ExtrudeTarget> {
+fn parse_extrude_target_table(
+    lua: &Lua,
+    table: &Table,
+) -> mlua::Result<crate::model::ExtrudeTarget> {
     if let Some(i) = table.get::<Option<usize>>("plane")? {
         return Ok(crate::model::ExtrudeTarget::Plane(i));
     }
@@ -578,7 +606,7 @@ fn parse_extrude_target_table(table: &Table) -> mlua::Result<crate::model::Extru
     }
     if let Some(point) = table.get::<Option<Table>>("vertex")? {
         return Ok(crate::model::ExtrudeTarget::Vertex(
-            parse_constraint_point_table(point)?,
+            parse_constraint_point_table(lua, point)?,
         ));
     }
     Err(mlua::Error::external(
@@ -629,7 +657,7 @@ fn lua_amount_expr(opts: &Table, key: &str) -> mlua::Result<String> {
     }
 }
 
-fn parse_constraint_point_table(table: Table) -> mlua::Result<ConstraintPoint> {
+fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<ConstraintPoint> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     if kind.eq_ignore_ascii_case("face") {
         // { kind = "face", face = { ... }, index = 0 } — vertex `index` of that face's own
@@ -659,10 +687,16 @@ fn parse_constraint_point_table(table: Table) -> mlua::Result<ConstraintPoint> {
         // point = 0|1 }`.
         "image" => {
             let point: usize = table.get("point")?;
-            Ok(ConstraintPoint::ImageCalibrationPoint {
-                image: index,
-                index: point,
-            })
+            // The script's `index` is the image's ordinal among the live ones (#1055).
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let image = unsafe { &tick.state().doc }
+                .tracing_images
+                .keys()
+                .nth(index)
+                .ok_or_else(|| mlua::Error::external(format!("no image {index}")))?;
+            Ok(ConstraintPoint::ImageCalibrationPoint { image, index: point })
         }
         // One of a sketch text's nine anchor points (#408): `{ kind = "sketch_text",
         // index = i, anchor = "center" }` (anchor defaults to center).
@@ -1096,6 +1130,7 @@ fn parse_shape_args(
 /// Parses `bearcad.repeat_bodies{}`/`bearcad.edit_repeat{}` arguments.
 #[allow(clippy::type_complexity)]
 fn parse_repeat_op_args(
+    lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(
     Vec<usize>,
@@ -1148,7 +1183,7 @@ fn parse_repeat_op_args(
     // table shape the Extrude tool's "up to" takes.
     let length_target = match opts.get::<Value>("to")? {
         Value::Nil => None,
-        Value::Table(t) => Some(parse_extrude_target_table(&t)?),
+        Value::Table(t) => Some(parse_extrude_target_table(lua, &t)?),
         _ => {
             return Err(mlua::Error::external(
                 "repeat `to` must be a target table, e.g. {plane = i} or {face = …}",
@@ -1348,7 +1383,7 @@ fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
     }
 }
 
-fn parse_distance_target(table: Table) -> mlua::Result<DistanceTarget> {
+fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => Ok(DistanceTarget::LineLength(table.get("index")?)),
@@ -1358,13 +1393,13 @@ fn parse_distance_target(table: Table) -> mlua::Result<DistanceTarget> {
         // current geometry by `constraints::finalize_distance_target`, exactly as it is for
         // an interactive pick, so a script only names the two things.
         "point_line" | "point_edge" => Ok(DistanceTarget::PointLineDistance {
-            point: parse_constraint_point_table(table.get("point")?)?,
+            point: parse_constraint_point_table(lua, table.get("point")?)?,
             line: parse_constraint_line_table(table.get("line")?)?,
             side: crate::model::default_constraint_sign(),
         }),
         "point_point" | "points" => Ok(DistanceTarget::PointPointDistance {
-            anchor: parse_constraint_point_table(table.get("anchor")?)?,
-            mover: parse_constraint_point_table(table.get("mover")?)?,
+            anchor: parse_constraint_point_table(lua, table.get("anchor")?)?,
+            mover: parse_constraint_point_table(lua, table.get("mover")?)?,
             dir_u: 0.0,
             dir_v: 0.0,
         }),
@@ -1563,11 +1598,11 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
         slide_max: joint_position_arg(opts, "slide_max")?,
         slide_min_target: opts
             .get::<Option<Table>>("slide_min_to")?
-            .map(|t| parse_extrude_target_table(&t))
+            .map(|t| parse_extrude_target_table(lua, &t))
             .transpose()?,
         slide_max_target: opts
             .get::<Option<Table>>("slide_max_to")?
-            .map(|t| parse_extrude_target_table(&t))
+            .map(|t| parse_extrude_target_table(lua, &t))
             .transpose()?,
         turn_min: joint_position_arg(opts, "turn_min")?,
         turn_max: joint_position_arg(opts, "turn_max")?,
@@ -1943,9 +1978,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "element",
         lua.create_function(|lua, (kind, index): (String, usize)| {
-            let element = scene_element_from_kind(&kind, index).ok_or_else(|| {
-                mlua::Error::external(format!("unknown element kind '{kind}'"))
-            })?;
+            let element = {
+                let tick = lua
+                    .app_data_ref::<ScriptTickData>()
+                    .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+                scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index).ok_or_else(
+                    || mlua::Error::external(format!("unknown element kind '{kind}'")),
+                )?
+            };
             make_element(lua, element)
         })?,
     )?;
@@ -2055,8 +2095,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let source = match kind.as_str() {
                 "line_length" => PS::LineLength(opts.get("a")?),
                 "point_distance" => PS::PointDistance(
-                    parse_constraint_point_table(opts.get("a")?)?,
-                    parse_constraint_point_table(opts.get("b")?)?,
+                    parse_constraint_point_table(lua, opts.get("a")?)?,
+                    parse_constraint_point_table(lua, opts.get("b")?)?,
                 ),
                 "line_distance" => PS::LineDistance(opts.get("a")?, opts.get("b")?),
                 "line_angle" => PS::LineAngle(opts.get("a")?, opts.get("b")?),
@@ -2121,9 +2161,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(&opts, "move_to_component", &["kind", "index", "component"])?;
             let kind: String = opts.get("kind")?;
             let index: usize = opts.get("index")?;
-            let element = scene_element_from_kind(&kind, index).ok_or_else(|| {
-                mlua::Error::external(format!("unknown element kind '{kind}'"))
-            })?;
+            let element = scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index)
+                .ok_or_else(|| {
+                    mlua::Error::external(format!("unknown element kind '{kind}'"))
+                })?;
             let component = match opts.get::<Value>("component")? {
                 Value::Boolean(false) | Value::Nil => None,
                 Value::Integer(i) => Some(i as usize),
@@ -2344,7 +2385,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
                 }
                 "component" => doc.components.iter().filter(|e| !e.deleted).count(),
-                "image" => doc.tracing_images.iter().filter(|e| !e.deleted).count(),
+                "image" => doc.tracing_images.len(),
                 "joint" => doc.joints.iter().filter(|e| !e.deleted).count(),
                 other => {
                     return Err(mlua::Error::external(format!(
@@ -2656,7 +2697,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
                 ) {
-                    entry.set("index", element_index(element))?;
+                    entry.set("index", element_index(&state.doc, element))?;
                 }
                 out.set(i + 1, entry)?;
             }
@@ -2683,8 +2724,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             let entry = lua.create_table()?;
             entry.set("kind", element_kind_name(element.clone()))?;
-            entry.set("index", element_index(element.clone()))?;
             let doc = unsafe { &tick.state().doc };
+            entry.set("index", element_index(doc, element.clone()))?;
             if let Some(label) = face_element_label(doc, &element) {
                 entry.set("label", label)?;
             }
@@ -2705,7 +2746,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             for (i, element) in state.exploder_leaves.iter().enumerate() {
                 let entry = lua.create_table()?;
                 entry.set("kind", element_kind_name(element.clone()))?;
-                entry.set("index", element_index(element.clone()))?;
+                entry.set("index", element_index(&state.doc, element.clone()))?;
                 // Where this leaf's loupe sits, in the viewport-local pixels `bearcad.ui.click`
                 // takes (#986) — absent for a leaf the current level shows inside a group.
                 if let Some(Some((x, y))) = state.exploder_loupe_positions.get(i) {
@@ -2757,7 +2798,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 for (n, element) in view.picker.picked().iter().enumerate() {
                     let item = lua.create_table()?;
                     item.set("kind", element_kind_name(element.clone()))?;
-                    item.set("index", element_index(element.clone()))?;
+                    item.set("index", element_index(&state.doc, element.clone()))?;
                     items.set(n + 1, item)?;
                 }
                 entry.set("items", items)?;
@@ -2797,7 +2838,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "add_constraint",
         lua.create_function(|lua, (target, expression): (Table, String)| {
-            let target = parse_distance_target(target)?;
+            let target = parse_distance_target(lua, target)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::AddDistanceConstraint { target, expression },
@@ -2875,10 +2916,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (first, u, v): (Table, Option<f32>, Option<f32>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (point, u, v) = match (u, v) {
-                (Some(u), Some(v)) => (parse_constraint_point_table(first)?, u, v),
+                (Some(u), Some(v)) => (parse_constraint_point_table(lua, first)?, u, v),
                 _ => {
                     let point_table: Table = first.get("point")?;
-                    let point = parse_constraint_point_table(point_table)?;
+                    let point = parse_constraint_point_table(lua, point_table)?;
                     let du: Option<f32> = first.get("du")?;
                     let dv: Option<f32> = first.get("dv")?;
                     if du.is_none() && dv.is_none() {
@@ -3996,7 +4037,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // extrusion to that object's extended plane (#114) — the scripted equivalent of
             // pulling the gizmo onto a surface. With a target, `distance` may be omitted.
             let target = match opts.get::<Option<Table>>("to")? {
-                Some(t) => Some(parse_extrude_target_table(&t)?),
+                Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
             };
             // `distance` accepts a plain number or a parameter expression string (#402).
@@ -4093,7 +4134,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .map_err(|_| mlua::Error::external("extrude_face requires a `face` table"))?;
             let face = parse_face_id_table(face_table)?;
             let target = match opts.get::<Option<Table>>("to")? {
-                Some(t) => Some(parse_extrude_target_table(&t)?),
+                Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
             };
             let distance: f32 = match opts.get::<Option<f32>>("distance")? {
@@ -4135,7 +4176,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &["bodies", "axis", "around", "flip", "mode", "count", "spacing", "gap", "length", "to", "name"],
             )?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
-                parse_repeat_op_args(&opts)?;
+                parse_repeat_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateRepeatOp {
                     around_axis,
@@ -4168,7 +4209,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let op: usize = opts.get("index")?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
-                parse_repeat_op_args(&opts)?;
+                parse_repeat_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditRepeatOp {
                     around_axis,
@@ -4370,7 +4411,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let cuts: Vec<usize> = opts.get::<Option<Vec<usize>>>("cuts")?.unwrap_or_default();
             let (_targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
-                parse_repeat_op_args(&opts)?;
+                parse_repeat_op_args(lua, &opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
                     path_circle: None,
@@ -4404,7 +4445,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let sketches: Vec<usize> = opts.get::<Option<Vec<usize>>>("sketches")?.unwrap_or_default();
             let (_targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
-                parse_repeat_op_args(&opts)?;
+                parse_repeat_op_args(lua, &opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
                     path_circle: None,
@@ -5226,7 +5267,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             let by: Option<f32> = opts.get("by")?;
             let target = match opts.get::<Option<Table>>("to")? {
-                Some(t) => Some(parse_extrude_target_table(&t)?),
+                Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
             };
             if let Some(by) = by {
@@ -5272,7 +5313,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let point_table: Table = opts.get("point")?;
-            let point = parse_constraint_point_table(point_table)?;
+            let point = parse_constraint_point_table(lua, point_table)?;
             // Number or expression string, so `distance = "leg"` ties the chamfer to a parameter.
             let distance = lua_amount_expr(&opts, "distance")?;
             unsafe {
@@ -5291,7 +5332,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let point_table: Table = opts.get("point")?;
-            let point = parse_constraint_point_table(point_table)?;
+            let point = parse_constraint_point_table(lua, point_table)?;
             // Number or expression string, so `radius = "r"` ties the fillet to a parameter.
             let radius = lua_amount_expr(&opts, "radius")?;
             unsafe {
@@ -5424,6 +5465,47 @@ mod tests {
     use super::*;
     use crate::actions::AppState;
     use crate::model::FaceId;
+
+    /// #1055: a script names an arena-backed element by its **ordinal** among the live ones,
+    /// not by its slot. Deleting the first image used to renumber the rest; now the key moves
+    /// and the ordinal is what has to be recomputed, in both directions.
+    #[test]
+    fn a_script_names_an_image_by_its_ordinal_among_the_live_ones() {
+        let image = |name: &str| crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: name.to_string(),
+            plane: 0,
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            name: None,
+            calibration: None,
+        };
+        let mut doc = crate::model::Document::default();
+        let first = doc.tracing_images.insert(image("first"));
+        let second = doc.tracing_images.insert(image("second"));
+
+        assert_eq!(
+            scene_element_from_kind(&doc, "image", 1),
+            Some(SceneElement::Image(second))
+        );
+        assert_eq!(element_index(&doc, SceneElement::Image(second)), 1);
+
+        // Remove the first: the second keeps its key and becomes ordinal 0.
+        doc.tracing_images.remove(first);
+        assert_eq!(
+            scene_element_from_kind(&doc, "image", 0),
+            Some(SceneElement::Image(second)),
+            "the survivor is what index 0 names now"
+        );
+        assert_eq!(element_index(&doc, SceneElement::Image(second)), 0);
+        assert_eq!(
+            scene_element_from_kind(&doc, "image", 1),
+            None,
+            "and there is no second image to name"
+        );
+    }
 
     fn run_lua(source: &str) -> AppState {
         let mut runner = ScriptRunner::from_lua_source(source).unwrap();

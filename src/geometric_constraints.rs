@@ -347,7 +347,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
             (8, text, anchor as u8, 0)
         }
         ConstraintRef::Point(ConstraintPoint::ImageCalibrationPoint { image, index }) => {
-            (9, image, index as u8, 0)
+            (9, image.index() as usize, index as u8, 0)
         }
         ConstraintRef::Line(ConstraintLine::OriginAxis(axis)) => (8, axis as usize, 0, 0),
         ConstraintRef::Origin => (9, 0, 0, 0),
@@ -662,14 +662,13 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
             let img = doc
                 .tracing_images
                 .get(*image)
-                .filter(|i| !i.deleted)
-                .ok_or_else(|| format!("Image {image} not found"))?;
+                .ok_or_else(|| format!("Image {image:?} not found"))?;
             if crate::model::image_calibration_point_uv(img, *index).is_none() {
-                return Err(format!("Image {image} has no calibration point {index}"));
+                return Err(format!("Image {image:?} has no calibration point {index}"));
             }
             if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
             {
-                return Err(format!("Image {image} is not on sketch {sketch}'s plane"));
+                return Err(format!("Image {image:?} is not on sketch {sketch}'s plane"));
             }
         }
     }
@@ -873,10 +872,9 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
             let img = doc
                 .tracing_images
                 .get(image)
-                .filter(|i| !i.deleted)
-                .ok_or_else(|| format!("Image {image} not found"))?;
+                .ok_or_else(|| format!("Image {image:?} not found"))?;
             crate::model::image_calibration_point_uv(img, index)
-                .ok_or_else(|| format!("Image {image} has no calibration point {index}"))
+                .ok_or_else(|| format!("Image {image:?} has no calibration point {index}"))
         }
         // A text anchor is derived from the text's origin + its baked bounding box (#408).
         ConstraintPoint::TextAnchor { text, anchor } => {
@@ -934,10 +932,9 @@ pub fn set_point_uv(
             let img = doc
                 .tracing_images
                 .get_mut(image)
-                .filter(|i| !i.deleted)
-                .ok_or_else(|| format!("Image {image} not found"))?;
+                .ok_or_else(|| format!("Image {image:?} not found"))?;
             let (px, py) = crate::model::image_calibration_point_uv(img, index)
-                .ok_or_else(|| format!("Image {image} has no calibration point {index}"))?;
+                .ok_or_else(|| format!("Image {image:?} has no calibration point {index}"))?;
             img.origin = (img.origin.0 + u - px, img.origin.1 + v - py);
             if let Some((bx, by)) = img.base_origin {
                 img.base_origin = Some((bx + u - px, by + v - py));
