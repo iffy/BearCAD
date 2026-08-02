@@ -46,7 +46,7 @@ pub enum HierarchyNode {
     /// A move operation on bodies (Move tool); its output bodies nest under it.
     MoveOp(crate::model::MoveOpKey),
     /// A mirror operation on bodies (Mirror tool, #523); its reflected bodies nest under it.
-    MirrorOp(usize),
+    MirrorOp(crate::model::MirrorOpKey),
     /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
     RepeatOp(usize),
     /// A 2D in-sketch linear repeat (#222/#228); its duplicated lines/circles nest under it.
@@ -186,7 +186,7 @@ pub enum SceneElement {
     /// A move operation on bodies (Move tool).
     MoveOp(crate::model::MoveOpKey),
     /// A mirror operation on bodies (Mirror tool, #523).
-    MirrorOp(usize),
+    MirrorOp(crate::model::MirrorOpKey),
     /// A linear repeat on bodies (Repeat tool).
     RepeatOp(usize),
     /// A 2D in-sketch linear repeat (#222/#228).
@@ -964,10 +964,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A mirror consumes its input bodies (and its plane face's body, if any) — #523.
-    for (oi, op) in doc.mirror_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.mirror_ops.iter() {
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::MirrorOp(oi)));
         }
@@ -1910,10 +1907,7 @@ pub fn build_hierarchy(
             children,
         });
     }
-    for (oi, op) in doc.mirror_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.mirror_ops.iter() {
         let children = op
             .outputs
             .iter()
@@ -5525,6 +5519,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::mirror_op_key_for_slot as mirkey;
     use crate::model::move_op_key_for_slot as mopkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
@@ -5542,7 +5537,7 @@ mod tests {
             CM::Body(bkey(1)),
             CM::BooleanOp(bopkey(1)),
             CM::MoveOp(mopkey(1)),
-            CM::MirrorOp(1),
+            CM::MirrorOp(mirkey(1)),
             CM::RepeatOp(1),
             CM::SliceOp(1),
             CM::EdgeTreatmentOp(1),

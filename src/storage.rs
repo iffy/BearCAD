@@ -250,7 +250,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_arena_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_arena_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "edge_treatment_op", &doc.edge_treatment_ops)?;
@@ -589,7 +589,7 @@ pub fn open(path: &str) -> Result<Document> {
     let sweeps = load_arena_entities(&conn, "sweep")?;
     let boolean_ops = load_arena_entities(&conn, "boolean_op")?;
     let move_ops = load_arena_entities(&conn, "move_op")?;
-    let mirror_ops = load_indexed_entities(&conn, "mirror_op")?;
+    let mirror_ops = load_arena_entities(&conn, "mirror_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
     let slice_ops = load_indexed_entities(&conn, "slice_op")?;
     let edge_treatment_ops = load_indexed_entities(&conn, "edge_treatment_op")?;

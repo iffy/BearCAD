@@ -174,13 +174,15 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
             doc.boolean_ops.keys().position(|k| k == key).unwrap_or(0)
         }
         SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::MirrorOp(key) => {
+            doc.mirror_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::MirrorOp(i)
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)
@@ -251,7 +253,7 @@ pub fn scene_element_from_kind(
         "sketch_vertex_treatment_op" | "chamfer_op" | "fillet_op" => {
             Some(SceneElement::SketchVertexTreatmentOp(index))
         }
-        "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
+        "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(doc.mirror_ops.keys().nth(index)?)),
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
         "image" | "tracing_image" => {
             Some(SceneElement::Image(doc.tracing_images.keys().nth(index)?))
@@ -4743,7 +4745,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.exec(Instruction::CreateMirrorOp { plane, targets, mode })?;
             }
             let element = SceneElement::MirrorOp(unsafe {
-                tick.state().doc.mirror_ops.len().saturating_sub(1)
+                tick.state()
+                    .doc
+                    .mirror_ops
+                    .keys()
+                    .last()
+                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
@@ -8506,9 +8513,9 @@ mod tests {
             }
             "#,
         );
-        assert_eq!(state.doc.mirror_ops[0].mode, crate::model::MirrorMode::Join);
+        assert_eq!(state.doc.mirror_ops.values().nth(0).unwrap().mode, crate::model::MirrorMode::Join);
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "a join consumes its source");
-        let out = state.doc.mirror_ops[0].outputs[0];
+        let out = state.doc.mirror_ops.values().nth(0).unwrap().outputs[0];
         let (min, max) = crate::extrude::body_solid_mesh(&state.doc, out)
             .and_then(|m| m.bounds())
             .expect("joined mesh");

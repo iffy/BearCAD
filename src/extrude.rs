@@ -1527,10 +1527,10 @@ pub fn mirror_op_transform(doc: &Document, op: &crate::model::MirrorOperation) -
 /// instead fuse or subtract the reflection against the source, and the source is shadowed.
 fn occt_mirrored_output_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::MirrorOpKey,
     target: usize,
 ) -> Option<crate::kernel::Shape> {
-    let op = doc.mirror_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.mirror_ops.get(op_index)?;
     let &input = op.targets.get(target)?;
     if op.outputs.contains(&input) {
         return None;
@@ -4443,7 +4443,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
         return Some(SolidMesh { triangles });
     }
     if let crate::model::BodySource::Mirrored { op, target } = body.source {
-        let mr = doc.mirror_ops.get(op).filter(|o| !o.deleted)?;
+        let mr = doc.mirror_ops.get(op)?;
         let &input = mr.targets.get(target)?;
         if input == body_index {
             return None;

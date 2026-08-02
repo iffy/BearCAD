@@ -13053,7 +13053,7 @@ impl eframe::App for App {
             let mut joint_edit: Option<context::JointEdit> = None;
             let mut joint_edit_begin: Option<usize> = None;
             let mut mirror_edit: Option<context::MirrorEdit> = None;
-            let mut mirror_edit_begin: Option<usize> = None;
+            let mut mirror_edit_begin: Option<crate::model::MirrorOpKey> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
             let mut sketch_offset_edit: Option<context::SketchOffsetEdit> = None;
@@ -16676,7 +16676,6 @@ fn build_viewport_scene_input<'a>(
                 mode: model::MirrorMode::NewBody,
                 outputs: Vec::new(),
                 name: None,
-                deleted: false,
             };
             if let Some(m) = extrude::mirror_op_transform(doc, &probe) {
                 for &bi in &cm.targets {

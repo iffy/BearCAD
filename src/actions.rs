@@ -1324,7 +1324,7 @@ pub struct CreatingMirror {
     /// How the reflections land (#639): a new body each, or joined to / cut from its source.
     pub mode: crate::model::MirrorMode,
     /// `Some(op)` while re-editing a committed operation.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::MirrorOpKey>,
 }
 
 impl CreatingMirror {
@@ -2350,7 +2350,7 @@ pub enum Action {
     },
     /// Re-point an existing mirror operation (#523).
     EditMirrorOperation {
-        op: usize,
+        op: crate::model::MirrorOpKey,
         plane: crate::model::FaceId,
         targets: Vec<crate::model::BodyKey>,
         mode: crate::model::MirrorMode,
@@ -5692,7 +5692,7 @@ fn set_mirror_input_shadows(doc: &mut Document, targets: &[crate::model::BodyKey
 fn validate_mirror_inputs(
     doc: &Document,
     targets: &[crate::model::BodyKey],
-    editing: Option<usize>,
+    editing: Option<crate::model::MirrorOpKey>,
 ) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Pick at least one body to mirror".to_string());
@@ -5981,7 +5981,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Image(i) => format!("Image {}", i.index()),
         SceneElement::BooleanOp(i) => format!("Boolean operation {}", i.index()),
         SceneElement::MoveOp(i) => format!("Move operation {}", i.index()),
-        SceneElement::MirrorOp(i) => format!("Mirror operation {i}"),
+        SceneElement::MirrorOp(i) => format!("Mirror operation {}", i.index()),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
@@ -11847,19 +11847,17 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let op_index = self.doc.mirror_ops.len();
-                self.doc.mirror_ops.push(crate::model::MirrorOperation {
+                let op_index = self.doc.mirror_ops.insert(crate::model::MirrorOperation {
                     plane,
                     targets: targets.clone(),
                     mode,
                     outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 if crate::extrude::mirror_op_transform(&self.doc, &self.doc.mirror_ops[op_index])
                     .is_none()
                 {
-                    self.doc.mirror_ops.pop();
+                    self.doc.mirror_ops.remove(op_index);
                     let e = "Mirror plane isn't a valid planar face".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -11888,8 +11886,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::EditMirrorOperation { op, plane, targets, mode } => {
-                if self.doc.mirror_ops.get(op).filter(|o| !o.deleted).is_none() {
-                    let e = format!("Mirror operation {op} not found");
+                if self.doc.mirror_ops.get(op).is_none() {
+                    let e = format!("Mirror operation {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -15784,7 +15782,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend(doc.lofts.keys().map(CM::Loft));
     members.extend(doc.boolean_ops.keys().map(CM::BooleanOp));
     members.extend(doc.move_ops.keys().map(CM::MoveOp));
-    members.extend((0..doc.mirror_ops.len()).map(CM::MirrorOp));
+    members.extend(doc.mirror_ops.keys().map(CM::MirrorOp));
     members.extend((0..doc.repeat_ops.len()).map(CM::RepeatOp));
     members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
     members.extend((0..doc.edge_treatment_ops.len()).map(CM::EdgeTreatmentOp));
@@ -15994,6 +15992,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::mirror_op_key_for_slot as mirkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use crate::model::move_op_key_for_slot as mopkey;
     use super::*;
@@ -16199,13 +16198,13 @@ mod tests {
         });
         assert!(matches!(r, ActionResult::Ok), "mirror should succeed: {r:?}");
         assert_eq!(state.doc.mirror_ops.len(), 1);
-        assert_eq!(state.doc.mirror_ops[0].outputs.len(), 1);
+        assert_eq!(state.doc.mirror_ops.values().nth(0).unwrap().outputs.len(), 1);
 
         // The original body is kept and NOT shadowed (a mirror adds, it doesn't relocate).
         assert!(state.doc.bodies.get(body).is_some_and(|b| !b.shadow));
 
         // The reflected body's geometry sits below the plane (z in [-2, -1]).
-        let out = state.doc.mirror_ops[0].outputs[0];
+        let out = state.doc.mirror_ops.values().nth(0).unwrap().outputs[0];
         let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("reflected mesh");
         let (min, max) = mesh.bounds().expect("bounds");
         assert!(
@@ -16215,7 +16214,7 @@ mod tests {
 
         // Editing to an empty target set removes the reflected body; back to one restores it.
         state.apply(Action::EditMirrorOperation {
-            op: 0,
+            op: mirkey(0),
             plane: FaceId::ConstructionPlane(0),
             targets: vec![body],
             mode: crate::model::MirrorMode::NewBody,
@@ -16223,7 +16222,7 @@ mod tests {
         assert!(state.doc.bodies.contains(out));
 
         // Deleting the op removes the reflection but keeps the source.
-        state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
+        state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(mirkey(0)) });
         assert!(!state.doc.bodies.contains(out), "reflection removed");
         assert!(!!state.doc.bodies.contains(body), "source kept");
     }
@@ -16247,11 +16246,11 @@ mod tests {
             mode: MirrorMode::Join,
         });
         assert!(matches!(r, ActionResult::Ok), "join mirror should succeed: {r:?}");
-        assert_eq!(state.doc.mirror_ops[0].mode, MirrorMode::Join);
+        assert_eq!(state.doc.mirror_ops.values().nth(0).unwrap().mode, MirrorMode::Join);
         // Join consumes its input, like Move does.
         assert!(state.doc.bodies[body].shadow, "the source is consumed by a Join");
 
-        let out = state.doc.mirror_ops[0].outputs[0];
+        let out = state.doc.mirror_ops.values().nth(0).unwrap().outputs[0];
         let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("joined mesh");
         let (min, max) = mesh.bounds().expect("bounds");
         assert!(
@@ -16261,7 +16260,7 @@ mod tests {
 
         // Re-editing back to NewBody releases the source and restores a lone reflection.
         let r = state.apply(Action::EditMirrorOperation {
-            op: 0,
+            op: mirkey(0),
             plane: FaceId::ConstructionPlane(0),
             targets: vec![body],
             mode: MirrorMode::NewBody,
@@ -16277,16 +16276,16 @@ mod tests {
 
         // Cut consumes the source too.
         state.apply(Action::EditMirrorOperation {
-            op: 0,
+            op: mirkey(0),
             plane: FaceId::ConstructionPlane(0),
             targets: vec![body],
             mode: MirrorMode::Cut,
         });
         assert!(state.doc.bodies[body].shadow, "the source is consumed by a Cut");
-        assert_eq!(state.doc.mirror_ops[0].mode, MirrorMode::Cut);
+        assert_eq!(state.doc.mirror_ops.values().nth(0).unwrap().mode, MirrorMode::Cut);
 
         // Deleting the op still keeps the source.
-        state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
+        state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(mirkey(0)) });
         assert!(!!state.doc.bodies.contains(body), "source kept");
     }
 

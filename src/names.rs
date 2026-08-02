@@ -289,7 +289,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let op = doc
                 .mirror_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("mirror operation {index} not found"))?;
+                .ok_or_else(|| format!("mirror operation {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::RepeatOp(index) => {
@@ -528,7 +528,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             format!("{kind} {}", i.index())
         }
         HierarchyNode::MoveOp(i) => format!("Move {}", i.index()),
-        HierarchyNode::MirrorOp(i) => format!("Mirror {i}"),
+        HierarchyNode::MirrorOp(i) => format!("Mirror {}", i.index()),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         HierarchyNode::SketchOffsetOp(i) => format!("Offset {i}"),
@@ -793,7 +793,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Image(i) => format!("Image {}", i.index()),
         SceneElement::BooleanOp(i) => format!("Boolean {}", i.index()),
         SceneElement::MoveOp(i) => format!("Move {}", i.index()),
-        SceneElement::MirrorOp(i) => format!("Mirror {i}"),
+        SceneElement::MirrorOp(i) => format!("Mirror {}", i.index()),
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Offset {i}"),

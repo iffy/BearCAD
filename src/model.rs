@@ -1274,7 +1274,7 @@ pub enum BodySource {
     /// shadowed) — a mirror adds the reflection alongside the source.
     Mirrored {
         #[serde(rename = "mirror_op")]
-        op: usize,
+        op: MirrorOpKey,
         #[serde(default)]
         target: usize,
     },
@@ -1672,6 +1672,12 @@ pub fn boolean_op_key_for_slot(n: usize) -> BooleanOpKey {
 /// The same for a move operation (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn move_op_key_for_slot(n: usize) -> MoveOpKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a mirror operation (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn mirror_op_key_for_slot(n: usize) -> MirrorOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2520,9 +2526,10 @@ pub struct MirrorOperation {
     pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a mirror operation (#1055).
+pub type MirrorOpKey = crate::arena::Key<MirrorOperation>;
 
 /// How a linear repeat spaces its instances (Repeat tool, #182). `gap` measures between
 /// an instance's end and the next one's start; `pitch` measures start-to-start; `fit`
@@ -3984,7 +3991,7 @@ pub struct Document {
     pub move_ops: crate::arena::Arena<MoveOperation>,
     /// Mirror operations on bodies (the Mirror tool, #523).
     #[serde(default)]
-    pub mirror_ops: Vec<MirrorOperation>,
+    pub mirror_ops: crate::arena::Arena<MirrorOperation>,
     /// Linear repeats on bodies (the Repeat tool, #182).
     #[serde(default)]
     pub repeat_ops: Vec<RepeatOperation>,
@@ -4115,7 +4122,7 @@ pub enum ComponentMember {
     Loft(LoftKey),
     BooleanOp(BooleanOpKey),
     MoveOp(MoveOpKey),
-    MirrorOp(usize),
+    MirrorOp(MirrorOpKey),
     RepeatOp(usize),
     SliceOp(usize),
     EdgeTreatmentOp(usize),
@@ -4229,7 +4236,7 @@ impl Default for Document {
             sweeps: crate::arena::Arena::new(),
             boolean_ops: crate::arena::Arena::new(),
             move_ops: crate::arena::Arena::new(),
-            mirror_ops: Vec::new(),
+            mirror_ops: crate::arena::Arena::new(),
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
             edge_treatment_ops: Vec::new(),

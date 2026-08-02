@@ -87,10 +87,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .is_some_and(|c| !c.deleted),
         SceneElement::BooleanOp(index) => doc.boolean_ops.contains(index),
         SceneElement::MoveOp(index) => doc.move_ops.contains(index),
-        SceneElement::MirrorOp(index) => doc
-            .mirror_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
+        SceneElement::MirrorOp(index) => doc.mirror_ops.contains(index),
         SceneElement::RepeatOp(index) => doc
             .repeat_ops
             .get(index)
@@ -481,15 +478,11 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::MirrorOp(index) => {
             // A mirror keeps its inputs (never shadowed), so deleting it only removes its
             // reflected output bodies (#523).
-            if let Some(op) = doc.mirror_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let op = doc.mirror_ops[index].clone();
-                    for &out in &op.outputs {
-                        doc.bodies.remove(out);
-                    }
-                    changed = true;
+            if let Some(op) = doc.mirror_ops.remove(index) {
+                for &out in &op.outputs {
+                    doc.bodies.remove(out);
                 }
+                changed = true;
             }
         }
         SceneElement::SliceOp(index) => {

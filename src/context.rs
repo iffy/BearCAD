@@ -102,7 +102,7 @@ pub struct ContextInput<'a> {
     /// Mirror tool state (#523): `Some` while the Mirror tool is active.
     pub mirror_op: Option<MirrorControl>,
     /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
-    pub mirror_edit_start: Option<usize>,
+    pub mirror_edit_start: Option<crate::model::MirrorOpKey>,
     /// Repeat tool state: `Some` while the Repeat tool is active.
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
@@ -1005,7 +1005,7 @@ pub struct ContextPaneContent {
     /// Mirror tool state (#523): `Some` while the Mirror tool is active.
     pub mirror_op: Option<MirrorControl>,
     /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
-    pub mirror_edit_start: Option<usize>,
+    pub mirror_edit_start: Option<crate::model::MirrorOpKey>,
     /// Repeat tool state: `Some` while the Repeat tool is active.
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
@@ -4241,7 +4241,7 @@ pub fn show_pane(
     on_joint_edit: &mut impl FnMut(JointEdit),
     on_joint_edit_start: &mut impl FnMut(usize),
     on_mirror_edit: &mut impl FnMut(MirrorEdit),
-    on_mirror_edit_start: &mut impl FnMut(usize),
+    on_mirror_edit_start: &mut impl FnMut(crate::model::MirrorOpKey),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
     on_sketch_offset_edit: &mut impl FnMut(SketchOffsetEdit),

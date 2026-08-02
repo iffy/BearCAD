@@ -1979,9 +1979,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::MirrorOp(i) => ElementScriptTokens {
             kind: "mirror_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::RepeatOp(i) => ElementScriptTokens {
@@ -2096,6 +2097,22 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A mirror operation's ordinal among the live ones — what a script writes (#1055).
+fn mirror_op_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::MirrorOpKey,
+) -> Option<usize> {
+    doc.mirror_ops.keys().position(|k| k == key)
+}
+
+/// The mirror operation an ordinal names — the inverse of [`mirror_op_ordinal`].
+fn mirror_op_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::MirrorOpKey> {
+    doc.mirror_ops.keys().nth(ordinal)
+}
+
 /// A move operation's ordinal among the live ones — what a script writes (#1055).
 fn move_op_ordinal(doc: &crate::model::Document, key: crate::model::MoveOpKey) -> Option<usize> {
     doc.move_ops.keys().position(|k| k == key)
@@ -2232,7 +2249,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             mode: *mode,
         }),
         Action::EditMirrorOperation { op, plane, targets, mode } => Some(Instruction::EditMirrorOp {
-            op: *op,
+            op: mirror_op_ordinal(doc, *op)?,
             plane: plane.clone(),
             targets: body_ordinals(doc, targets)?,
             mode: *mode,
@@ -5348,6 +5365,10 @@ impl ScriptRunner {
             }
             Instruction::EditMirrorOp { op, plane, targets, mode } => {
                 let targets = body_keys(&state.doc, &targets);
+                let Some(op) = mirror_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Mirror operation {op} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::EditMirrorOperation { op, plane, targets, mode });
                 self.record_action_error(result);
                 StepResult::Continue
