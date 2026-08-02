@@ -1453,10 +1453,10 @@ fn mat4_to_rows_3x4(m: &glam::Mat4) -> [f64; 12] {
 /// The BREP solid of one move-operation output: the input body's shape, transformed.
 fn occt_moved_output_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::MoveOpKey,
     target: usize,
 ) -> Option<crate::kernel::Shape> {
-    let op = doc.move_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.move_ops.get(op_index)?;
     let &input = op.targets.get(target)?;
     if op.outputs.contains(&input) {
         return None;
@@ -1730,7 +1730,7 @@ pub fn descendant_bodies(doc: &Document, seeds: &[crate::model::BodyKey]) -> std
                 outs.extend(op.outputs.iter().copied());
             }
         }
-        for op in doc.move_ops.iter().filter(|o| !o.deleted) {
+        for op in doc.move_ops.values() {
             if op.targets.contains(&bi) {
                 outs.extend(op.outputs.iter().copied());
             }
@@ -4420,7 +4420,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
         return Some(SolidMesh { triangles });
     }
     if let crate::model::BodySource::Moved { op, target } = body.source {
-        let mv = doc.move_ops.get(op).filter(|o| !o.deleted)?;
+        let mv = doc.move_ops.get(op)?;
         let &input = mv.targets.get(target)?;
         if input == body_index {
             return None;
@@ -6465,6 +6465,7 @@ fn extrude_profile_with_treatments(
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::move_op_key_for_slot as mopkey;
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
 
@@ -6839,7 +6840,6 @@ mod tests {
             tz: String::new(),
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         assert!(op.has_snap_rotation());
         let m = move_op_transform(&doc, &op).expect("transform");
@@ -6927,7 +6927,6 @@ mod tests {
             tz: String::new(),
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         assert!(base.has_snap_rotation() && !base.has_snap_roll());
         // With B alone, +10Z stays put — the spin is undecided, so nothing turns.
@@ -7062,7 +7061,6 @@ mod tests {
             tz: String::new(),
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         let (axis, angle) = move_snap_rotation_axis_angle(&doc, &op).unwrap();
         assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "quarter turn, got {angle}");
@@ -7140,7 +7138,6 @@ mod tests {
             tz: String::new(),
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         assert!(!base.has_snap_translation());
         assert_eq!(
@@ -7254,7 +7251,6 @@ mod tests {
             tz: String::new(),
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         assert!(op.has_snap_translation());
         assert_eq!(
@@ -7353,7 +7349,7 @@ mod tests {
             outputs: vec![bkey(2)],
             name: None,
         });
-        doc.move_ops.push(crate::model::MoveOperation {
+        doc.move_ops.insert(crate::model::MoveOperation {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
@@ -7370,7 +7366,6 @@ mod tests {
             tz: String::new(),
             outputs: vec![bkey(3)],
             name: None,
-            deleted: false,
         });
 
         let d = descendant_bodies(&doc, &[bkey(0)]);
@@ -7710,7 +7705,7 @@ mod tests {
             name: None,
             shadow: false,
         });
-        doc.move_ops.push(crate::model::MoveOperation {
+        doc.move_ops.insert(crate::model::MoveOperation {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
@@ -7727,10 +7722,9 @@ mod tests {
             tz: String::new(),
             outputs: vec![bkey(1)],
             name: None,
-            deleted: false,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Moved { op: 0, target: 0 },
+            source: crate::model::BodySource::Moved { op: mopkey(0), target: 0 },
             material: None,
             name: None,
             shadow: false,
@@ -7739,7 +7733,7 @@ mod tests {
         let before = body_solid_mesh_uncached_pub(&doc, bkey(1)).and_then(|m| m.bounds()).unwrap();
         // Simulate an in-progress move-gizmo drag on a scratch clone: shift tx by 20mm.
         let mut scratch = doc.clone();
-        scratch.move_ops[0].tx = "20mm".to_string();
+        scratch.move_ops.values_mut().nth(0).unwrap().tx = "20mm".to_string();
         let after = body_solid_mesh_uncached_pub(&scratch, scratch.body_at(1).unwrap()).and_then(|m| m.bounds()).unwrap();
 
         assert!(
@@ -8302,7 +8296,7 @@ mod tests {
             primary: false,
             source: None,
         });
-        doc.move_ops.push(MoveOperation {
+        doc.move_ops.insert(MoveOperation {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
@@ -8319,10 +8313,9 @@ mod tests {
             tz: String::new(),
             outputs: vec![bkey(1)],
             name: None,
-            deleted: false,
         });
         doc.bodies.insert(Body {
-            source: BodySource::Moved { op: 0, target: 0 },
+            source: BodySource::Moved { op: mopkey(0), target: 0 },
             material: None,
             name: None,
             shadow: false,

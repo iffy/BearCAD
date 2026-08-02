@@ -173,13 +173,13 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::BooleanOp(key) => {
             doc.boolean_ops.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
@@ -243,6 +243,7 @@ pub fn scene_element_from_kind(
         "boolean_op" | "boolean" => {
             Some(SceneElement::BooleanOp(doc.boolean_ops.keys().nth(index)?))
         }
+        "move_op" | "move" => Some(SceneElement::MoveOp(doc.move_ops.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
         "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
@@ -4609,7 +4610,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
-                tick.state().doc.move_ops.len().saturating_sub(1)
+                tick.state()
+                    .doc
+                    .move_ops
+                    .keys()
+                    .last()
+                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
@@ -7841,7 +7847,7 @@ mod tests {
             }
             "#,
         );
-        let op = &state.doc.move_ops[0];
+        let op = &state.doc.move_ops.values().nth(0).unwrap();
         assert_eq!(op.translate_mode, crate::model::MoveTranslateMode::Snap);
         assert!(op.has_snap_translation());
         let t = crate::extrude::move_op_translation(&state.doc, op).expect("translation");
@@ -7864,7 +7870,7 @@ mod tests {
             "#,
         );
         assert_eq!(
-            free.doc.move_ops[0].translate_mode,
+            free.doc.move_ops.values().nth(0).unwrap().translate_mode,
             crate::model::MoveTranslateMode::Free
         );
     }
@@ -7888,7 +7894,7 @@ mod tests {
             }
             "#,
         );
-        let op = &state.doc.move_ops[0];
+        let op = &state.doc.move_ops.values().nth(0).unwrap();
         assert!(op.has_snap_rotation(), "both B points make it rotate");
         let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
         let landed = m.transform_point3(glam::Vec3::new(10.0, 0.0, 0.0));
@@ -7906,7 +7912,7 @@ mod tests {
                 to   = { body = 0, vertex = {0, 0, 0} } }
             "#,
         );
-        assert!(!translate_only.doc.move_ops[0].has_snap_rotation());
+        assert!(!translate_only.doc.move_ops.values().nth(0).unwrap().has_snap_rotation());
     }
 
     /// `from_c`/`to_c` pin the spin about `end A → end B` that the B pair leaves free.
@@ -7932,8 +7938,8 @@ mod tests {
         };
         // Without C the spin is undecided, so nothing turns.
         let free = run_lua(&source(""));
-        assert!(!free.doc.move_ops[0].has_snap_roll());
-        let m = crate::extrude::move_op_transform(&free.doc, &free.doc.move_ops[0]).unwrap();
+        assert!(!free.doc.move_ops.values().nth(0).unwrap().has_snap_roll());
+        let m = crate::extrude::move_op_transform(&free.doc, &free.doc.move_ops.values().nth(0).unwrap()).unwrap();
         let corner = glam::Vec3::new(0.0, 0.0, 10.0);
         assert!((m.transform_point3(corner) - corner).length() < 1e-2, "no C, no spin");
 
@@ -7942,7 +7948,7 @@ mod tests {
             "from_c = { body = 0, vertex = {0, 0, 10} },
              to_c   = { body = 0, vertex = {0, 10, 0} },",
         ));
-        let op = &state.doc.move_ops[0];
+        let op = &state.doc.move_ops.values().nth(0).unwrap();
         assert!(op.has_snap_roll(), "both C points pin the spin");
         let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
         let landed = m.transform_point3(corner);
@@ -8410,7 +8416,7 @@ mod tests {
             }
             "#,
         );
-        let op = &state.doc.move_ops[0];
+        let op = &state.doc.move_ops.values().nth(0).unwrap();
         let t = crate::extrude::move_op_translation(&state.doc, op).expect("translation");
         assert!(
             (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,

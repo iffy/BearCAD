@@ -13049,7 +13049,7 @@ impl eframe::App for App {
             let mut boolean_edit: Option<context::BooleanEdit> = None;
             let mut boolean_edit_begin: Option<crate::model::BooleanOpKey> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
-            let mut move_edit_begin: Option<usize> = None;
+            let mut move_edit_begin: Option<crate::model::MoveOpKey> = None;
             let mut joint_edit: Option<context::JointEdit> = None;
             let mut joint_edit_begin: Option<usize> = None;
             let mut mirror_edit: Option<context::MirrorEdit> = None;
@@ -15282,7 +15282,6 @@ fn move_ghost_target_transform(
         tz: cm.tz.clone(),
         outputs: Vec::new(),
         name: None,
-        deleted: false,
     };
     extrude::move_op_transform(doc, &probe).filter(|m| *m != glam::Mat4::IDENTITY)
 }
@@ -15553,7 +15552,6 @@ impl SnapPreviewPoints {
             tz: String::new(),
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         }
     }
 

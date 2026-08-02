@@ -44,7 +44,7 @@ pub enum HierarchyNode {
     /// A boolean operation between bodies (Combine tool); its output bodies nest under it.
     BooleanOp(crate::model::BooleanOpKey),
     /// A move operation on bodies (Move tool); its output bodies nest under it.
-    MoveOp(usize),
+    MoveOp(crate::model::MoveOpKey),
     /// A mirror operation on bodies (Mirror tool, #523); its reflected bodies nest under it.
     MirrorOp(usize),
     /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
@@ -184,7 +184,7 @@ pub enum SceneElement {
     /// A boolean operation between bodies (Combine tool).
     BooleanOp(crate::model::BooleanOpKey),
     /// A move operation on bodies (Move tool).
-    MoveOp(usize),
+    MoveOp(crate::model::MoveOpKey),
     /// A mirror operation on bodies (Mirror tool, #523).
     MirrorOp(usize),
     /// A linear repeat on bodies (Repeat tool).
@@ -958,10 +958,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // Move and Slice operations consume their input bodies too.
-    for (oi, op) in doc.move_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.move_ops.iter() {
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::MoveOp(oi)));
         }
@@ -1025,10 +1022,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A move also consumes its planes and images, beyond the bodies covered above (#449).
-    for (oi, op) in doc.move_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.move_ops.iter() {
         for &pi in &op.plane_targets {
             edges.push((HierarchyNode::ConstructionPlane(pi), HierarchyNode::MoveOp(oi)));
         }
@@ -1901,10 +1895,7 @@ pub fn build_hierarchy(
             children,
         });
     }
-    for (oi, op) in doc.move_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.move_ops.iter() {
         let children = op
             .outputs
             .iter()
@@ -5534,6 +5525,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::move_op_key_for_slot as mopkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
     use crate::model::ShapeKind;
@@ -5549,7 +5541,7 @@ mod tests {
             CM::Extrusion(1),
             CM::Body(bkey(1)),
             CM::BooleanOp(bopkey(1)),
-            CM::MoveOp(1),
+            CM::MoveOp(mopkey(1)),
             CM::MirrorOp(1),
             CM::RepeatOp(1),
             CM::SliceOp(1),

@@ -92,7 +92,7 @@ pub struct ContextInput<'a> {
     /// Move tool state: `Some` while the Move tool is active.
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
-    pub move_edit_start: Option<usize>,
+    pub move_edit_start: Option<crate::model::MoveOpKey>,
     /// Create Shape tool state (#909): `Some` while the Shape tool is active.
     pub shape: Option<ShapeControl>,
     /// Joint tool state (#894): `Some` while the Joint tool is active.
@@ -995,7 +995,7 @@ pub struct ContextPaneContent {
     /// Move tool state: `Some` while the Move tool is active.
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
-    pub move_edit_start: Option<usize>,
+    pub move_edit_start: Option<crate::model::MoveOpKey>,
     /// Create Shape tool state (#909): `Some` while the Shape tool is active.
     pub shape: Option<ShapeControl>,
     /// Joint tool state (#894): `Some` while the Joint tool is active.
@@ -4236,7 +4236,7 @@ pub fn show_pane(
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(crate::model::BooleanOpKey),
     on_move_edit: &mut impl FnMut(MoveEdit),
-    on_move_edit_start: &mut impl FnMut(usize),
+    on_move_edit_start: &mut impl FnMut(crate::model::MoveOpKey),
     on_shape_edit: &mut impl FnMut(ShapeEdit),
     on_joint_edit: &mut impl FnMut(JointEdit),
     on_joint_edit_start: &mut impl FnMut(usize),

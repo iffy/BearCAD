@@ -1973,9 +1973,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::MoveOp(i) => ElementScriptTokens {
             kind: "move_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::MirrorOp(i) => ElementScriptTokens {
@@ -2095,6 +2096,16 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A move operation's ordinal among the live ones — what a script writes (#1055).
+fn move_op_ordinal(doc: &crate::model::Document, key: crate::model::MoveOpKey) -> Option<usize> {
+    doc.move_ops.keys().position(|k| k == key)
+}
+
+/// The move operation an ordinal names — the inverse of [`move_op_ordinal`].
+fn move_op_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::MoveOpKey> {
+    doc.move_ops.keys().nth(ordinal)
+}
+
 /// A boolean operation's ordinal among the live ones — what a script writes (#1055).
 fn boolean_op_ordinal(
     doc: &crate::model::Document,
@@ -2202,7 +2213,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::EditMoveOperation { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::EditMoveOp {
-                op: *op,
+                op: move_op_ordinal(doc, *op)?,
                 targets: body_ordinals(doc, targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
@@ -5217,6 +5228,10 @@ impl ScriptRunner {
             }
             Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
+                let Some(op) = move_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Move operation {op} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::EditMoveOperation {
                     op,
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a),

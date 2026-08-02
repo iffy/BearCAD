@@ -249,7 +249,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
     save_arena_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_arena_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
@@ -588,7 +588,7 @@ pub fn open(path: &str) -> Result<Document> {
     let primitives = load_arena_entities(&conn, "primitive")?;
     let sweeps = load_arena_entities(&conn, "sweep")?;
     let boolean_ops = load_arena_entities(&conn, "boolean_op")?;
-    let move_ops = load_indexed_entities(&conn, "move_op")?;
+    let move_ops = load_arena_entities(&conn, "move_op")?;
     let mirror_ops = load_indexed_entities(&conn, "mirror_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
     let slice_ops = load_indexed_entities(&conn, "slice_op")?;
@@ -932,7 +932,7 @@ mod tests {
         let input = doc.bodies.insert(body("input"));
         let output = doc.bodies.insert(body("output"));
         assert!(doc.bodies.remove(doomed).is_some());
-        doc.move_ops.push(crate::model::MoveOperation {
+        doc.move_ops.insert(crate::model::MoveOperation {
             targets: vec![input],
             outputs: vec![output],
             translate_mode: Default::default(),
@@ -949,7 +949,6 @@ mod tests {
             ty: String::new(),
             tz: String::new(),
             name: None,
-            deleted: false,
         });
         doc.joints.push(crate::model::Joint {
             members: vec![
@@ -989,8 +988,8 @@ mod tests {
                 "{suffix}"
             );
             assert!(loaded.bodies.get(doomed).is_none(), "{suffix}: removed stays removed");
-            assert_eq!(loaded.move_ops[0].targets, vec![input], "{suffix}: op input");
-            assert_eq!(loaded.move_ops[0].outputs, vec![output], "{suffix}: op output");
+            assert_eq!(loaded.move_ops.values().nth(0).unwrap().targets, vec![input], "{suffix}: op input");
+            assert_eq!(loaded.move_ops.values().nth(0).unwrap().outputs, vec![output], "{suffix}: op output");
             assert_eq!(
                 loaded.joints[0].members,
                 vec![

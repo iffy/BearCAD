@@ -824,7 +824,7 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
     for extrusion in &mut doc.extrusions {
         extrusion.expression = substitute_parameter_name(&extrusion.expression, old, new);
     }
-    for op in &mut doc.move_ops {
+    for op in doc.move_ops.values_mut() {
         for expr in [&mut op.tx, &mut op.ty, &mut op.tz] {
             *expr = substitute_parameter_name(expr, old, new);
         }

@@ -1172,7 +1172,7 @@ pub struct CreatingMove {
     pub ty: String,
     pub tz: String,
     /// `Some(op)` while re-editing a committed operation.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::MoveOpKey>,
 }
 
 /// In-progress joint (Joint tool, #894): the picked parts, the mate that places them
@@ -2287,7 +2287,7 @@ pub enum Action {
     },
     /// Re-point an existing move operation.
     EditMoveOperation {
-        op: usize,
+        op: crate::model::MoveOpKey,
         translate_mode: crate::model::MoveTranslateMode,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
@@ -5555,7 +5555,7 @@ fn validate_boolean_inputs(
 fn validate_move_inputs(
     doc: &Document,
     targets: &[crate::model::BodyKey],
-    editing: Option<usize>,
+    editing: Option<crate::model::MoveOpKey>,
 ) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Pick at least one body to move".to_string());
@@ -5575,15 +5575,23 @@ fn validate_move_inputs(
         if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
             return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
-        if let crate::model::BodySource::Moved { op, .. } = body.source {
-            if editing.is_some_and(|e| op >= e) {
-                return Err(
-                    "Cannot use this operation's own (or a later) result as an input".to_string(),
-                );
-            }
-        }
         if !seen.insert(bi) {
             return Err(format!("Body {bi:?} is picked twice"));
+        }
+    }
+    // A move may not take its own result, nor anything built from it — the descendant walk
+    // the old "a later op" index comparison was standing in for (#1055).
+    if let Some(e) = editing {
+        let own = doc.move_ops.get(e).map(|o| o.outputs.clone()).unwrap_or_default();
+        let downstream = crate::extrude::descendant_bodies(doc, &own);
+        for &bi in targets {
+            if own.contains(&bi) || downstream.contains(&bi) {
+                return Err(
+                    "Cannot use this operation's own result (or anything built from it) as an \
+                     input"
+                        .to_string(),
+                );
+            }
         }
     }
     Ok(())
@@ -5972,7 +5980,7 @@ fn element_label(element: SceneElement) -> String {
         // The slot number, which is what the ordinal was before anything was removed (#1055).
         SceneElement::Image(i) => format!("Image {}", i.index()),
         SceneElement::BooleanOp(i) => format!("Boolean operation {}", i.index()),
-        SceneElement::MoveOp(i) => format!("Move operation {i}"),
+        SceneElement::MoveOp(i) => format!("Move operation {}", i.index()),
         SceneElement::MirrorOp(i) => format!("Mirror operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
@@ -11505,8 +11513,7 @@ label_hidden: false,
                         return ActionResult::Err(e);
                     }
                 }
-                let op_index = self.doc.move_ops.len();
-                self.doc.move_ops.push(crate::model::MoveOperation {
+                let op_index = self.doc.move_ops.insert(crate::model::MoveOperation {
                     targets: targets.clone(),
                     translate_mode,
                     start_point_a,
@@ -11521,12 +11528,11 @@ label_hidden: false,
                     tx,                    ty,                    tz,
                     outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op_index])
                     .is_none()
                 {
-                    self.doc.move_ops.pop();
+                    self.doc.move_ops.remove(op_index);
                     let e = "Move amounts don't evaluate (check expressions and axis)".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -11559,8 +11565,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
-                if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
-                    let e = format!("Move operation {op} not found");
+                if self.doc.move_ops.get(op).is_none() {
+                    let e = format!("Move operation {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -13708,7 +13714,7 @@ fn same_move_set<T: Copy + Ord>(a: &[T], b: &[T]) -> bool {
 /// The existing Move op the in-progress move is re-moving, if any (#217): the same construction
 /// planes moved again, or bodies whose targets are exactly an op's moved outputs. Consecutive
 /// moves on the same element fold into one op instead of stacking tiny ops.
-fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
+fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<crate::model::MoveOpKey> {
     if cm.editing.is_some() {
         return None;
     }
@@ -13717,9 +13723,9 @@ fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
     if cm.start_point_a.is_some() && cm.end_point_a.is_some() {
         return None;
     }
-    doc.move_ops.iter().position(|op| {
-        if op.deleted || op.has_snap_translation() {
-            return false;
+    doc.move_ops.iter().find_map(|(key, op)| {
+        if op.has_snap_translation() {
+            return None;
         }
         // Coalesce only a pure re-move of the exact same single kind of element set, so the
         // folded op keeps one clean target list (mixed-kind moves stack a fresh op).
@@ -13741,7 +13747,7 @@ fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
             && op.targets.is_empty()
             && op.plane_targets.is_empty()
             && same_move_set(&op.image_targets, &cm.image_targets);
-        planes_again || bodies_again || images_again
+        (planes_again || bodies_again || images_again).then_some(key)
     })
 }
 
@@ -13771,21 +13777,21 @@ pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
     use std::collections::BTreeSet;
     let targeted: BTreeSet<usize> = doc
         .move_ops
-        .iter()
-        .filter(|o| !o.deleted)
+        .values()
         .flat_map(|o| o.plane_targets.iter().copied())
         .collect();
     if targeted.is_empty() {
         return;
     }
     // Precompute each op's world transform (immutable borrow, before mutating planes).
-    let transforms: Vec<Option<glam::Mat4>> = doc
+    let transforms: std::collections::HashMap<crate::model::MoveOpKey, Option<glam::Mat4>> = doc
         .move_ops
         .iter()
-        .map(|op| {
-            (!op.deleted && !op.plane_targets.is_empty())
+        .map(|(key, op)| {
+            let m = (!op.plane_targets.is_empty())
                 .then(|| crate::extrude::move_op_transform(doc, op))
-                .flatten()
+                .flatten();
+            (key, m)
         })
         .collect();
     let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
@@ -13795,11 +13801,11 @@ pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
         };
         let base = plane_from_definition(&plane.definition, plane.parent);
         let (mut o, mut n, mut u, mut v) = (base.origin, base.normal, base.u_axis, base.v_axis);
-        for (op_idx, op) in doc.move_ops.iter().enumerate() {
-            if op.deleted || !op.plane_targets.contains(&i) {
+        for (op_idx, op) in doc.move_ops.iter() {
+            if !op.plane_targets.contains(&i) {
                 continue;
             }
-            if let Some(m) = transforms[op_idx] {
+            if let Some(m) = transforms.get(&op_idx).copied().flatten() {
                 o = m.transform_point3(o);
                 n = m.transform_vector3(n).normalize_or_zero();
                 u = m.transform_vector3(u).normalize_or_zero();
@@ -13829,18 +13835,18 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
     use std::collections::BTreeSet;
     let targeted: BTreeSet<crate::model::TracingImageKey> = doc
         .move_ops
-        .iter()
-        .filter(|o| !o.deleted)
+        .values()
         .flat_map(|o| o.image_targets.iter().copied())
         .collect();
     // Precompute each op's world transform (immutable borrow, before mutating images).
-    let transforms: Vec<Option<glam::Mat4>> = doc
+    let transforms: std::collections::HashMap<crate::model::MoveOpKey, Option<glam::Mat4>> = doc
         .move_ops
         .iter()
-        .map(|op| {
-            (!op.deleted && !op.image_targets.is_empty())
+        .map(|(key, op)| {
+            let m = (!op.image_targets.is_empty())
                 .then(|| crate::extrude::move_op_transform(doc, op))
-                .flatten()
+                .flatten();
+            (key, m)
         })
         .collect();
     // (image, new origin, new base_origin).
@@ -13860,11 +13866,11 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
                 continue;
             };
             let mut world = frame.origin + frame.u_axis * base.0 + frame.v_axis * base.1;
-            for (op_idx, op) in doc.move_ops.iter().enumerate() {
-                if op.deleted || !op.image_targets.contains(&i) {
+            for (op_idx, op) in doc.move_ops.iter() {
+                if !op.image_targets.contains(&i) {
                     continue;
                 }
-                if let Some(m) = transforms[op_idx] {
+                if let Some(m) = transforms.get(&op_idx).copied().flatten() {
                     world = m.transform_point3(world);
                 }
             }
@@ -15777,7 +15783,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend((0..doc.extrusions.len()).map(CM::Extrusion));
     members.extend(doc.lofts.keys().map(CM::Loft));
     members.extend(doc.boolean_ops.keys().map(CM::BooleanOp));
-    members.extend((0..doc.move_ops.len()).map(CM::MoveOp));
+    members.extend(doc.move_ops.keys().map(CM::MoveOp));
     members.extend((0..doc.mirror_ops.len()).map(CM::MirrorOp));
     members.extend((0..doc.repeat_ops.len()).map(CM::RepeatOp));
     members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
@@ -15989,6 +15995,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 mod tests {
     use crate::model::body_key_for_slot as bkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
+    use crate::model::move_op_key_for_slot as mopkey;
     use super::*;
 
     /// #991: a two-sided joint's parts are picked as two named slots — the **mobile** part and
@@ -16685,7 +16692,7 @@ mod tests {
             moved.z
         );
         // Editing the op back to zero returns the plane home.
-        let op = state.doc.move_ops.len() - 1;
+        let op = state.doc.move_ops.keys().last().unwrap();
         state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
@@ -16729,13 +16736,13 @@ mod tests {
         };
         move_plane(&mut state, "40mm");
         assert_eq!(
-            state.doc.move_ops.iter().filter(|o| !o.deleted).count(),
+            state.doc.move_ops.values().count(),
             1,
             "first move creates one op"
         );
         move_plane(&mut state, "10mm");
         assert_eq!(
-            state.doc.move_ops.iter().filter(|o| !o.deleted).count(),
+            state.doc.move_ops.values().count(),
             1,
             "second move on the same plane coalesces into the first op"
         );
@@ -16789,7 +16796,7 @@ mod tests {
         );
         assert_eq!(img.base_origin, Some((0.0, 0.0)), "authored base is locked in");
 
-        let op = state.doc.move_ops.len() - 1;
+        let op = state.doc.move_ops.keys().last().unwrap();
         // Editing the op back to zero returns the image home (still targeted, base kept).
         state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
@@ -16867,7 +16874,7 @@ mod tests {
         move_image(&mut state, "25mm");
         move_image(&mut state, "5mm");
         assert_eq!(
-            state.doc.move_ops.iter().filter(|o| !o.deleted).count(),
+            state.doc.move_ops.values().count(),
             1,
             "second move on the same image coalesces into the first op"
         );
@@ -18297,7 +18304,7 @@ mod tests {
             tz: String::new(),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
-        assert!(state.doc.move_ops[0].outputs.is_empty(), "the instance itself moves");
+        assert!(state.doc.move_ops.values().nth(0).unwrap().outputs.is_empty(), "the instance itself moves");
         assert!(!state.doc.bodies[unit_body].shadow, "nothing is consumed");
         let after = crate::extrude::body_solid_mesh(&state.doc, unit_body)
             .unwrap()
@@ -21025,7 +21032,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.len(), 1);
-        let op = state.doc.move_ops[0].clone();
+        let op = state.doc.move_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.outputs.len(), 2);
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
         assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
@@ -21067,7 +21074,7 @@ mod tests {
             ty: String::new(),
             tz: String::new(),
         });
-        assert_eq!(state.doc.move_ops[0].outputs.len(), 1);
+        assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
@@ -21076,7 +21083,7 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            op: 0,
+            op: mopkey(0),
             targets: vec![bkey(0), bkey(1)],
             plane_targets: vec![],
             image_targets: vec![],
@@ -21086,7 +21093,7 @@ mod tests {
             tz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert_eq!(state.doc.move_ops[0].outputs.len(), 2);
+        assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 2);
         assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
     }
 
@@ -21115,7 +21122,7 @@ mod tests {
             tz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
-        let op = state.doc.move_ops[0].clone();
+        let op = state.doc.move_ops.values().nth(0).unwrap().clone();
         let m = crate::extrude::move_op_transform(&state.doc, &op).unwrap();
         assert!((m.w_axis.x - 30.0).abs() < 1e-4);
     }
@@ -22405,7 +22412,7 @@ mod tests {
         }
         assert!(matches!(state.apply(Action::CommitMove), ActionResult::Ok), "{}", state.status);
         assert!(state.doc.parameters.values().any(|p| p.name == "dx"));
-        assert_eq!(state.doc.move_ops[0].tx, "dx", "the stored offset should be the bare name");
+        assert_eq!(state.doc.move_ops.values().nth(0).unwrap().tx, "dx", "the stored offset should be the bare name");
     }
 
     /// Adds an XY-parallel construction plane at `z` and returns its `FaceId`.

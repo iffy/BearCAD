@@ -184,7 +184,7 @@ pub fn instance_transform(doc: &Document, instance: usize) -> glam::Mat4 {
         }
         guard.borrow_mut().push(instance);
         let mut transform = base;
-        for op in doc.move_ops.iter().filter(|o| !o.deleted) {
+        for op in doc.move_ops.values() {
             if !op.instance_targets.contains(&instance) {
                 continue;
             }

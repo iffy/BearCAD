@@ -86,10 +86,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .get(index)
             .is_some_and(|c| !c.deleted),
         SceneElement::BooleanOp(index) => doc.boolean_ops.contains(index),
-        SceneElement::MoveOp(index) => doc
-            .move_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
+        SceneElement::MoveOp(index) => doc.move_ops.contains(index),
         SceneElement::MirrorOp(index) => doc
             .mirror_ops
             .get(index)
@@ -466,23 +463,19 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::MoveOp(index) => {
-            if let Some(op) = doc.move_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let op = doc.move_ops[index].clone();
-                    for &out in &op.outputs {
-                        doc.bodies.remove(out);
-                    }
-                    for &input in &op.targets {
-                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, Some(index), None, None)
-                        {
-                            if let Some(body) = doc.bodies.get_mut(input) {
-                                body.shadow = false;
-                            }
+            if let Some(op) = doc.move_ops.remove(index) {
+                for &out in &op.outputs {
+                    doc.bodies.remove(out);
+                }
+                for &input in &op.targets {
+                    if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, None, None)
+                    {
+                        if let Some(body) = doc.bodies.get_mut(input) {
+                            body.shadow = false;
                         }
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         SceneElement::MirrorOp(index) => {

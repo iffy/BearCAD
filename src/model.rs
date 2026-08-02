@@ -1264,7 +1264,7 @@ pub enum BodySource {
     /// `Document::move_ops`, `target` is the position within that operation's input list.
     Moved {
         #[serde(rename = "move_op")]
-        op: usize,
+        op: MoveOpKey,
         #[serde(default)]
         target: usize,
     },
@@ -1524,14 +1524,14 @@ pub fn body_shadowed_by_other_ops(
     doc: &Document,
     body: BodyKey,
     skip_boolean: Option<crate::model::BooleanOpKey>,
-    skip_move: Option<usize>,
+    skip_move: Option<MoveOpKey>,
     skip_slice: Option<usize>,
     skip_edge_treatment: Option<usize>,
 ) -> bool {
     doc.boolean_ops.iter().any(|(oi, o)| {
         skip_boolean != Some(oi) && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
-    }) || doc.move_ops.iter().enumerate().any(|(oi, o)| {
-        skip_move != Some(oi) && !o.deleted && o.targets.contains(&body)
+    }) || doc.move_ops.iter().any(|(oi, o)| {
+        skip_move != Some(oi) && o.targets.contains(&body)
     }) || doc.slice_ops.iter().enumerate().any(|(oi, o)| {
         skip_slice != Some(oi) && !o.deleted && o.targets.contains(&body)
     }) || doc.edge_treatment_ops.iter().enumerate().any(|(oi, o)| {
@@ -1666,6 +1666,12 @@ pub fn body_key_for_slot(n: usize) -> BodyKey {
 /// The same for a boolean operation (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn boolean_op_key_for_slot(n: usize) -> BooleanOpKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a move operation (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn move_op_key_for_slot(n: usize) -> MoveOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2188,9 +2194,10 @@ pub struct MoveOperation {
     pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a move operation (#1055).
+pub type MoveOpKey = crate::arena::Key<MoveOperation>;
 
 /// What a joint holds on each side (#891): a whole body, everything in a component, or a
 /// placed unit instance.
@@ -3974,7 +3981,7 @@ pub struct Document {
     pub boolean_ops: crate::arena::Arena<BooleanOperation>,
     /// Move operations on bodies (the Move tool, #176/#183).
     #[serde(default)]
-    pub move_ops: Vec<MoveOperation>,
+    pub move_ops: crate::arena::Arena<MoveOperation>,
     /// Mirror operations on bodies (the Mirror tool, #523).
     #[serde(default)]
     pub mirror_ops: Vec<MirrorOperation>,
@@ -4107,7 +4114,7 @@ pub enum ComponentMember {
     Body(BodyKey),
     Loft(LoftKey),
     BooleanOp(BooleanOpKey),
-    MoveOp(usize),
+    MoveOp(MoveOpKey),
     MirrorOp(usize),
     RepeatOp(usize),
     SliceOp(usize),
@@ -4221,7 +4228,7 @@ impl Default for Document {
             primitives: crate::arena::Arena::new(),
             sweeps: crate::arena::Arena::new(),
             boolean_ops: crate::arena::Arena::new(),
-            move_ops: Vec::new(),
+            move_ops: crate::arena::Arena::new(),
             mirror_ops: Vec::new(),
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
