@@ -3260,7 +3260,6 @@ impl<'a> SceneMesh<'a> {
                     crate::construction::sketch_face_boundary_world(doc, &face),
                     doc.repeat_ops
                         .get(op)
-                        .filter(|o| !o.deleted)
                         .and_then(|o| crate::extrude::repeat_instance_transform(doc, o, instance)),
                 ) {
                     let moved: Vec<Vec3> =

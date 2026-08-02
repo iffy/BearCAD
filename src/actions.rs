@@ -811,7 +811,7 @@ pub struct CreatingRepeat {
     /// one (the two the user changed most recently are kept).
     pub var_mru: [crate::model::RepeatVar; 3],
     /// `Some(op)` while re-editing a committed operation.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::RepeatOpKey>,
 }
 
 impl Default for CreatingRepeat {
@@ -2395,7 +2395,7 @@ pub enum Action {
     },
     /// Re-point an existing repeat operation.
     EditRepeatOperation {
-        op: usize,
+        op: crate::model::RepeatOpKey,
         targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<usize>,
@@ -5982,7 +5982,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BooleanOp(i) => format!("Boolean operation {}", i.index()),
         SceneElement::MoveOp(i) => format!("Move operation {}", i.index()),
         SceneElement::MirrorOp(i) => format!("Mirror operation {}", i.index()),
-        SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
+        SceneElement::RepeatOp(i) => format!("Repeat operation {}", i.index()),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
         SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
@@ -10628,8 +10628,7 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let op_index = self.doc.repeat_ops.len();
-                self.doc.repeat_ops.push(crate::model::RepeatOperation {
+                let op_index = self.doc.repeat_ops.insert(crate::model::RepeatOperation {
                     targets: targets.clone(),
                     plane_targets: plane_targets.clone(),
                     extrusion_targets: extrusion_targets.clone(),
@@ -10648,12 +10647,11 @@ label_hidden: false,
                     sketch_plane_outputs: Vec::new(),
                     sketch_outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 let Some(offsets) =
                     crate::extrude::repeat_offsets(&self.doc, &self.doc.repeat_ops[op_index])
                 else {
-                    self.doc.repeat_ops.pop();
+                    self.doc.repeat_ops.remove(op_index);
                     let e =
                         "Repeat doesn't evaluate (check count/spacing/length and the axis)"
                             .to_string();
@@ -10661,7 +10659,7 @@ label_hidden: false,
                     return ActionResult::Err(e);
                 };
                 if offsets.is_empty() {
-                    self.doc.repeat_ops.pop();
+                    self.doc.repeat_ops.remove(op_index);
                     let e = "Repeat produces no extra instances".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -10714,8 +10712,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, path_circle, around_axis, flip, mode, count, spacing, length, length_target } => {
-                if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
-                    let e = format!("Repeat operation {op} not found");
+                if self.doc.repeat_ops.get(op).is_none() {
+                    let e = format!("Repeat operation {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -13895,11 +13893,11 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
 /// before its instances copy it.
 pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
     // Precompute each op's axis direction and instance offsets (immutable borrow before mutating).
-    let op_data: Vec<Option<Vec<glam::Mat4>>> = doc
+    let op_data: std::collections::HashMap<crate::model::RepeatOpKey, Vec<glam::Mat4>> = doc
         .repeat_ops
         .iter()
-        .map(|op| {
-            if op.deleted || op.plane_targets.is_empty() {
+        .filter_map(|(key, op)| {
+            if op.plane_targets.is_empty() {
                 return None;
             }
             let offsets = crate::extrude::repeat_offsets(doc, op)?;
@@ -13907,7 +13905,7 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
                 .iter()
                 .filter_map(|off| crate::extrude::repeat_offset_transform(doc, op, *off))
                 .collect();
-            Some(transforms)
+            Some((key, transforms))
         })
         .collect();
     let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
@@ -13918,10 +13916,12 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
         let Some(inst) = plane.repeat_instance else {
             continue;
         };
-        let Some(transforms) = op_data.get(inst.op).and_then(|d| d.as_ref()) else {
+        let Some(transforms) = op_data.get(&inst.op) else {
             continue;
         };
-        let op = &doc.repeat_ops[inst.op];
+        let Some(op) = doc.repeat_ops.get(inst.op) else {
+            continue;
+        };
         let Some(&src) = op.plane_targets.get(inst.target) else {
             continue;
         };
@@ -15089,8 +15089,8 @@ fn resolve_treatment_corner_sources(
 /// unchanged, so they step by the offset in world). Regenerates from scratch each call: prior
 /// generated planes/sketches/entities are tombstoned first. Restricted to construction-plane
 /// hosted sketches; others are skipped.
-fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) {
-    let Some(op) = doc.repeat_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::model::RepeatOpKey) {
+    let Some(op) = doc.repeat_ops.get(op_index).cloned() else {
         return;
     };
     // Tombstone anything a previous run generated.
@@ -15783,7 +15783,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend(doc.boolean_ops.keys().map(CM::BooleanOp));
     members.extend(doc.move_ops.keys().map(CM::MoveOp));
     members.extend(doc.mirror_ops.keys().map(CM::MirrorOp));
-    members.extend((0..doc.repeat_ops.len()).map(CM::RepeatOp));
+    members.extend(doc.repeat_ops.keys().map(CM::RepeatOp));
     members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
     members.extend((0..doc.edge_treatment_ops.len()).map(CM::EdgeTreatmentOp));
     members.extend(doc.revolutions.keys().map(CM::Revolution));
@@ -15992,6 +15992,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::repeat_op_key_for_slot as repkey;
     use crate::model::mirror_op_key_for_slot as mirkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use crate::model::move_op_key_for_slot as mopkey;
@@ -21147,7 +21148,7 @@ mod tests {
             length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
-        let op = state.doc.repeat_ops[0].clone();
+        let op = state.doc.repeat_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.outputs.len(), 2, "3 instances = original + 2 outputs");
         assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "repeat originals stay real");
         // Box extent along X is 10, so step = 15: instance offsets 15 and 30.
@@ -21191,7 +21192,7 @@ mod tests {
             length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
-        let op = state.doc.repeat_ops[0].clone();
+        let op = state.doc.repeat_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
@@ -21218,9 +21219,9 @@ mod tests {
             length: String::new(),
             length_target: None,
         });
-        assert_eq!(state.doc.repeat_ops[0].outputs.len(), 1);
+        assert_eq!(state.doc.repeat_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditRepeatOperation {
-            op: 0,
+            op: repkey(0),
             targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
@@ -21236,7 +21237,7 @@ mod tests {
             length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert_eq!(state.doc.repeat_ops[0].outputs.len(), 4);
+        assert_eq!(state.doc.repeat_ops.values().nth(0).unwrap().outputs.len(), 4);
     }
 
     /// A parameter-driven count follows parameter edits.
@@ -21262,7 +21263,7 @@ mod tests {
             length: String::new(),
             length_target: None,
         });
-        let op = state.doc.repeat_ops[0].clone();
+        let op = state.doc.repeat_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
@@ -22105,7 +22106,7 @@ mod tests {
             length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
-        let op = state.doc.repeat_ops[0].clone();
+        let op = state.doc.repeat_ops.values().nth(0).unwrap().clone();
         assert!(op.outputs.is_empty(), "a plane-only repeat makes no body copies");
         assert_eq!(op.plane_outputs.len(), 2, "3 instances = original + 2 copies");
         // Planes are zero-thickness, so the step is exactly the gap.
@@ -22117,7 +22118,7 @@ mod tests {
         let inst = state.doc.construction_planes[op.plane_outputs[0]]
             .repeat_instance
             .expect("instance carries a back-reference");
-        assert_eq!((inst.op, inst.target, inst.instance), (0, 0, 1));
+        assert_eq!((inst.op, inst.target, inst.instance), (repkey(0), 0, 1));
         assert!((state.doc.construction_planes[op.plane_outputs[0]].normal - normal).length() < 1e-4);
 
         // Undo removes the op and its instance planes.
@@ -22146,7 +22147,7 @@ mod tests {
             length: String::new(),
             length_target: None,
         });
-        let inst_idx = state.doc.repeat_ops[0].plane_outputs[0];
+        let inst_idx = state.doc.repeat_ops.values().nth(0).unwrap().plane_outputs[0];
         assert!((state.doc.construction_planes[inst_idx].origin.x - 10.0).abs() < 1e-3);
         // Move the source plane +5 along X; the instance should sit at 5 + 10 = 15.
         let result = state.apply(Action::CreateMoveOperation {
@@ -22192,9 +22193,9 @@ mod tests {
             length: String::new(),
             length_target: None,
         });
-        assert_eq!(state.doc.repeat_ops[0].plane_outputs.len(), 1);
+        assert_eq!(state.doc.repeat_ops.values().nth(0).unwrap().plane_outputs.len(), 1);
         let result = state.apply(Action::EditRepeatOperation {
-            op: 0,
+            op: repkey(0),
             targets: Vec::new(),
             plane_targets: vec![0],
             extrusion_targets: Vec::new(),
@@ -22210,7 +22211,7 @@ mod tests {
             length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
-        let op = state.doc.repeat_ops[0].clone();
+        let op = state.doc.repeat_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.plane_outputs.len(), 3, "4 instances = original + 3 copies");
         assert!((state.doc.construction_planes[op.plane_outputs[2]].origin.x - 30.0).abs() < 1e-3);
     }
@@ -22365,8 +22366,8 @@ mod tests {
         }
         assert!(matches!(state.apply(Action::CommitRepeat), ActionResult::Ok), "{}", state.status);
         assert!(state.doc.parameters.values().any(|p| p.name == "n"));
-        assert_eq!(state.doc.repeat_ops[0].count, "n", "the stored count should be the bare name");
-        assert_eq!(state.doc.repeat_ops[0].outputs.len(), 3, "n = 4 → 3 extra instances");
+        assert_eq!(state.doc.repeat_ops.values().nth(0).unwrap().count, "n", "the stored count should be the bare name");
+        assert_eq!(state.doc.repeat_ops.values().nth(0).unwrap().outputs.len(), 3, "n = 4 → 3 extra instances");
     }
 
     /// #439: activating the Repeat tool seeds its targets from the selected body, the

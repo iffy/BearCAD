@@ -1196,7 +1196,7 @@ pub enum ExtrudeTarget {
     /// snap follows when the repeat's spacing or the source body changes.
     RepeatedFace {
         face: FaceId,
-        op: usize,
+        op: RepeatOpKey,
         instance: usize,
     },
 }
@@ -1254,7 +1254,7 @@ pub enum BodySource {
     /// `instance` counts from 1 (the original body is instance 0).
     Repeated {
         #[serde(rename = "repeat_op")]
-        op: usize,
+        op: RepeatOpKey,
         #[serde(default)]
         target: usize,
         #[serde(default)]
@@ -1678,6 +1678,12 @@ pub fn move_op_key_for_slot(n: usize) -> MoveOpKey {
 /// The same for a mirror operation (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn mirror_op_key_for_slot(n: usize) -> MirrorOpKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a linear repeat (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn repeat_op_key_for_slot(n: usize) -> RepeatOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2756,9 +2762,10 @@ pub struct RepeatOperation {
     pub plane_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a linear repeat (#1055).
+pub type RepeatOpKey = crate::arena::Key<RepeatOperation>;
 
 /// Back-reference stamped on a generated construction plane that is one instance of a
 /// [`RepeatOperation`]'s plane repeat (#221). The instance's frame is derived at recompute from
@@ -2767,8 +2774,8 @@ pub struct RepeatOperation {
 /// use (#217).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RepeatPlaneInstance {
-    /// Index into [`Document::repeat_ops`].
-    pub op: usize,
+    /// The repeat that generated this plane.
+    pub op: RepeatOpKey,
     /// Index into the op's [`RepeatOperation::plane_targets`].
     pub target: usize,
     /// 1-based instance number; the along-axis offset is `repeat_offsets(op)[instance - 1]`.
@@ -3994,7 +4001,7 @@ pub struct Document {
     pub mirror_ops: crate::arena::Arena<MirrorOperation>,
     /// Linear repeats on bodies (the Repeat tool, #182).
     #[serde(default)]
-    pub repeat_ops: Vec<RepeatOperation>,
+    pub repeat_ops: crate::arena::Arena<RepeatOperation>,
     /// Slice operations on bodies (the Slice tool, #181).
     #[serde(default)]
     pub slice_ops: Vec<SliceOperation>,
@@ -4123,7 +4130,7 @@ pub enum ComponentMember {
     BooleanOp(BooleanOpKey),
     MoveOp(MoveOpKey),
     MirrorOp(MirrorOpKey),
-    RepeatOp(usize),
+    RepeatOp(RepeatOpKey),
     SliceOp(usize),
     EdgeTreatmentOp(usize),
     Revolution(RevolutionKey),
@@ -4237,7 +4244,7 @@ impl Default for Document {
             boolean_ops: crate::arena::Arena::new(),
             move_ops: crate::arena::Arena::new(),
             mirror_ops: crate::arena::Arena::new(),
-            repeat_ops: Vec::new(),
+            repeat_ops: crate::arena::Arena::new(),
             slice_ops: Vec::new(),
             edge_treatment_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),

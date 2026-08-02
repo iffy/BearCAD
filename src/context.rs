@@ -134,7 +134,7 @@ pub struct ContextInput<'a> {
     /// The Aligned-view tool's current base projection `(view, label)`, if one is chosen (#365).
     pub drawing_align_base: Option<(usize, String)>,
     /// "Edit repeat" entry point.
-    pub repeat_edit_start: Option<usize>,
+    pub repeat_edit_start: Option<crate::model::RepeatOpKey>,
     /// Slice tool state: `Some` while the Slice tool is active.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" entry point.
@@ -1036,7 +1036,7 @@ pub struct ContextPaneContent {
     /// option is the chosen base projection `(view, label)` or `None` while none is picked.
     pub drawing_align: Option<Option<(usize, String)>>,
     /// "Edit repeat" entry point.
-    pub repeat_edit_start: Option<usize>,
+    pub repeat_edit_start: Option<crate::model::RepeatOpKey>,
     /// Slice tool controls.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" button target.
@@ -4252,7 +4252,7 @@ pub fn show_pane(
     on_drawing_annotation_edit: &mut impl FnMut(DrawingAnnotationEdit),
     on_drawing_selection_edit: &mut impl FnMut(DrawingSelectionEdit),
     on_drawing_align_clear: &mut impl FnMut(),
-    on_repeat_edit_start: &mut impl FnMut(usize),
+    on_repeat_edit_start: &mut impl FnMut(crate::model::RepeatOpKey),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
     on_revolve_edit_start: &mut impl FnMut(crate::model::RevolutionKey),

@@ -533,8 +533,8 @@ fn occt_fused_extrusions(
         // add-replay) — an add extrusion targeted by a repeat op is fused again at each instance,
         // growing N bumps instead of one.
         let mut placements: Vec<glam::Mat4> = vec![glam::Mat4::IDENTITY];
-        for op in doc.repeat_ops.iter() {
-            if op.deleted || !op.extrusion_targets.contains(&ei) {
+        for op in doc.repeat_ops.values() {
+            if !op.extrusion_targets.contains(&ei) {
                 continue;
             }
             if let Some(offsets) = repeat_offsets(doc, op) {
@@ -639,8 +639,8 @@ fn occt_subtract_cut_extrusions(
         // Repeat-operation replay (#220): any non-deleted repeat op that targets this cut
         // extrusion subtracts the same tool again at each instance offset along its axis —
         // punching N holes rather than copying a solid.
-        for op in doc.repeat_ops.iter() {
-            if op.deleted || !op.extrusion_targets.contains(&ei) {
+        for op in doc.repeat_ops.values() {
+            if !op.extrusion_targets.contains(&ei) {
                 continue;
             }
             if let Some(offsets) = repeat_offsets(doc, op) {
@@ -1735,7 +1735,7 @@ pub fn descendant_bodies(doc: &Document, seeds: &[crate::model::BodyKey]) -> std
                 outs.extend(op.outputs.iter().copied());
             }
         }
-        for op in doc.repeat_ops.iter().filter(|o| !o.deleted) {
+        for op in doc.repeat_ops.values() {
             if op.targets.contains(&bi) {
                 outs.extend(op.outputs.iter().copied());
             }
@@ -2029,11 +2029,11 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
 /// offset along the axis.
 fn occt_repeated_output_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::RepeatOpKey,
     target: usize,
     instance: usize,
 ) -> Option<crate::kernel::Shape> {
-    let op = doc.repeat_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.repeat_ops.get(op_index)?;
     let &input = op.targets.get(target)?;
     let m = repeat_instance_transform(doc, op, instance)?;
     let shape = occt_body_shape(doc, input)?;
@@ -4399,7 +4399,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
     }
 
     if let crate::model::BodySource::Repeated { op, target, instance } = body.source {
-        let rp = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
+        let rp = doc.repeat_ops.get(op)?;
         let &input = rp.targets.get(target)?;
         if input == body_index {
             return None;
@@ -4914,10 +4914,10 @@ pub fn target_distance(
 pub fn repeated_face_plane(
     doc: &Document,
     face: &crate::model::FaceId,
-    op: usize,
+    op: crate::model::RepeatOpKey,
     instance: usize,
 ) -> Option<(Vec3, Vec3)> {
-    let rep = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
+    let rep = doc.repeat_ops.get(op)?;
     // `repeat_offsets` lists the copies only; instance 0 is the original body.
     let m = repeat_instance_transform(doc, rep, instance)?;
     let (p, n) = body_face_plane(doc, face)?;
@@ -7409,7 +7409,6 @@ mod tests {
             outputs: Vec::new(),
             plane_outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         let path = repeat_path_polyline(&doc, op.axis).expect("a curved path");
         assert!(path.len() > 2, "a curve samples to a polyline");
@@ -7485,7 +7484,6 @@ mod tests {
             outputs: Vec::new(),
             plane_outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         let step1 = |doc: &Document, o: &RepeatOperation| {
             repeat_instance_transform(doc, o, 1)
@@ -7600,7 +7598,6 @@ mod tests {
             outputs: Vec::new(),
             plane_outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         let angles = repeat_offsets(&doc, &op(true, "60deg")).expect("angles");
         assert_eq!(angles.len(), 5, "6 instances = the original plus 5 copies");
@@ -7907,7 +7904,6 @@ mod tests {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         // L = 30 (x=0 start → x=30 plane), pitch 10, extent 10 → n = ((30-10)/10)+1 = 3.
         assert_eq!(repeat_offsets(&doc, &op), Some(vec![10.0, 20.0]));
@@ -8205,7 +8201,7 @@ mod tests {
         assert!((mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs() - one_hole).abs() < 3.0);
 
         // Replay the hole (extrusion 1) ×3 along X at 6mm gap → holes at x = -6, 0, +6.
-        doc.repeat_ops.push(RepeatOperation {
+        doc.repeat_ops.insert(RepeatOperation {
             targets: Vec::new(),
             plane_targets: Vec::new(),
             extrusion_targets: vec![1],
@@ -8224,7 +8220,6 @@ mod tests {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             name: None,
-            deleted: false,
         });
         let three_holes = 2000.0 - 3.0 * std::f32::consts::PI * 2.5 * 2.5 * 5.0;
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs();
@@ -8251,7 +8246,7 @@ mod tests {
         assert!((mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs() - 80.0).abs() < 1.0);
 
         // Replay the add ×3 along X at 10mm gap → boxes at x = 0, 10, 20 (disjoint).
-        doc.repeat_ops.push(RepeatOperation {
+        doc.repeat_ops.insert(RepeatOperation {
             targets: Vec::new(),
             plane_targets: Vec::new(),
             extrusion_targets: vec![0],
@@ -8270,7 +8265,6 @@ mod tests {
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
             name: None,
-            deleted: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs();
         assert!((vol - 240.0).abs() < 3.0, "expected ~240 (3 boxes), got {vol}");

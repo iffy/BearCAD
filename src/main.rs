@@ -9724,7 +9724,6 @@ impl App {
             outputs: Vec::new(),
             plane_outputs: Vec::new(),
             name: None,
-            deleted: false,
         })
     }
 
@@ -13064,7 +13063,7 @@ impl eframe::App for App {
             let mut drawing_annotation_edit: Option<context::DrawingAnnotationEdit> = None;
             let mut drawing_selection_edit: Option<context::DrawingSelectionEdit> = None;
             let mut drawing_align_clear = false;
-            let mut repeat_edit_begin: Option<usize> = None;
+            let mut repeat_edit_begin: Option<crate::model::RepeatOpKey> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
             let mut revolve_edit_begin: Option<model::RevolutionKey> = None;
@@ -16602,7 +16601,6 @@ fn build_viewport_scene_input<'a>(
                 outputs: Vec::new(),
                 plane_outputs: Vec::new(),
                 name: None,
-                deleted: false,
             };
             let offsets = extrude::repeat_offsets(doc, &probe)?;
             let mut ghosts = Vec::new();
@@ -18526,10 +18524,7 @@ fn pick_repeated_face(
     editing: Option<usize>,
 ) -> Option<model::ExtrudeTarget> {
     let mut best: Option<(f32, model::ExtrudeTarget)> = None;
-    for (op_index, op) in doc.repeat_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (op_index, op) in doc.repeat_ops.iter() {
         let Some((_, dir)) = extrude::axis_world(doc, op.axis) else { continue };
         let Some(offsets) = extrude::repeat_offsets(doc, op) else { continue };
         for &body in &op.targets {
@@ -18631,7 +18626,7 @@ fn consider_repeated_hit(
     best: &mut Option<(f32, model::ExtrudeTarget)>,
     depth_key: f32,
     face: FaceId,
-    op: usize,
+    op: crate::model::RepeatOpKey,
     instance: usize,
 ) {
     if best.as_ref().is_none_or(|(d, _)| depth_key < *d) {
@@ -19631,7 +19626,7 @@ fn draw_extrude_target_highlight(
         // translated to the instance position.
         model::ExtrudeTarget::RepeatedFace { face, op, instance } => {
             let offset = (|| {
-                let rep = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
+                let rep = doc.repeat_ops.get(op)?;
                 let (_, dir) = extrude::axis_world(doc, rep.axis)?;
                 Some(dir * *extrude::repeat_offsets(doc, rep)?.get(instance.checked_sub(1)?)?)
             })();

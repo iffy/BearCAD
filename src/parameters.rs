@@ -829,7 +829,7 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
             *expr = substitute_parameter_name(expr, old, new);
         }
     }
-    for op in &mut doc.repeat_ops {
+    for op in doc.repeat_ops.values_mut() {
         for expr in [&mut op.count, &mut op.spacing, &mut op.length] {
             *expr = substitute_parameter_name(expr, old, new);
         }

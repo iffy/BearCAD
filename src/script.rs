@@ -1985,9 +1985,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::RepeatOp(i) => ElementScriptTokens {
             kind: "repeat_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::SketchOffsetOp(i) => ElementScriptTokens {
@@ -2097,6 +2098,22 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A repeat's ordinal among the live ones — what a script writes (#1055).
+fn repeat_op_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::RepeatOpKey,
+) -> Option<usize> {
+    doc.repeat_ops.keys().position(|k| k == key)
+}
+
+/// The repeat an ordinal names — the inverse of [`repeat_op_ordinal`].
+fn repeat_op_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::RepeatOpKey> {
+    doc.repeat_ops.keys().nth(ordinal)
+}
+
 /// A mirror operation's ordinal among the live ones — what a script writes (#1055).
 fn mirror_op_ordinal(
     doc: &crate::model::Document,
@@ -2271,7 +2288,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, path_circle: _, around_axis, flip, mode, count, spacing, length, length_target } => {
             Some(Instruction::EditRepeatOp {
-                op: *op,
+                op: repeat_op_ordinal(doc, *op)?,
                 targets: body_ordinals(doc, targets)?,
                 axis: *axis,
                 around_axis: *around_axis,
@@ -3301,8 +3318,10 @@ fn extrude_target_lua_table(target: &crate::model::ExtrudeTarget) -> String {
         ExtrudeTarget::Face(face) => format!("{{ face = {} }}", extrude_face_spec_table(face)),
         ExtrudeTarget::BodyFace(face_id) => format!("{{ face = {} }}", face_id_lua_ref(face_id)),
         ExtrudeTarget::RepeatedFace { face, op, instance } => format!(
-            "{{ face = {}, repeat_op = {op}, instance = {instance} }}",
-            face_id_lua_ref(face)
+            // The repeat's arena slot, not its ordinal (#1070).
+            "{{ face = {}, repeat_op = {}, instance = {instance} }}",
+            face_id_lua_ref(face),
+            op.index()
         ),
         ExtrudeTarget::Vertex(point) => {
             format!("{{ vertex = {} }}", constraint_point_lua_ref(point))
@@ -5395,6 +5414,10 @@ impl ScriptRunner {
             }
             Instruction::EditRepeatOp { op, targets, axis, around_axis, flip, mode, count, spacing, length, length_target } => {
                 let targets = body_keys(&state.doc, &targets);
+                let Some(op) = repeat_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Repeat operation {op} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::EditRepeatOperation {
                     op,
                     targets,

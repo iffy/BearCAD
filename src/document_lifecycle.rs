@@ -67,7 +67,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::ExtrusionEdge { extrusion, .. } => extrusion_alive(doc, extrusion),
         // A repeat instance's face (#955) lives as long as both the repeat and the source face.
         SceneElement::RepeatedFace { face, op, .. } => {
-            doc.repeat_ops.get(op).is_some_and(|o| !o.deleted)
+            doc.repeat_ops.contains(op)
                 && crate::face::sketch_frame(doc, face).is_some()
         }
         SceneElement::MovePoint(point) => match point {
@@ -88,10 +88,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::BooleanOp(index) => doc.boolean_ops.contains(index),
         SceneElement::MoveOp(index) => doc.move_ops.contains(index),
         SceneElement::MirrorOp(index) => doc.mirror_ops.contains(index),
-        SceneElement::RepeatOp(index) => doc
-            .repeat_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
+        SceneElement::RepeatOp(index) => doc.repeat_ops.contains(index),
         SceneElement::SketchOffsetOp(index) => doc
             .sketch_offset_ops
             .get(index)
@@ -305,22 +302,21 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::RepeatOp(index) => {
-            if let Some(op) = doc.repeat_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let outputs = doc.repeat_ops[index].outputs.clone();
+            if let Some(removed) = doc.repeat_ops.remove(index) {
+                {
+                    let outputs = removed.outputs.clone();
                     for out in outputs {
                         doc.bodies.remove(out);
                     }
                     // Generated plane instances go with the op (#221).
-                    let plane_outputs = doc.repeat_ops[index].plane_outputs.clone();
+                    let plane_outputs = removed.plane_outputs.clone();
                     for out in plane_outputs {
                         if let Some(plane) = doc.construction_planes.get_mut(out) {
                             plane.deleted = true;
                         }
                     }
                     // Repeated-sketch copies: their planes, sketches, and copied entities (#226).
-                    let op = doc.repeat_ops[index].clone();
+                    let op = removed;
                     for out in &op.sketch_plane_outputs {
                         if let Some(plane) = doc.construction_planes.get_mut(*out) {
                             plane.deleted = true;

@@ -177,13 +177,15 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::MirrorOp(key) => {
             doc.mirror_ops.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::RepeatOp(key) => {
+            doc.repeat_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)
         | SceneElement::SketchMirrorOp(i)
@@ -625,8 +627,18 @@ fn parse_extrude_target_table(
             let face_id = parse_face_id_table(lua, face)?;
             // A repeated instance's face (#452): `{ face = {...}, repeat_op = i,
             // instance = n }` targets the source face translated to instance `n`.
-            if let Some(op) = table.get::<Option<usize>>("repeat_op")? {
+            if let Some(ordinal) = table.get::<Option<usize>>("repeat_op")? {
                 let instance: usize = table.get::<Option<usize>>("instance")?.unwrap_or(1);
+                // The script's `repeat_op` is an ordinal among the live ones (#1055).
+                let tick = lua
+                    .app_data_ref::<ScriptTickData>()
+                    .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+                let op = unsafe { &tick.state().doc }
+                    .repeat_ops
+                    .keys()
+                    .nth(ordinal)
+                    .ok_or_else(|| mlua::Error::external(format!("no repeat {ordinal}")))?;
+                drop(tick);
                 return Ok(crate::model::ExtrudeTarget::RepeatedFace {
                     face: face_id,
                     op,
@@ -4256,7 +4268,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 })?;
             }
             let element = SceneElement::RepeatOp(unsafe {
-                tick.state().doc.repeat_ops.len().saturating_sub(1)
+                tick.state()
+                    .doc
+                    .repeat_ops
+                    .keys()
+                    .last()
+                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
@@ -5991,7 +6008,7 @@ mod tests {
                                      mode = "count_gap", count = 3, spacing = 10 }
             "#,
         );
-        let op = &state.doc.repeat_ops[0];
+        let op = &state.doc.repeat_ops.values().nth(0).unwrap();
         assert_eq!(op.sketch_outputs.len(), 2, "3 instances = original + 2 copies");
         assert_eq!(op.sketch_plane_outputs.len(), 2);
         // Host planes step +z by the gap (extent 0 → step = gap).
@@ -6050,7 +6067,7 @@ mod tests {
                                      mode = "count_gap", count = 2, spacing = 5 }
             "#,
         );
-        let op = &state.doc.repeat_ops[0];
+        let op = &state.doc.repeat_ops.values().nth(0).unwrap();
         assert_eq!(op.sketch_outputs.len(), 1, "2 instances = original + 1 copy");
         // The cap sits at z = 10; the copy's host plane is +5 above it.
         let pz = state.doc.construction_planes[op.sketch_plane_outputs[0]].origin.z;
@@ -6308,7 +6325,7 @@ mod tests {
                                    mode = "count_gap", count = 4, spacing = "90deg" }
         "#,
         );
-        let op = &state.doc.repeat_ops[0];
+        let op = &state.doc.repeat_ops.values().nth(0).unwrap();
         assert!(op.around_axis);
         assert_eq!(op.outputs.len(), 3, "4 instances = the original plus 3 copies");
         // The first copy is a quarter turn round: its bounds swap x for y.
@@ -8447,7 +8464,7 @@ mod tests {
             }
             "#,
         );
-        let op = &state.doc.repeat_ops[0];
+        let op = &state.doc.repeat_ops.values().nth(0).unwrap();
         assert!(op.length_target.is_some(), "the plane target is stored");
         let offsets = crate::extrude::repeat_offsets(&state.doc, op).expect("offsets");
         assert!(
@@ -8473,7 +8490,7 @@ mod tests {
                 bearcad.repeat_bodies{{ bodies = {{0}}, axis = "x", count = 3, gap = 5{flip} }}
                 "#
             ));
-            let op = &state.doc.repeat_ops[0];
+            let op = &state.doc.repeat_ops.values().nth(0).unwrap();
             assert!(op.outputs.len() >= 2, "the repeat made copies");
             op.outputs
                 .iter()
@@ -8580,7 +8597,7 @@ mod tests {
             }
             "#,
         );
-        let op = &state.doc.repeat_ops[0];
+        let op = &state.doc.repeat_ops.values().nth(0).unwrap();
         assert_eq!(
             op.axis,
             crate::model::RevolveAxis::BodyEdge {
@@ -8605,7 +8622,7 @@ mod tests {
             bearcad.repeat_bodies{{ bodies = {{0}}, axis = {rendered}, count = 3, gap = 5 }}
             "#
         ));
-        assert_eq!(round_tripped.doc.repeat_ops[0].axis, op.axis);
+        assert_eq!(round_tripped.doc.repeat_ops.values().nth(0).unwrap().axis, op.axis);
     }
 
     /// #406: a boolean-profiled extrusion's cap hosts a scripted sketch, and a drawing's

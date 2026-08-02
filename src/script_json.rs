@@ -139,6 +139,7 @@ pub fn scene_element_selection_index(
         SceneElement::BooleanOp(key) => doc.boolean_ops.keys().position(|k| k == *key),
         SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == *key),
         SceneElement::MirrorOp(key) => doc.mirror_ops.keys().position(|k| k == *key),
+        SceneElement::RepeatOp(key) => doc.repeat_ops.keys().position(|k| k == *key),
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
@@ -174,7 +175,6 @@ pub fn scene_element_selection_index(
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)
         | SceneElement::SketchMirrorOp(i)
