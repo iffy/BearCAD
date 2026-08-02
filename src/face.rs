@@ -1107,6 +1107,13 @@ pub fn pick_sketch_face(
     }
 
     for (i, plane) in doc.construction_planes.iter().enumerate().rev() {
+        // A tombstoned plane is not there to be picked (#1051). Every other candidate in this
+        // function already filters its own deleted flag; planes did not, so a deleted one went
+        // on hovering, selecting, and — because the Shape tool anchors through here — catching
+        // shapes meant for the face behind it.
+        if plane.deleted {
+            continue;
+        }
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             let candidate = FaceId::ConstructionPlane(i);
@@ -1237,6 +1244,9 @@ pub fn sketch_faces_near(
         }
     }
     for (i, plane) in doc.construction_planes.iter().enumerate() {
+        if plane.deleted {
+            continue;
+        }
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             push(FaceId::ConstructionPlane(i), c, dist);
@@ -1614,6 +1624,43 @@ mod tests {
         // Away from the body, the plane is still perfectly pickable.
         let off = pick_sketch_face(eframe::egui::pos2(-40.0, -40.0), &project, &doc, eye);
         assert_eq!(off, Some(FaceId::ConstructionPlane(1)), "got {off:?}");
+    }
+
+    /// #1051: a deleted construction plane is gone — it must not go on being hovered,
+    /// selected, or (since the Shape tool anchors through this) catching shapes aimed at
+    /// whatever is behind it.
+    #[test]
+    fn a_deleted_construction_plane_is_not_pickable() {
+        let mut doc = Document::default();
+        doc.construction_planes.truncate(1);
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let eye = Vec3::new(0.0, 0.0, 100.0);
+        let at = eframe::egui::pos2(20.0, 20.0);
+
+        assert_eq!(
+            pick_sketch_face(at, &project, &doc, eye),
+            Some(FaceId::ConstructionPlane(0)),
+            "the live plane is pickable to begin with"
+        );
+        assert!(
+            sketch_faces_near(at, &project, &doc, 40.0)
+                .iter()
+                .any(|(face, ..)| *face == FaceId::ConstructionPlane(0)),
+            "and reaches the crowd"
+        );
+
+        doc.construction_planes[0].deleted = true;
+        assert_eq!(
+            pick_sketch_face(at, &project, &doc, eye),
+            None,
+            "a deleted plane is not pickable"
+        );
+        assert!(
+            !sketch_faces_near(at, &project, &doc, 40.0)
+                .iter()
+                .any(|(face, ..)| *face == FaceId::ConstructionPlane(0)),
+            "nor does it reach the crowd"
+        );
     }
 
     #[test]
