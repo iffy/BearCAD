@@ -8336,10 +8336,9 @@ mod tests {
             deleted: false,
             shadow: true, // consumed by the move
         });
-        doc.parameters.push(Parameter {
+        doc.parameters.insert(Parameter {
             name: "gap".to_string(),
             expression: "10".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -8381,7 +8380,7 @@ mod tests {
         // The moved copy starts at x = 0 + gap(10).
         assert!((min_x(&doc, 1) - 10.0).abs() < 1e-3, "moved by gap = 10");
         // Editing the parameter the move references must propagate to the descendant body.
-        doc.parameters[0].expression = "25".to_string();
+        doc.parameters.values_mut().next().unwrap().expression = "25".to_string();
         assert!(
             (min_x(&doc, 1) - 25.0).abs() < 1e-3,
             "descendant follows the parameter edit (fingerprint includes parameters/move_ops)"

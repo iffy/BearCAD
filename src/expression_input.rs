@@ -22,7 +22,7 @@ const AUTOCOMPLETE_MAX: usize = 8;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParameterExpressionContext {
     pub param_name: String,
-    pub existing_index: Option<usize>,
+    pub existing_index: Option<crate::model::ParameterKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -349,7 +349,7 @@ pub fn parameter_autocomplete_candidates(
         };
         let spelled = spell_instance_name(&instance_name);
         let mut matches: Vec<(bool, AutocompleteMatch)> = Vec::new();
-        for param in unit.document.parameters.iter().filter(|p| !p.deleted) {
+        for param in unit.document.parameters.values() {
             let score = if partial.is_empty() {
                 0
             } else {
@@ -381,8 +381,8 @@ pub fn parameter_autocomplete_candidates(
     }
 
     let mut matches = Vec::new();
-    for (index, param) in doc.parameters.iter().enumerate() {
-        if param.deleted || exclude_names.iter().any(|name| *name == param.name) {
+    for (index, param) in doc.parameters.iter() {
+        if exclude_names.iter().any(|name| *name == param.name) {
             continue;
         }
         let Some(score) = fuzzy_score(query, &param.name) else {
@@ -1097,10 +1097,9 @@ mod tests {
         for (name, expression, primary) in
             [("internal", "width * 2", false), ("width", "10", true)]
         {
-            inner.parameters.push(crate::model::Parameter {
+            inner.parameters.insert(crate::model::Parameter {
                 name: name.to_string(),
                 expression: expression.to_string(),
-                deleted: false,
                 primary,
                 source: None,
             });
@@ -1291,7 +1290,7 @@ mod tests {
             &doc,
             Some(&ParameterExpressionContext {
                 param_name: "A".to_string(),
-                existing_index: Some(0),
+                existing_index: doc.parameters.keys().next(),
             }),
         );
         assert_eq!(errors, vec!["Circular dependency: A → B → A".to_string()]);
@@ -1306,7 +1305,7 @@ mod tests {
             &doc,
             Some(&ParameterExpressionContext {
                 param_name: "A".to_string(),
-                existing_index: Some(0),
+                existing_index: doc.parameters.keys().next(),
             }),
         );
         assert_eq!(

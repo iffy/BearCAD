@@ -108,11 +108,7 @@ fn evaluate_uncached(unit: &ImportedUnit, overrides: &[(String, String)]) -> Uni
         let mut scratch = unit.document.clone();
         let mut error = None;
         for (name, expression) in overrides {
-            match scratch
-                .parameters
-                .iter_mut()
-                .find(|p| !p.deleted && p.name == *name)
-            {
+            match scratch.parameters.values_mut().find(|p| p.name == *name) {
                 Some(parameter) => parameter.expression = expression.clone(),
                 None => {
                     error = Some(format!("no parameter named '{name}' in the unit"));
@@ -510,10 +506,9 @@ mod tests {
     /// an override visibly changes the built box.
     fn boxy_unit_doc() -> Document {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "width".to_string(),
             expression: "10".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -581,10 +576,9 @@ mod tests {
         assert!(a.error.is_none(), "error: {:?}", a.error);
 
         // An edit to the importing document's own content leaves the memo warm.
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "own".to_string(),
             expression: "1".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -663,10 +657,9 @@ mod tests {
     #[test]
     fn instance_transform_follows_the_importing_documents_parameters() {
         let mut doc = doc_with_unit_and_instances(vec![Vec::new()]);
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "gap".to_string(),
             expression: "7".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });

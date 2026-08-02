@@ -6,7 +6,9 @@ use crate::constraints::{
 };
 use crate::icons::{icon_button, IconId};
 use crate::document_health::HealthStatus;
-use crate::model::{effective_length_unit, DistanceTarget, Document, Parameter, ParameterSource};
+use crate::model::{
+    effective_length_unit, DistanceTarget, Document, Parameter, ParameterKey, ParameterSource,
+};
 use crate::value::{
     eval_parameter_in_doc, expression_references_document_parameter,
     format_angle_display_in, format_length_display_in, format_unknown_variable_error,
@@ -33,12 +35,12 @@ fn styled_parameter_label(label: &str, status: HealthStatus) -> RichText {
     }
 }
 
-fn param_name_id(index: usize) -> Id {
-    Id::new(("bearcad_parameters_name", index))
+fn param_name_id(key: ParameterKey) -> Id {
+    Id::new(("bearcad_parameters_name", key.index(), key.generation()))
 }
 
-fn param_value_id(index: usize) -> Id {
-    Id::new(("bearcad_parameters_value", index))
+fn param_value_id(key: ParameterKey) -> Id {
+    Id::new(("bearcad_parameters_value", key.index(), key.generation()))
 }
 
 /// Whether a stored parameter value should show computed + expression text.
@@ -57,13 +59,10 @@ pub fn parameter_value_is_expression(doc: &Document, expression: &str) -> bool {
 }
 
 /// Evaluated value label for parameter autocomplete rows.
-pub fn format_parameter_autocomplete_value(doc: &Document, index: usize) -> String {
+pub fn format_parameter_autocomplete_value(doc: &Document, index: ParameterKey) -> String {
     let Some(param) = doc.parameters.get(index) else {
         return String::new();
     };
-    if param.deleted {
-        return String::new();
-    }
     match eval_parameter_in_doc(&param.expression, doc) {
         Some(EvaluatedParameter::LengthMm(v)) => {
             format_length_display_in(v, doc.default_length_unit)
@@ -118,9 +117,8 @@ pub fn focused_derived_parameter_source(
     };
     doc.parameters
         .iter()
-        .enumerate()
         .find_map(|(index, param)| {
-            if param.deleted || focused != param_name_id(index) {
+            if focused != param_name_id(index) {
                 return None;
             }
             param.source.as_ref().map(derived_source_elements)
@@ -131,10 +129,7 @@ pub fn focused_derived_parameter_source(
 /// Name of the parameter whose name/value field currently holds keyboard focus, if any.
 pub fn focused_parameter_name(ctx: &egui::Context, doc: &Document) -> Option<String> {
     let focused = ctx.memory(|m| m.focused())?;
-    doc.parameters.iter().enumerate().find_map(|(index, param)| {
-        if param.deleted {
-            return None;
-        }
+    doc.parameters.iter().find_map(|(index, param)| {
         (focused == param_name_id(index) || focused == param_value_id(index))
             .then(|| param.name.clone())
     })
@@ -177,7 +172,7 @@ pub fn elements_using_parameter(
     let mut elements = std::collections::HashSet::new();
     let known = [name];
     // A derived parameter highlights the geometry that defines its value (#432).
-    for param in doc.parameters.iter().filter(|p| !p.deleted && p.name == name) {
+    for param in doc.parameters.values().filter(|p| p.name == name) {
         if let Some(source) = &param.source {
             elements.extend(derived_source_elements(source));
         }
@@ -235,9 +230,9 @@ pub fn parameter_field_focused(ctx: &egui::Context, doc: &Document) -> bool {
             if id == Id::new(NEW_NAME_ID) || id == Id::new(NEW_VALUE_ID) {
                 return true;
             }
-            doc.parameters.iter().enumerate().any(|(index, _)| {
-                id == param_name_id(index) || id == param_value_id(index)
-            })
+            doc.parameters
+                .keys()
+                .any(|index| id == param_name_id(index) || id == param_value_id(index))
         })
     })
 }
@@ -245,8 +240,8 @@ pub fn parameter_field_focused(ctx: &egui::Context, doc: &Document) -> bool {
 /// Which cell is being edited in the parameters table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParameterEditCell {
-    Name(usize),
-    Value(usize),
+    Name(ParameterKey),
+    Value(ParameterKey),
 }
 
 /// Transient UI state for the parameters pane.
@@ -331,13 +326,13 @@ impl ParametersPaneState {
 /// already ignored when expressions are evaluated (`parameter_value_by_name`), so having it still
 /// answer to its name only ever produced "Parameter 'x' already exists" about a parameter that
 /// isn't there. Deleting one frees its name.
-pub fn parameter_index_by_name(doc: &Document, name: &str) -> Option<usize> {
+pub fn parameter_index_by_name(doc: &Document, name: &str) -> Option<ParameterKey> {
     doc.parameters
         .iter()
-        .position(|p| !p.deleted && p.name == name)
+        .find_map(|(key, p)| (p.name == name).then_some(key))
 }
 
-pub fn duplicate_parameter_name(doc: &Document, name: &str, except: Option<usize>) -> bool {
+pub fn duplicate_parameter_name(doc: &Document, name: &str, except: Option<ParameterKey>) -> bool {
     parameter_index_by_name(doc, name).is_some_and(|i| except != Some(i))
 }
 
@@ -360,13 +355,16 @@ pub fn line_eligible_for_computed_length_parameter(doc: &Document, line_index: u
         && find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_none()
 }
 
-pub fn computed_parameter_index_for_line(doc: &Document, line_index: usize) -> Option<usize> {
-    doc.parameters.iter().position(|param| {
-        !param.deleted
-            && matches!(
-                param.source,
-                Some(ParameterSource::LineLength(index)) if index == line_index
-            )
+pub fn computed_parameter_index_for_line(
+    doc: &Document,
+    line_index: usize,
+) -> Option<ParameterKey> {
+    doc.parameters.iter().find_map(|(key, param)| {
+        matches!(
+            param.source,
+            Some(ParameterSource::LineLength(index)) if index == line_index
+        )
+        .then_some(key)
     })
 }
 
@@ -557,11 +555,9 @@ pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: usiz
 pub fn sync_computed_parameters(doc: &mut Document) {
     // Values are computed against an immutable view first (the derived evaluators walk
     // sketches/frames), then written back.
-    let updates: Vec<(usize, String)> = doc
+    let updates: Vec<(ParameterKey, String)> = doc
         .parameters
         .iter()
-        .enumerate()
-        .filter(|(_, p)| !p.deleted)
         .filter_map(|(i, p)| {
             let source = p.source.as_ref()?;
             let (value, is_angle) = derived_source_value(doc, source)?;
@@ -598,7 +594,7 @@ pub fn add_computed_parameter_from_line_length(
     doc: &mut Document,
     line_index: usize,
     name: Option<String>,
-) -> Result<usize, String> {
+) -> Result<ParameterKey, String> {
     if !crate::document_lifecycle::line_alive(doc, line_index) {
         return Err(format!("Line {line_index} not found"));
     }
@@ -615,12 +611,10 @@ pub fn add_computed_parameter_from_line_length(
     validate_new_parameter_name(doc, &name, None)?;
     let length = doc.lines[line_index].length();
     let unit = effective_length_unit(doc, doc.lines[line_index].sketch);
-    let index = doc.parameters.len();
-    doc.parameters.push(Parameter {
+    let index = doc.parameters.insert(Parameter {
         name,
         expression: format_length_display_in(length, unit),
-        deleted: false,
-            primary: false,
+        primary: false,
         source: Some(ParameterSource::LineLength(line_index)),
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -707,7 +701,7 @@ pub fn add_derived_parameter(
     doc: &mut Document,
     source: ParameterSource,
     name: Option<String>,
-) -> Result<usize, String> {
+) -> Result<ParameterKey, String> {
     if let ParameterSource::LineLength(line_index) = source {
         return add_computed_parameter_from_line_length(doc, line_index, name);
     }
@@ -715,8 +709,8 @@ pub fn add_derived_parameter(
         derived_source_value(doc, &source).ok_or("Selection doesn't measure anything")?;
     if doc
         .parameters
-        .iter()
-        .any(|p| !p.deleted && p.source.as_ref() == Some(&source))
+        .values()
+        .any(|p| p.source.as_ref() == Some(&source))
     {
         return Err("A parameter already tracks this measurement".to_string());
     }
@@ -730,12 +724,10 @@ pub fn add_derived_parameter(
     } else {
         format_length_display_in(value, doc.default_length_unit)
     };
-    let index = doc.parameters.len();
-    doc.parameters.push(Parameter {
+    let index = doc.parameters.insert(Parameter {
         name,
         expression,
-        deleted: false,
-            primary: false,
+        primary: false,
         source: Some(source),
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -807,7 +799,7 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
     if old == new {
         return;
     }
-    for param in &mut doc.parameters {
+    for param in doc.parameters.values_mut() {
         param.expression = substitute_parameter_name(&param.expression, old, new);
     }
     for line in &mut doc.lines {
@@ -868,12 +860,7 @@ pub fn propagate_instance_rename(doc: &mut Document, unit: usize, old: &str, new
         .units
         .get(unit)
         .map(|u| {
-            u.document
-                .parameters
-                .iter()
-                .filter(|p| !p.deleted)
-                .map(|p| p.name.clone())
-                .collect()
+            u.document.parameters.values().map(|p| p.name.clone()).collect()
         })
         .unwrap_or_default();
     let spelled_new = if crate::value::is_valid_parameter_name(new) {
@@ -966,7 +953,11 @@ pub fn rebake_extrusion_distances(doc: &mut Document) {
     }
 }
 
-pub fn validate_new_parameter_name(doc: &Document, name: &str, except: Option<usize>) -> Result<(), String> {
+pub fn validate_new_parameter_name(
+    doc: &Document,
+    name: &str,
+    except: Option<ParameterKey>,
+) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Parameter name is required".to_string());
@@ -993,12 +984,11 @@ fn parameter_bindings_for_check(
     doc: &Document,
     param_name: &str,
     expression: &str,
-    existing_index: Option<usize>,
+    existing_index: Option<ParameterKey>,
 ) -> Vec<(String, String)> {
     let mut bindings: Vec<(String, String)> = doc
         .parameters
         .iter()
-        .enumerate()
         .map(|(index, param)| {
             let expr = if existing_index == Some(index) {
                 expression.to_string()
@@ -1027,7 +1017,7 @@ pub fn find_parameter_dependency_cycle(
     doc: &Document,
     param_name: &str,
     expression: &str,
-    existing_index: Option<usize>,
+    existing_index: Option<ParameterKey>,
 ) -> Option<Vec<String>> {
     let param_name = param_name.trim();
     if param_name.is_empty() {
@@ -1078,7 +1068,7 @@ pub fn parameter_expression_cycle_warning(
     doc: &Document,
     param_name: &str,
     expression: &str,
-    existing_index: Option<usize>,
+    existing_index: Option<ParameterKey>,
 ) -> Option<String> {
     let expression = expression.trim();
     if expression.is_empty() || param_name.trim().is_empty() {
@@ -1089,7 +1079,7 @@ pub fn parameter_expression_cycle_warning(
 }
 
 pub fn validate_document_parameters_no_cycles(doc: &Document) -> Result<(), String> {
-    for (index, param) in doc.parameters.iter().enumerate() {
+    for (index, param) in doc.parameters.iter() {
         if let Some(cycle) = find_parameter_dependency_cycle(
             doc,
             &param.name,
@@ -1106,7 +1096,7 @@ pub fn validate_parameter_expression_for(
     doc: &Document,
     param_name: &str,
     expression: &str,
-    existing_index: Option<usize>,
+    existing_index: Option<ParameterKey>,
 ) -> Result<(), String> {
     let expression = expression.trim();
     if expression.is_empty() {
@@ -1193,9 +1183,7 @@ pub fn try_commit_inline_parameter_definition(
     let Some((name, value)) = parse_inline_parameter_definition(text) else {
         return Ok(None);
     };
-    // `name=value` on an existing name redefines that parameter's expression. A deleted one is
-    // not an existing name (#995) — the lookup skips tombstones — so it falls through and makes
-    // a fresh parameter rather than silently reviving an invisible row.
+    // `name=value` on an existing name redefines that parameter's expression.
     if let Some(index) = parameter_index_by_name(doc, &name) {
         set_parameter_expression(doc, index, value)?;
         *text = name.clone();
@@ -1216,17 +1204,19 @@ pub fn new_parameter_primary_default(expression: &str) -> bool {
         || crate::value::eval_angle_rad(expression).is_some()
 }
 
-pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Result<usize, String> {
+pub fn add_parameter(
+    doc: &mut Document,
+    name: String,
+    expression: String,
+) -> Result<ParameterKey, String> {
     let name = name.trim().to_string();
     let expression = expression.trim().to_string();
     validate_new_parameter_name(doc, &name, None)?;
     validate_parameter_expression_for(doc, &name, &expression, None)?;
-    let index = doc.parameters.len();
-    doc.parameters.push(Parameter {
+    let index = doc.parameters.insert(Parameter {
         name,
         primary: new_parameter_primary_default(&expression),
         expression,
-        deleted: false,
         source: None,
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -1234,12 +1224,16 @@ pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Re
     Ok(index)
 }
 
-pub fn set_parameter_name(doc: &mut Document, index: usize, name: String) -> Result<(), String> {
+pub fn set_parameter_name(
+    doc: &mut Document,
+    index: ParameterKey,
+    name: String,
+) -> Result<(), String> {
     let name = name.trim().to_string();
     let old = doc
         .parameters
         .get(index)
-        .ok_or_else(|| format!("Parameter {index} not found"))?
+        .ok_or_else(|| format!("Parameter {index:?} not found"))?
         .name
         .clone();
     if name == old {
@@ -1253,14 +1247,14 @@ pub fn set_parameter_name(doc: &mut Document, index: usize, name: String) -> Res
 
 pub fn set_parameter_expression(
     doc: &mut Document,
-    index: usize,
+    index: ParameterKey,
     expression: String,
 ) -> Result<(), String> {
     let expression = expression.trim().to_string();
     let param = doc
         .parameters
         .get(index)
-        .ok_or_else(|| format!("Parameter {index} not found"))?;
+        .ok_or_else(|| format!("Parameter {index:?} not found"))?;
     require_parameter_value_editable(param)?;
     let param_name = param.name.clone();
     validate_parameter_expression_for(doc, &param_name, &expression, Some(index))?;
@@ -1268,12 +1262,9 @@ pub fn set_parameter_expression(
     recompute_document_geometry(doc)
 }
 
-pub fn delete_parameter(doc: &mut Document, index: usize) -> Result<(), String> {
-    if index >= doc.parameters.len() {
-        return Err(format!("Parameter {index} not found"));
-    }
+pub fn delete_parameter(doc: &mut Document, index: ParameterKey) -> Result<(), String> {
     if !crate::document_lifecycle::tombstone_parameter(doc, index) {
-        return Err(format!("Parameter {index} already deleted"));
+        return Err(format!("Parameter {index:?} not found"));
     }
     Ok(())
 }
@@ -1325,8 +1316,8 @@ pub fn unit_parameter_rows(
     let mut rows: Vec<UnitParamRow> = unit
         .document
         .parameters
-        .iter()
-        .filter(|p| !p.deleted && (p.primary || show_secondary))
+        .values()
+        .filter(|p| p.primary || show_secondary)
         .map(|p| {
             let over = inst.parameter_overrides.iter().find(|(n, _)| *n == p.name);
             UnitParamRow {
@@ -1466,12 +1457,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
     // A row's ✕ delete button queues here and is applied after the grid, so the loop keeps its
     // borrow of `app` (#270).
-    let mut delete_index: Option<usize> = None;
+    let mut delete_index: Option<ParameterKey> = None;
     // Row-hover tracking (#620): re-derived every frame; queued here (like `delete_index`)
     // so the row loop keeps its borrow of `app`.
     let mut hovered_name: Option<String> = None;
     // The eyeball toggle's flip (#727), applied after the grid like the delete.
-    let mut toggle_primary: Option<(usize, bool)> = None;
+    let mut toggle_primary: Option<(ParameterKey, bool)> = None;
 
     ScrollArea::vertical().show(ui, |ui| {
         // Selected unit instance (#728): its parameters lead the pane, unmistakably its
@@ -1487,13 +1478,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                 ui.label("");
                 ui.end_row();
 
-                let count = app.doc.parameters.len();
                 let enter = ui.input(|i| i.key_pressed(Key::Enter));
 
-                for index in 0..count {
-                    if !crate::document_lifecycle::parameter_alive(&app.doc, index) {
-                        continue;
-                    }
+                let rows: Vec<ParameterKey> = app.doc.parameters.keys().collect();
+                for index in rows {
                     let (param_name, param_expression, param_display, param_status, value_readonly, source_description) = {
                         let param = &app.doc.parameters[index];
                         (
@@ -1873,32 +1861,34 @@ mod tests {
             name: "width".to_string(),
             expression: "10".to_string(),
         });
-        assert!(state.doc.parameters[0].primary);
+        let width = state.doc.parameters.keys().next().expect("the parameter");
+        assert!(state.doc.parameters[width].primary);
         let r = state.apply(crate::actions::Action::SetParameterPrimary {
-            index: 0,
+            index: width,
             primary: false,
         });
         assert_eq!(r, crate::actions::ActionResult::Ok);
-        assert!(!state.doc.parameters[0].primary, "the toggle flips it");
-        state.apply(crate::actions::Action::SetParameterPrimary { index: 0, primary: true });
+        assert!(!state.doc.parameters[width].primary, "the toggle flips it");
+        state.apply(crate::actions::Action::SetParameterPrimary { index: width, primary: true });
 
         let path = std::env::temp_dir().join("bearcad_primary_roundtrip.bearcad");
         let _ = std::fs::remove_file(&path);
         crate::storage::save(&path.to_string_lossy(), &state.doc).unwrap();
         let loaded = crate::storage::open(&path.to_string_lossy()).unwrap();
-        assert!(loaded.parameters[0].primary, "the flag round-trips");
+        assert!(loaded.parameters.values().next().unwrap().primary, "the flag round-trips");
         let _ = std::fs::remove_file(&path);
 
         // An existing document whose JSON has no `primary` field loads secondary.
         let mut value = serde_json::to_value(&state.doc).unwrap();
-        value["parameters"][0]
+        // An arena serializes as `{ entries: [[slot, generation, value], ...] }` (#1055).
+        value["parameters"]["entries"][0][2]
             .as_object_mut()
             .unwrap()
             .remove("primary");
         let bytes = serde_json::to_vec(&value).unwrap();
         let legacy = crate::storage::from_json_bytes(&bytes).unwrap();
         assert!(
-            !legacy.parameters[0].primary,
+            !legacy.parameters.values().next().unwrap().primary,
             "existing parameters load secondary — the front door is chosen deliberately"
         );
     }
@@ -1987,7 +1977,7 @@ mod tests {
         add_parameter(&mut doc, "B".to_string(), "A + 5in".to_string()).unwrap();
         add_parameter(&mut doc, "width".to_string(), "2 * B".to_string()).unwrap();
         assert_eq!(doc.parameters.len(), 3);
-        assert_eq!(doc.parameters[2].expression, "2 * B");
+        assert_eq!(doc.parameters.values().nth(2).unwrap().expression, "2 * B");
     }
 
     /// #995: deleting a parameter frees its name. Deleted parameters are tombstoned so every
@@ -2006,11 +1996,11 @@ mod tests {
         delete_parameter(&mut doc, i).expect("deleted");
         let j = add_parameter(&mut doc, "slotwidth".into(), "5".into())
             .expect("the name is free once the parameter is gone");
-        assert_ne!(i, j, "the tombstone stays put so other indices don't shift");
-        assert!(doc.parameters[i].deleted);
-        assert!(!doc.parameters[j].deleted);
+        assert_ne!(i, j, "the reused slot carries a new generation, so the keys differ");
+        assert!(doc.parameters.get(i).is_none(), "the old parameter is gone, not tombstoned");
+        assert!(doc.parameters.contains(j));
 
-        // The name now resolves to the new one, and nothing sees the tombstone.
+        // The name now resolves to the new one.
         assert_eq!(parameter_index_by_name(&doc, "slotwidth"), Some(j));
         assert_eq!(
             crate::value::eval_length_mm_in_doc("slotwidth", &doc),
@@ -2024,8 +2014,8 @@ mod tests {
         let mut doc = Document::default();
         add_parameter(&mut doc, "width".to_string(), "2in".to_string()).unwrap();
         assert_eq!(doc.parameters.len(), 1);
-        assert_eq!(doc.parameters[0].name, "width");
-        assert_eq!(doc.parameters[0].expression, "2in");
+        assert_eq!(doc.parameters.values().next().unwrap().name, "width");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "2in");
         assert!(doc.shape_order.contains(&ShapeKind::Parameter));
     }
 
@@ -2033,8 +2023,9 @@ mod tests {
     fn parameter_rename_updates_dependent_expressions() {
         let mut doc = doc_with_param_a();
         add_parameter(&mut doc, "B".to_string(), "A + 5in".to_string()).unwrap();
-        set_parameter_name(&mut doc, 0, "Len".to_string()).unwrap();
-        assert_eq!(doc.parameters[1].expression, "Len + 5in");
+        let a = doc.parameters.keys().next().unwrap();
+        set_parameter_name(&mut doc, a, "Len".to_string()).unwrap();
+        assert_eq!(doc.parameters.values().nth(1).unwrap().expression, "Len + 5in");
     }
 
     #[test]
@@ -2071,8 +2062,8 @@ mod tests {
         let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
         assert_eq!(outcome, Some(InlineParameterCommit::Created("width".to_string())));
         assert_eq!(text, "width");
-        assert_eq!(doc.parameters[0].name, "width");
-        assert_eq!(doc.parameters[0].expression, "10mm");
+        assert_eq!(doc.parameters.values().next().unwrap().name, "width");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "10mm");
     }
 
     /// #147 / SPEC §5.1.1: `name=value` on an existing name **redefines** that parameter
@@ -2086,14 +2077,18 @@ mod tests {
         let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
         assert_eq!(outcome, Some(InlineParameterCommit::Redefined("dia".to_string())));
         assert_eq!(text, "dia");
-        assert_eq!(doc.parameters[0].expression, "30");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "30");
         assert_eq!(doc.parameters.len(), 1, "redefine must not add a second parameter");
 
         let mut text = "dia=".to_string();
         let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
         assert_eq!(outcome, Some(InlineParameterCommit::Reused("dia".to_string())));
         assert_eq!(text, "dia");
-        assert_eq!(doc.parameters[0].expression, "30", "reuse leaves the value unchanged");
+        assert_eq!(
+            doc.parameters.values().next().unwrap().expression,
+            "30",
+            "reuse leaves the value unchanged"
+        );
     }
 
     /// A bare `name=` for a name that doesn't exist stays untouched (nothing to reuse) —
@@ -2205,7 +2200,8 @@ mod tests {
     #[test]
     fn rejects_unknown_variable_in_parameter_expression() {
         let mut doc = doc_with_param_a();
-        let err = set_parameter_expression(&mut doc, 0, "Missing".to_string()).unwrap_err();
+        let a = doc.parameters.keys().next().unwrap();
+        let err = set_parameter_expression(&mut doc, a, "Missing".to_string()).unwrap_err();
         assert_eq!(err, "Unknown variable: Missing");
     }
 
@@ -2219,7 +2215,8 @@ mod tests {
     fn rejects_two_parameter_cycle() {
         let mut doc = doc_with_param_a();
         add_parameter(&mut doc, "B".to_string(), "A".to_string()).unwrap();
-        let err = set_parameter_expression(&mut doc, 0, "B".to_string()).unwrap_err();
+        let a = doc.parameters.keys().next().unwrap();
+        let err = set_parameter_expression(&mut doc, a, "B".to_string()).unwrap_err();
         assert!(err.contains("Circular dependency"));
         assert!(err.contains("A"));
         assert!(err.contains("B"));
@@ -2230,7 +2227,8 @@ mod tests {
         let mut doc = doc_with_param_a();
         add_parameter(&mut doc, "C".to_string(), "A".to_string()).unwrap();
         add_parameter(&mut doc, "B".to_string(), "C".to_string()).unwrap();
-        let err = set_parameter_expression(&mut doc, 0, "B".to_string()).unwrap_err();
+        let a = doc.parameters.keys().next().unwrap();
+        let err = set_parameter_expression(&mut doc, a, "B".to_string()).unwrap_err();
         assert_eq!(err, "Circular dependency: A → B → C → A");
     }
 
@@ -2253,7 +2251,8 @@ mod tests {
     fn parameter_expression_cycle_warning_for_draft_expression() {
         let mut doc = doc_with_param_a();
         add_parameter(&mut doc, "B".to_string(), "A".to_string()).unwrap();
-        let warning = parameter_expression_cycle_warning(&doc, "A", "B", Some(0)).unwrap();
+        let a = doc.parameters.keys().next();
+        let warning = parameter_expression_cycle_warning(&doc, "A", "B", a).unwrap();
         assert_eq!(warning, "Circular dependency: A → B → A");
     }
 
@@ -2268,7 +2267,7 @@ mod tests {
     fn add_angle_parameter_with_degrees() {
         let mut doc = Document::default();
         add_parameter(&mut doc, "corner".to_string(), "16.7deg".to_string()).unwrap();
-        assert_eq!(doc.parameters[0].expression, "16.7deg");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "16.7deg");
         match eval_parameter_in_doc("corner", &doc).unwrap() {
             EvaluatedParameter::AngleRad(v) => {
                 assert!((v.to_degrees() - 16.7).abs() < 1e-3);
@@ -2301,7 +2300,10 @@ mod tests {
             _ => panic!("expected angle parameter"),
         }
         assert_eq!(
-            format_parameter_value_display(&doc, &doc.parameters[1].expression),
+            format_parameter_value_display(
+                &doc,
+                &doc.parameters.values().nth(1).unwrap().expression
+            ),
             "35.0 deg (base + 5deg)"
         );
     }
@@ -2346,7 +2348,7 @@ mod tests {
         state.parameters_pane.new_value = "A + 5mm".to_string();
         commit_new_parameter(&mut state).unwrap();
         assert_eq!(state.doc.parameters.len(), 2);
-        assert_eq!(state.doc.parameters[1].expression, "A + 5mm");
+        assert_eq!(state.doc.parameters.values().nth(1).unwrap().expression, "A + 5mm");
     }
 
     /// #453: the Dimension tool measures in 3D mode — a plain click on a line captures
@@ -2376,9 +2378,9 @@ mod tests {
             name: Some("width".to_string()),
         });
         assert_eq!(state.doc.parameters.len(), 1);
-        assert_eq!(state.doc.parameters[0].name, "width");
+        assert_eq!(state.doc.parameters.values().next().unwrap().name, "width");
         assert_eq!(
-            state.doc.parameters[0].source,
+            state.doc.parameters.values().next().unwrap().source,
             Some(ParameterSource::LineLength(0))
         );
     }
@@ -2480,7 +2482,7 @@ mod tests {
         add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
         doc.lines[0].x1 = 25.0;
         recompute_document_geometry(&mut doc).unwrap();
-        assert_eq!(doc.parameters[0].expression, "25.0 mm");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "25.0 mm");
     }
 
     #[test]
@@ -2504,10 +2506,11 @@ mod tests {
         add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
         tombstone_element(&mut doc, SceneElement::Line(line_index));
         assert_eq!(doc.parameters.len(), 1);
-        assert_eq!(doc.parameters[0].expression, "10.0 mm");
+        assert_eq!(doc.parameters.values().next().unwrap().expression, "10.0 mm");
         let health = crate::document_health::recompute_document_health(&doc);
+        let param = doc.parameters.keys().next().expect("the parameter");
         assert_eq!(
-            health.parameter_status(0),
+            health.parameter_status(param),
             crate::document_health::HealthStatus::Invalid
         );
     }

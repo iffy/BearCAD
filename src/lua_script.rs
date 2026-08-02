@@ -2398,7 +2398,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
                 "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
                 "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
-                "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
+                "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
                 }
@@ -2539,7 +2539,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("cut", cut)?;
                 }
                 "parameter" => {
-                    let Some(param) = doc.parameters.get(index).filter(|e| !e.deleted) else {
+                    // The script's `index` is the parameter's ordinal (#1055).
+                    let Some(param) = doc.parameters.keys().nth(index).map(|k| &doc.parameters[k])
+                    else {
                         return Ok(Value::Nil);
                     };
                     t.set("name", param.name.as_str())?;
@@ -3326,9 +3328,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         }
                     };
                     let doc = unsafe { &tick.state().doc };
-                    let Some(param) =
-                        doc.parameters.iter().find(|p| !p.deleted && p.name == name)
-                    else {
+                    let Some(param) = doc.parameters.values().find(|p| p.name == name) else {
                         return Ok(Value::Nil);
                     };
                     if action == "get_expression" {
@@ -5913,8 +5913,9 @@ mod tests {
         );
         let op = state.doc.sketch_offset_ops[0].clone();
         assert!((state.doc.lines[op.line_outputs[0]].y0 - 3.0).abs() < 1e-3);
+        let param = state.doc.parameters.keys().next().expect("the parameter");
         state.apply(crate::actions::Action::CommitParameterExpression {
-            index: 0,
+            index: param,
             expression: "5".to_string(),
         });
         assert!((state.doc.lines[op.line_outputs[0]].y0 - 5.0).abs() < 1e-3);
@@ -6360,8 +6361,8 @@ mod tests {
             state
                 .doc
                 .parameters
-                .iter()
-                .find(|p| !p.deleted && p.name == name)
+                .values()
+                .find(|p| p.name == name)
                 .map(|p| p.expression.clone())
         };
         assert_eq!(param("leg").as_deref(), Some("40mm"));
@@ -6392,12 +6393,12 @@ mod tests {
         let leg = state
             .doc
             .parameters
-            .iter()
-            .find(|p| !p.deleted && p.name == "leg")
+            .values()
+            .find(|p| p.name == "leg")
             .expect("leg exists");
         assert_eq!(leg.expression, "40mm");
         assert_eq!(
-            state.doc.parameters.iter().filter(|p| !p.deleted && p.name == "leg").count(),
+            state.doc.parameters.values().filter(|p| p.name == "leg").count(),
             1,
             "redefining shouldn't add a second row"
         );
@@ -8492,14 +8493,14 @@ mod tests {
             "#,
         );
         let value = |name: &str| {
-            let p = state.doc.parameters.iter().find(|p| p.name == name).unwrap();
+            let p = state.doc.parameters.values().find(|p| p.name == name).unwrap();
             crate::value::computed_length_in_doc(&p.expression, &state.doc).unwrap()
         };
         assert!((value("edge") - 30.0).abs() < 1e-2, "edge = {}", value("edge"));
         assert!((value("diag") - 50.0).abs() < 1e-2, "diag = {}", value("diag"));
         // Both are read-only, geometry-driven parameters.
         for name in ["edge", "diag"] {
-            let p = state.doc.parameters.iter().find(|p| p.name == name).unwrap();
+            let p = state.doc.parameters.values().find(|p| p.name == name).unwrap();
             assert!(p.source.is_some(), "{name} is derived");
         }
     }

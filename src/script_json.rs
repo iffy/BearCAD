@@ -1678,7 +1678,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
                 "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
                 "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
-                "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
+                "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
                 }
@@ -1817,7 +1817,8 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             t.insert("cut".into(), json!(body.source.cut_extrusion_indices()));
         }
         "parameter" => {
-            let Some(param) = doc.parameters.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the parameter's ordinal among the live ones (#1055).
+            let Some(param) = doc.parameters.keys().nth(index).map(|k| &doc.parameters[k]) else {
                 return Ok(Value::Null);
             };
             t.insert("name".into(), json!(param.name));

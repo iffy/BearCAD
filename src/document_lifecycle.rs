@@ -8,11 +8,6 @@ use crate::model::{
 use crate::selection::SceneSelection;
 use std::collections::HashSet;
 
-/// Whether a stored entity at `index` is still active (not tombstoned).
-pub fn parameter_alive(doc: &Document, index: usize) -> bool {
-    doc.parameters.get(index).is_some_and(|p| !p.deleted)
-}
-
 pub fn sketch_alive(doc: &Document, sketch: SketchId) -> bool {
     doc.sketches.get(sketch).is_some_and(|s| !s.deleted)
 }
@@ -889,16 +884,16 @@ fn tombstone_constraint(doc: &mut Document, index: usize) -> bool {
     true
 }
 
-/// Tombstone a parameter by index (used by `DeleteParameter` and selection delete).
-pub fn tombstone_parameter(doc: &mut Document, index: usize) -> bool {
-    let Some(param) = doc.parameters.get_mut(index) else {
+/// Remove a parameter (used by `DeleteParameter` and selection delete). Its name is free
+/// again the moment it goes, because it is actually gone (#1055).
+pub fn tombstone_parameter(doc: &mut Document, index: crate::model::ParameterKey) -> bool {
+    // The history-tape marker to drop is the one for this parameter's place among the live
+    // ones, read before the removal.
+    let Some(ordinal) = doc.parameters.keys().position(|k| k == index) else {
         return false;
     };
-    if param.deleted {
-        return false;
-    }
-    param.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Parameter, index);
+    doc.parameters.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::Parameter, ordinal);
     true
 }
 

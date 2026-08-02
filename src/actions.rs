@@ -1781,7 +1781,7 @@ pub enum Action {
     AddParameter { name: String, expression: String },
     /// Flip a parameter's primary/secondary flag (#727): primary parameters are the
     /// knobs an importing file is offered first; advisory only.
-    SetParameterPrimary { index: usize, primary: bool },
+    SetParameterPrimary { index: crate::model::ParameterKey, primary: bool },
     /// Override (or with `None`, clear back to the unit's own value) one parameter of one
     /// unit **instance** (#728). Never touches the source file or other instances.
     SetUnitParameterOverride {
@@ -1807,9 +1807,9 @@ pub enum Action {
         source: crate::model::ParameterSource,
         name: Option<String>,
     },
-    CommitParameterName { index: usize, name: String },
-    CommitParameterExpression { index: usize, expression: String },
-    DeleteParameter { index: usize },
+    CommitParameterName { index: crate::model::ParameterKey, name: String },
+    CommitParameterExpression { index: crate::model::ParameterKey, expression: String },
+    DeleteParameter { index: crate::model::ParameterKey },
     /// Tombstone every element in the current scene selection.
     DeleteSelection,
     /// Delete one specific element (right-click → Delete in the Elements pane, #253), independent
@@ -8519,13 +8519,8 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetParameterPrimary { index, primary } => {
-                let Some(param) = self
-                    .doc
-                    .parameters
-                    .get_mut(index)
-                    .filter(|p| !p.deleted)
-                else {
-                    self.status = format!("Parameter {index} not found");
+                let Some(param) = self.doc.parameters.get_mut(index) else {
+                    self.status = format!("Parameter {index:?} not found");
                     return ActionResult::Err(self.status.clone());
                 };
                 param.primary = primary;
@@ -8601,7 +8596,7 @@ impl AppState {
                     .doc
                     .units
                     .get(inst.unit)
-                    .is_some_and(|u| u.document.parameters.iter().any(|p| !p.deleted && p.name == name));
+                    .is_some_and(|u| u.document.parameters.values().any(|p| p.name == name));
                 if !unit_param_exists {
                     self.status = format!("The unit has no parameter named '{name}'");
                     return ActionResult::Err(self.status.clone());
@@ -17277,7 +17272,7 @@ mod tests {
             state.status
         );
         assert!(
-            state.doc.parameters.iter().any(|p| !p.deleted && p.name == "depth"),
+            state.doc.parameters.values().any(|p| p.name == "depth"),
             "a `depth` parameter should have been defined"
         );
         assert!(
@@ -17308,7 +17303,12 @@ mod tests {
         // The extrusion tracks the parameter by expression, not a baked literal.
         assert_eq!(state.doc.extrusions[0].expression, "foo");
 
-        let idx = state.doc.parameters.iter().position(|p| p.name == "foo").unwrap();
+        let idx = state
+            .doc
+            .parameters
+            .iter()
+            .find_map(|(k, p)| (p.name == "foo").then_some(k))
+            .unwrap();
         state.apply(Action::CommitParameterExpression {
             index: idx,
             expression: "40mm".to_string(),
@@ -17375,10 +17375,9 @@ mod tests {
     /// Build a small standalone document on disk to import as a unit (#721).
     fn write_unit_file(name: &str) -> std::path::PathBuf {
         let mut source = AppState::default();
-        source.doc.parameters.push(crate::model::Parameter {
+        source.doc.parameters.insert(crate::model::Parameter {
             name: "width".to_string(),
             expression: "10".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -17412,7 +17411,7 @@ mod tests {
         );
         assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Dynamic, "default link is dynamic");
         assert!(state.doc.units[0].source_hash.is_some());
-        assert_eq!(state.doc.units[0].document.parameters[0].name, "width");
+        assert_eq!(state.doc.units[0].document.parameters.values().next().unwrap().name, "width");
         assert_eq!(
             state.doc.unit_instances[0].name.as_deref(),
             Some("bearcad_unit_import_a")
@@ -17541,7 +17540,7 @@ mod tests {
         let loaded = crate::storage::open(&elsewhere.to_string_lossy()).unwrap();
         assert_eq!(loaded.units.len(), 1, "the embedded copy travels with the document");
         assert_eq!(loaded.unit_instances.len(), 1);
-        assert_eq!(loaded.units[0].document.parameters[0].name, "width");
+        assert_eq!(loaded.units[0].document.parameters.values().next().unwrap().name, "width");
 
         let _ = std::fs::remove_dir_all(&elsewhere_dir);
     }
@@ -17550,10 +17549,9 @@ mod tests {
     /// (#724), so overrides visibly move its geometry.
     fn write_solid_unit_file(name: &str) -> std::path::PathBuf {
         let mut doc = crate::model::Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "width".to_string(),
             expression: "10".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -17647,7 +17645,7 @@ mod tests {
             "the unit edge upgrades to its analytic identity: {source:?}"
         );
         let pi = crate::parameters::add_derived_parameter(&mut state.doc, source, None).unwrap();
-        let value = |doc: &crate::model::Document, pi: usize| {
+        let value = |doc: &crate::model::Document, pi: crate::model::ParameterKey| {
             crate::value::eval_length_mm_in_doc(&doc.parameters[pi].expression, doc).unwrap()
         };
         assert!((value(&state.doc, pi) - 10.0).abs() < 1e-2);
@@ -17890,7 +17888,7 @@ mod tests {
         // Re-sync simulation (#732 will do this from disk): the embedded copy is replaced
         // with new geometry; both operations re-run against it.
         let mut taller = state.doc.units[0].document.clone();
-        taller.parameters[0].expression = "18".to_string();
+        taller.parameters.values_mut().next().unwrap().expression = "18".to_string();
         crate::parameters::recompute_document_geometry(&mut taller).unwrap();
         state.doc.units[0].document = taller;
         state.refresh_document_health();
@@ -17920,11 +17918,10 @@ mod tests {
         }
         let _ = std::fs::remove_file(&unit_path);
         // Mark `width` primary in the embedded copy, and add a secondary internal.
-        state.doc.units[0].document.parameters[0].primary = true;
-        state.doc.units[0].document.parameters.push(crate::model::Parameter {
+        state.doc.units[0].document.parameters.values_mut().next().unwrap().primary = true;
+        state.doc.units[0].document.parameters.insert(crate::model::Parameter {
             name: "internal".to_string(),
             expression: "width * 2".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -18010,7 +18007,7 @@ mod tests {
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
         assert_eq!(
-            state.doc.parameters.iter().find(|p| p.name == "x").unwrap().expression,
+            state.doc.parameters.values().find(|p| p.name == "x").unwrap().expression,
             "`left bracket`.width * 2",
             "a spaced new name rewrites into its backticked spelling"
         );
@@ -18046,7 +18043,7 @@ mod tests {
             "undo restores the name"
         );
         assert_eq!(
-            state.doc.parameters.iter().find(|p| p.name == "x").unwrap().expression,
+            state.doc.parameters.values().find(|p| p.name == "x").unwrap().expression,
             format!("{first}.width * 2"),
             "…and the references, in the same step"
         );
@@ -18147,7 +18144,7 @@ mod tests {
             expression: format!("{first}.width"),
         });
         let mut v2 = state.doc.units[0].document.clone();
-        v2.parameters[0].name = "w".to_string();
+        v2.parameters.values_mut().next().unwrap().name = "w".to_string();
         v2.extrusions[0].expression = "w * 2".to_string();
         std::thread::sleep(std::time::Duration::from_millis(1100)); // move the mtime second
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
@@ -18163,7 +18160,12 @@ mod tests {
 
         // The orphaned reference reports through health rather than blocking the sync.
         state.refresh_document_health();
-        let xi = state.doc.parameters.iter().position(|p| p.name == "x").unwrap();
+        let xi = state
+            .doc
+            .parameters
+            .iter()
+            .find_map(|(k, p)| (p.name == "x").then_some(k))
+            .unwrap();
         assert_ne!(
             state.document_health.parameter_status(xi),
             crate::document_health::HealthStatus::Healthy,
@@ -18221,14 +18223,14 @@ mod tests {
 
         // The source is rewritten — twice, quickly (an editor's temp-write dance).
         let mut v2 = state.doc.units[0].document.clone();
-        v2.parameters[0].expression = "17".to_string();
+        v2.parameters.values_mut().next().unwrap().expression = "17".to_string();
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
         assert!(
             watcher.poll(&state.doc, state.path.as_deref(), None).is_empty(),
             "a fresh change waits for a quiet poll"
         );
         std::thread::sleep(std::time::Duration::from_millis(30));
-        v2.parameters[0].expression = "18".to_string();
+        v2.parameters.values_mut().next().unwrap().expression = "18".to_string();
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
         assert!(
             watcher.poll(&state.doc, state.path.as_deref(), None).is_empty(),
@@ -18245,7 +18247,7 @@ mod tests {
 
         // A static unit is never reported, however stale.
         state.doc.units[0].link = crate::model::LinkMode::Static;
-        v2.parameters[0].expression = "19".to_string();
+        v2.parameters.values_mut().next().unwrap().expression = "19".to_string();
         std::thread::sleep(std::time::Duration::from_millis(30));
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
         assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
@@ -19272,8 +19274,9 @@ mod tests {
         };
         let before = bridge_at(&state);
         // Grow the parameter; the trim (and hence the bridge) must move.
+        let param = state.doc.parameters.keys().next().expect("the parameter");
         state.apply(Action::CommitParameterExpression {
-            index: 0,
+            index: param,
             expression: "6".to_string(),
         });
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
@@ -19936,10 +19939,10 @@ mod tests {
             name: None,
         });
         assert_eq!(state.doc.parameters.len(), 1);
-        assert_eq!(state.doc.parameters[0].name, "line0_length");
-        assert_eq!(state.doc.parameters[0].expression, "15.0 mm");
+        assert_eq!(state.doc.parameters.values().next().unwrap().name, "line0_length");
+        assert_eq!(state.doc.parameters.values().next().unwrap().expression, "15.0 mm");
         assert!(crate::parameters::parameter_value_is_readonly(
-            &state.doc.parameters[0]
+            &state.doc.parameters.values().next().unwrap()
         ));
     }
 
@@ -20393,7 +20396,7 @@ mod tests {
             1,
             "redo is a no-op once a new action has cleared the redo stack"
         );
-        assert_eq!(state.doc.parameters[0].name, "h");
+        assert_eq!(state.doc.parameters.values().next().unwrap().name, "h");
     }
 
     #[test]
@@ -22317,7 +22320,7 @@ mod tests {
             cr.spacing = "10".to_string();
         }
         assert!(matches!(state.apply(Action::CommitRepeat), ActionResult::Ok), "{}", state.status);
-        assert!(state.doc.parameters.iter().any(|p| !p.deleted && p.name == "n"));
+        assert!(state.doc.parameters.values().any(|p| p.name == "n"));
         assert_eq!(state.doc.repeat_ops[0].count, "n", "the stored count should be the bare name");
         assert_eq!(state.doc.repeat_ops[0].outputs.len(), 3, "n = 4 → 3 extra instances");
     }
@@ -22363,7 +22366,7 @@ mod tests {
             cm.tx = "dx = 25mm".to_string();
         }
         assert!(matches!(state.apply(Action::CommitMove), ActionResult::Ok), "{}", state.status);
-        assert!(state.doc.parameters.iter().any(|p| !p.deleted && p.name == "dx"));
+        assert!(state.doc.parameters.values().any(|p| p.name == "dx"));
         assert_eq!(state.doc.move_ops[0].tx, "dx", "the stored offset should be the bare name");
     }
 
@@ -23948,8 +23951,8 @@ mod tests {
         let param = state
             .doc
             .parameters
-            .iter()
-            .find(|p| !p.deleted && p.name == "dia")
+            .values()
+            .find(|p| p.name == "dia")
             .expect("variable dia created");
         assert_eq!(param.expression, "30");
         assert_eq!(
@@ -23981,8 +23984,8 @@ mod tests {
         let dia_params: Vec<_> = state
             .doc
             .parameters
-            .iter()
-            .filter(|p| !p.deleted && p.name == "dia")
+            .values()
+            .filter(|p| p.name == "dia")
             .collect();
         assert_eq!(dia_params.len(), 1, "still exactly one 'dia' parameter");
         assert_eq!(dia_params[0].expression, "30", "existing parameter redefined");
@@ -25028,17 +25031,17 @@ mod tests {
         let mut state = AppState::default();
         // Checkpoint the empty document, then force an invalid-parameter state in place.
         state.undo_stack.push(state.doc.clone());
-        state.doc.parameters.push(crate::model::Parameter {
+        state.doc.parameters.insert(crate::model::Parameter {
             name: "bad".to_string(),
             expression: "1mm / 0".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
         state.doc.shape_order.push(ShapeKind::Parameter);
         state.refresh_document_health();
+        let param = state.doc.parameters.keys().next().expect("the parameter");
         assert_eq!(
-            state.document_health.parameter_status(0),
+            state.document_health.parameter_status(param),
             crate::document_health::HealthStatus::Invalid
         );
 

@@ -158,8 +158,6 @@ pub enum ParameterSource {
 pub struct Parameter {
     pub name: String,
     pub expression: String,
-    #[serde(default)]
-    pub deleted: bool,
     /// Primary parameters (#727) are a file's front door: the knobs someone importing
     /// this document is expected to change; secondary ones are internals. Advisory only —
     /// nothing is blocked either way. Existing documents load secondary (`default`); a
@@ -172,6 +170,9 @@ pub struct Parameter {
     #[serde(default)]
     pub source: Option<ParameterSource>,
 }
+
+/// How anything names a parameter by identity rather than by name (#1055).
+pub type ParameterKey = crate::arena::Key<Parameter>;
 
 /// A 2D sketch hosted on a face. A single face may host multiple independent sketches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3914,7 +3915,7 @@ pub fn validate_units(doc: &Document, own_path: Option<&std::path::Path>) -> Res
 /// The whole document: sketches, sketch primitives, constraints, and construction planes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
-    pub parameters: Vec<Parameter>,
+    pub parameters: crate::arena::Arena<Parameter>,
     pub sketches: Vec<Sketch>,
     pub lines: Vec<Line>,
     pub circles: Vec<Circle>,
@@ -4181,7 +4182,7 @@ pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<usize> {
 impl Default for Document {
     fn default() -> Self {
         Self {
-            parameters: Vec::new(),
+            parameters: crate::arena::Arena::new(),
             sketches: Vec::new(),
             lines: Vec::new(),
             circles: Vec::new(),

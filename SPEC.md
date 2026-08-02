@@ -2439,11 +2439,11 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   that parameter — the UI must make which one is happening unambiguous (e.g. reuse on
   bare `name=`, redefine on `name=value`, with a clear indicator). Reject names that
   collide with reserved words or that would create an expression cycle (§4.1).
-- **A deleted parameter's name is free (#995).** Parameters are tombstoned rather than removed,
-  so every other parameter's index stays put — that is bookkeeping, not a claim on the name.
-  `parameters::parameter_index_by_name` skips tombstones, matching evaluation, which has always
-  ignored them: otherwise deleting `slotwidth` and typing it again answered "Parameter
-  'slotwidth' already exists" about a parameter that is not there and cannot be seen.
+- **A deleted parameter's name is free (#995).** Deleting a parameter removes it —
+  `Document::parameters` is an `arena::Arena` keyed by `ParameterKey` (#1055), so nothing
+  has to stay behind to keep the others addressable, and its name stops being claimed the
+  moment it goes. A script names a parameter by its **ordinal** among the live ones,
+  resolved to a key at the script boundary.
 
 #### 5.1.2 Derived parameters (#432)
 - A parameter may be **driven by a measurement** (`Parameter::source`,

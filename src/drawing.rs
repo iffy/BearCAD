@@ -2234,10 +2234,9 @@ label_hidden: false,
         assert!(!svg.contains(auto_caption), "hidden: no caption in the export");
 
         doc.drawings[0].views[0].label_hidden = false;
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "w".to_string(),
             expression: "40mm".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });

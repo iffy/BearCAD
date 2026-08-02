@@ -173,7 +173,7 @@ pub fn unknown_variables_in_parameter_expression(
     expression: &str,
     doc: &Document,
     param_name: &str,
-    existing_index: Option<usize>,
+    existing_index: Option<crate::model::ParameterKey>,
 ) -> Vec<String> {
     let known = document_parameter_names(doc);
     identifiers_in_expression(expression)
@@ -207,8 +207,7 @@ pub fn document_parameter_names(doc: &Document) -> Vec<String> {
 pub fn document_parameter_bindings(doc: &Document) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = doc
         .parameters
-        .iter()
-        .filter(|p| !p.deleted)
+        .values()
         .map(|p| (p.name.clone(), p.expression.clone()))
         .collect();
     for inst in doc.unit_instances.iter().filter(|i| !i.deleted) {
@@ -218,8 +217,7 @@ pub fn document_parameter_bindings(doc: &Document) -> Vec<(String, String)> {
         let Some(unit) = doc.units.get(inst.unit) else {
             continue;
         };
-        let inner: Vec<&crate::model::Parameter> =
-            unit.document.parameters.iter().filter(|p| !p.deleted).collect();
+        let inner: Vec<&crate::model::Parameter> = unit.document.parameters.values().collect();
         for param in &inner {
             let qualified = format!("{name}.{}", param.name);
             let expression = match inst
@@ -254,7 +252,7 @@ pub fn expression_references_document_parameter(doc: &Document, expression: &str
     let mut i = 0;
     while i < expression.len() {
         if let Some((ident, len)) = identifier_at(expression, i) {
-            if doc.parameters.iter().any(|p| p.name == ident) {
+            if doc.parameters.values().any(|p| p.name == ident) {
                 return true;
             }
             i += len;
@@ -1329,10 +1327,9 @@ mod tests {
     fn doc_with_named_instances() -> Document {
         let mut inner = Document::default();
         for (name, expression) in [("width", "10"), ("internal", "width * 2")] {
-            inner.parameters.push(crate::model::Parameter {
+            inner.parameters.insert(crate::model::Parameter {
                 name: name.to_string(),
                 expression: expression.to_string(),
-                deleted: false,
                 primary: false,
                 source: None,
             });
@@ -1398,10 +1395,9 @@ mod tests {
 
         // B's `x` = foo.width, and foo.width overridden back to `x`: a cycle through the
         // qualified binding, refused by the evaluator.
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "x".to_string(),
             expression: "foo.width".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -1585,10 +1581,9 @@ mod tests {
     #[test]
     fn shows_computed_length_in_doc_for_parameter_name() {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "A".to_string(),
             expression: "10mm".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -1651,17 +1646,15 @@ mod tests {
     #[test]
     fn eval_parameter_in_doc_accepts_length_or_angle() {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "width".to_string(),
             expression: "10mm".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "corner".to_string(),
             expression: "45deg".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -1684,10 +1677,9 @@ mod tests {
     #[test]
     fn interpolate_text_substitutes_expression_fields() {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "foo".to_string(),
             expression: "20mm".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -1710,10 +1702,9 @@ mod tests {
     #[test]
     fn interpolate_text_uses_document_display_unit() {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "foo".to_string(),
             expression: "3in".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });

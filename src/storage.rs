@@ -237,7 +237,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;
     save_indexed_nodes(&tx, &mut row_id, "line", &doc.lines)?;
     save_indexed_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
-    save_indexed_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
+    save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
@@ -457,7 +457,7 @@ fn load_construction_planes(
 fn load_legacy_document_nodes(
     conn: &Connection,
 ) -> Result<(
-    Vec<Parameter>,
+    crate::arena::Arena<Parameter>,
     Vec<Sketch>,
     Vec<Line>,
     Vec<Circle>,
@@ -477,7 +477,7 @@ fn load_legacy_document_nodes(
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
 
-    let mut parameters = Vec::new();
+    let mut parameters = crate::arena::Arena::new();
     let mut sketches = Vec::new();
     let mut lines = Vec::new();
     let mut circles = Vec::new();
@@ -504,7 +504,7 @@ fn load_legacy_document_nodes(
             }
             "parameter" => {
                 let param: Parameter = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                parameters.push(param);
+                parameters.insert(param);
                 shape_order.push(ShapeKind::Parameter);
             }
             "constraint" => {
@@ -555,7 +555,7 @@ pub fn open(path: &str) -> Result<Document> {
         construction_planes,
         shape_order,
     ) = if let Some(shape_order) = load_shape_order_meta(&conn) {
-        let parameters = load_indexed_entities(&conn, "parameter")?;
+        let parameters = load_arena_entities(&conn, "parameter")?;
         let sketches = load_indexed_entities(&conn, "sketch")?;
         let lines = load_indexed_entities(&conn, "line")?;
         let circles = load_indexed_entities(&conn, "circle")?;
@@ -1648,17 +1648,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.parameters.push(Parameter {
+        doc.parameters.insert(Parameter {
             name: "A".to_string(),
             expression: "B".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
-        doc.parameters.push(Parameter {
+        doc.parameters.insert(Parameter {
             name: "B".to_string(),
             expression: "A".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -1679,17 +1677,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.parameters.push(Parameter {
+        doc.parameters.insert(Parameter {
             name: "A".to_string(),
             expression: "5mm".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
-        doc.parameters.push(Parameter {
+        doc.parameters.insert(Parameter {
             name: "B".to_string(),
             expression: "A + 5in".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
@@ -1716,21 +1712,35 @@ mod tests {
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines[0].deleted = true;
-        doc.parameters.push(Parameter {
+        // A parameter that was removed for real (#1055): the file must not bring it back,
+        // and its key must not come back to life either.
+        let gone = doc.parameters.insert(Parameter {
             name: "width".to_string(),
             expression: "10mm".to_string(),
-            deleted: true,
             primary: false,
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
+        let kept = doc.parameters.insert(Parameter {
+            name: "height".to_string(),
+            expression: "20mm".to_string(),
+            primary: false,
+            source: None,
+        });
+        doc.shape_order.push(ShapeKind::Parameter);
+        doc.parameters.remove(gone);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert!(loaded.lines[0].deleted);
-        assert!(loaded.parameters[0].deleted);
         assert_eq!(loaded.lines.len(), 1);
         assert_eq!(loaded.parameters.len(), 1);
+        assert_eq!(
+            loaded.parameters.get(kept).map(|p| p.name.as_str()),
+            Some("height"),
+            "the surviving parameter kept its key"
+        );
+        assert!(loaded.parameters.get(gone).is_none(), "and the removed one stays gone");
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -1884,10 +1894,9 @@ mod tests {
     /// A small standalone document to embed as a unit (#719).
     fn unit_source_doc(param: &str) -> Document {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: param.to_string(),
             expression: "10".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });

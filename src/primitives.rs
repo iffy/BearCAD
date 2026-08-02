@@ -579,10 +579,9 @@ mod tests {
     #[test]
     fn shape_dimensions_are_expressions() {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "side".to_string(),
             expression: "12".to_string(),
-            deleted: false,
             primary: true,
             source: None,
         });

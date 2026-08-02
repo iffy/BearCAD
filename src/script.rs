@@ -2090,6 +2090,22 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A parameter's ordinal among the live ones — what a script writes (#1055).
+fn parameter_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::ParameterKey,
+) -> Option<usize> {
+    doc.parameters.keys().position(|k| k == key)
+}
+
+/// The parameter an ordinal names — the inverse of [`parameter_ordinal`].
+fn parameter_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::ParameterKey> {
+    doc.parameters.keys().nth(ordinal)
+}
+
 /// A tracing image's ordinal among the live ones — what a script writes (#1055).
 fn image_ordinal(
     doc: &crate::model::Document,
@@ -2449,7 +2465,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::SetParameterPrimary { index, primary } => {
-            Some(Instruction::SetParameterPrimary { index: *index, primary: *primary })
+            Some(Instruction::SetParameterPrimary {
+                index: parameter_ordinal(doc, *index)?,
+                primary: *primary,
+            })
         }
         Action::SetUnitParameterOverride { instance, name, expression } => {
             Some(Instruction::SetUnitParameterOverride {
@@ -2471,16 +2490,18 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             part: part.clone(),
         }),
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
-            index: *index,
+            index: parameter_ordinal(doc, *index)?,
             name: name.clone(),
         }),
         Action::CommitParameterExpression { index, expression } => {
             Some(Instruction::SetParameterExpression {
-                index: *index,
+                index: parameter_ordinal(doc, *index)?,
                 expression: expression.clone(),
             })
         }
-        Action::DeleteParameter { index } => Some(Instruction::DeleteParameter { index: *index }),
+        Action::DeleteParameter { index } => Some(Instruction::DeleteParameter {
+            index: parameter_ordinal(doc, *index)?,
+        }),
         Action::DeleteSelection => Some(Instruction::DeleteSelection),
         Action::SetCommandPaletteOpen { open } => Some(Instruction::SetCommandPalette {
             open: Some(*open),
@@ -5822,16 +5843,29 @@ impl ScriptRunner {
                 state.apply(Action::CreateParameterFromLineLength { line_index, name });
                 StepResult::Continue
             }
+            // A script names a parameter by its ordinal among the live ones (#1055).
             Instruction::SetParameterName { index, name } => {
-                state.apply(Action::CommitParameterName { index, name });
+                if let Some(key) = parameter_key(&state.doc, index) {
+                    state.apply(Action::CommitParameterName { index: key, name });
+                } else {
+                    self.last_action_error = Some(format!("Parameter {index} not found"));
+                }
                 StepResult::Continue
             }
             Instruction::SetParameterExpression { index, expression } => {
-                state.apply(Action::CommitParameterExpression { index, expression });
+                if let Some(key) = parameter_key(&state.doc, index) {
+                    state.apply(Action::CommitParameterExpression { index: key, expression });
+                } else {
+                    self.last_action_error = Some(format!("Parameter {index} not found"));
+                }
                 StepResult::Continue
             }
             Instruction::SetParameterPrimary { index, primary } => {
-                let r = state.apply(Action::SetParameterPrimary { index, primary });
+                let Some(key) = parameter_key(&state.doc, index) else {
+                    self.last_action_error = Some(format!("Parameter {index} not found"));
+                    return StepResult::Continue;
+                };
+                let r = state.apply(Action::SetParameterPrimary { index: key, primary });
                 self.record_action_error(r);
                 StepResult::Continue
             }
@@ -5864,7 +5898,11 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::DeleteParameter { index } => {
-                state.apply(Action::DeleteParameter { index });
+                if let Some(key) = parameter_key(&state.doc, index) {
+                    state.apply(Action::DeleteParameter { index: key });
+                } else {
+                    self.last_action_error = Some(format!("Parameter {index} not found"));
+                }
                 StepResult::Continue
             }
             Instruction::DeleteSelection => {
@@ -7024,8 +7062,8 @@ mod tests {
             );
         }
         assert_eq!(state.doc.parameters.len(), 2);
-        assert_eq!(state.doc.parameters[0].name, "Len");
-        assert_eq!(state.doc.parameters[1].expression, "Len+5in");
+        assert_eq!(state.doc.parameters.values().next().unwrap().name, "Len");
+        assert_eq!(state.doc.parameters.values().nth(1).unwrap().expression, "Len+5in");
     }
 
     #[test]
@@ -7045,7 +7083,7 @@ mod tests {
                 &egui::Context::default(),
             );
         }
-        assert_eq!(state.doc.parameters[0].expression, "16.7deg");
+        assert_eq!(state.doc.parameters.values().next().unwrap().expression, "16.7deg");
         let angle = crate::value::eval_parameter_in_doc("corner", &state.doc).unwrap();
         match angle {
             crate::value::EvaluatedParameter::AngleRad(v) => {

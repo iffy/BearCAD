@@ -86,11 +86,11 @@ pub enum ElementSnapshot {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DocumentHealth {
     pub elements: HashMap<SceneElement, HealthStatus>,
-    pub parameters: HashMap<usize, HealthStatus>,
+    pub parameters: HashMap<crate::model::ParameterKey, HealthStatus>,
     pub element_snapshots: HashMap<SceneElement, ElementSnapshot>,
-    pub parameter_snapshots: HashMap<usize, ElementSnapshot>,
+    pub parameter_snapshots: HashMap<crate::model::ParameterKey, ElementSnapshot>,
     pub element_reasons: HashMap<SceneElement, String>,
-    pub parameter_reasons: HashMap<usize, String>,
+    pub parameter_reasons: HashMap<crate::model::ParameterKey, String>,
     /// Unit instances whose evaluation failed (#722): instance index → reason. The rest
     /// of the document stays healthy and usable around them.
     pub unit_instances: HashMap<usize, String>,
@@ -105,7 +105,7 @@ impl DocumentHealth {
         self.elements.get(&element).copied().unwrap_or(HealthStatus::Healthy)
     }
 
-    pub fn parameter_status(&self, index: usize) -> HealthStatus {
+    pub fn parameter_status(&self, index: crate::model::ParameterKey) -> HealthStatus {
         self.parameters.get(&index).copied().unwrap_or(HealthStatus::Healthy)
     }
 
@@ -113,7 +113,7 @@ impl DocumentHealth {
         self.element_reasons.get(&element).map(String::as_str)
     }
 
-    pub fn parameter_reason(&self, index: usize) -> Option<&str> {
+    pub fn parameter_reason(&self, index: crate::model::ParameterKey) -> Option<&str> {
         self.parameter_reasons.get(&index).map(String::as_str)
     }
 
@@ -275,7 +275,10 @@ pub fn constraint_annotation_color(
     }
 }
 
-pub fn require_parameter_editable(health: &DocumentHealth, index: usize) -> Result<(), String> {
+pub fn require_parameter_editable(
+    health: &DocumentHealth,
+    index: crate::model::ParameterKey,
+) -> Result<(), String> {
     match health.parameter_status(index) {
         HealthStatus::Healthy => Ok(()),
         status => Err(
@@ -577,16 +580,8 @@ fn point_owner_element(point: &ConstraintPoint) -> SceneElement {
 }
 
 fn mark_invalid_parameters(doc: &Document, health: &mut DocumentHealth) {
-    let known: Vec<&str> = doc
-        .parameters
-        .iter()
-        .filter(|p| !p.deleted)
-        .map(|p| p.name.as_str())
-        .collect();
-    for (index, param) in doc.parameters.iter().enumerate() {
-        if param.deleted {
-            continue;
-        }
+    let known: Vec<&str> = doc.parameters.values().map(|p| p.name.as_str()).collect();
+    for (index, param) in doc.parameters.iter() {
         if let Some(ParameterSource::LineLength(line_index)) = param.source {
             if !crate::document_lifecycle::line_alive(doc, line_index) {
                 set_parameter_invalid(
@@ -608,7 +603,10 @@ fn mark_invalid_parameters(doc: &Document, health: &mut DocumentHealth) {
             continue;
         }
         for dep in parameter_names_referenced_in_expression(&param.expression, &known) {
-            if health.parameter_status(index_of_parameter_name(doc, &dep)) == HealthStatus::Invalid {
+            let Some(dep_key) = key_of_parameter_name(doc, &dep) else {
+                continue;
+            };
+            if health.parameter_status(dep_key) == HealthStatus::Invalid {
                 set_parameter_invalid(
                     health,
                     doc,
@@ -621,11 +619,10 @@ fn mark_invalid_parameters(doc: &Document, health: &mut DocumentHealth) {
     }
 }
 
-fn index_of_parameter_name(doc: &Document, name: &str) -> usize {
+fn key_of_parameter_name(doc: &Document, name: &str) -> Option<crate::model::ParameterKey> {
     doc.parameters
         .iter()
-        .position(|p| p.name == name)
-        .unwrap_or(usize::MAX)
+        .find_map(|(key, p)| (p.name == name).then_some(key))
 }
 
 fn set_element_invalid(
@@ -666,7 +663,7 @@ fn mark_unstable_geometry(
 fn set_parameter_invalid(
     health: &mut DocumentHealth,
     doc: &Document,
-    index: usize,
+    index: crate::model::ParameterKey,
     reason: String,
 ) {
     if health.parameter_status(index) == HealthStatus::Invalid {
@@ -779,15 +776,15 @@ mod tests {
     #[test]
     fn invalid_parameter_expression_marks_parameter_invalid() {
         let mut doc = Document::default();
-        doc.parameters.push(crate::model::Parameter {
+        doc.parameters.insert(crate::model::Parameter {
             name: "width".to_string(),
             expression: "1mm / 0".to_string(),
-            deleted: false,
             primary: false,
             source: None,
         });
         let health = recompute_document_health(&doc);
-        assert_eq!(health.parameter_status(0), HealthStatus::Invalid);
+        let param = doc.parameters.keys().next().expect("the parameter");
+        assert_eq!(health.parameter_status(param), HealthStatus::Invalid);
     }
 
     #[test]

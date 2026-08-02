@@ -3518,8 +3518,7 @@ impl App {
             .state
             .doc
             .parameters
-            .iter()
-            .filter(|p| !p.deleted)
+            .values()
             .map(|p| p.name.clone())
             .take(5)
             .collect();

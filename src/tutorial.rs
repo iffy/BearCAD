@@ -228,8 +228,8 @@ fn live_constraints(app: &AppState) -> impl Iterator<Item = &crate::model::Const
 fn param_exists(app: &AppState, name: &str) -> bool {
     app.doc
         .parameters
-        .iter()
-        .any(|p| !p.deleted && p.name.eq_ignore_ascii_case(name))
+        .values()
+        .any(|p| p.name.eq_ignore_ascii_case(name))
 }
 
 fn name_box_tapped(app: &AppState) -> bool {
@@ -1920,11 +1920,9 @@ fn assist_engrave(app: &mut AppState) {
 
 /// Change the bend angle — the payoff step.
 fn assist_change_angle(app: &mut AppState) {
-    let index = app
-        .doc
-        .parameters
-        .iter()
-        .position(|p| !p.deleted && p.name.eq_ignore_ascii_case("bend_angle"));
+    let index = app.doc.parameters.iter().find_map(|(key, p)| {
+        p.name.eq_ignore_ascii_case("bend_angle").then_some(key)
+    });
     if let Some(index) = index {
         app.apply(Action::CommitParameterExpression {
             index,
@@ -2636,8 +2634,14 @@ mod tests {
         assert!(line_tool_active(&app));
 
         assert!(!bend_angle_changed(&app), "120deg is the starting value");
+        let bend = app
+            .doc
+            .parameters
+            .iter()
+            .find_map(|(k, p)| (p.name == "bend_angle").then_some(k))
+            .expect("the tutorial's bend_angle parameter");
         app.apply(Action::CommitParameterExpression {
-            index: 5,
+            index: bend,
             expression: "150deg".to_string(),
         });
         assert!(bend_angle_changed(&app));
@@ -2704,7 +2708,7 @@ mod tests {
 
         assert!(params_defined(&app));
         assert!(app.parameters_pane.new_name.is_empty(), "the draft row is cleared");
-        let leg = app.doc.parameters.iter().find(|p| p.name == "leg").unwrap();
+        let leg = app.doc.parameters.values().find(|p| p.name == "leg").unwrap();
         assert_eq!(leg.expression, "60mm", "a hand-typed value is left alone");
         assert!(app.tutorial.unwrap().step > step, "the step auto-advances as usual");
     }
