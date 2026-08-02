@@ -5874,8 +5874,7 @@ mod tests {
             deleted: false,
         });
         state.doc.component_members.push((
-            crate::model::ComponentMember::Body,
-            0,
+            crate::model::ComponentMember::Body(0),
             state.doc.components.len() - 1,
         ));
         state.doc.joints.push(crate::model::Joint {

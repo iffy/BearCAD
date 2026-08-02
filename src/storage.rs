@@ -806,7 +806,7 @@ mod tests {
             angle_unit: None,
             deleted: false,
         });
-        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane, 0, Some(1));
+        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(0), Some(1));
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();

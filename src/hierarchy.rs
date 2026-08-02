@@ -2261,28 +2261,11 @@ pub fn build_hierarchy(
 /// Group top-level entries into their components' entries (#423). Components render even
 /// when empty; a component whose parent chain is broken surfaces at the top level.
 fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Vec<HierarchyEntry> {
-    use crate::model::ComponentMember as CM;
     if doc.components.iter().all(|c| c.deleted) {
         return roots;
     }
     let member_of = |node: &HierarchyNode| -> Option<usize> {
-        let (kind, index) = match node {
-            HierarchyNode::ConstructionPlane(i) => (CM::ConstructionPlane, *i),
-            HierarchyNode::Extrusion(i) => (CM::Extrusion, *i),
-            HierarchyNode::Body(i) => (CM::Body, *i),
-            // Component membership is still an untyped table, so a key rides as bits (#1055).
-            HierarchyNode::Loft(i) => (CM::Loft, i.to_bits() as usize),
-            HierarchyNode::BooleanOp(i) => (CM::BooleanOp, *i),
-            HierarchyNode::MoveOp(i) => (CM::MoveOp, *i),
-            HierarchyNode::MirrorOp(i) => (CM::MirrorOp, *i),
-            HierarchyNode::RepeatOp(i) => (CM::RepeatOp, *i),
-            HierarchyNode::SliceOp(i) => (CM::SliceOp, *i),
-            HierarchyNode::Revolution(i) => (CM::Revolution, *i),
-            HierarchyNode::SweepOp(i) => (CM::Sweep, *i),
-            HierarchyNode::Drawing(i) => (CM::Drawing, *i),
-            _ => return None,
-        };
-        doc.component_of(kind, index)
+        doc.component_of(component_member_for_node(node)?)
     };
     // component index -> its (initially childless) entry.
     let mut comp_children: HashMap<usize, Vec<HierarchyEntry>> = HashMap::new();
@@ -2585,26 +2568,70 @@ fn topological_flat_sort(
     result
 }
 
-/// The [`SceneElement`] a component member reference points at (#423). Drawings and lofts
-/// are display-only (no scene element).
-pub fn component_member_element(
-    kind: crate::model::ComponentMember,
-    index: usize,
-) -> Option<SceneElement> {
+/// The [`SceneElement`] a component member points at (#423). Drawings and lofts are
+/// display-only (no scene element).
+pub fn component_member_element(member: crate::model::ComponentMember) -> Option<SceneElement> {
     use crate::model::ComponentMember as CM;
-    Some(match kind {
-        CM::ConstructionPlane => SceneElement::ConstructionPlane(index),
-        CM::Extrusion => SceneElement::Extrusion(index),
-        CM::Body => SceneElement::Body(index),
-        CM::BooleanOp => SceneElement::BooleanOp(index),
-        CM::MoveOp => SceneElement::MoveOp(index),
-        CM::MirrorOp => SceneElement::MirrorOp(index),
-        CM::RepeatOp => SceneElement::RepeatOp(index),
-        CM::SliceOp => SceneElement::SliceOp(index),
-        CM::EdgeTreatmentOp => SceneElement::EdgeTreatmentOp(index),
-        CM::Revolution => SceneElement::Revolution(index),
-        CM::Sweep => SceneElement::SweepOp(index),
-        CM::Loft | CM::Drawing => return None,
+    Some(match member {
+        CM::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
+        CM::Extrusion(i) => SceneElement::Extrusion(i),
+        CM::Body(i) => SceneElement::Body(i),
+        CM::BooleanOp(i) => SceneElement::BooleanOp(i),
+        CM::MoveOp(i) => SceneElement::MoveOp(i),
+        CM::MirrorOp(i) => SceneElement::MirrorOp(i),
+        CM::RepeatOp(i) => SceneElement::RepeatOp(i),
+        CM::SliceOp(i) => SceneElement::SliceOp(i),
+        CM::EdgeTreatmentOp(i) => SceneElement::EdgeTreatmentOp(i),
+        CM::Revolution(i) => SceneElement::Revolution(i),
+        CM::Sweep(i) => SceneElement::SweepOp(i),
+        CM::Loft(_) | CM::Drawing(_) => return None,
+    })
+}
+
+/// The component member a scene element stands for (#423) — the inverse of
+/// [`component_member_element`], and what turns "move this into that component" into a
+/// membership entry. `None` for anything that is not a top-level member: a shape (#909),
+/// a nested element, or derived geometry.
+pub fn component_member_for_element(
+    element: &SceneElement,
+) -> Option<crate::model::ComponentMember> {
+    use crate::model::ComponentMember as CM;
+    Some(match element {
+        SceneElement::ConstructionPlane(i) => CM::ConstructionPlane(*i),
+        SceneElement::Extrusion(i) => CM::Extrusion(*i),
+        SceneElement::Body(i) => CM::Body(*i),
+        SceneElement::BooleanOp(i) => CM::BooleanOp(*i),
+        SceneElement::MoveOp(i) => CM::MoveOp(*i),
+        SceneElement::MirrorOp(i) => CM::MirrorOp(*i),
+        SceneElement::RepeatOp(i) => CM::RepeatOp(*i),
+        SceneElement::SliceOp(i) => CM::SliceOp(*i),
+        SceneElement::EdgeTreatmentOp(i) => CM::EdgeTreatmentOp(*i),
+        SceneElement::Revolution(i) => CM::Revolution(*i),
+        SceneElement::SweepOp(i) => CM::Sweep(*i),
+        _ => return None,
+    })
+}
+
+/// The component member an Elements-pane row stands for (#423). Wider than
+/// [`component_member_for_element`]: lofts and drawings are rows a user can file into a
+/// component even though neither is a scene element.
+pub fn component_member_for_node(node: &HierarchyNode) -> Option<crate::model::ComponentMember> {
+    use crate::model::ComponentMember as CM;
+    Some(match node {
+        HierarchyNode::ConstructionPlane(i) => CM::ConstructionPlane(*i),
+        HierarchyNode::Extrusion(i) => CM::Extrusion(*i),
+        HierarchyNode::Body(i) => CM::Body(*i),
+        HierarchyNode::Loft(k) => CM::Loft(*k),
+        HierarchyNode::BooleanOp(i) => CM::BooleanOp(*i),
+        HierarchyNode::MoveOp(i) => CM::MoveOp(*i),
+        HierarchyNode::MirrorOp(i) => CM::MirrorOp(*i),
+        HierarchyNode::RepeatOp(i) => CM::RepeatOp(*i),
+        HierarchyNode::SliceOp(i) => CM::SliceOp(*i),
+        HierarchyNode::EdgeTreatmentOp(i) => CM::EdgeTreatmentOp(*i),
+        HierarchyNode::Revolution(i) => CM::Revolution(*i),
+        HierarchyNode::SweepOp(i) => CM::Sweep(*i),
+        HierarchyNode::Drawing(i) => CM::Drawing(*i),
+        _ => return None,
     })
 }
 
@@ -2616,7 +2643,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
     match element {
         SceneElement::Component(i) => doc.components.get(*i).and_then(|c| c.parent),
         SceneElement::ConstructionPlane(i) => {
-            doc.component_of(CM::ConstructionPlane, *i).or_else(|| {
+            doc.component_of(CM::ConstructionPlane(*i)).or_else(|| {
                 match doc.construction_planes.get(*i)?.parent {
                     ConstructionPlaneParent::Root => None,
                     ConstructionPlaneParent::Sketch(s) => crate::model::sketch_component(doc, s),
@@ -2624,12 +2651,12 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
             })
         }
         SceneElement::Sketch(s) => crate::model::sketch_component(doc, *s),
-        SceneElement::Extrusion(i) => doc.component_of(CM::Extrusion, *i).or_else(|| {
+        SceneElement::Extrusion(i) => doc.component_of(CM::Extrusion(*i)).or_else(|| {
             doc.extrusions
                 .get(*i)
                 .and_then(|e| crate::model::sketch_component(doc, e.sketch))
         }),
-        SceneElement::Body(i) => doc.component_of(CM::Body, *i).or_else(|| {
+        SceneElement::Body(i) => doc.component_of(CM::Body(*i)).or_else(|| {
             use crate::model::BodySource;
             match &doc.bodies.get(*i)?.source {
                 BodySource::Extrusion(e) => {
@@ -2639,18 +2666,18 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                     .iter()
                     .find_map(|e| owning_component(doc, &SceneElement::Extrusion(*e))),
                 BodySource::Imported(_) => None,
-                BodySource::Loft(l) => doc.component_of(CM::Loft, l.to_bits() as usize),
-                BodySource::Revolve(r) => doc.component_of(CM::Revolution, *r),
+                BodySource::Loft(l) => doc.component_of(CM::Loft(*l)),
+                BodySource::Revolve(r) => doc.component_of(CM::Revolution(*r)),
                 // A shape has no component membership of its own (#909); the body's does.
                 BodySource::Primitive(_) => None,
-                BodySource::Sweep(f) => doc.component_of(CM::Sweep, *f),
-                BodySource::Repeated { op, .. } => doc.component_of(CM::RepeatOp, *op),
-                BodySource::Moved { op, .. } => doc.component_of(CM::MoveOp, *op),
-                BodySource::Mirrored { op, .. } => doc.component_of(CM::MirrorOp, *op),
-                BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp, *op),
-                BodySource::Sliced { op, .. } => doc.component_of(CM::SliceOp, *op),
+                BodySource::Sweep(f) => doc.component_of(CM::Sweep(*f)),
+                BodySource::Repeated { op, .. } => doc.component_of(CM::RepeatOp(*op)),
+                BodySource::Moved { op, .. } => doc.component_of(CM::MoveOp(*op)),
+                BodySource::Mirrored { op, .. } => doc.component_of(CM::MirrorOp(*op)),
+                BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp(*op)),
+                BodySource::Sliced { op, .. } => doc.component_of(CM::SliceOp(*op)),
                 BodySource::EdgeTreated { op, .. } => {
-                    doc.component_of(CM::EdgeTreatmentOp, *op)
+                    doc.component_of(CM::EdgeTreatmentOp(*op))
                 }
                 BodySource::Solid { .. } => None,
                 BodySource::UnitInstance(_) | BodySource::UnitCut { .. } => None,
@@ -2660,16 +2687,16 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
             .tracing_images
             .get(*i)
             .and_then(|img| owning_component(doc, &SceneElement::ConstructionPlane(img.plane))),
-        SceneElement::BooleanOp(i) => doc.component_of(CM::BooleanOp, *i),
-        SceneElement::MoveOp(i) => doc.component_of(CM::MoveOp, *i),
-        SceneElement::MirrorOp(i) => doc.component_of(CM::MirrorOp, *i),
-        SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp, *i),
-        SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp, *i),
-        SceneElement::EdgeTreatmentOp(i) => doc.component_of(CM::EdgeTreatmentOp, *i),
-        SceneElement::Revolution(i) => doc.component_of(CM::Revolution, *i),
+        SceneElement::BooleanOp(i) => doc.component_of(CM::BooleanOp(*i)),
+        SceneElement::MoveOp(i) => doc.component_of(CM::MoveOp(*i)),
+        SceneElement::MirrorOp(i) => doc.component_of(CM::MirrorOp(*i)),
+        SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp(*i)),
+        SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp(*i)),
+        SceneElement::EdgeTreatmentOp(i) => doc.component_of(CM::EdgeTreatmentOp(*i)),
+        SceneElement::Revolution(i) => doc.component_of(CM::Revolution(*i)),
         // A shape isn't a component member of its own (#909).
         SceneElement::Shape(_) => None,
-        SceneElement::SweepOp(i) => doc.component_of(CM::Sweep, *i),
+        SceneElement::SweepOp(i) => doc.component_of(CM::Sweep(*i)),
         // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
         // own effective-visibility recursion); everything else has no owning component.
         _ => None,
@@ -2792,11 +2819,11 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         // A unit's contents have no scene identity to collect (#723).
         SceneElement::UnitInstance(_) => {}
         SceneElement::Component(index) => {
-            for (k, i, c) in doc.component_members.iter() {
+            for (m, c) in doc.component_members.iter() {
                 if *c != index {
                     continue;
                 }
-                if let Some(e) = component_member_element(*k, *i) {
+                if let Some(e) = component_member_element(*m) {
                     out.insert(e.clone());
                     collect_descendants(doc, e, out);
                 }
@@ -5535,6 +5562,32 @@ mod tests {
     use super::*;
     use crate::model::ShapeKind;
 
+    /// #1056: the two directions between a member and its scene element must agree. They used
+    /// to be written out separately, and the "move this into that component" side had quietly
+    /// dropped mirror ops and sweeps — you could see them grouped but not put them there.
+    #[test]
+    fn every_member_with_a_scene_element_can_be_moved_into_a_component() {
+        use crate::model::ComponentMember as CM;
+        let members = [
+            CM::ConstructionPlane(1),
+            CM::Extrusion(1),
+            CM::Body(1),
+            CM::BooleanOp(1),
+            CM::MoveOp(1),
+            CM::MirrorOp(1),
+            CM::RepeatOp(1),
+            CM::SliceOp(1),
+            CM::EdgeTreatmentOp(1),
+            CM::Revolution(1),
+            CM::Sweep(1),
+        ];
+        for member in members {
+            let element = component_member_element(member)
+                .unwrap_or_else(|| panic!("{member:?} names a scene element"));
+            assert_eq!(component_member_for_element(&element), Some(member));
+        }
+    }
+
     /// #977: an operation, a component and a joint have no shape of their own in the 3D view,
     /// so hovering their Elements-pane rows lights what they **made** instead. This is the
     /// mapping that finds it.
@@ -5585,7 +5638,7 @@ mod tests {
             angle_unit: None,
             deleted: false,
         });
-        doc.component_members.push((ComponentMember::Body, 1, 0));
+        doc.component_members.push((ComponentMember::Body(1), 0));
         assert_eq!(produced_bodies(&doc, &SceneElement::Component(0)), vec![1]);
 
         // A joint has no descendants at all — what it holds together is the answer.
@@ -5910,7 +5963,7 @@ mod tests {
         });
         let plane = doc.construction_planes.len();
         doc.construction_planes.push(crate::face::default_xy_plane());
-        doc.set_component_member(CM::ConstructionPlane, plane, Some(0));
+        doc.set_component_member(CM::ConstructionPlane(plane), Some(0));
 
         let tree = build_hierarchy(&doc, None);
         let root = &tree[0];

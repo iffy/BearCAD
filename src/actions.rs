@@ -6243,18 +6243,18 @@ impl AppState {
         // Active component (#429): new top-level elements created by this action are
         // filed into it. Counts are read only at the outermost level so a whole gesture
         // files consistently.
-        let member_counts = (outermost && self.active_component.is_some())
-            .then(|| member_vec_lens(&self.doc));
+        let members_before = (outermost && self.active_component.is_some())
+            .then(|| assignable_members(&self.doc));
         let result = self.apply_inner(action);
         self.undo_group_depth = self.undo_group_depth.saturating_sub(1);
-        if let (Some(before_counts), Some(active)) = (member_counts, self.active_component) {
+        if let (Some(before_members), Some(active)) = (members_before, self.active_component) {
             if self
                 .doc
                 .components
                 .get(active)
                 .is_some_and(|c| !c.deleted)
             {
-                assign_new_members(&mut self.doc, &before_counts, active);
+                assign_new_members(&mut self.doc, &before_members, active);
             } else {
                 self.active_component = None;
             }
@@ -13000,7 +13000,6 @@ label_hidden: false,
             }
             Action::MoveToComponent { element, component } => {
                 use crate::hierarchy::SceneElement;
-                use crate::model::ComponentMember as CM;
                 if let Some(c) = component {
                     if self.doc.components.get(c).is_none_or(|comp| comp.deleted) {
                         let e = format!("Component {c} not found");
@@ -13027,26 +13026,14 @@ label_hidden: false,
                     self.status = "Moved component".to_string();
                     return ActionResult::Ok;
                 }
-                let member = match &element {
-                    SceneElement::ConstructionPlane(i) => Some((CM::ConstructionPlane, *i)),
-                    SceneElement::Extrusion(i) => Some((CM::Extrusion, *i)),
-                    SceneElement::Body(i) => Some((CM::Body, *i)),
-                    SceneElement::BooleanOp(i) => Some((CM::BooleanOp, *i)),
-                    SceneElement::MoveOp(i) => Some((CM::MoveOp, *i)),
-                    SceneElement::RepeatOp(i) => Some((CM::RepeatOp, *i)),
-                    SceneElement::SliceOp(i) => Some((CM::SliceOp, *i)),
-                    SceneElement::EdgeTreatmentOp(i) => Some((CM::EdgeTreatmentOp, *i)),
-                    SceneElement::Revolution(i) => Some((CM::Revolution, *i)),
-                    // A shape isn't a component member of its own (#909).
-                    SceneElement::Shape(_) => None,
-                    _ => None,
-                };
-                let Some((kind, index)) = member else {
+                // A shape isn't a component member of its own (#909), and neither is anything
+                // nested or derived.
+                let Some(member) = crate::hierarchy::component_member_for_element(&element) else {
                     let e = "This element can't be moved into a component".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                self.doc.set_component_member(kind, index, component);
+                self.doc.set_component_member(member, component);
                 self.status = match component {
                     Some(_) => "Moved into component".to_string(),
                     None => "Moved out of component".to_string(),
@@ -15826,50 +15813,43 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
     only.filter(|&i| state.doc.sketch_texts.get(i).is_some_and(|t| !t.deleted))
 }
 
-/// Element counts per component-member kind (#429), read before an action to detect what
-/// it created. Bodies are skipped: their component derives from the producing
-/// op/extrusion (`hierarchy::owning_component`), and rebuilds churn the body list.
-fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 11] {
+/// Every element a component can be told to hold (#429), read before an action so whatever
+/// it creates can be spotted afterwards by difference. Bodies are skipped: their component
+/// derives from the producing op/extrusion (`hierarchy::owning_component`), and rebuilds
+/// churn the body list. Drawings are skipped too — a drawing is filed by hand, not by
+/// whichever component happened to be active.
+///
+/// A set rather than a per-collection count, because an arena-backed collection's length is
+/// not a high-water mark: removing an element frees its slot, so the next insert reuses it
+/// and the count does not move (#1055).
+fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     use crate::model::ComponentMember as CM;
-    [
-        (CM::ConstructionPlane, doc.construction_planes.len()),
-        (CM::Extrusion, doc.extrusions.len()),
-        (CM::Loft, doc.lofts.len()),
-        (CM::BooleanOp, doc.boolean_ops.len()),
-        (CM::MoveOp, doc.move_ops.len()),
-        (CM::MirrorOp, doc.mirror_ops.len()),
-        (CM::RepeatOp, doc.repeat_ops.len()),
-        (CM::SliceOp, doc.slice_ops.len()),
-        (CM::EdgeTreatmentOp, doc.edge_treatment_ops.len()),
-        (CM::Revolution, doc.revolutions.len()),
-        (CM::Sweep, doc.sweeps.len()),
-    ]
+    let mut members = Vec::new();
+    members.extend((0..doc.construction_planes.len()).map(CM::ConstructionPlane));
+    members.extend((0..doc.extrusions.len()).map(CM::Extrusion));
+    members.extend(doc.lofts.keys().map(CM::Loft));
+    members.extend((0..doc.boolean_ops.len()).map(CM::BooleanOp));
+    members.extend((0..doc.move_ops.len()).map(CM::MoveOp));
+    members.extend((0..doc.mirror_ops.len()).map(CM::MirrorOp));
+    members.extend((0..doc.repeat_ops.len()).map(CM::RepeatOp));
+    members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
+    members.extend((0..doc.edge_treatment_ops.len()).map(CM::EdgeTreatmentOp));
+    members.extend((0..doc.revolutions.len()).map(CM::Revolution));
+    members.extend((0..doc.sweeps.len()).map(CM::Sweep));
+    members
 }
 
-/// File every element created since `before` into `component` (#429).
+/// File every element created since `before` into `component` (#429). Document order, so a
+/// gesture that creates several elements files them in the order it made them.
 fn assign_new_members(
     doc: &mut Document,
-    before: &[(crate::model::ComponentMember, usize)],
+    before: &[crate::model::ComponentMember],
     component: usize,
 ) {
-    use crate::model::ComponentMember as CM;
-    for &(kind, prior) in before {
-        let now = match kind {
-            CM::ConstructionPlane => doc.construction_planes.len(),
-            CM::Extrusion => doc.extrusions.len(),
-            CM::Loft => doc.lofts.len(),
-            CM::BooleanOp => doc.boolean_ops.len(),
-            CM::MoveOp => doc.move_ops.len(),
-            CM::MirrorOp => doc.mirror_ops.len(),
-            CM::RepeatOp => doc.repeat_ops.len(),
-            CM::SliceOp => doc.slice_ops.len(),
-            CM::EdgeTreatmentOp => doc.edge_treatment_ops.len(),
-            CM::Revolution => doc.revolutions.len(),
-            CM::Sweep => doc.sweeps.len(),
-            CM::Body | CM::Drawing => continue,
-        };
-        for index in prior..now {
-            doc.set_component_member(kind, index, Some(component));
+    let before: std::collections::HashSet<_> = before.iter().copied().collect();
+    for member in assignable_members(doc) {
+        if !before.contains(&member) {
+            doc.set_component_member(member, Some(component));
         }
     }
 }
@@ -16188,13 +16168,13 @@ mod tests {
         // A plane created now lands in the component.
         state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 20.0 });
         let plane = state.doc.construction_planes.len() - 1;
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane), Some(0));
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(0));
 
         // Deactivating (the Document row) stops the filing.
         state.active_component = None;
         state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 40.0 });
         let plane2 = state.doc.construction_planes.len() - 1;
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane2), None);
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane2)), None);
     }
 
     /// #522: the dirty flag tracks divergence from the last-saved baseline — set by a
@@ -16540,9 +16520,9 @@ mod tests {
             state.import_mesh_body(name, tetra.clone(), None);
         }
         // Body 0 → Frame (0), body 1 → nested (1), body 2 → the unrelated Other (2).
-        state.doc.set_component_member(CM::Body, 0, Some(0));
-        state.doc.set_component_member(CM::Body, 1, Some(1));
-        state.doc.set_component_member(CM::Body, 2, Some(2));
+        state.doc.set_component_member(CM::Body(0), Some(0));
+        state.doc.set_component_member(CM::Body(1), Some(1));
+        state.doc.set_component_member(CM::Body(2), Some(2));
 
         // Exporting Frame gathers its own body and the nested component's, not Other's.
         let mut frame = state.component_body_indices(0);
@@ -16595,7 +16575,7 @@ mod tests {
             element: SceneElement::ConstructionPlane(plane),
             component: Some(1),
         });
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane), Some(1));
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(1));
 
         // Hiding the OUTER component hides the plane and sketch inside the inner one.
         assert!(state
@@ -16634,7 +16614,7 @@ mod tests {
         // Deleting the inner component re-homes its member to the outer one.
         state.apply(Action::DeleteElement { element: SceneElement::Component(1) });
         assert!(state.doc.components[1].deleted);
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane), Some(0));
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(0));
         assert_eq!(
             crate::model::effective_length_unit(&state.doc, sketch),
             crate::value::LengthUnit::In,

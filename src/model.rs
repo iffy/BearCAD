@@ -4003,11 +4003,11 @@ pub struct Document {
     #[serde(default)]
     pub components: Vec<Component>,
     /// Component membership (#423): which component each assigned top-level element belongs
-    /// to, as `(member kind, element index, component index)`. Elements without an entry sit
-    /// directly under the document root. Tombstoned elements may leave stale entries; lookups
-    /// go through live elements only.
+    /// to, as `(member, component index)`. Elements without an entry sit directly under the
+    /// document root. Tombstoned elements may leave stale entries; lookups go through live
+    /// elements only.
     #[serde(default)]
-    pub component_members: Vec<(ComponentMember, usize, usize)>,
+    pub component_members: Vec<(ComponentMember, usize)>,
     /// Imported units (#719): one embedded copy per imported source document, placed by
     /// [`unit_instances`](Self::unit_instances).
     #[serde(default)]
@@ -4057,47 +4057,45 @@ pub struct Component {
     pub deleted: bool,
 }
 
-/// The kinds of top-level element a component can hold (#423) — the Elements pane's root
-/// rows. Nested elements (sketches on a plane, bodies under an op) follow their root.
+/// A top-level element a component can hold (#423) — one of the Elements pane's root rows.
+/// Nested elements (sketches on a plane, bodies under an op) follow their root.
+///
+/// Each variant carries the identity its own collection uses, so the kind and the reference
+/// are one value that cannot disagree (#1055). A `Vec`-backed collection is still named by
+/// its index; an arena-backed one by its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentMember {
-    ConstructionPlane,
-    Extrusion,
-    Body,
-    Loft,
-    BooleanOp,
-    MoveOp,
-    MirrorOp,
-    RepeatOp,
-    SliceOp,
-    EdgeTreatmentOp,
-    Revolution,
-    Sweep,
-    Drawing,
+    ConstructionPlane(usize),
+    Extrusion(usize),
+    Body(usize),
+    Loft(LoftKey),
+    BooleanOp(usize),
+    MoveOp(usize),
+    MirrorOp(usize),
+    RepeatOp(usize),
+    SliceOp(usize),
+    EdgeTreatmentOp(usize),
+    Revolution(usize),
+    Sweep(usize),
+    Drawing(usize),
 }
 
 impl Document {
     /// The component an assigned top-level element belongs to, if any (#423).
-    pub fn component_of(&self, kind: ComponentMember, index: usize) -> Option<usize> {
+    pub fn component_of(&self, member: ComponentMember) -> Option<usize> {
         self.component_members
             .iter()
-            .find(|(k, i, _)| *k == kind && *i == index)
-            .map(|(_, _, c)| *c)
+            .find(|(m, _)| *m == member)
+            .map(|(_, c)| *c)
             .filter(|&c| self.components.get(c).is_some_and(|comp| !comp.deleted))
     }
 
     /// Assign (or with `None`, unassign) a top-level element to a component (#423).
-    pub fn set_component_member(
-        &mut self,
-        kind: ComponentMember,
-        index: usize,
-        component: Option<usize>,
-    ) {
-        self.component_members
-            .retain(|(k, i, _)| !(*k == kind && *i == index));
+    pub fn set_component_member(&mut self, member: ComponentMember, component: Option<usize>) {
+        self.component_members.retain(|(m, _)| *m != member);
         if let Some(c) = component {
-            self.component_members.push((kind, index, c));
+            self.component_members.push((member, c));
         }
     }
 
@@ -4141,7 +4139,7 @@ pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<usize> {
         if depth > 8 {
             return None;
         }
-        if let Some(c) = doc.component_of(ComponentMember::ConstructionPlane, plane) {
+        if let Some(c) = doc.component_of(ComponentMember::ConstructionPlane(plane)) {
             return Some(c);
         }
         match doc.construction_planes.get(plane)?.parent {
@@ -4156,7 +4154,7 @@ pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<usize> {
         match doc.sketch_face(sketch)? {
             FaceId::ConstructionPlane(p) => plane_component(doc, p, depth + 1),
             FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
-                doc.component_of(ComponentMember::Extrusion, extrusion).or_else(|| {
+                doc.component_of(ComponentMember::Extrusion(extrusion)).or_else(|| {
                     doc.extrusions
                         .get(extrusion)
                         .and_then(|e| sketch_component_inner(doc, e.sketch, depth + 1))
@@ -4311,6 +4309,34 @@ mod tests {
         assert_eq!(kind.next().name(), "rigid", "and round again");
     }
     use super::*;
+
+    /// #1056: membership names an element with the identity that element's own collection
+    /// uses, so a key's generation travels with it. Recreating a loft reuses the freed slot,
+    /// and the entry the old loft left behind must not claim the new one.
+    #[test]
+    fn a_membership_entry_does_not_survive_onto_whatever_reuses_the_slot() {
+        let mut doc = Document::default();
+        doc.components.push(Component {
+            name: None,
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+            deleted: false,
+        });
+        let loft = || Loft { sections: Vec::new(), mode: LoftMode::NewBody, name: None };
+        let old = doc.lofts.insert(loft());
+        doc.set_component_member(ComponentMember::Loft(old), Some(0));
+        assert_eq!(doc.component_of(ComponentMember::Loft(old)), Some(0));
+
+        doc.lofts.remove(old);
+        let new = doc.lofts.insert(loft());
+        assert_eq!(old.index(), new.index(), "the slot was reused");
+        assert_eq!(
+            doc.component_of(ComponentMember::Loft(new)),
+            None,
+            "the new loft sits at the document root, not in the old one's component"
+        );
+    }
 
     /// #833: documents saved before planes had an extent load with the old symmetric
     /// ±50mm square, so they look exactly as they did.

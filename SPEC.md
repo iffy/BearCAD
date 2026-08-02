@@ -68,15 +68,20 @@ components meshed together, the back one in the accent blue, the front in the th
 **Implemented today (#423) — components as organizational groups:** `model::Component`
 (`name`, `parent`, per-component `length_unit`/`angle_unit` overrides, tombstoned) plus
 `Document::component_members` mapping top-level elements
-(`model::ComponentMember`: planes, extrusions, bodies, lofts, boolean/move/repeat/slice
-ops, revolutions, drawings) to a component; the document acts as the root component.
-Grouping never changes geometry.
+(`model::ComponentMember`: planes, extrusions, bodies, lofts, boolean/move/mirror/repeat/
+slice/edge-treatment ops, revolutions, sweeps, drawings) to a component; the document acts
+as the root component. Grouping never changes geometry. Each `ComponentMember` variant
+carries the identity its own collection uses — an index for a `Vec`-backed one, a key for
+an arena-backed one (#1055) — so the kind and the reference are one value that cannot
+disagree.
 
 - **Active component (#429):** `AppState::active_component` (UI-only) is set when a
   component is created (the new component is also selected) or clicked; while set, the
   outermost `apply` files every newly created top-level element (planes, extrusions,
   lofts, ops, revolutions — bodies derive via their source) into it
-  (`member_vec_lens`/`assign_new_members`, inside the same undo step). The active
+  (`assignable_members` before and after, by difference rather than by count, since an
+  arena's length is not a high-water mark; `assign_new_members`, inside the same undo
+  step). The active
   component's row shows a ● accent marker (the Document row carries it when none is
   active); clicking the Document row deactivates.
 - **Elements pane:** the header **+** (icon button) opens an add menu with **New

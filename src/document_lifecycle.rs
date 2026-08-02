@@ -244,14 +244,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                 let parent = doc.components[index].parent;
                 doc.components[index].deleted = true;
                 for m in doc.component_members.iter_mut() {
-                    if m.2 == index {
+                    if m.1 == index {
                         match parent {
-                            Some(p) => m.2 = p,
-                            None => m.2 = usize::MAX, // pruned below
+                            Some(p) => m.1 = p,
+                            None => m.1 = usize::MAX, // pruned below
                         }
                     }
                 }
-                doc.component_members.retain(|m| m.2 != usize::MAX);
+                doc.component_members.retain(|m| m.1 != usize::MAX);
                 for c in doc.components.iter_mut() {
                     if c.parent == Some(index) {
                         c.parent = parent;

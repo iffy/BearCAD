@@ -43,8 +43,8 @@ impl<T> Key<T> {
         self.generation
     }
 
-    /// The key as one integer, for the few tables that still store element references
-    /// untyped (component membership, #1055). Lossless and round-trips through
+    /// The key as one integer, for storage layers with no place to put a pair — the SQLite
+    /// row id an element is saved under (#1055). Lossless and round-trips through
     /// [`Key::from_bits`]; not an index, and not usable as one.
     pub fn to_bits(self) -> u64 {
         ((self.index as u64) << 32) | self.generation as u64
