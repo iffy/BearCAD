@@ -906,7 +906,9 @@ pub fn constraint_kind_applicable(doc: &Document, kind: &ConstraintKind) -> bool
     }
 }
 
-fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: usize) {
+/// Drop the `ordinal`-th `kind` marker from the history tape (#1055): `ordinal` is the
+/// element's place among the live ones of its kind, not its storage key.
+pub fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: usize) {
     if let Some(pos) = doc
         .shape_order
         .iter()

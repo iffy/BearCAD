@@ -9154,9 +9154,9 @@ impl AppState {
                             a_op.corners
                                 .push(mk_corner(pa, end1, pb + offset, end2, amount_expr));
                         }
-                        // Tombstone ob's generated geometry and empty it. Its source edges now
-                        // belong to `oa` (whose rebuild re-shadows them), so they are NOT
-                        // un-shadowed here.
+                        // Tombstone ob's generated geometry and remove the op itself — `oa`
+                        // owns everything now. Its source edges belong to `oa` (whose rebuild
+                        // re-shadows them), so they are NOT un-shadowed here.
                         for &out in ob_op.line_outputs.iter().chain(ob_op.bridge_outputs.iter()) {
                             if let Some(l) = self.doc.lines.get_mut(out) {
                                 l.deleted = true;
@@ -9167,12 +9167,19 @@ impl AppState {
                                 c.deleted = true;
                             }
                         }
-                        let ob_mut = &mut self.doc.sketch_vertex_treatment_ops[ob];
-                        ob_mut.line_targets.clear();
-                        ob_mut.corners.clear();
-                        ob_mut.line_outputs.clear();
-                        ob_mut.bridge_outputs.clear();
-                        ob_mut.constraint_outputs.clear();
+                        let ordinal = self
+                            .doc
+                            .sketch_vertex_treatment_ops
+                            .keys()
+                            .position(|k| k == ob);
+                        self.doc.sketch_vertex_treatment_ops.remove(ob);
+                        if let Some(ordinal) = ordinal {
+                            crate::document_lifecycle::remove_shape_order_entry(
+                                &mut self.doc,
+                                ShapeKind::SketchVertexTreatmentOperation,
+                                ordinal,
+                            );
+                        }
                         oa
                     }
                 };
