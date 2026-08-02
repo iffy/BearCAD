@@ -141,6 +141,21 @@ pub fn scene_element_selection_index(
         SceneElement::MirrorOp(key) => doc.mirror_ops.keys().position(|k| k == *key),
         SceneElement::RepeatOp(key) => doc.repeat_ops.keys().position(|k| k == *key),
         SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == *key),
+        SceneElement::SketchRepeatOp(key) => {
+            doc.sketch_repeat_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchOffsetOp(key) => {
+            doc.sketch_offset_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchMirrorOp(key) => {
+            doc.sketch_mirror_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchVertexTreatmentOp(key) => {
+            doc.sketch_vertex_treatment_ops.keys().position(|k| k == *key)
+        }
+        SceneElement::SketchSliceOp(key) => {
+            doc.sketch_slice_ops.keys().position(|k| k == *key)
+        }
         SceneElement::EdgeTreatmentOp(key) => {
             doc.edge_treatment_ops.keys().position(|k| k == *key)
         }
@@ -179,11 +194,6 @@ pub fn scene_element_selection_index(
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::SketchRepeatOp(i)
-        | SceneElement::SketchOffsetOp(i)
-        | SceneElement::SketchMirrorOp(i)
-        | SceneElement::SketchVertexTreatmentOp(i)
-        | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
 
         | SceneElement::Component(i)

@@ -739,7 +739,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Revolve** — about an axis, full or partial angle.
 
 ### 3.3 Combining solids
-- **Operation identity (#1055):** every body operation lives in an `arena::Arena` —
+- **Operation identity (#1055):** every operation lives in an `arena::Arena` — the five
+  in-sketch ones (`sketch_repeat_ops`, `sketch_offset_ops`, `sketch_mirror_ops`,
+  `sketch_vertex_treatment_ops`, `sketch_slice_ops`, keyed by their own `…OpKey`) as well as
+  the body ones —
   `boolean_ops`, `move_ops`, `mirror_ops`, `repeat_ops`, `slice_ops`,
   `edge_treatment_ops` — keyed by `BooleanOpKey`, `MoveOpKey`, `MirrorOpKey`,
   `RepeatOpKey`, `SliceOpKey`, `EdgeTreatmentOpKey`. Those are what the matching

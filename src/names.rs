@@ -303,35 +303,35 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let op = doc
                 .sketch_repeat_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch repeat {index} not found"))?;
+                .ok_or_else(|| format!("sketch repeat {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchOffsetOp(index) => {
             let op = doc
                 .sketch_offset_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch offset {index} not found"))?;
+                .ok_or_else(|| format!("sketch offset {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchMirrorOp(index) => {
             let op = doc
                 .sketch_mirror_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch mirror {index} not found"))?;
+                .ok_or_else(|| format!("sketch mirror {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchVertexTreatmentOp(index) => {
             let op = doc
                 .sketch_vertex_treatment_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch vertex treatment {index} not found"))?;
+                .ok_or_else(|| format!("sketch vertex treatment {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchSliceOp(index) => {
             let op = doc
                 .sketch_slice_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch slice {index} not found"))?;
+                .ok_or_else(|| format!("sketch slice {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchText(index) => {
@@ -530,13 +530,13 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::MoveOp(i) => format!("Move {}", i.index()),
         HierarchyNode::MirrorOp(i) => format!("Mirror {}", i.index()),
         HierarchyNode::RepeatOp(i) => format!("Repeat {}", i.index()),
-        HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
-        HierarchyNode::SketchOffsetOp(i) => format!("Offset {i}"),
-        HierarchyNode::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
+        HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {}", i.index()),
+        HierarchyNode::SketchOffsetOp(i) => format!("Offset {}", i.index()),
+        HierarchyNode::SketchMirrorOp(i) => format!("Sketch mirror {}", i.index()),
         HierarchyNode::SketchVertexTreatmentOp(i) => {
-            format!("{} {i}", sketch_vertex_treatment_label(doc, i))
+            format!("{} {}", sketch_vertex_treatment_label(doc, i), i.index())
         }
-        HierarchyNode::SketchSliceOp(i) => format!("Sketch slice {i}"),
+        HierarchyNode::SketchSliceOp(i) => format!("Sketch slice {}", i.index()),
         HierarchyNode::SketchText(i) => {
             // Show the string itself (first line, trimmed to keep rows compact).
             let content = doc
@@ -669,7 +669,10 @@ pub fn joint_kind_label(kind: &crate::model::JointKind) -> &'static str {
     }
 }
 
-fn sketch_vertex_treatment_label(doc: &Document, index: usize) -> &'static str {
+fn sketch_vertex_treatment_label(
+    doc: &Document,
+    index: crate::model::SketchVertexTreatmentOpKey,
+) -> &'static str {
     match doc
         .sketch_vertex_treatment_ops
         .get(index)
@@ -795,13 +798,13 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::MoveOp(i) => format!("Move {}", i.index()),
         SceneElement::MirrorOp(i) => format!("Mirror {}", i.index()),
         SceneElement::RepeatOp(i) => format!("Repeat {}", i.index()),
-        SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
-        SceneElement::SketchOffsetOp(i) => format!("Offset {i}"),
-        SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
+        SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {}", i.index()),
+        SceneElement::SketchOffsetOp(i) => format!("Offset {}", i.index()),
+        SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {}", i.index()),
         SceneElement::SketchVertexTreatmentOp(i) => {
-            format!("{} {i}", sketch_vertex_treatment_label(doc, *i))
+            format!("{} {}", sketch_vertex_treatment_label(doc, *i), i.index())
         }
-        SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
+        SceneElement::SketchSliceOp(i) => format!("Sketch slice {}", i.index()),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice {}", i.index()),
         SceneElement::EdgeTreatmentOp(i) => match doc.edge_treatment_ops.get(*i).map(|o| o.kind) {

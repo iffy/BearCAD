@@ -110,11 +110,11 @@ pub struct ContextInput<'a> {
     /// In-sketch Offset tool control.
     pub sketch_offset: Option<SketchOffsetControl>,
     /// "Edit offset" entry point: the selected committed offset op.
-    pub sketch_offset_edit_start: Option<usize>,
+    pub sketch_offset_edit_start: Option<crate::model::SketchOffsetOpKey>,
     /// In-sketch Mirror tool control (#523/#528).
     pub sketch_mirror: Option<SketchMirrorControl>,
     /// "Edit sketch mirror" entry point: the selected committed sketch-mirror op.
-    pub sketch_mirror_edit_start: Option<usize>,
+    pub sketch_mirror_edit_start: Option<crate::model::SketchMirrorOpKey>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
@@ -630,7 +630,7 @@ pub enum SketchOffsetEdit {
     Construction(bool),
     Commit,
     /// Re-open a committed offset op for editing.
-    EditStart(usize),
+    EditStart(crate::model::SketchOffsetOpKey),
     /// Remove one picked entity from the offset set (#493).
     Remove(SceneElement),
     /// Clear all picked entities (#493).
@@ -659,7 +659,7 @@ pub enum SketchMirrorEdit {
     Clear,
     Commit,
     /// Re-open a committed sketch-mirror op for editing.
-    EditStart(usize),
+    EditStart(crate::model::SketchMirrorOpKey),
 }
 
 /// One edit from the Repeat context section (#257): the three interlinked variables and the two
@@ -1013,11 +1013,11 @@ pub struct ContextPaneContent {
     /// In-sketch Offset tool control.
     pub sketch_offset: Option<SketchOffsetControl>,
     /// "Edit offset" entry point: the selected committed offset op.
-    pub sketch_offset_edit_start: Option<usize>,
+    pub sketch_offset_edit_start: Option<crate::model::SketchOffsetOpKey>,
     /// In-sketch Mirror tool control (#523/#528).
     pub sketch_mirror: Option<SketchMirrorControl>,
     /// "Edit sketch mirror" entry point: the selected committed sketch-mirror op.
-    pub sketch_mirror_edit_start: Option<usize>,
+    pub sketch_mirror_edit_start: Option<crate::model::SketchMirrorOpKey>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).

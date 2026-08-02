@@ -15507,7 +15507,6 @@ fn sketch_repeat_probe_op(
         line_outputs: Vec::new(),
         circle_outputs: Vec::new(),
         name: None,
-        deleted: false,
     }
 }
 

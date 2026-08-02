@@ -1699,6 +1699,13 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for any in-sketch operation (#1055) — tests only, same caveat. Generic because
+/// the five sketch ops all take the same shape.
+#[cfg(test)]
+pub fn sketch_op_key_for_slot<T>(n: usize) -> crate::arena::Key<T> {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 impl Document {
     /// The body at ordinal `n` among the live ones (#1055) — what a script names, and how
     /// to say "the first body" now that a position is not an identity.
@@ -2899,9 +2906,10 @@ pub struct SketchRepeatOperation {
     pub circle_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a SketchRepeatOperation (#1055).
+pub type SketchRepeatOpKey = crate::arena::Key<SketchRepeatOperation>;
 
 /// A 2D in-sketch offset: parallel copies of the picked lines (mitered where they
 /// chain end-to-end) and concentric copies of the picked circles, at a signed
@@ -2932,9 +2940,10 @@ pub struct SketchOffsetOperation {
     pub circle_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a SketchOffsetOperation (#1055).
+pub type SketchOffsetOpKey = crate::arena::Key<SketchOffsetOperation>;
 
 /// A 2D in-sketch mirror (Mirror tool inside a sketch, #523): reflects the picked lines and
 /// circles across a mirror line, emitting the reflections as separate `Line`/`Circle` entries
@@ -2964,9 +2973,10 @@ pub struct SketchMirrorOperation {
     pub constraint_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a SketchMirrorOperation (#1055).
+pub type SketchMirrorOpKey = crate::arena::Key<SketchMirrorOperation>;
 
 /// A 2D in-sketch slice (#224): splits the target sketch **lines** at their interior crossings
 /// with the cutter lines, shadowing each split original and emitting its fragments as new lines
@@ -3004,9 +3014,10 @@ pub struct SketchSliceOperation {
     pub constraint_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a SketchSliceOperation (#1055).
+pub type SketchSliceOpKey = crate::arena::Key<SketchSliceOperation>;
 
 /// One treated corner owned by a [`SketchVertexTreatmentOperation`] (#538): the two edges that
 /// meet at a sketch vertex, addressed by their position in the op's `line_targets` and which end
@@ -3048,9 +3059,10 @@ pub struct SketchVertexTreatmentOperation {
     pub constraint_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a SketchVertexTreatmentOperation (#1055).
+pub type SketchVertexTreatmentOpKey = crate::arena::Key<SketchVertexTreatmentOperation>;
 
 /// A text element placed in a sketch (#282). The glyph outlines are **baked** at create/edit time
 /// into `contours` (sketch-local mm, laid out from a baseline at the local origin, *before* the
@@ -4025,20 +4037,20 @@ pub struct Document {
     pub edge_treatment_ops: crate::arena::Arena<EdgeTreatmentOperation>,
     /// 2D in-sketch linear repeats (#222): duplicated sketch entities grouped under an op.
     #[serde(default)]
-    pub sketch_repeat_ops: Vec<SketchRepeatOperation>,
+    pub sketch_repeat_ops: crate::arena::Arena<SketchRepeatOperation>,
     /// 2D in-sketch slices (#224): split sketch entities grouped under an op.
     #[serde(default)]
-    pub sketch_slice_ops: Vec<SketchSliceOperation>,
+    pub sketch_slice_ops: crate::arena::Arena<SketchSliceOperation>,
     /// 2D in-sketch offsets: parallel sketch entities grouped under an op.
     #[serde(default)]
-    pub sketch_offset_ops: Vec<SketchOffsetOperation>,
+    pub sketch_offset_ops: crate::arena::Arena<SketchOffsetOperation>,
     /// 2D in-sketch mirrors (#523): reflected sketch entities grouped under an op.
     #[serde(default)]
-    pub sketch_mirror_ops: Vec<SketchMirrorOperation>,
+    pub sketch_mirror_ops: crate::arena::Arena<SketchMirrorOperation>,
     /// 2D in-sketch chamfer/fillet operations (#538): shadowed source edges plus regenerated
     /// trimmed copies + bridge lines, grouped under an op.
     #[serde(default)]
-    pub sketch_vertex_treatment_ops: Vec<SketchVertexTreatmentOperation>,
+    pub sketch_vertex_treatment_ops: crate::arena::Arena<SketchVertexTreatmentOperation>,
     /// Sketch text elements (#282): baked glyph outlines + embedded font, per sketch.
     #[serde(default)]
     pub sketch_texts: Vec<SketchText>,
@@ -4261,11 +4273,11 @@ impl Default for Document {
             repeat_ops: crate::arena::Arena::new(),
             slice_ops: crate::arena::Arena::new(),
             edge_treatment_ops: crate::arena::Arena::new(),
-            sketch_repeat_ops: Vec::new(),
-            sketch_offset_ops: Vec::new(),
-            sketch_mirror_ops: Vec::new(),
-            sketch_vertex_treatment_ops: Vec::new(),
-            sketch_slice_ops: Vec::new(),
+            sketch_repeat_ops: crate::arena::Arena::new(),
+            sketch_offset_ops: crate::arena::Arena::new(),
+            sketch_mirror_ops: crate::arena::Arena::new(),
+            sketch_vertex_treatment_ops: crate::arena::Arena::new(),
+            sketch_slice_ops: crate::arena::Arena::new(),
             sketch_texts: Vec::new(),
             drawings: Vec::new(),
             joints: Vec::new(),

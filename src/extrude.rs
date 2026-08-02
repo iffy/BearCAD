@@ -7668,7 +7668,6 @@ mod tests {
                 line_outputs: Vec::new(),
                 circle_outputs: Vec::new(),
                 name: None,
-                deleted: false,
             }
         };
         // Along U the line spans 0..10.

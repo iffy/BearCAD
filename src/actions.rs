@@ -905,7 +905,7 @@ pub struct CreatingSketchOffset {
     pub distance: String,
     pub construction: bool,
     /// `Some(op)` while re-editing a committed offset.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::SketchOffsetOpKey>,
 }
 
 impl CreatingSketchOffset {
@@ -979,7 +979,7 @@ pub struct CreatingSketchRepeat {
     pub distance_is_end: bool,
     pub var_mru: [crate::model::RepeatVar; 3],
     /// `Some(op)` while re-editing a committed in-sketch repeat.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::SketchRepeatOpKey>,
 }
 
 impl CreatingSketchRepeat {
@@ -1121,7 +1121,7 @@ pub struct CreatingSketchSlice {
     /// `false` = the next viewport click picks a target; `true` = it picks a cutter line.
     pub picking_cutter: bool,
     /// `Some(op)` while re-editing a committed in-sketch slice.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::SketchSliceOpKey>,
 }
 
 impl CreatingSketchSlice {
@@ -1290,7 +1290,7 @@ pub struct CreatingSketchMirror {
     pub line: Option<usize>,
     pub line_targets: Vec<usize>,
     pub circle_targets: Vec<usize>,
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::SketchMirrorOpKey>,
 }
 
 impl CreatingSketchMirror {
@@ -2366,7 +2366,7 @@ pub enum Action {
     },
     /// Re-target an existing in-sketch mirror.
     EditSketchMirrorOperation {
-        op: usize,
+        op: crate::model::SketchMirrorOpKey,
         line: usize,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
@@ -2425,7 +2425,7 @@ pub enum Action {
     },
     /// Re-point / re-space an existing in-sketch repeat (#222).
     EditSketchRepeatOperation {
-        op: usize,
+        op: crate::model::SketchRepeatOpKey,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
         dir_u: f32,
@@ -2459,7 +2459,7 @@ pub enum Action {
     },
     /// Re-target / re-distance / re-style an existing in-sketch offset.
     EditSketchOffsetOperation {
-        op: usize,
+        op: crate::model::SketchOffsetOpKey,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
         distance: String,
@@ -2513,7 +2513,7 @@ pub enum Action {
     },
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
-        op: usize,
+        op: crate::model::SketchSliceOpKey,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
         #[allow(dead_code)]
@@ -5975,11 +5975,11 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::MoveOp(i) => format!("Move operation {}", i.index()),
         SceneElement::MirrorOp(i) => format!("Mirror operation {}", i.index()),
         SceneElement::RepeatOp(i) => format!("Repeat operation {}", i.index()),
-        SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
-        SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
-        SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
-        SceneElement::SketchVertexTreatmentOp(i) => format!("Sketch chamfer/fillet {i}"),
-        SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
+        SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {}", i.index()),
+        SceneElement::SketchOffsetOp(i) => format!("Sketch offset {}", i.index()),
+        SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {}", i.index()),
+        SceneElement::SketchVertexTreatmentOp(i) => format!("Sketch chamfer/fillet {}", i.index()),
+        SceneElement::SketchSliceOp(i) => format!("Sketch slice {}", i.index()),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {}", i.index()),
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {}", i.index()),
@@ -9097,8 +9097,7 @@ impl AppState {
                 // them (#538).
                 let op_index = match (a_owner, b_owner) {
                     (None, None) => {
-                        let idx = self.doc.sketch_vertex_treatment_ops.len();
-                        self.doc.sketch_vertex_treatment_ops.push(
+                        let idx = self.doc.sketch_vertex_treatment_ops.insert(
                             crate::model::SketchVertexTreatmentOperation {
                                 sketch,
                                 line_targets: vec![line1, line2],
@@ -9107,7 +9106,6 @@ impl AppState {
                                 bridge_outputs: Vec::new(),
                                 constraint_outputs: Vec::new(),
                                 name: None,
-                                deleted: false,
                             },
                         );
                         self.doc
@@ -9170,7 +9168,6 @@ impl AppState {
                             }
                         }
                         let ob_mut = &mut self.doc.sketch_vertex_treatment_ops[ob];
-                        ob_mut.deleted = true;
                         ob_mut.line_targets.clear();
                         ob_mut.corners.clear();
                         ob_mut.line_outputs.clear();
@@ -10842,8 +10839,7 @@ label_hidden: false,
                     return ActionResult::Err(e);
                 }
                 let n = line_targets.len() + circle_targets.len();
-                let op_index = self.doc.sketch_repeat_ops.len();
-                self.doc.sketch_repeat_ops.push(crate::model::SketchRepeatOperation {
+                                let op_index = self.doc.sketch_repeat_ops.insert(crate::model::SketchRepeatOperation {
                     sketch,
                     line_targets,
                     circle_targets,
@@ -10856,11 +10852,10 @@ label_hidden: false,
                     line_outputs: Vec::new(),
                     circle_outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SketchRepeatOperation);
                 if !rebuild_sketch_repeat(&mut self.doc, op_index) {
-                    self.doc.sketch_repeat_ops.pop();
+                    self.doc.sketch_repeat_ops.remove(op_index);
                     self.doc.shape_order.pop();
                     let e = "Repeat doesn't evaluate, or produces no extra instances \
                              (check direction, count/spacing/length)"
@@ -10884,9 +10879,9 @@ label_hidden: false,
                 length,
             } => {
                 let Some(sketch) =
-                    self.doc.sketch_repeat_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                    self.doc.sketch_repeat_ops.get(op).map(|o| o.sketch)
                 else {
-                    let e = format!("Sketch repeat {op} not found");
+                    let e = format!("Sketch repeat {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -11008,8 +11003,7 @@ label_hidden: false,
                     return ActionResult::Err(e);
                 }
                 let n = line_targets.len() + circle_targets.len();
-                let op_index = self.doc.sketch_offset_ops.len();
-                self.doc.sketch_offset_ops.push(crate::model::SketchOffsetOperation {
+                                let op_index = self.doc.sketch_offset_ops.insert(crate::model::SketchOffsetOperation {
                     sketch,
                     line_targets,
                     circle_targets,
@@ -11018,11 +11012,10 @@ label_hidden: false,
                     line_outputs: Vec::new(),
                     circle_outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SketchOffsetOperation);
                 if !rebuild_sketch_offset(&mut self.doc, op_index) {
-                    self.doc.sketch_offset_ops.pop();
+                    self.doc.sketch_offset_ops.remove(op_index);
                     self.doc.shape_order.pop();
                     let e = "Offset distance doesn't evaluate".to_string();
                     self.status = e.clone();
@@ -11040,9 +11033,9 @@ label_hidden: false,
                 construction,
             } => {
                 let Some(sketch) =
-                    self.doc.sketch_offset_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                    self.doc.sketch_offset_ops.get(op).map(|o| o.sketch)
                 else {
-                    let e = format!("Sketch offset {op} not found");
+                    let e = format!("Sketch offset {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -11118,8 +11111,7 @@ label_hidden: false,
                     return ActionResult::Err(e);
                 }
                 let n = line_targets.len() + circle_targets.len();
-                let op_index = self.doc.sketch_mirror_ops.len();
-                self.doc.sketch_mirror_ops.push(crate::model::SketchMirrorOperation {
+                                let op_index = self.doc.sketch_mirror_ops.insert(crate::model::SketchMirrorOperation {
                     sketch,
                     line,
                     line_targets,
@@ -11128,11 +11120,10 @@ label_hidden: false,
                     circle_outputs: Vec::new(),
                     constraint_outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SketchMirrorOperation);
                 if !rebuild_sketch_mirror(&mut self.doc, op_index) {
-                    self.doc.sketch_mirror_ops.pop();
+                    self.doc.sketch_mirror_ops.remove(op_index);
                     self.doc.shape_order.pop();
                     let e = "Mirror line is degenerate or missing".to_string();
                     self.status = e.clone();
@@ -11149,9 +11140,9 @@ label_hidden: false,
                 circle_targets,
             } => {
                 let Some(sketch) =
-                    self.doc.sketch_mirror_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                    self.doc.sketch_mirror_ops.get(op).map(|o| o.sketch)
                 else {
-                    let e = format!("Sketch mirror {op} not found");
+                    let e = format!("Sketch mirror {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -11338,8 +11329,7 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let op_index = self.doc.sketch_slice_ops.len();
-                self.doc.sketch_slice_ops.push(crate::model::SketchSliceOperation {
+                                let op_index = self.doc.sketch_slice_ops.insert(crate::model::SketchSliceOperation {
                     sketch,
                     line_targets,
                     cutter_lines,
@@ -11348,11 +11338,10 @@ label_hidden: false,
                     line_outputs: Vec::new(),
                     constraint_outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SketchSliceOperation);
                 if !rebuild_sketch_slice(&mut self.doc, op_index) {
-                    self.doc.sketch_slice_ops.pop();
+                    self.doc.sketch_slice_ops.remove(op_index);
                     self.doc.shape_order.pop();
                     let e = "Slice produces no cuts (no cutter crosses a target line)".to_string();
                     self.status = e.clone();
@@ -11365,9 +11354,9 @@ label_hidden: false,
             }
             Action::EditSketchSliceOperation { op, line_targets, circle_targets, face_targets, cutter_lines } => {
                 let Some(sketch) =
-                    self.doc.sketch_slice_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                    self.doc.sketch_slice_ops.get(op).map(|o| o.sketch)
                 else {
-                    let e = format!("Sketch slice {op} not found");
+                    let e = format!("Sketch slice {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -14127,8 +14116,8 @@ fn arc_to_beziers(cx: f32, cy: f32, r: f32, a0: f32, a1: f32) -> Vec<[(f32, f32)
 /// flagged `shadow` (kept, but no longer face-forming) and its pieces become fresh lines (curved
 /// pieces keep their bezier shape via de Casteljau). Targets with no crossing are left untouched.
 /// Returns `false` — leaving the op untouched — when nothing actually splits.
-fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bool {
-    let Some(op) = doc.sketch_slice_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model::SketchSliceOpKey) -> bool {
+    let Some(op) = doc.sketch_slice_ops.get(op_index).cloned() else {
         return false;
     };
     // Reset any prior run: un-shadow every target, tombstone old fragments.
@@ -14385,8 +14374,8 @@ fn slice_face_loop(
 /// two output lists to `instances × targets` and refreshing every surviving copy's geometry from
 /// its source shifted along the (normalized) direction. Returns `false` (leaving the op's outputs
 /// untouched) when the configuration doesn't evaluate to at least one extra instance.
-fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: usize) -> bool {
-    let Some(op) = doc.sketch_repeat_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: crate::model::SketchRepeatOpKey) -> bool {
+    let Some(op) = doc.sketch_repeat_ops.get(op_index).cloned() else {
         return false;
     };
     let Some(offsets) = crate::extrude::sketch_repeat_offsets(doc, &op) else {
@@ -14503,8 +14492,8 @@ fn ensure_offset_joint_coincidences(
 /// target offsets by the op's signed distance (chains miter via
 /// [`crate::offset::offset_segments`]), every circle target's radius shifts by it.
 /// Output entries are reused in place so their indices stay stable across rebuilds.
-pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: usize) -> bool {
-    let Some(op) = doc.sketch_offset_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: crate::model::SketchOffsetOpKey) -> bool {
+    let Some(op) = doc.sketch_offset_ops.get(op_index).cloned() else {
         return false;
     };
     let Some(distance) = crate::value::eval_length_mm_in_doc(&op.distance, doc) else {
@@ -14605,7 +14594,7 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
 /// Re-run every live offset op so outputs track their sources and distance
 /// expressions; called from `recompute_document_geometry`.
 pub fn rebuild_sketch_offsets(doc: &mut crate::model::Document) {
-    for i in 0..doc.sketch_offset_ops.len() {
+    for i in doc.sketch_offset_ops.keys().collect::<Vec<_>>() {
         let _ = rebuild_sketch_offset(doc, i);
     }
 }
@@ -14619,8 +14608,8 @@ fn reflect_point_2d(p: glam::Vec2, a: glam::Vec2, dir: glam::Vec2) -> glam::Vec2
 /// (Re)generate the reflected copies for in-sketch mirror op `op_index` (#523): every target
 /// line/circle reflected across the mirror line, reusing output slots so their indices stay
 /// stable across rebuilds. `false` when the mirror line or sources are gone/degenerate.
-pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: usize) -> bool {
-    let Some(op) = doc.sketch_mirror_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: crate::model::SketchMirrorOpKey) -> bool {
+    let Some(op) = doc.sketch_mirror_ops.get(op_index).cloned() else {
         return false;
     };
     let Some(ml) = doc.lines.get(op.line).filter(|l| !l.deleted) else {
@@ -14776,7 +14765,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
 /// Re-run every live in-sketch mirror op so outputs track their sources/mirror line; called
 /// from `recompute_document_geometry`.
 pub fn rebuild_sketch_mirrors(doc: &mut crate::model::Document) {
-    for i in 0..doc.sketch_mirror_ops.len() {
+    for i in doc.sketch_mirror_ops.keys().collect::<Vec<_>>() {
         let _ = rebuild_sketch_mirror(doc, i);
     }
 }
@@ -14799,19 +14788,14 @@ pub fn rebuild_sketch_mirrors(doc: &mut crate::model::Document) {
 /// its rebuild is self-contained (adjacent corners share an edge, treated at both ends here).
 pub(crate) fn rebuild_sketch_vertex_treatment(
     doc: &mut crate::model::Document,
-    op_index: usize,
+    op_index: crate::model::SketchVertexTreatmentOpKey,
 ) -> bool {
     use crate::model::{
         Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd, ShapeKind,
     };
     use std::collections::HashMap;
 
-    let Some(op) = doc
-        .sketch_vertex_treatment_ops
-        .get(op_index)
-        .filter(|o| !o.deleted)
-        .cloned()
-    else {
+    let Some(op) = doc.sketch_vertex_treatment_ops.get(op_index).cloned() else {
         return false;
     };
     let sketch = op.sketch;
@@ -15008,7 +14992,7 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
 /// shadow sources' solved endpoints and the parametric amounts; called from
 /// `recompute_document_geometry` after the sketch has solved.
 pub fn rebuild_sketch_vertex_treatments(doc: &mut crate::model::Document) {
-    for i in 0..doc.sketch_vertex_treatment_ops.len() {
+    for i in doc.sketch_vertex_treatment_ops.keys().collect::<Vec<_>>() {
         let _ = rebuild_sketch_vertex_treatment(doc, i);
     }
 }
@@ -15018,12 +15002,11 @@ pub fn rebuild_sketch_vertex_treatments(doc: &mut crate::model::Document) {
 fn live_vertex_treatment_owner(
     doc: &crate::model::Document,
     line: usize,
-) -> Option<(usize, usize)> {
+) -> Option<(crate::model::SketchVertexTreatmentOpKey, usize)> {
     doc.sketch_vertex_treatment_ops
         .iter()
-        .enumerate()
         .find_map(|(oi, op)| {
-            if op.deleted {
+            if false {
                 return None;
             }
             op.line_targets
@@ -15044,9 +15027,9 @@ fn resolve_treatment_corner_sources(
     point: ConstraintPoint,
 ) -> Option<(usize, LineEnd, usize, LineEnd)> {
     let is_output = |line: usize| -> bool {
-        doc.sketch_vertex_treatment_ops.iter().any(|op| {
-            !op.deleted && (op.line_outputs.contains(&line) || op.bridge_outputs.contains(&line))
-        })
+        doc.sketch_vertex_treatment_ops
+            .values()
+            .any(|op| op.line_outputs.contains(&line) || op.bridge_outputs.contains(&line))
     };
     let mut endpoints: Vec<(usize, LineEnd)> =
         crate::vertex_drag::coincident_group(doc, sketch, point)
@@ -15976,6 +15959,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::sketch_op_key_for_slot as skop;
     use crate::model::edge_treatment_op_key_for_slot as etkey;
     use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::repeat_op_key_for_slot as repkey;
@@ -16297,10 +16281,10 @@ mod tests {
         });
         assert!(matches!(r, ActionResult::Ok), "sketch mirror should succeed: {r:?}");
         assert_eq!(state.doc.sketch_mirror_ops.len(), 1);
-        assert_eq!(state.doc.sketch_mirror_ops[0].line_outputs.len(), 1);
+        assert_eq!(state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs.len(), 1);
 
         // Reflected across x = 0: (5,0)→(-5,0), (8,3)→(-8,3).
-        let out = state.doc.sketch_mirror_ops[0].line_outputs[0];
+        let out = state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs[0];
         let o = &state.doc.lines[out];
         assert!((o.x0 + 5.0).abs() < 1e-3 && o.y0.abs() < 1e-3, "start {:?}", (o.x0, o.y0));
         assert!((o.x1 + 8.0).abs() < 1e-3 && (o.y1 - 3.0).abs() < 1e-3, "end {:?}", (o.x1, o.y1));
@@ -16308,7 +16292,7 @@ mod tests {
         assert!(!state.doc.lines[1].deleted);
 
         // Deleting the op removes the reflection.
-        state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(0) });
+        state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(skop(0)) });
         assert!(state.doc.lines[out].deleted, "reflected line removed with the op");
         assert!(!state.doc.lines[1].deleted, "source kept");
     }
@@ -16383,9 +16367,9 @@ mod tests {
             line_targets: vec![1, 2, 3, 4],
             circle_targets: vec![],
         });
-        assert_eq!(state.doc.sketch_mirror_ops[0].line_outputs.len(), 4);
+        assert_eq!(state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs.len(), 4);
         assert_eq!(
-            state.doc.sketch_mirror_ops[0].constraint_outputs.len(),
+            state.doc.sketch_mirror_ops.values().nth(0).unwrap().constraint_outputs.len(),
             4,
             "the four corner-coincidences are reflected"
         );
@@ -16394,7 +16378,7 @@ mod tests {
         assert_eq!(loops.len(), 2, "the reflected rectangle forms its own face: {loops:?}");
         // One loop is made entirely of the reflected output lines.
         let outs: std::collections::HashSet<usize> =
-            state.doc.sketch_mirror_ops[0].line_outputs.iter().copied().collect();
+            state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs.iter().copied().collect();
         assert!(
             loops.iter().any(|l| l.iter().all(|li| outs.contains(li))),
             "a face is formed from the reflected lines: {loops:?}"
@@ -16418,7 +16402,7 @@ mod tests {
             line_targets: vec![1],
             circle_targets: vec![],
         });
-        let out = state.doc.sketch_mirror_ops[0].line_outputs[0];
+        let out = state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs[0];
         assert!((state.doc.lines[out].x0 + 5.0).abs() < 1e-3, "initial reflection at x=-5");
 
         // Drag the whole mirror line to x = 2 (both endpoints shift +2 in u), by selecting it
@@ -19199,7 +19183,7 @@ mod tests {
         assert_eq!(dim0.expression, "10", "the source's length dim must be untouched");
         // A live op owns the treated corner; its output is the trimmed copy that lands at x = 7.
         assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
-        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
         assert_eq!(op.line_targets, vec![0, 1]);
         assert_eq!(op.corners.len(), 1);
         assert_eq!(op.line_outputs.len(), 2);
@@ -19214,7 +19198,7 @@ mod tests {
         // A full recompute keeps the source full-length and re-derives the same trim.
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-2, "source stays full after recompute");
-        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
         assert!((state.doc.lines[op.line_outputs[0]].x1 - 7.0).abs() < 1e-2);
     }
 
@@ -19237,14 +19221,14 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(
-            state.doc.sketch_vertex_treatment_ops[0].corners[0].amount, "cham",
+            state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap().corners[0].amount, "cham",
             "the parametric amount expression is stored verbatim on the corner"
         );
         let _ = sketch;
 
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         let bridge_at = |s: &AppState| {
-            let op = &s.doc.sketch_vertex_treatment_ops[0];
+            let op = &s.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
             let b = &s.doc.lines[op.bridge_outputs[0]];
             (b.x0, b.y0, b.x1, b.y1)
         };
@@ -20506,7 +20490,7 @@ mod tests {
         // #538: the sources are shadowed at full length; the trim lives on the op's outputs.
         assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
         assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3, "source 0 stays full length");
-        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
         // Trimmed copy of line 0: End truncated back from (10,0) toward (0,0) by 3mm.
         let t0 = &state.doc.lines[op.line_outputs[0]];
         assert!((t0.x1 - 7.0).abs() < 1e-3 && t0.y1.abs() < 1e-3);
@@ -20529,7 +20513,7 @@ mod tests {
             amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
         assert!(state.doc.lines[op.bridge_outputs[0]].is_curved());
     }
 
@@ -20597,8 +20581,7 @@ mod tests {
         let live: Vec<_> = state
             .doc
             .sketch_vertex_treatment_ops
-            .iter()
-            .filter(|o| !o.deleted)
+            .values()
             .collect();
         assert_eq!(live.len(), 1, "adjacent corners must merge into one op");
         let op = live[0];
@@ -20628,15 +20611,15 @@ mod tests {
             kind: VertexTreatmentKind::Fillet,
             amount: "3.0".to_string(),
         });
-        let op = state.doc.sketch_vertex_treatment_ops[0].clone();
+        let op = state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap().clone();
         assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
 
         crate::document_lifecycle::tombstone_element(
             &mut state.doc,
-            SceneElement::SketchVertexTreatmentOp(0),
+            SceneElement::SketchVertexTreatmentOp(skop(0)),
         );
 
-        assert!(state.doc.sketch_vertex_treatment_ops[0].deleted);
+        assert!(state.doc.sketch_vertex_treatment_ops.is_empty(), "the op is removed, not tombstoned");
         // Sources un-shadowed (live geometry, sharp corner back).
         assert!(!state.doc.lines[0].shadow && !state.doc.lines[1].shadow);
         // Every generated trimmed copy + bridge is tombstoned.
@@ -21280,7 +21263,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!(state.doc.lines[0].shadow);
-        let op = state.doc.sketch_slice_ops[0].clone();
+        let op = state.doc.sketch_slice_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.line_outputs.len(), 2);
         let f0 = &state.doc.lines[op.line_outputs[0]];
         let f1 = &state.doc.lines[op.line_outputs[1]];
@@ -21319,7 +21302,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!(state.doc.circles[0].shadow, "sliced circle becomes shadow");
-        let op = state.doc.sketch_slice_ops[0].clone();
+        let op = state.doc.sketch_slice_ops.values().nth(0).unwrap().clone();
         // Two arcs (each split into ≤90° bezier chunks → 2 pieces per semicircle = 4 fragments).
         assert!(!op.line_outputs.is_empty());
         for &o in &op.line_outputs {
@@ -24947,7 +24930,7 @@ mod tests {
             }),
             ActionResult::Ok
         ));
-        let out = state.doc.sketch_offset_ops[0].line_outputs[0];
+        let out = state.doc.sketch_offset_ops.values().nth(0).unwrap().line_outputs[0];
         assert!(!state.doc.lines[out].deleted, "offset output exists");
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Line(out),
@@ -24964,13 +24947,13 @@ mod tests {
             "rebuild must not revive a user-deleted offset line"
         );
         assert!(
-            !state.doc.sketch_offset_ops[0]
+            !state.doc.sketch_offset_ops.values().nth(0).unwrap()
                 .line_outputs
                 .contains(&out),
             "deleted output must leave the offset op's output list"
         );
         assert_eq!(
-            state.doc.sketch_offset_ops[0].line_targets.len(),
+            state.doc.sketch_offset_ops.values().nth(0).unwrap().line_targets.len(),
             3,
             "paired source target must be dropped with the output"
         );

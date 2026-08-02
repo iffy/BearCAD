@@ -1991,29 +1991,34 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchOffsetOp(i) => ElementScriptTokens {
             kind: "sketch_offset_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchMirrorOp(i) => ElementScriptTokens {
             kind: "sketch_mirror_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchVertexTreatmentOp(i) => ElementScriptTokens {
             kind: "sketch_vertex_treatment_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchRepeatOp(i) => ElementScriptTokens {
             kind: "sketch_repeat_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchSliceOp(i) => ElementScriptTokens {
             kind: "sketch_slice_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::SketchText(i) => ElementScriptTokens {

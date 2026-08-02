@@ -50,14 +50,14 @@ pub enum HierarchyNode {
     /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
     RepeatOp(crate::model::RepeatOpKey),
     /// A 2D in-sketch linear repeat (#222/#228); its duplicated lines/circles nest under it.
-    SketchRepeatOp(usize),
-    SketchOffsetOp(usize),
+    SketchRepeatOp(crate::model::SketchRepeatOpKey),
+    SketchOffsetOp(crate::model::SketchOffsetOpKey),
     /// A 2D in-sketch mirror (#523); its reflected lines/circles nest under it.
-    SketchMirrorOp(usize),
+    SketchMirrorOp(crate::model::SketchMirrorOpKey),
     /// A 2D in-sketch chamfer/fillet (#538); its trimmed copies + bridge lines nest under it.
-    SketchVertexTreatmentOp(usize),
+    SketchVertexTreatmentOp(crate::model::SketchVertexTreatmentOpKey),
     /// A 2D in-sketch slice (#224/#229); its fragment lines nest under it.
-    SketchSliceOp(usize),
+    SketchSliceOp(crate::model::SketchSliceOpKey),
     /// A sketch text element (#282/#286); nests under its sketch like a line.
     SketchText(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
@@ -190,14 +190,14 @@ pub enum SceneElement {
     /// A linear repeat on bodies (Repeat tool).
     RepeatOp(crate::model::RepeatOpKey),
     /// A 2D in-sketch linear repeat (#222/#228).
-    SketchRepeatOp(usize),
-    SketchOffsetOp(usize),
+    SketchRepeatOp(crate::model::SketchRepeatOpKey),
+    SketchOffsetOp(crate::model::SketchOffsetOpKey),
     /// A 2D in-sketch mirror (#523); its reflected lines/circles nest under it.
-    SketchMirrorOp(usize),
+    SketchMirrorOp(crate::model::SketchMirrorOpKey),
     /// A 2D in-sketch chamfer/fillet (#538); its trimmed copies + bridge lines nest under it.
-    SketchVertexTreatmentOp(usize),
+    SketchVertexTreatmentOp(crate::model::SketchVertexTreatmentOpKey),
     /// A 2D in-sketch slice (#224/#229).
-    SketchSliceOp(usize),
+    SketchSliceOp(crate::model::SketchSliceOpKey),
     /// A sketch text element (#282): selecting it selects the whole text.
     SketchText(usize),
     /// A slice operation on bodies (Slice tool).
@@ -1056,10 +1056,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
     }
     // In-sketch ops consume their source lines/circles (#449); the in-sketch slice also
     // its cutter lines.
-    for (oi, op) in doc.sketch_repeat_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_repeat_ops.iter() {
         for &li in &op.line_targets {
             edges.push((HierarchyNode::Line(li), HierarchyNode::SketchRepeatOp(oi)));
         }
@@ -1067,10 +1064,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchRepeatOp(oi)));
         }
     }
-    for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_offset_ops.iter() {
         for &li in &op.line_targets {
             edges.push((HierarchyNode::Line(li), HierarchyNode::SketchOffsetOp(oi)));
         }
@@ -1079,10 +1073,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // An in-sketch mirror consumes its mirror line and every source line/circle (#523).
-    for (oi, op) in doc.sketch_mirror_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_mirror_ops.iter() {
         edges.push((HierarchyNode::Line(op.line), HierarchyNode::SketchMirrorOp(oi)));
         for &li in &op.line_targets {
             edges.push((HierarchyNode::Line(li), HierarchyNode::SketchMirrorOp(oi)));
@@ -1092,10 +1083,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // An in-sketch chamfer/fillet consumes its (shadowed) source edges (#538).
-    for (oi, op) in doc.sketch_vertex_treatment_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_vertex_treatment_ops.iter() {
         for &li in &op.line_targets {
             edges.push((
                 HierarchyNode::Line(li),
@@ -1103,10 +1091,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             ));
         }
     }
-    for (oi, op) in doc.sketch_slice_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_slice_ops.iter() {
         for &li in op.line_targets.iter().chain(op.cutter_lines.iter()) {
             edges.push((HierarchyNode::Line(li), HierarchyNode::SketchSliceOp(oi)));
         }
@@ -1947,10 +1932,7 @@ pub fn build_hierarchy(
     }
     // 2D in-sketch repeats (#222/#228): the op is its own element with its duplicated
     // lines/circles nested beneath it (they're excluded from the sketch's own listing).
-    for (oi, op) in doc.sketch_repeat_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_repeat_ops.iter() {
         let mut children: Vec<HierarchyEntry> = op
             .line_outputs
             .iter()
@@ -1971,17 +1953,14 @@ pub fn build_hierarchy(
     // 2D in-sketch offsets nest under the sketch they offset (#941, see `build_sketch_entry`);
     // only an offset whose sketch died falls back to a top-level orphan here so it stays
     // reachable.
-    for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
-        if op.deleted || crate::document_lifecycle::sketch_alive(doc, op.sketch) {
+    for (oi, op) in doc.sketch_offset_ops.iter() {
+        if crate::document_lifecycle::sketch_alive(doc, op.sketch) {
             continue;
         }
         roots.push(build_sketch_offset_entry(doc, oi));
     }
     // 2D in-sketch mirrors (#523): the op with its reflected lines/circles nested beneath.
-    for (oi, op) in doc.sketch_mirror_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_mirror_ops.iter() {
         let mut children: Vec<HierarchyEntry> = op
             .line_outputs
             .iter()
@@ -2001,10 +1980,7 @@ pub fn build_hierarchy(
     }
     // 2D in-sketch chamfer/fillet (#538): the op with its trimmed copies + bridge lines nested
     // beneath it (the shadowed source edges stay listed under the sketch, dimmed).
-    for (oi, op) in doc.sketch_vertex_treatment_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_vertex_treatment_ops.iter() {
         let children: Vec<HierarchyEntry> = op
             .line_outputs
             .iter()
@@ -2019,10 +1995,7 @@ pub fn build_hierarchy(
     }
     // 2D in-sketch slices (#224/#229): the op is its own element with its fragment lines nested
     // beneath it (the shadowed originals stay listed under the sketch, dimmed).
-    for (oi, op) in doc.sketch_slice_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.sketch_slice_ops.iter() {
         let children: Vec<HierarchyEntry> = op
             .line_outputs
             .iter()
@@ -3557,34 +3530,34 @@ fn is_repeat_sketch_host_plane(doc: &Document, pi: usize) -> bool {
 /// listed under their operation node, not under the sketch directly.
 fn is_sketch_repeat_line_output(doc: &Document, li: usize) -> bool {
     doc.sketch_repeat_ops
-        .iter()
-        .any(|op| !op.deleted && op.line_outputs.contains(&li))
+        .values()
+        .any(|op| op.line_outputs.contains(&li))
         || doc
             .sketch_slice_ops
-            .iter()
-            .any(|op| !op.deleted && op.line_outputs.contains(&li))
+            .values()
+            .any(|op| op.line_outputs.contains(&li))
         || doc
             .sketch_offset_ops
-            .iter()
-            .any(|op| !op.deleted && op.line_outputs.contains(&li))
-        || doc.sketch_vertex_treatment_ops.iter().any(|op| {
-            !op.deleted && (op.line_outputs.contains(&li) || op.bridge_outputs.contains(&li))
+            .values()
+            .any(|op| op.line_outputs.contains(&li))
+        || doc.sketch_vertex_treatment_ops.values().any(|op| {
+            op.line_outputs.contains(&li) || op.bridge_outputs.contains(&li)
         })
 }
 
 fn is_sketch_repeat_circle_output(doc: &Document, ci: usize) -> bool {
     doc.sketch_repeat_ops
-        .iter()
-        .any(|op| !op.deleted && op.circle_outputs.contains(&ci))
+        .values()
+        .any(|op| op.circle_outputs.contains(&ci))
         || doc
             .sketch_offset_ops
-            .iter()
-            .any(|op| !op.deleted && op.circle_outputs.contains(&ci))
+            .values()
+            .any(|op| op.circle_outputs.contains(&ci))
 }
 
 /// One in-sketch offset's row: the op with its parallel lines/circles nested beneath it
 /// (they're excluded from the sketch's own listing, see `is_sketch_repeat_line_output`).
-fn build_sketch_offset_entry(doc: &Document, oi: usize) -> HierarchyEntry {
+fn build_sketch_offset_entry(doc: &Document, oi: crate::model::SketchOffsetOpKey) -> HierarchyEntry {
     let op = &doc.sketch_offset_ops[oi];
     let mut children: Vec<HierarchyEntry> = op
         .line_outputs
@@ -3689,7 +3662,7 @@ fn build_sketch_entry(
 
     // Offsets of this sketch's geometry nest under it (#941): the op belongs to the sketch,
     // so it reads as a sketch feature rather than a document-level sibling.
-    for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
+    for (oi, op) in doc.sketch_offset_ops.iter() {
         if op.sketch == sketch {
             children.push(build_sketch_offset_entry(doc, oi));
         }
@@ -5498,6 +5471,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::sketch_op_key_for_slot as skop;
     use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::edge_treatment_op_key_for_slot as etkey;
     use crate::model::repeat_op_key_for_slot as repkey;
@@ -6579,7 +6553,7 @@ label_hidden: false,
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        doc.sketch_offset_ops.push(crate::model::SketchOffsetOperation {
+        doc.sketch_offset_ops.insert(crate::model::SketchOffsetOperation {
             sketch,
             line_targets: vec![0],
             circle_targets: Vec::new(),
@@ -6588,21 +6562,20 @@ label_hidden: false,
             line_outputs: vec![1],
             circle_outputs: Vec::new(),
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::SketchOffsetOperation);
 
         let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
         let roots = &tree[0].children;
         assert!(
-            !roots.iter().any(|e| e.node == HierarchyNode::SketchOffsetOp(0)),
+            !roots.iter().any(|e| e.node == HierarchyNode::SketchOffsetOp(skop(0))),
             "the offset must not be a document-level root: {roots:?}"
         );
         let sketch_entry = find_entry(&tree, HierarchyNode::Sketch(sketch)).expect("sketch entry");
         let op = sketch_entry
             .children
             .iter()
-            .find(|c| c.node == HierarchyNode::SketchOffsetOp(0))
+            .find(|c| c.node == HierarchyNode::SketchOffsetOp(skop(0)))
             .expect("offset nests under its sketch");
         assert_eq!(op.children, vec![HierarchyEntry {
             node: HierarchyNode::Line(1),
@@ -6617,7 +6590,7 @@ label_hidden: false,
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.sketches[sketch].deleted = true;
-        doc.sketch_offset_ops.push(crate::model::SketchOffsetOperation {
+        doc.sketch_offset_ops.insert(crate::model::SketchOffsetOperation {
             sketch,
             line_targets: Vec::new(),
             circle_targets: Vec::new(),
@@ -6626,14 +6599,13 @@ label_hidden: false,
             line_outputs: Vec::new(),
             circle_outputs: Vec::new(),
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::SketchOffsetOperation);
         let tree = build_hierarchy(&doc, None);
         assert!(tree[0]
             .children
             .iter()
-            .any(|e| e.node == HierarchyNode::SketchOffsetOp(0)));
+            .any(|e| e.node == HierarchyNode::SketchOffsetOp(skop(0))));
     }
 
     #[test]

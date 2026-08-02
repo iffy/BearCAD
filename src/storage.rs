@@ -254,16 +254,16 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
     save_arena_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
     save_arena_nodes(&tx, &mut row_id, "edge_treatment_op", &doc.edge_treatment_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "sketch_offset_op", &doc.sketch_offset_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "sketch_mirror_op", &doc.sketch_mirror_ops)?;
-    save_indexed_nodes(
+    save_arena_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "sketch_offset_op", &doc.sketch_offset_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "sketch_mirror_op", &doc.sketch_mirror_ops)?;
+    save_arena_nodes(
         &tx,
         &mut row_id,
         "sketch_vertex_treatment_op",
         &doc.sketch_vertex_treatment_ops,
     )?;
-    save_indexed_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     save_indexed_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
@@ -593,12 +593,12 @@ pub fn open(path: &str) -> Result<Document> {
     let repeat_ops = load_arena_entities(&conn, "repeat_op")?;
     let slice_ops = load_arena_entities(&conn, "slice_op")?;
     let edge_treatment_ops = load_arena_entities(&conn, "edge_treatment_op")?;
-    let sketch_repeat_ops = load_indexed_entities(&conn, "sketch_repeat_op")?;
-    let sketch_offset_ops = load_indexed_entities(&conn, "sketch_offset_op")?;
-    let sketch_mirror_ops = load_indexed_entities(&conn, "sketch_mirror_op")?;
+    let sketch_repeat_ops = load_arena_entities(&conn, "sketch_repeat_op")?;
+    let sketch_offset_ops = load_arena_entities(&conn, "sketch_offset_op")?;
+    let sketch_mirror_ops = load_arena_entities(&conn, "sketch_mirror_op")?;
     let sketch_vertex_treatment_ops =
-        load_indexed_entities(&conn, "sketch_vertex_treatment_op")?;
-    let sketch_slice_ops = load_indexed_entities(&conn, "sketch_slice_op")?;
+        load_arena_entities(&conn, "sketch_vertex_treatment_op")?;
+    let sketch_slice_ops = load_arena_entities(&conn, "sketch_slice_op")?;
     let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
     let drawings = load_indexed_entities(&conn, "drawing")?;
     let joints = load_indexed_entities(&conn, "joint")?;

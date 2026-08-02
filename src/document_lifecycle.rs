@@ -89,26 +89,11 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::MoveOp(index) => doc.move_ops.contains(index),
         SceneElement::MirrorOp(index) => doc.mirror_ops.contains(index),
         SceneElement::RepeatOp(index) => doc.repeat_ops.contains(index),
-        SceneElement::SketchOffsetOp(index) => doc
-            .sketch_offset_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
-        SceneElement::SketchMirrorOp(index) => doc
-            .sketch_mirror_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
-        SceneElement::SketchVertexTreatmentOp(index) => doc
-            .sketch_vertex_treatment_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
-        SceneElement::SketchRepeatOp(index) => doc
-            .sketch_repeat_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
-        SceneElement::SketchSliceOp(index) => doc
-            .sketch_slice_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
+        SceneElement::SketchOffsetOp(index) => doc.sketch_offset_ops.contains(index),
+        SceneElement::SketchMirrorOp(index) => doc.sketch_mirror_ops.contains(index),
+        SceneElement::SketchVertexTreatmentOp(index) => doc.sketch_vertex_treatment_ops.contains(index),
+        SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.contains(index),
+        SceneElement::SketchSliceOp(index) => doc.sketch_slice_ops.contains(index),
         SceneElement::SliceOp(index) => doc.slice_ops.contains(index),
         SceneElement::EdgeTreatmentOp(index) => doc.edge_treatment_ops.contains(index),
         SceneElement::Revolution(index) => doc.revolutions.contains(index),
@@ -332,11 +317,10 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::SketchRepeatOp(index) => {
-            if let Some(op) = doc.sketch_repeat_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
+            if let Some(removed) = doc.sketch_repeat_ops.remove(index) {
+                {
                     // The duplicated lines/circles go with the op (#222/#228).
-                    let op = doc.sketch_repeat_ops[index].clone();
+                    let op = removed.clone();
                     for &out in &op.line_outputs {
                         if let Some(l) = doc.lines.get_mut(out) {
                             l.deleted = true;
@@ -352,11 +336,10 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::SketchOffsetOp(index) => {
-            if let Some(op) = doc.sketch_offset_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
+            if let Some(removed) = doc.sketch_offset_ops.remove(index) {
+                {
                     // The parallel lines/circles go with the op.
-                    let op = doc.sketch_offset_ops[index].clone();
+                    let op = removed.clone();
                     for &out in &op.line_outputs {
                         if let Some(l) = doc.lines.get_mut(out) {
                             l.deleted = true;
@@ -372,11 +355,10 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::SketchMirrorOp(index) => {
-            if let Some(op) = doc.sketch_mirror_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
+            if let Some(removed) = doc.sketch_mirror_ops.remove(index) {
+                {
                     // The reflected lines/circles go with the op (#523).
-                    let op = doc.sketch_mirror_ops[index].clone();
+                    let op = removed.clone();
                     for &out in &op.line_outputs {
                         if let Some(l) = doc.lines.get_mut(out) {
                             l.deleted = true;
@@ -398,13 +380,12 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::SketchVertexTreatmentOp(index) => {
-            if let Some(op) = doc.sketch_vertex_treatment_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
+            if let Some(removed) = doc.sketch_vertex_treatment_ops.remove(index) {
+                {
                     // Deleting the chamfer/fillet (#538) un-shadows the source edges (they
                     // become live geometry again, sharp corner restored) and tombstones the
                     // generated trimmed copies, bridges, and stitch constraints.
-                    let op = doc.sketch_vertex_treatment_ops[index].clone();
+                    let op = removed.clone();
                     for &li in &op.line_targets {
                         if let Some(l) = doc.lines.get_mut(li) {
                             l.shadow = false;
@@ -425,10 +406,9 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::SketchSliceOp(index) => {
-            if let Some(op) = doc.sketch_slice_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let op = doc.sketch_slice_ops[index].clone();
+            if let Some(removed) = doc.sketch_slice_ops.remove(index) {
+                {
+                    let op = removed.clone();
                     // Un-shadow the originals and remove the fragments (#224/#229/#237).
                     for &t in &op.line_targets {
                         if let Some(l) = doc.lines.get_mut(t) {
@@ -768,11 +748,8 @@ fn tombstone_line(doc: &mut Document, index: usize) -> bool {
 /// lists so rebuild does not revive it (#502). Empties the op if it has no sources left.
 fn detach_line_from_sketch_ops(doc: &mut Document, line: usize) {
     let mut orphan_outputs: Vec<usize> = Vec::new();
-    let mut empty_ops: Vec<usize> = Vec::new();
-    for (oi, op) in doc.sketch_offset_ops.iter_mut().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    let mut empty_ops: Vec<crate::model::SketchOffsetOpKey> = Vec::new();
+    for (oi, op) in doc.sketch_offset_ops.iter_mut() {
         // Parallel target/output slots: drop whichever end references this line.
         let mut i = 0;
         while i < op.line_targets.len() {
@@ -809,17 +786,15 @@ fn detach_line_from_sketch_ops(doc: &mut Document, line: usize) {
         }
     }
     for oi in empty_ops {
-        if let Some(op) = doc.sketch_offset_ops.get_mut(oi) {
-            if !op.deleted {
-                op.deleted = true;
-                remove_shape_order_entry(doc, ShapeKind::SketchOffsetOperation, oi);
+        // The history-tape marker to drop is this op's place among the live ones (#1055).
+        let ordinal = doc.sketch_offset_ops.keys().position(|k| k == oi);
+        if doc.sketch_offset_ops.remove(oi).is_some() {
+            if let Some(ordinal) = ordinal {
+                remove_shape_order_entry(doc, ShapeKind::SketchOffsetOperation, ordinal);
             }
         }
     }
-    for op in &mut doc.sketch_repeat_ops {
-        if op.deleted {
-            continue;
-        }
+    for op in doc.sketch_repeat_ops.values_mut() {
         op.line_targets.retain(|&t| t != line);
         op.line_outputs.retain(|&out| out != line);
     }

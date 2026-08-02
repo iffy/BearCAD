@@ -181,6 +181,23 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
             doc.repeat_ops.keys().position(|k| k == key).unwrap_or(0)
         }
         SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::SketchRepeatOp(key) => {
+            doc.sketch_repeat_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
+        SceneElement::SketchOffsetOp(key) => {
+            doc.sketch_offset_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
+        SceneElement::SketchMirrorOp(key) => {
+            doc.sketch_mirror_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
+        SceneElement::SketchVertexTreatmentOp(key) => doc
+            .sketch_vertex_treatment_ops
+            .keys()
+            .position(|k| k == key)
+            .unwrap_or(0),
+        SceneElement::SketchSliceOp(key) => {
+            doc.sketch_slice_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::EdgeTreatmentOp(key) => {
             doc.edge_treatment_ops.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -190,11 +207,6 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::SketchRepeatOp(i)
-        | SceneElement::SketchOffsetOp(i)
-        | SceneElement::SketchMirrorOp(i)
-        | SceneElement::SketchVertexTreatmentOp(i)
-        | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
 
         | SceneElement::Component(i)
@@ -253,11 +265,15 @@ pub fn scene_element_from_kind(
         "move_op" | "move" => Some(SceneElement::MoveOp(doc.move_ops.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
-        "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
-        "sketch_mirror_op" => Some(SceneElement::SketchMirrorOp(index)),
-        "sketch_vertex_treatment_op" | "chamfer_op" | "fillet_op" => {
-            Some(SceneElement::SketchVertexTreatmentOp(index))
+        "sketch_offset_op" | "offset" => {
+            Some(SceneElement::SketchOffsetOp(doc.sketch_offset_ops.keys().nth(index)?))
         }
+        "sketch_mirror_op" => {
+            Some(SceneElement::SketchMirrorOp(doc.sketch_mirror_ops.keys().nth(index)?))
+        }
+        "sketch_vertex_treatment_op" | "chamfer_op" | "fillet_op" => Some(
+            SceneElement::SketchVertexTreatmentOp(doc.sketch_vertex_treatment_ops.keys().nth(index)?),
+        ),
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(doc.mirror_ops.keys().nth(index)?)),
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
         "image" | "tracing_image" => {
@@ -4363,7 +4379,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 parse_sketch_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchRepeatOperation {
-                    op,
+                    // A script names the op by its ordinal among the live ones (#1055).
+                    op: tick
+                        .state()
+                        .doc
+                        .sketch_repeat_ops
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no operation {op}")))?,
                     line_targets: lines,
                     circle_targets: circles,
                     dir_u,
@@ -4426,7 +4449,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 parse_sketch_offset_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchOffsetOperation {
-                    op,
+                    // A script names the op by its ordinal among the live ones (#1055).
+                    op: tick
+                        .state()
+                        .doc
+                        .sketch_offset_ops
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no operation {op}")))?,
                     line_targets: lines,
                     circle_targets: circles,
                     distance,
@@ -4475,7 +4505,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (_sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchMirrorOperation {
-                    op,
+                    // A script names the op by its ordinal among the live ones (#1055).
+                    op: tick
+                        .state()
+                        .doc
+                        .sketch_mirror_ops
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no operation {op}")))?,
                     line,
                     line_targets: lines,
                     circle_targets: circles,
@@ -4605,7 +4642,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchSliceOperation {
-                    op,
+                    // A script names the op by its ordinal among the live ones (#1055).
+                    op: tick
+                        .state()
+                        .doc
+                        .sketch_slice_ops
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no operation {op}")))?,
                     line_targets,
                     circle_targets,
                     face_targets,
@@ -5567,6 +5611,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::sketch_op_key_for_slot as skop;
     use crate::model::edge_treatment_op_key_for_slot as etkey;
     use super::*;
     use crate::actions::AppState;
@@ -5657,7 +5702,7 @@ mod tests {
                                    mode = "count_gap", count = 3, spacing = 10 }
             "#,
         );
-        let op = state.doc.sketch_repeat_ops[0].clone();
+        let op = state.doc.sketch_repeat_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.circle_outputs.len(), 2);
         // The op node exists with its two copies nested; count copy-circle nodes across the tree.
         let tree = build_hierarchy(&state.doc, None);
@@ -5678,8 +5723,8 @@ mod tests {
             );
         }
         // Deleting the op tombstones the copies.
-        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchRepeatOp(0));
-        assert!(state.doc.sketch_repeat_ops[0].deleted);
+        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchRepeatOp(skop(0)));
+        assert!(state.doc.sketch_repeat_ops.is_empty(), "the op is removed, not tombstoned");
         for &ci in &op.circle_outputs {
             assert!(state.doc.circles[ci].deleted, "copy circle {ci} removed with the op");
         }
@@ -5857,7 +5902,7 @@ mod tests {
                                    distance = 2 }
             "#,
         );
-        let op = state.doc.sketch_offset_ops[0].clone();
+        let op = state.doc.sketch_offset_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.line_outputs.len(), 4);
         assert_eq!(op.circle_outputs.len(), 1);
         // Closed loop grows outward: the offset rectangle spans 24 × 14.
@@ -5904,13 +5949,13 @@ mod tests {
 
         // Edit: new distance and construction toggle re-offset in place.
         state.apply(crate::actions::Action::EditSketchOffsetOperation {
-            op: 0,
+            op: crate::model::sketch_op_key_for_slot(0),
             line_targets: op.line_targets.clone(),
             circle_targets: op.circle_targets.clone(),
             distance: "-3".to_string(),
             construction: true,
         });
-        let op = state.doc.sketch_offset_ops[0].clone();
+        let op = state.doc.sketch_offset_ops.values().nth(0).unwrap().clone();
         assert!((state.doc.circles[op.circle_outputs[0]].r - 2.0).abs() < 1e-3);
         assert!(state.doc.lines[op.line_outputs[0]].construction);
         let xs: Vec<f32> = op
@@ -5923,8 +5968,8 @@ mod tests {
         assert!((w - 14.0).abs() < 1e-3, "negative offset shrinks, got {w}");
 
         // Deleting the op tombstones the outputs.
-        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchOffsetOp(0));
-        assert!(state.doc.sketch_offset_ops[0].deleted);
+        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchOffsetOp(skop(0)));
+        assert!(state.doc.sketch_offset_ops.is_empty(), "the op is removed, not tombstoned");
         for &li in &op.line_outputs {
             assert!(state.doc.lines[li].deleted);
         }
@@ -5969,7 +6014,7 @@ mod tests {
             bearcad.offset_sketch{ sketch = 0, lines = {0}, distance = 5 }
             "#,
         );
-        let op = &state.doc.sketch_offset_ops[0];
+        let op = &state.doc.sketch_offset_ops.values().nth(0).unwrap();
         assert_eq!(op.line_outputs.len(), 1);
         let out = &state.doc.lines[op.line_outputs[0]];
         assert!(
@@ -5995,7 +6040,7 @@ mod tests {
             bearcad.offset_sketch{ sketch = 0, lines = {0}, distance = "gap" }
             "#,
         );
-        let op = state.doc.sketch_offset_ops[0].clone();
+        let op = state.doc.sketch_offset_ops.values().nth(0).unwrap().clone();
         assert!((state.doc.lines[op.line_outputs[0]].y0 - 3.0).abs() < 1e-3);
         let param = state.doc.parameters.keys().next().expect("the parameter");
         state.apply(crate::actions::Action::CommitParameterExpression {
@@ -6099,7 +6144,7 @@ mod tests {
         );
         // The original is shadowed (kept, not face-forming); its two fragments are real lines.
         assert!(state.doc.lines[0].shadow, "sliced original becomes a shadow line");
-        let op = &state.doc.sketch_slice_ops[0];
+        let op = &state.doc.sketch_slice_ops.values().nth(0).unwrap();
         assert_eq!(op.line_outputs.len(), 2, "one crossing → two fragments");
         let frag = |i: usize| {
             let l = &state.doc.lines[op.line_outputs[i]];
@@ -6123,7 +6168,7 @@ mod tests {
             bearcad.slice_sketch{ sketch = 0, lines = {0}, cutters = {1} }
             "#,
         );
-        let op = state.doc.sketch_slice_ops[0].clone();
+        let op = state.doc.sketch_slice_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.line_outputs.len(), 2);
         assert!(state.doc.lines[0].shadow);
         let tree = build_hierarchy(&state.doc, None);
@@ -6138,7 +6183,7 @@ mod tests {
                 "fragment line {li} listed once (under the op)"
             );
         }
-        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchSliceOp(0));
+        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchSliceOp(skop(0)));
         assert!(!state.doc.lines[0].shadow, "delete un-shadows the original");
         for &li in &op.line_outputs {
             assert!(state.doc.lines[li].deleted, "fragment {li} removed");
@@ -6181,7 +6226,7 @@ mod tests {
                                    mode = "count_gap", count = 4, spacing = 10 }
             "#,
         );
-        let op = &state.doc.sketch_repeat_ops[0];
+        let op = &state.doc.sketch_repeat_ops.values().nth(0).unwrap();
         // extent along +u is the circle's diameter (4); gap 10 → step 14.
         assert_eq!(op.circle_outputs.len(), 3, "4 instances = original + 3 copies");
         let cx = |i: usize| state.doc.circles[op.circle_outputs[i]].cx;
@@ -6206,7 +6251,7 @@ mod tests {
                                         mode = "count_gap", count = 3, spacing = 5 }
             "#,
         );
-        let op = &state.doc.sketch_repeat_ops[0];
+        let op = &state.doc.sketch_repeat_ops.values().nth(0).unwrap();
         assert_eq!(op.circle_outputs.len(), 2, "3 instances = original + 2 copies");
         // angle 90 → +v; extent 2 (diameter), gap 5 → step 7 along y.
         let cy = |i: usize| state.doc.circles[op.circle_outputs[i]].cy;
