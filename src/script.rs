@@ -2034,9 +2034,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The sweep's arena slot, not its ordinal (#1070).
         SceneElement::SweepOp(i) => ElementScriptTokens {
             kind: "sweep",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::Component(i) => ElementScriptTokens {
@@ -2719,7 +2720,7 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
 /// Replayable `Instruction::Sweep` for the sweep the interactive tool just created
 /// (mirrors `instruction_for_new_revolution`).
 pub fn instruction_for_new_sweep(doc: &crate::model::Document) -> Option<Instruction> {
-    let fp = doc.sweeps.last()?;
+    let fp = doc.sweeps.values().last()?;
     let (body, bodies) = match &fp.mode {
         crate::model::SweepMode::NewBody => {
             (crate::actions::RevolveBodyChoice::NewBody, Vec::new())

@@ -123,6 +123,7 @@ pub fn scene_element_selection_index(
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
+        SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
         // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -169,7 +170,6 @@ pub fn scene_element_selection_index(
         | SceneElement::SliceOp(i)
         | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Shape(i)
-        | SceneElement::SweepOp(i)
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
         | SceneElement::Joint(i) => Some(*i),

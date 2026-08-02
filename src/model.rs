@@ -1246,8 +1246,8 @@ pub enum BodySource {
     Revolve(RevolutionKey),
     /// A primitive solid (#909); indexes `Document::primitives`.
     Primitive(usize),
-    /// A swept solid (the Sweep tool, #sweep); indexes `Document::sweeps`.
-    Sweep(usize),
+    /// A swept solid (the Sweep tool, #sweep); keys `Document::sweeps`.
+    Sweep(SweepKey),
     /// One repeated instance of one input of a linear repeat (Repeat tool): `op` indexes
     /// `Document::repeat_ops`; `target` is the input's position in the op's target list;
     /// `instance` counts from 1 (the original body is instance 0).
@@ -1936,9 +1936,10 @@ pub struct Sweep {
     pub mode: SweepMode,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a sweep (#1055), like [`RevolutionKey`].
+pub type SweepKey = crate::arena::Key<Sweep>;
 
 /// Which set algebra a boolean operation (Combine tool) applies to its input bodies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3943,7 +3944,7 @@ pub struct Document {
     pub primitives: Vec<Primitive>,
     /// Swept solids (the Sweep tool, #sweep).
     #[serde(default)]
-    pub sweeps: Vec<Sweep>,
+    pub sweeps: crate::arena::Arena<Sweep>,
     /// Boolean operations between bodies (the Combine tool).
     #[serde(default)]
     pub boolean_ops: Vec<BooleanOperation>,
@@ -4088,7 +4089,7 @@ pub enum ComponentMember {
     SliceOp(usize),
     EdgeTreatmentOp(usize),
     Revolution(RevolutionKey),
-    Sweep(usize),
+    Sweep(SweepKey),
     Drawing(usize),
 }
 
@@ -4194,7 +4195,7 @@ impl Default for Document {
             lofts: crate::arena::Arena::new(),
             revolutions: crate::arena::Arena::new(),
             primitives: Vec::new(),
-            sweeps: Vec::new(),
+            sweeps: crate::arena::Arena::new(),
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),
             mirror_ops: Vec::new(),

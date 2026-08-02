@@ -1398,7 +1398,7 @@ pub struct CreatingSweep {
     /// Bodies picked for Cut mode.
     pub cut_bodies: Vec<usize>,
     /// `Some(op)` while re-editing a committed sweep, else a fresh sweep.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::SweepKey>,
 }
 
 /// State for the in-progress (pre-Enter) loft: the cross sections picked so far.
@@ -4800,7 +4800,6 @@ impl AppState {
                     path: path.to_vec(),
                     mode: crate::model::SweepMode::NewBody,
                     name: None,
-                    deleted: false,
                 };
                 let touching = crate::extrude::sweep_mesh(&self.doc, &probe)
                     .and_then(|m| m.bounds())
@@ -4849,7 +4848,6 @@ impl AppState {
             path,
             mode: mode.clone(),
             name: None,
-            deleted: false,
         };
         if crate::extrude::sweep_mesh(&self.doc, &fp).is_none() {
             let e = "Sweep failed: profiles must be closed faces and the path one                      connected chain of lines"
@@ -4857,10 +4855,10 @@ impl AppState {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
-        self.doc.sweeps.push(fp);
+        let key = self.doc.sweeps.insert(fp);
         if matches!(mode, crate::model::SweepMode::NewBody) {
             self.doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Sweep(self.doc.sweeps.len() - 1),
+                source: crate::model::BodySource::Sweep(key),
                 material: None,
                 name: None,
                 deleted: false,
@@ -4888,14 +4886,14 @@ impl AppState {
     /// `BodySource::Sweep`; `AddTo`/`Cut` own none (they fuse at recompute).
     fn edit_sweep(
         &mut self,
-        op: usize,
+        op: crate::model::SweepKey,
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
         path: Vec<usize>,
         mode: crate::model::SweepMode,
     ) -> ActionResult {
-        let Some(existing) = self.doc.sweeps.get(op).filter(|f| !f.deleted) else {
-            return ActionResult::Err(format!("no sweep {op}"));
+        let Some(existing) = self.doc.sweeps.get(op) else {
+            return ActionResult::Err(format!("no sweep {op:?}"));
         };
         let candidate = crate::model::Sweep {
             sketch,
@@ -4903,7 +4901,6 @@ impl AppState {
             path,
             mode: mode.clone(),
             name: existing.name.clone(),
-            deleted: false,
         };
         if crate::extrude::sweep_mesh(&self.doc, &candidate).is_none() {
             let e = "Sweep failed: profiles must be closed faces and the path one                      connected chain of lines"
@@ -5973,7 +5970,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {i}"),
-        SceneElement::SweepOp(i) => format!("Sweep operation {i}"),
+        SceneElement::SweepOp(i) => format!("Sweep operation {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {i}"),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
@@ -15811,7 +15808,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
     members.extend((0..doc.edge_treatment_ops.len()).map(CM::EdgeTreatmentOp));
     members.extend(doc.revolutions.keys().map(CM::Revolution));
-    members.extend((0..doc.sweeps.len()).map(CM::Sweep));
+    members.extend(doc.sweeps.keys().map(CM::Sweep));
     members
 }
 
@@ -19065,10 +19062,11 @@ mod tests {
         });
         assert!(matches!(state.apply(Action::CommitSweep), ActionResult::Ok));
         assert_eq!(state.doc.sweeps.len(), 1);
-        assert_eq!(state.doc.sweeps[0].path, vec![li]);
+        let sweep = state.doc.sweeps.keys().next().expect("the sweep");
+        assert_eq!(state.doc.sweeps[sweep].path, vec![li]);
         assert_eq!(
             state.doc.bodies.last().map(|b| b.source.clone()),
-            Some(crate::model::BodySource::Sweep(0))
+            Some(crate::model::BodySource::Sweep(sweep))
         );
         assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Sweep));
         assert!(state.creating_sweep.is_none());

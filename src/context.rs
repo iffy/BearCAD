@@ -142,7 +142,7 @@ pub struct ContextInput<'a> {
     /// "Edit revolve" entry point (#211): `Some(op)` when exactly one revolution is selected.
     pub revolve_edit_start: Option<crate::model::RevolutionKey>,
     /// "Edit sweep" entry point: `Some(op)` when exactly one sweep is selected.
-    pub sweep_edit_start: Option<usize>,
+    pub sweep_edit_start: Option<crate::model::SweepKey>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<crate::model::TracingImageKey>,
@@ -1044,7 +1044,7 @@ pub struct ContextPaneContent {
     /// "Edit revolve" button target (#211).
     pub revolve_edit_start: Option<crate::model::RevolutionKey>,
     /// "Edit sweep" button target.
-    pub sweep_edit_start: Option<usize>,
+    pub sweep_edit_start: Option<crate::model::SweepKey>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<crate::model::TracingImageKey>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -4256,7 +4256,7 @@ pub fn show_pane(
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
     on_revolve_edit_start: &mut impl FnMut(crate::model::RevolutionKey),
-    on_sweep_edit_start: &mut impl FnMut(usize),
+    on_sweep_edit_start: &mut impl FnMut(crate::model::SweepKey),
     on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
     on_dimension_derive_edit: &mut impl FnMut(DimensionDeriveEdit),

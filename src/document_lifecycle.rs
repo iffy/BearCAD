@@ -139,10 +139,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .primitives
             .get(index)
             .is_some_and(|shape| !shape.deleted),
-        SceneElement::SweepOp(index) => doc
-            .sweeps
-            .get(index)
-            .is_some_and(|fp| !fp.deleted),
+        SceneElement::SweepOp(index) => doc.sweeps.contains(index),
         SceneElement::Image(index) => doc.tracing_images.contains(index),
         SceneElement::SketchText(index) => doc
             .sketch_texts
@@ -603,16 +600,13 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::SweepOp(index) => {
             // Deleting the sweep removes its output body (only NewBody mode has one;
             // AddTo/Cut fuse into existing bodies at recompute).
-            if let Some(fp) = doc.sweeps.get_mut(index) {
-                if !fp.deleted {
-                    fp.deleted = true;
-                    for body in doc.bodies.iter_mut() {
-                        if body.source == crate::model::BodySource::Sweep(index) {
-                            body.deleted = true;
-                        }
+            if doc.sweeps.remove(index).is_some() {
+                for body in doc.bodies.iter_mut() {
+                    if body.source == crate::model::BodySource::Sweep(index) {
+                        body.deleted = true;
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         SceneElement::BooleanOp(index) => {

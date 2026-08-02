@@ -13069,7 +13069,7 @@ impl eframe::App for App {
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
             let mut revolve_edit_begin: Option<model::RevolutionKey> = None;
-            let mut sweep_edit_begin: Option<usize> = None;
+            let mut sweep_edit_begin: Option<model::SweepKey> = None;
             // Help mode (#672): the row helpers collect a note per control as the pane lays
             // itself out, and the notes are drawn beside it once its rect is known.
             if self.state.help_mode {
@@ -16484,7 +16484,6 @@ fn build_viewport_scene_input<'a>(
             path: cf.path.clone(),
             mode: model::SweepMode::NewBody,
             name: None,
-            deleted: false,
         })
     });
     let preview_replacement: gpu_viewport::PreviewReplacement = creating_sweep

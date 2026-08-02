@@ -247,7 +247,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_arena_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
     save_indexed_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
-    save_indexed_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
+    save_arena_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
@@ -586,7 +586,7 @@ pub fn open(path: &str) -> Result<Document> {
     let lofts = load_arena_entities(&conn, "loft")?;
     let revolutions = load_arena_entities(&conn, "revolution")?;
     let primitives = load_indexed_entities(&conn, "primitive")?;
-    let sweeps = load_indexed_entities(&conn, "sweep")?;
+    let sweeps = load_arena_entities(&conn, "sweep")?;
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
     let move_ops = load_indexed_entities(&conn, "move_op")?;
     let mirror_ops = load_indexed_entities(&conn, "mirror_op")?;
@@ -863,6 +863,51 @@ mod tests {
             assert!(
                 loaded.lofts.get(doomed).is_none(),
                 "{suffix}: a key to a removed loft does not come back to life"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: a sweep keeps its key across a save, and the body it produced keeps pointing
+    /// at it.
+    #[test]
+    fn sweep_keys_survive_a_save_and_reload() {
+        let sweep = |path: Vec<usize>| crate::model::Sweep {
+            sketch: 0,
+            faces: Vec::new(),
+            path,
+            mode: crate::model::SweepMode::NewBody,
+            name: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.sweeps.insert(sweep(vec![0]));
+        let kept = doc.sweeps.insert(sweep(vec![1, 2]));
+        assert!(doc.sweeps.remove(doomed).is_some());
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Sweep(kept),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_sweep_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.sweeps.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.sweeps.get(kept).map(|s| s.path.clone()),
+                Some(vec![1, 2]),
+                "{suffix}: the surviving sweep did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.bodies[0].source,
+                crate::model::BodySource::Sweep(kept),
+                "{suffix}: its body still points at it"
             );
             let _ = std::fs::remove_file(&path);
         }

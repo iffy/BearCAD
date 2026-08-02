@@ -740,7 +740,7 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
             occt_revolution_shape(doc, doc.revolutions.get(ri)?)?
         }
         crate::model::BodySource::Sweep(fi) => {
-            occt_sweep_shape(doc, doc.sweeps.get(fi).filter(|f| !f.deleted)?)?
+            occt_sweep_shape(doc, doc.sweeps.get(fi)?)?
         }
         crate::model::BodySource::Loft(li) => {
             occt_loft_shape(doc, doc.lofts.get(li)?)?
@@ -2999,7 +2999,7 @@ pub fn preview_sweep_cut_meshes(
             return cache.borrow().1.clone();
         }
         let mut scratch = doc.clone();
-        scratch.sweeps.push(fp.clone());
+        scratch.sweeps.insert(fp.clone());
         let meshes: Vec<(usize, SolidMesh)> = bodies
             .iter()
             .filter_map(|&bi| body_solid_mesh_uncached(&scratch, bi).map(|m| (bi, m)))
@@ -3036,11 +3036,12 @@ fn resample_polyline_by_arc_length(path: &[Vec3], n: usize) -> Vec<Vec3> {
 }
 
 /// The sweeps fusing into (`false`) or cutting (`true`) `body_index`.
-pub fn sweeps_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)> {
+pub fn sweeps_targeting(
+    doc: &Document,
+    body_index: usize,
+) -> Vec<(crate::model::SweepKey, bool)> {
     doc.sweeps
         .iter()
-        .enumerate()
-        .filter(|(_, f)| !f.deleted)
         .filter_map(|(fi, f)| match &f.mode {
             crate::model::SweepMode::AddTo(bodies) if bodies.contains(&body_index) => {
                 Some((fi, false))
@@ -4525,7 +4526,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         return revolve_mesh(doc, rev);
     }
     if let crate::model::BodySource::Sweep(fi) = body.source {
-        let fp = doc.sweeps.get(fi).filter(|f| !f.deleted)?;
+        let fp = doc.sweeps.get(fi)?;
         return sweep_mesh(doc, fp);
     }
     if let crate::model::BodySource::Loft(li) = body.source {
@@ -8834,7 +8835,6 @@ mod tests {
             path: vec![doc.lines.len() - 1],
             mode: crate::model::SweepMode::NewBody,
             name: None,
-            deleted: false,
         };
         let vol = mesh_signed_volume(&sweep_mesh(&doc, &fp).expect("sweep mesh")).abs();
         assert!(
@@ -8858,7 +8858,6 @@ mod tests {
             path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
             mode: crate::model::SweepMode::NewBody,
             name: None,
-            deleted: false,
         };
         let path = sweep_path_polyline(&doc, &fp).expect("chained polyline");
         assert!(
@@ -8890,7 +8889,6 @@ mod tests {
             path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
             mode: crate::model::SweepMode::NewBody,
             name: None,
-            deleted: false,
         };
         assert!(sweep_path_polyline(&doc, &fp).is_none());
         assert!(sweep_mesh(&doc, &fp).is_none());
@@ -8914,13 +8912,12 @@ mod tests {
         let bit = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
         doc.lines.push(Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
-        doc.sweeps.push(crate::model::Sweep {
+        doc.sweeps.insert(crate::model::Sweep {
             sketch,
             faces: vec![bit],
             path: vec![doc.lines.len() - 1],
             mode: crate::model::SweepMode::Cut(vec![0]),
             name: None,
-            deleted: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let plain = 60.0 * 60.0 * 5.0;

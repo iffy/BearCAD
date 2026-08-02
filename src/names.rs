@@ -380,7 +380,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let fp = doc
                 .sweeps
                 .get_mut(index)
-                .ok_or_else(|| format!("sweep {index} not found"))?;
+                .ok_or_else(|| format!("sweep {index:?} not found"))?;
             fp.name = stored;
         }
         SceneElement::Image(index) => {
@@ -563,7 +563,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             Some(shape) => format!("{} {i}", crate::names::primitive_kind_label(shape.kind)),
             None => format!("Shape {i}"),
         },
-        HierarchyNode::SweepOp(i) => format!("Sweep {i}"),
+        HierarchyNode::SweepOp(i) => format!("Sweep {}", i.index()),
         // A joint reads by its kind (#891): "Revolute 0", or "Rigid group 2" once a rigid
         // joint ties more than two things (#900).
         HierarchyNode::Joint(i) => match doc.joints.get(i) {
@@ -808,7 +808,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         },
         SceneElement::Revolution(i) => format!("Revolve {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {i}"),
-        SceneElement::SweepOp(i) => format!("Sweep {i}"),
+        SceneElement::SweepOp(i) => format!("Sweep {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {i}"),
     }
 }

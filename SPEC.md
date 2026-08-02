@@ -1894,7 +1894,8 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   (mirroring the extrude cut preview). Selecting a committed sweep offers **Edit
   sweep**, re-opening the tool with its faces/path/mode loaded and re-pointing the
   operation in place on commit. Data model: `Sweep { sketch, faces, path, mode }` in
-  `Document::sweeps` with `SweepMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
+  `Document::sweeps`, an `arena::Arena` (#1055) keyed by `SweepKey`, with
+  `SweepMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
   add/cut relationships live on the sweep (bodies consult `sweeps_targeting` at
   mesh/kernel build time), and a NewBody sweep gets `BodySource::Sweep`. One
   `ShapeKind::Sweep` undo marker covers the feature and its body. In the elements

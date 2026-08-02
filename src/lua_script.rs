@@ -166,6 +166,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::Revolution(key) => {
             doc.revolutions.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
@@ -186,7 +187,6 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::SliceOp(i)
         | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Shape(i)
-        | SceneElement::SweepOp(i)
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
         | SceneElement::Joint(i) => i,
@@ -252,6 +252,7 @@ pub fn scene_element_from_kind(
         "revolution" | "revolve" => {
             Some(SceneElement::Revolution(doc.revolutions.keys().nth(index)?))
         }
+        "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
         "joint" => Some(SceneElement::Joint(index)),
         "shape" | "primitive" => Some(SceneElement::Shape(index)),
         // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.

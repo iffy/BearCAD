@@ -70,7 +70,7 @@ pub enum HierarchyNode {
     /// A primitive shape (Create Shape tool, #909); its body nests under it.
     Shape(usize),
     /// A sweep (Sweep tool); its output body nests under it.
-    SweepOp(usize),
+    SweepOp(crate::model::SweepKey),
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
     /// it as graph inputs (#252). Display-only for now (no `SceneElement`).
     Loft(crate::model::LoftKey),
@@ -209,7 +209,7 @@ pub enum SceneElement {
     /// A primitive shape placed straight into 3D (Create Shape tool, #909).
     Shape(usize),
     /// A sweep (Sweep tool).
-    SweepOp(usize),
+    SweepOp(crate::model::SweepKey),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
@@ -1072,10 +1072,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A sweep is fed by its profile sketch and every path line.
-    for (fi, fp) in doc.sweeps.iter().enumerate() {
-        if fp.deleted {
-            continue;
-        }
+    for (fi, fp) in doc.sweeps.iter() {
         edges.push((HierarchyNode::Sketch(fp.sketch), HierarchyNode::SweepOp(fi)));
         for &li in &fp.path {
             edges.push((HierarchyNode::Line(li), HierarchyNode::SweepOp(fi)));
@@ -2156,8 +2153,8 @@ pub fn build_hierarchy(
     }
     // Sweeps nest under their profile sketch (#478, see `build_sketch_entry`); only a
     // sweep whose sketch died falls back to a top-level orphan here so it stays reachable.
-    for (oi, fp) in doc.sweeps.iter().enumerate() {
-        if fp.deleted || crate::document_lifecycle::sketch_alive(doc, fp.sketch) {
+    for (oi, fp) in doc.sweeps.iter() {
+        if crate::document_lifecycle::sketch_alive(doc, fp.sketch) {
             continue;
         }
         let children = doc
@@ -3753,8 +3750,8 @@ fn build_sketch_entry(
     // Sweeps whose profile faces live in this sketch nest under it too (#478), each
     // owning its output body — so the graph shows the sketch (the faces' proxy) as the
     // op's input rather than the document root.
-    for (oi, fp) in doc.sweeps.iter().enumerate() {
-        if fp.deleted || fp.sketch != sketch {
+    for (oi, fp) in doc.sweeps.iter() {
+        if fp.sketch != sketch {
             continue;
         }
         let bodies = doc
@@ -5573,7 +5570,7 @@ mod tests {
             CM::SliceOp(1),
             CM::EdgeTreatmentOp(1),
             CM::Revolution(crate::arena::Key::from_bits(1)),
-            CM::Sweep(1),
+            CM::Sweep(crate::arena::Key::from_bits(1)),
         ];
         for member in members {
             let element = component_member_element(member)
@@ -7455,16 +7452,15 @@ label_hidden: false,
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
-        doc.sweeps.push(Sweep {
+        let sweep = doc.sweeps.insert(Sweep {
             sketch,
             faces: Vec::new(),
             path: vec![0, 1],
             mode: SweepMode::NewBody,
             name: None,
-            deleted: false,
         });
         doc.bodies.push(Body {
-            source: BodySource::Sweep(0),
+            source: BodySource::Sweep(sweep),
             material: None,
             name: None,
             deleted: false,
@@ -7473,18 +7469,21 @@ label_hidden: false,
 
         let tree = build_hierarchy(&doc, None);
         // The op nests under its profile sketch (#478), with the output body beneath it.
-        fn find_op(entries: &[HierarchyEntry]) -> Option<&HierarchyEntry> {
+        fn find_op(
+            entries: &[HierarchyEntry],
+            sweep: crate::model::SweepKey,
+        ) -> Option<&HierarchyEntry> {
             for e in entries {
-                if e.node == HierarchyNode::SweepOp(0) {
+                if e.node == HierarchyNode::SweepOp(sweep) {
                     return Some(e);
                 }
-                if let Some(found) = find_op(&e.children) {
+                if let Some(found) = find_op(&e.children, sweep) {
                     return Some(found);
                 }
             }
             None
         }
-        let op = find_op(&tree).expect("the sweep op appears in the tree");
+        let op = find_op(&tree, sweep).expect("the sweep op appears in the tree");
         let sketch_entry = {
             fn find_sketch(entries: &[HierarchyEntry], sketch: SketchId) -> Option<&HierarchyEntry> {
                 for e in entries {
@@ -7500,7 +7499,7 @@ label_hidden: false,
             find_sketch(&tree, sketch).expect("profile sketch in the tree")
         };
         assert!(
-            sketch_entry.children.iter().any(|c| c.node == HierarchyNode::SweepOp(0)),
+            sketch_entry.children.iter().any(|c| c.node == HierarchyNode::SweepOp(sweep)),
             "the sweep op nests under its profile sketch"
         );
         assert!(
@@ -7508,9 +7507,9 @@ label_hidden: false,
             "the swept body nests under the sweep op as its output"
         );
         let deps = graph_dependency_edges(&doc);
-        assert!(deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::SweepOp(0))));
-        assert!(deps.contains(&(HierarchyNode::Line(0), HierarchyNode::SweepOp(0))));
-        assert!(deps.contains(&(HierarchyNode::Line(1), HierarchyNode::SweepOp(0))));
+        assert!(deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::SweepOp(sweep))));
+        assert!(deps.contains(&(HierarchyNode::Line(0), HierarchyNode::SweepOp(sweep))));
+        assert!(deps.contains(&(HierarchyNode::Line(1), HierarchyNode::SweepOp(sweep))));
     }
 
     /// #909: a shape is a top-level element with its body nested under it, named by kind.
