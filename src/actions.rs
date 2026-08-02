@@ -3919,14 +3919,13 @@ impl AppState {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "import".to_string());
         let tri_count = triangles.len();
-        self.doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = self.doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles,
             source_name: source_name.clone(),
             step_bytes,
         });
-        let mesh_index = self.doc.imported_meshes.len() - 1;
         self.doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(mesh_index),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: Some(source_name),
             deleted: false,
@@ -17334,9 +17333,10 @@ mod tests {
         let result = state.apply(Action::ImportStl { path: path_str.clone() });
         assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
         assert_eq!(state.doc.imported_meshes.len(), 1);
-        assert_eq!(state.doc.imported_meshes[0].triangles.len(), 1);
+        let mesh = state.doc.imported_meshes.keys().next().expect("the imported mesh");
+        assert_eq!(state.doc.imported_meshes[mesh].triangles.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
-        assert_eq!(state.doc.bodies[0].source, crate::model::BodySource::Imported(0));
+        assert_eq!(state.doc.bodies[0].source, crate::model::BodySource::Imported(mesh));
         assert_eq!(
             state.doc.bodies[0].name.as_deref(),
             path.file_stem().unwrap().to_str()
@@ -18595,8 +18595,9 @@ mod tests {
             ActionResult::Ok
         ));
         let _ = std::fs::remove_file(&path);
+        let mesh = state.doc.imported_meshes.keys().next().expect("the imported mesh");
         assert!(
-            state.doc.imported_meshes[0].step_bytes.is_some(),
+            state.doc.imported_meshes[mesh].step_bytes.is_some(),
             "a kernel STEP import must keep the BREP bytes"
         );
         assert!(

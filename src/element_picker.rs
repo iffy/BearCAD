@@ -1491,7 +1491,7 @@ mod tests {
         assert!(doc.lines[curved].bezier.is_some());
         for _ in 0..2 {
             doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Imported(0),
+                source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
                 deleted: false,

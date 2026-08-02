@@ -691,8 +691,11 @@ pub fn occt_unit_instance_shape(doc: &Document, instance: usize) -> Option<crate
 
 /// Re-read a STEP import's BREP from the bytes kept on the mesh (#1029). `None` when the
 /// import was triangle-only (STL, faceted parser) or the kernel can't parse the bytes.
-fn imported_step_shape(doc: &Document, mesh_index: usize) -> Option<crate::kernel::Shape> {
-    let bytes = doc.imported_meshes.get(mesh_index)?.step_bytes.as_ref()?;
+fn imported_step_shape(
+    doc: &Document,
+    mesh: crate::model::ImportedMeshKey,
+) -> Option<crate::kernel::Shape> {
+    let bytes = doc.imported_meshes.get(mesh)?.step_bytes.as_ref()?;
     if bytes.is_empty() {
         return None;
     }
@@ -706,7 +709,7 @@ fn imported_step_shape(doc: &Document, mesh_index: usize) -> Option<crate::kerne
         let path = std::env::temp_dir().join(format!(
             "bearcad-import-shape-{}-{}.step",
             std::process::id(),
-            mesh_index
+            mesh.index()
         ));
         std::fs::write(&path, bytes).ok()?;
         let shape = crate::kernel::Shape::read_step(&path);
@@ -726,7 +729,7 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
     if body.deleted {
         return None;
     }
-    if let Some(mi) = body.source.imported_mesh_index() {
+    if let Some(mi) = body.source.imported_mesh_key() {
         return imported_step_shape(doc, mi);
     }
     let mut solid = match body.source {
@@ -2436,7 +2439,7 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
         let cut_by_sweep = sweeps_targeting(doc, i).iter().any(|(_, cut)| *cut);
         let cut_by_loft = lofts_targeting(doc, i).iter().any(|(_, cut)| *cut);
         if body.deleted
-            || body.source.imported_mesh_index().is_some()
+            || body.source.imported_mesh_key().is_some()
             || (body.source.cut_extrusion_indices().is_empty()
                 && !cut_by_revolve
                 && !cut_by_sweep
@@ -3722,7 +3725,7 @@ fn structural_mesh_fingerprint(doc: &Document) -> u64 {
         ),
     )
     .ok();
-    for mesh in &doc.imported_meshes {
+    for mesh in doc.imported_meshes.values() {
         std::io::Write::write_all(&mut writer, mesh.source_name.as_bytes()).ok();
         writer.0.write_usize(mesh.triangles.len());
         writer.0.write_usize(mesh.step_bytes.as_ref().map(|b| b.len()).unwrap_or(0));
@@ -4373,8 +4376,8 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let shape = doc.primitives.get(pi)?;
         return crate::primitives::mesh(doc, shape);
     }
-    if let Some(idx) = body.source.imported_mesh_index() {
-        let imported = doc.imported_meshes.get(idx)?;
+    if let Some(key) = body.source.imported_mesh_key() {
+        let imported = doc.imported_meshes.get(key)?;
         return (!imported.triangles.is_empty()).then(|| SolidMesh {
             triangles: imported.triangles.clone(),
         });
@@ -4657,7 +4660,7 @@ pub fn cut_tool_bites(doc: &Document, body_index: usize, cut: &Extrusion) -> Opt
 pub fn preview_cut_body_mesh(doc: &Document, body_index: usize, cut: &Extrusion) -> Option<SolidMesh> {
     {
         let body = doc.bodies.get(body_index)?;
-        if body.deleted || body.source.imported_mesh_index().is_some() {
+        if body.deleted || body.source.imported_mesh_key().is_some() {
             return None;
         }
         if cut.faces.is_empty() || effective_distance(doc, cut).abs() < 1e-4 {
@@ -4733,7 +4736,7 @@ fn occt_document_union_mesh(doc: &Document) -> Option<SolidMesh> {
         if body.deleted {
             continue;
         }
-        if body.source.imported_mesh_index().is_some() {
+        if body.source.imported_mesh_key().is_some() {
             // Prefer BREP when the import still has it (#1029); otherwise concatenate triangles.
             if let Some(shape) = occt_body_shape(doc, bi) {
                 saw_kernel_body = true;
@@ -6725,7 +6728,7 @@ mod tests {
         let mut doc = Document::default();
         // One body is enough: the points are read by position, not by which body they name.
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
             deleted: false,
@@ -6786,7 +6789,7 @@ mod tests {
         use crate::model::MovePointRef;
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
             deleted: false,
@@ -6820,13 +6823,13 @@ mod tests {
             Vec3::new(10.0, 0.0, 0.0),
             Vec3::new(0.0, 10.0, 0.0),
         );
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[o, x, y]],
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -6906,13 +6909,13 @@ mod tests {
             Vec3::new(10.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 10.0),
         );
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[o, x, z]],
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -6997,7 +7000,7 @@ mod tests {
         let mut doc = Document::default();
         // A single edge running along X from (-10, 0, 0) to (10, 0, 0), as a degenerate
         // triangle so the mesh has that edge.
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 Vec3::new(-10.0, 0.0, 0.0),
                 Vec3::new(10.0, 0.0, 0.0),
@@ -7007,7 +7010,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -7046,7 +7049,7 @@ mod tests {
         use crate::model::{MovePointRef, MoveOperation, MoveTranslateMode};
         let q = crate::hierarchy::quantize_body_point;
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 Vec3::ZERO,
                 Vec3::new(10.0, 0.0, 0.0),
@@ -7056,7 +7059,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -7099,7 +7102,7 @@ mod tests {
     fn snap_rotation_axis_candidates_extend_edges_through_the_pivot() {
         let mut doc = Document::default();
         // Two edges through the origin (along X and along Y) and one that misses it.
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 Vec3::new(-10.0, 0.0, 0.0),
                 Vec3::new(10.0, 0.0, 0.0),
@@ -7109,7 +7112,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -7195,13 +7198,13 @@ mod tests {
         let q = crate::hierarchy::quantize_body_point;
         let mut doc = Document::default();
         // One triangle body with corners at the origin, +10X and +10Y.
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[Vec3::ZERO, Vec3::X * 10.0, Vec3::Y * 10.0]],
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -7245,13 +7248,13 @@ mod tests {
         // A move onto it snaps the source corner to (0, 0, 0).
         let mut doc = Document::default();
         let corner = Vec3::new(40.0, 40.0, 0.0);
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[corner, corner + Vec3::X * 10.0, corner + Vec3::Y * 10.0]],
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -7289,7 +7292,7 @@ mod tests {
     fn repeat_gizmo_anchor_sits_on_the_start_plane() {
         let mut doc = Document::default();
         // A triangle spanning x in [10, 30], y in [0, 4], flat at z = 0.
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 Vec3::new(10.0, 0.0, 0.0),
                 Vec3::new(30.0, 0.0, 0.0),
@@ -7299,7 +7302,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -7322,7 +7325,7 @@ mod tests {
     fn axis_world_resolves_a_body_edge() {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
             deleted: false,
@@ -7360,7 +7363,7 @@ mod tests {
         let mut doc = Document::default();
         for _ in 0..5 {
             doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Imported(0),
+                source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
                 deleted: false,

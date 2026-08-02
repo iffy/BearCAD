@@ -242,7 +242,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
-    save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
+    save_arena_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_arena_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
@@ -581,7 +581,7 @@ pub fn open(path: &str) -> Result<Document> {
     let bodies = load_indexed_entities(&conn, "body")?;
     // Materials (#834) — empty for files saved before they existed.
     let materials = load_arena_entities(&conn, "material")?;
-    let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
+    let imported_meshes = load_arena_entities(&conn, "imported_mesh")?;
     let tracing_images = load_arena_entities(&conn, "tracing_image")?;
     let lofts = load_arena_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
@@ -868,6 +868,49 @@ mod tests {
         }
     }
 
+    /// #1055: the same for imported meshes, which a body names through
+    /// `BodySource::Imported`.
+    #[test]
+    fn imported_mesh_keys_survive_a_save_and_reload() {
+        let mesh = |name: &str| crate::model::ImportedMesh {
+            triangles: Vec::new(),
+            source_name: name.to_string(),
+            step_bytes: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.imported_meshes.insert(mesh("doomed"));
+        let kept = doc.imported_meshes.insert(mesh("kept"));
+        assert!(doc.imported_meshes.remove(doomed).is_some());
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(kept),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_mesh_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.imported_meshes.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.bodies[0].source,
+                crate::model::BodySource::Imported(kept),
+                "{suffix}: the body still names the mesh it was imported from"
+            );
+            assert_eq!(
+                loaded.imported_meshes.get(kept).map(|m| m.source_name.as_str()),
+                Some("kept"),
+                "{suffix}: which did not shift into the hole"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: the same for tracing images, whose keys are held by move-op targets and by
     /// the calibration constraints on them — a renumbering reload would point those at the
     /// wrong image.
@@ -1057,7 +1100,7 @@ mod tests {
 
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
             deleted: false,
@@ -1100,7 +1143,7 @@ mod tests {
 
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
             deleted: false,

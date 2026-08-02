@@ -7132,7 +7132,7 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
             state.doc.bodies[0].source,
-            crate::model::BodySource::Imported(0)
+            crate::model::BodySource::Imported(crate::arena::Key::from_bits(0))
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -7159,7 +7159,7 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
             state.doc.bodies[0].source,
-            crate::model::BodySource::Imported(0)
+            crate::model::BodySource::Imported(crate::arena::Key::from_bits(0))
         );
         let _ = std::fs::remove_file(&path);
     }

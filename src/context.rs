@@ -7512,7 +7512,7 @@ mod tests {
         let mut doc = Document::default();
         for _ in 0..n {
             doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Imported(0),
+                source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
                 deleted: false,
@@ -8294,7 +8294,7 @@ mod tests {
         // is refused — as it should be.
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
             deleted: false,

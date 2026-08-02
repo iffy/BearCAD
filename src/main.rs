@@ -28187,7 +28187,7 @@ mod tests {
     fn move_tool_ghosts_the_snapped_destination() {
         use crate::model::{MovePointRef, MoveTranslateMode};
         let mut state = crate::actions::AppState::default();
-        state.doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = state.doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 glam::Vec3::ZERO,
                 glam::Vec3::new(10.0, 0.0, 0.0),
@@ -28197,7 +28197,7 @@ mod tests {
                     step_bytes: None,
         });
         state.doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -28371,13 +28371,13 @@ mod tests {
         let corner = glam::Vec3::new(10.0, 0.0, 0.0);
 
         let mut doc = crate::model::Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, corner, glam::Vec3::new(0.0, 10.0, 0.0)]],
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -29181,7 +29181,7 @@ mod tests {
 
         // A single imported-mesh body: one big triangle in the ground plane.
         let mut doc = crate::model::Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 glam::Vec3::new(-20.0, -20.0, 0.0),
                 glam::Vec3::new(20.0, -20.0, 0.0),
@@ -29191,7 +29191,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -29268,7 +29268,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
 
         let mut doc = crate::model::Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 glam::Vec3::new(-20.0, -20.0, 0.0),
                 glam::Vec3::new(20.0, -20.0, 0.0),
@@ -29278,7 +29278,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -29365,7 +29365,7 @@ mod tests {
         use super::resolve_viewport_hover_highlight;
 
         let mut doc = crate::model::Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 glam::Vec3::new(-20.0, -20.0, 0.0),
                 glam::Vec3::new(20.0, -20.0, 0.0),
@@ -29375,7 +29375,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -29958,7 +29958,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
 
         let mut doc = crate::model::Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 glam::Vec3::new(-20.0, -20.0, 0.0),
                 glam::Vec3::new(20.0, -20.0, 0.0),
@@ -29968,7 +29968,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,

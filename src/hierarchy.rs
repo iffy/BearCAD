@@ -5699,7 +5699,7 @@ mod tests {
         let sketch = inner.add_sketch(FaceId::ConstructionPlane(0));
         crate::construction::add_line_rectangle(&mut inner, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         inner.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: Some("Inner body".to_string()),
             deleted: false,
@@ -6008,13 +6008,13 @@ mod tests {
     #[test]
     fn imported_body_is_effectively_visible_by_default() {
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
             source_name: "part".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -6094,7 +6094,7 @@ mod tests {
         let mut doc = Document::default();
         for _ in 0..3 {
             doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Imported(0),
+                source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
                 deleted: false,
@@ -6123,7 +6123,7 @@ mod tests {
     fn drawing_views_nest_as_projections_under_the_drawing() {
         let mut doc = Document::default();
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: Some("Plate".to_string()),
             deleted: false,
@@ -6382,13 +6382,13 @@ label_hidden: false,
         assert!(!sketch_alive(&doc, sketch));
 
         // An orphaned body (STL import, no source extrusion, #70) also nests under Document.
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
             source_name: "part".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -6408,13 +6408,13 @@ label_hidden: false,
     #[test]
     fn imported_mesh_body_surfaces_at_top_level() {
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
             source_name: "part".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: Some("part".to_string()),
             deleted: false,

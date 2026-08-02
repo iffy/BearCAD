@@ -153,7 +153,7 @@ mod tests {
         let mut doc = Document::default();
         for i in 0..2 {
             let origin = Vec3::new(i as f32 * 10.0, 0.0, 0.0);
-            doc.imported_meshes.push(ImportedMesh {
+            let mesh = doc.imported_meshes.insert(ImportedMesh {
                 triangles: vec![
                     [origin, origin + Vec3::X, origin + Vec3::Y],
                     [origin, origin + Vec3::X, origin + Vec3::Z],
@@ -164,7 +164,7 @@ mod tests {
                 step_bytes: None,
             });
             doc.bodies.push(Body {
-                source: BodySource::Imported(i),
+                source: BodySource::Imported(mesh),
                 name: None,
                 material: None,
                 deleted: false,

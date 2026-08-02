@@ -545,13 +545,13 @@ pub mod tests {
     }
 
     pub fn cube_body(doc: &mut Document, origin: Vec3, size: Vec3) -> usize {
-        doc.imported_meshes.push(ImportedMesh {
+        let mesh = doc.imported_meshes.insert(ImportedMesh {
             triangles: cube_tris(origin, size),
             source_name: format!("part{}", doc.imported_meshes.len()),
             step_bytes: None,
         });
         doc.bodies.push(Body {
-            source: BodySource::Imported(doc.imported_meshes.len() - 1),
+            source: BodySource::Imported(mesh),
             name: None,
             material: None,
             deleted: false,

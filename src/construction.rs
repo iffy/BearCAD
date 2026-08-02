@@ -4037,7 +4037,7 @@ mod tests {
 
     fn doc_with_imported_triangle_body() -> Document {
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 Vec3::new(0.0, 0.0, 0.0),
                 Vec3::new(10.0, 0.0, 0.0),
@@ -4047,7 +4047,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -4087,13 +4087,13 @@ mod tests {
             [c(0.0, 0.0, 10.0), c(80.0, 0.0, 10.0), c(80.0, 80.0, 10.0)],
             [c(0.0, 0.0, 10.0), c(80.0, 80.0, 10.0), c(0.0, 80.0, 10.0)],
         ];
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles,
             source_name: "blocker".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -4713,13 +4713,13 @@ mod tests {
             triangles.extend(face);
         }
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles,
             source_name: "box".to_string(),
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,
@@ -4804,8 +4804,18 @@ mod tests {
             triangles.extend(face);
         }
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh { triangles, source_name: "box".to_string(), step_bytes: None });
-        doc.bodies.push(crate::model::Body { source: crate::model::BodySource::Imported(0), material: None, name: None, deleted: false, shadow: false });
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles,
+            source_name: "box".to_string(),
+            step_bytes: None,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
         let project = |p: Vec3| Some(egui::pos2(p.x, p.y));
         let eye = Vec3::new(30.0, 30.0, 100.0);
         let vis = crate::hierarchy::ElementVisibility::default();

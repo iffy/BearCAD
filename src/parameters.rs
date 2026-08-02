@@ -1909,7 +1909,7 @@ mod tests {
     /// unavailable once the geometry no longer has that edge/corner.
     fn doc_with_one_triangle_body() -> Document {
         let mut doc = Document::default();
-        doc.imported_meshes.push(crate::model::ImportedMesh {
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
             triangles: vec![[
                 glam::Vec3::new(0.0, 0.0, 0.0),
                 glam::Vec3::new(30.0, 0.0, 0.0),
@@ -1919,7 +1919,7 @@ mod tests {
                     step_bytes: None,
         });
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Imported(0),
+            source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
             deleted: false,

@@ -1237,9 +1237,9 @@ pub struct Extrusion {
 pub enum BodySource {
     Extrusion(usize),
     Extrusions(Vec<usize>),
-    /// A mesh body brought in via STL import (#70); indexes `Document::imported_meshes`
+    /// A mesh body brought in via STL import (#70); keys `Document::imported_meshes`
     /// rather than depending on a sketch-based feature.
-    Imported(usize),
+    Imported(ImportedMeshKey),
     /// A lofted solid; indexes `Document::lofts`.
     Loft(LoftKey),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
@@ -1384,9 +1384,9 @@ impl BodySource {
         }
     }
 
-    pub fn imported_mesh_index(&self) -> Option<usize> {
+    pub fn imported_mesh_key(&self) -> Option<ImportedMeshKey> {
         match self {
-            Self::Imported(index) => Some(*index),
+            Self::Imported(key) => Some(*key),
             Self::Extrusion(_)
             | Self::Extrusions(_)
             | Self::Solid { .. }
@@ -3128,6 +3128,9 @@ mod tracing_image_bytes {
 /// When the import was a real STEP BREP (#1029), `step_bytes` keeps the file so booleans
 /// and other kernel ops can re-read the solid. Pure mesh imports (STL, faceted-only STEP)
 /// leave it empty — they stay triangle-only.
+/// How a body names the mesh it was imported from (#1055).
+pub type ImportedMeshKey = crate::arena::Key<ImportedMesh>;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct ImportedMesh {
     pub triangles: Vec<[glam::Vec3; 3]>,
@@ -3923,7 +3926,7 @@ pub struct Document {
     #[serde(default)]
     pub materials: crate::arena::Arena<Material>,
     #[serde(default)]
-    pub imported_meshes: Vec<ImportedMesh>,
+    pub imported_meshes: crate::arena::Arena<ImportedMesh>,
     /// Reference images imported for tracing (#163/#169).
     #[serde(default)]
     pub tracing_images: crate::arena::Arena<TracingImage>,
@@ -4184,7 +4187,7 @@ impl Default for Document {
             extrusions: Vec::new(),
             bodies: Vec::new(),
             materials: Material::defaults(),
-            imported_meshes: Vec::new(),
+            imported_meshes: crate::arena::Arena::new(),
             tracing_images: crate::arena::Arena::new(),
             lofts: crate::arena::Arena::new(),
             revolutions: Vec::new(),
