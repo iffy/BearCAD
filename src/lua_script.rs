@@ -180,6 +180,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::RepeatOp(key) => {
             doc.repeat_ops.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::EdgeTreatmentOp(key) => {
+            doc.edge_treatment_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
@@ -192,8 +196,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::SketchVertexTreatmentOp(i)
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
-        | SceneElement::SliceOp(i)
-        | SceneElement::EdgeTreatmentOp(i)
+
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
         | SceneElement::Joint(i) => i,
@@ -4844,7 +4847,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.exec(Instruction::CreateSliceOp { targets, cutters, extend_infinite })?;
             }
             let element = SceneElement::SliceOp(unsafe {
-                tick.state().doc.slice_ops.len().saturating_sub(1)
+                tick.state()
+                    .doc
+                    .slice_ops
+                    .keys()
+                    .last()
+                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
@@ -5559,6 +5567,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::edge_treatment_op_key_for_slot as etkey;
     use super::*;
     use crate::actions::AppState;
     use crate::model::FaceId;
@@ -6899,9 +6908,9 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
-        assert_eq!(state.doc.edge_treatment_ops[0].kind, VertexTreatmentKind::Chamfer);
+        assert_eq!(state.doc.edge_treatment_ops.values().nth(0).unwrap().kind, VertexTreatmentKind::Chamfer);
         // The chamfer's beveled output body has more than the 12 triangles of the plain box.
-        let output = state.doc.edge_treatment_ops[0].outputs[0];
+        let output = state.doc.edge_treatment_ops.values().nth(0).unwrap().outputs[0];
         let mesh = crate::extrude::body_solid_mesh(&state.doc, output).unwrap();
         assert_ne!(mesh.triangles.len(), 12);
     }
@@ -6928,10 +6937,10 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.edge_treatment_ops.len(), 1, "one operation, not one per edge");
-        assert_eq!(state.doc.edge_treatment_ops[0].edges.len(), 4);
+        assert_eq!(state.doc.edge_treatment_ops.values().nth(0).unwrap().edges.len(), 4);
         // One output body, and it carries all four rounds (far more than the box's 12 triangles).
-        assert_eq!(state.doc.edge_treatment_ops[0].outputs.len(), 1);
-        let output = state.doc.edge_treatment_ops[0].outputs[0];
+        assert_eq!(state.doc.edge_treatment_ops.values().nth(0).unwrap().outputs.len(), 1);
+        let output = state.doc.edge_treatment_ops.values().nth(0).unwrap().outputs[0];
         let mesh = crate::extrude::body_solid_mesh(&state.doc, output).unwrap();
         assert!(mesh.triangles.len() > 12, "{} triangles", mesh.triangles.len());
     }
@@ -6950,9 +6959,9 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
-        assert_eq!(state.doc.edge_treatment_ops[0].kind, VertexTreatmentKind::Fillet);
+        assert_eq!(state.doc.edge_treatment_ops.values().nth(0).unwrap().kind, VertexTreatmentKind::Fillet);
         assert!(matches!(
-            state.doc.edge_treatment_ops[0].edges[0].edge,
+            state.doc.edge_treatment_ops.values().nth(0).unwrap().edges[0].edge,
             ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true }
         ));
     }
@@ -6974,14 +6983,14 @@ mod tests {
         "#,
         );
         // It appears as a top-level operation node, labelled by its kind.
-        let node = crate::hierarchy::HierarchyNode::EdgeTreatmentOp(0);
+        let node = crate::hierarchy::HierarchyNode::EdgeTreatmentOp(etkey(0));
         let nodes = crate::hierarchy::build_element_list(&state.doc, state.sketch_session);
         assert!(nodes.contains(&node), "fillet op should show in the elements pane");
         assert!(crate::names::node_label(&state.doc, node).starts_with("Fillet"));
         // Its beveled output body nests under the operation node in the real tree.
         let tree = crate::hierarchy::build_hierarchy(&state.doc, state.sketch_session);
         let op_entry = crate::hierarchy::find_hierarchy_entry(&tree, node).expect("op entry");
-        let output = state.doc.edge_treatment_ops[0].outputs[0];
+        let output = state.doc.edge_treatment_ops.values().nth(0).unwrap().outputs[0];
         assert!(op_entry
             .children
             .iter()
@@ -6989,7 +6998,9 @@ mod tests {
 
         // Re-opening the op for edit and committing a new amount leaves one live operation.
         assert_eq!(
-            state.apply(crate::actions::Action::EditEdgeTreatmentOp { op: 0 }),
+            state.apply(crate::actions::Action::EditEdgeTreatmentOp {
+                op: crate::model::edge_treatment_op_key_for_slot(0)
+            }),
             crate::actions::ActionResult::Ok
         );
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
@@ -7004,8 +7015,7 @@ mod tests {
         let live: Vec<_> = state
             .doc
             .edge_treatment_ops
-            .iter()
-            .filter(|o| !o.deleted)
+            .values()
             .collect();
         assert_eq!(live.len(), 1);
         assert!((live[0].amount - 2.75).abs() < 1e-4);
@@ -9160,7 +9170,7 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.slice_ops.len(), 1);
-        let op = &state.doc.slice_ops[0];
+        let op = &state.doc.slice_ops.values().nth(0).unwrap();
         assert_eq!(op.name.as_deref(), Some("Halved"));
         assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "the sliced input becomes a shadow body");

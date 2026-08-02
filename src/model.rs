@@ -1294,7 +1294,7 @@ pub enum BodySource {
     /// result. The input body becomes a shadow body; each fragment is its own `Body`.
     Sliced {
         #[serde(rename = "slice_op")]
-        op: usize,
+        op: SliceOpKey,
         #[serde(default)]
         target: usize,
         #[serde(default)]
@@ -1306,7 +1306,7 @@ pub enum BodySource {
     /// bevel.
     EdgeTreated {
         #[serde(rename = "edge_treatment_op")]
-        op: usize,
+        op: EdgeTreatmentOpKey,
         #[serde(default)]
         target: usize,
     },
@@ -1525,17 +1525,17 @@ pub fn body_shadowed_by_other_ops(
     body: BodyKey,
     skip_boolean: Option<crate::model::BooleanOpKey>,
     skip_move: Option<MoveOpKey>,
-    skip_slice: Option<usize>,
-    skip_edge_treatment: Option<usize>,
+    skip_slice: Option<SliceOpKey>,
+    skip_edge_treatment: Option<EdgeTreatmentOpKey>,
 ) -> bool {
     doc.boolean_ops.iter().any(|(oi, o)| {
         skip_boolean != Some(oi) && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
     }) || doc.move_ops.iter().any(|(oi, o)| {
         skip_move != Some(oi) && o.targets.contains(&body)
-    }) || doc.slice_ops.iter().enumerate().any(|(oi, o)| {
-        skip_slice != Some(oi) && !o.deleted && o.targets.contains(&body)
-    }) || doc.edge_treatment_ops.iter().enumerate().any(|(oi, o)| {
-        skip_edge_treatment != Some(oi) && !o.deleted && o.targets.contains(&body)
+    }) || doc.slice_ops.iter().any(|(oi, o)| {
+        skip_slice != Some(oi) && o.targets.contains(&body)
+    }) || doc.edge_treatment_ops.iter().any(|(oi, o)| {
+        skip_edge_treatment != Some(oi) && o.targets.contains(&body)
     })
 }
 
@@ -1684,6 +1684,18 @@ pub fn mirror_op_key_for_slot(n: usize) -> MirrorOpKey {
 /// The same for a linear repeat (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn repeat_op_key_for_slot(n: usize) -> RepeatOpKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a slice operation (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn slice_op_key_for_slot(n: usize) -> SliceOpKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for an edge-treatment operation (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2806,9 +2818,10 @@ pub struct SliceOperation {
     pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a slice operation (#1055).
+pub type SliceOpKey = crate::arena::Key<SliceOperation>;
 
 /// One edge treated by an [`EdgeTreatmentOperation`] (#531): the stable, parametric edge
 /// identity is the extrusion-relative [`ExtrusionEdgeRef`] (a topological face/edge address
@@ -2846,9 +2859,10 @@ pub struct EdgeTreatmentOperation {
     pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names an edge-treatment operation (#1055).
+pub type EdgeTreatmentOpKey = crate::arena::Key<EdgeTreatmentOperation>;
 
 /// A 2D in-sketch linear repeat (#222): duplicates selected sketch entities along an in-plane
 /// direction as generated entities in the *same* sketch, grouped under the operation. The
@@ -4004,11 +4018,11 @@ pub struct Document {
     pub repeat_ops: crate::arena::Arena<RepeatOperation>,
     /// Slice operations on bodies (the Slice tool, #181).
     #[serde(default)]
-    pub slice_ops: Vec<SliceOperation>,
+    pub slice_ops: crate::arena::Arena<SliceOperation>,
     /// Edge chamfer/fillet operations on bodies (#531): each shadows its input bodies and
     /// produces beveled output bodies.
     #[serde(default)]
-    pub edge_treatment_ops: Vec<EdgeTreatmentOperation>,
+    pub edge_treatment_ops: crate::arena::Arena<EdgeTreatmentOperation>,
     /// 2D in-sketch linear repeats (#222): duplicated sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_repeat_ops: Vec<SketchRepeatOperation>,
@@ -4131,8 +4145,8 @@ pub enum ComponentMember {
     MoveOp(MoveOpKey),
     MirrorOp(MirrorOpKey),
     RepeatOp(RepeatOpKey),
-    SliceOp(usize),
-    EdgeTreatmentOp(usize),
+    SliceOp(SliceOpKey),
+    EdgeTreatmentOp(EdgeTreatmentOpKey),
     Revolution(RevolutionKey),
     Sweep(SweepKey),
     Drawing(usize),
@@ -4245,8 +4259,8 @@ impl Default for Document {
             move_ops: crate::arena::Arena::new(),
             mirror_ops: crate::arena::Arena::new(),
             repeat_ops: crate::arena::Arena::new(),
-            slice_ops: Vec::new(),
-            edge_treatment_ops: Vec::new(),
+            slice_ops: crate::arena::Arena::new(),
+            edge_treatment_ops: crate::arena::Arena::new(),
             sketch_repeat_ops: Vec::new(),
             sketch_offset_ops: Vec::new(),
             sketch_mirror_ops: Vec::new(),

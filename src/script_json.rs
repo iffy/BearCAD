@@ -140,6 +140,10 @@ pub fn scene_element_selection_index(
         SceneElement::MoveOp(key) => doc.move_ops.keys().position(|k| k == *key),
         SceneElement::MirrorOp(key) => doc.mirror_ops.keys().position(|k| k == *key),
         SceneElement::RepeatOp(key) => doc.repeat_ops.keys().position(|k| k == *key),
+        SceneElement::SliceOp(key) => doc.slice_ops.keys().position(|k| k == *key),
+        SceneElement::EdgeTreatmentOp(key) => {
+            doc.edge_treatment_ops.keys().position(|k| k == *key)
+        }
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
@@ -181,8 +185,7 @@ pub fn scene_element_selection_index(
         | SceneElement::SketchVertexTreatmentOp(i)
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
-        | SceneElement::SliceOp(i)
-        | SceneElement::EdgeTreatmentOp(i)
+
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
         | SceneElement::Joint(i) => Some(*i),

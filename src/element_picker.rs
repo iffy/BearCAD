@@ -1236,6 +1236,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::move_op_key_for_slot as mopkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
@@ -1872,7 +1873,7 @@ mod tests {
         let f = ElementFilter::kinds(&[ElementKind::Body])
             .operations(&[OperationKind::Boolean, OperationKind::Slice]);
         assert!(f.accepts(&Document::default(), &SceneElement::BooleanOp(bopkey(0))));
-        assert!(f.accepts(&Document::default(), &SceneElement::SliceOp(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::SliceOp(slckey(0))));
         assert!(!f.accepts(&Document::default(), &SceneElement::MoveOp(mopkey(0))));
         // Body still accepted alongside the operations.
         assert!(f.accepts(&Document::default(), &body(0)));

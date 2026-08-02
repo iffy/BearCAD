@@ -1473,10 +1473,10 @@ fn occt_moved_output_shape(
 /// is gone, or an output body was fed back as its own input.
 fn edge_treated_input_doc(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::EdgeTreatmentOpKey,
     target: usize,
 ) -> Option<(Document, crate::model::BodyKey)> {
-    let op = doc.edge_treatment_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.edge_treatment_ops.get(op_index)?;
     let &input = op.targets.get(target)?;
     if op.outputs.contains(&input) {
         return None;
@@ -1498,7 +1498,7 @@ fn edge_treated_input_doc(
 /// op's chamfer/fillet edges spliced onto its extrusions.
 fn occt_edge_treated_output_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::EdgeTreatmentOpKey,
     target: usize,
 ) -> Option<crate::kernel::Shape> {
     let (clone, input) = edge_treated_input_doc(doc, op_index, target)?;
@@ -1740,7 +1740,7 @@ pub fn descendant_bodies(doc: &Document, seeds: &[crate::model::BodyKey]) -> std
                 outs.extend(op.outputs.iter().copied());
             }
         }
-        for op in doc.slice_ops.iter().filter(|o| !o.deleted) {
+        for op in doc.slice_ops.values() {
             if op.targets.contains(&bi) {
                 outs.extend(op.outputs.iter().copied());
             }
@@ -2088,10 +2088,10 @@ fn occt_slice_halfspace(
 /// and, for each cutter, replace every current piece with its two sides of the cutter's
 /// half-space, dropping empty results. Deterministic order (common side before cut side, in
 /// cutter order) keeps output-body mapping stable across edits.
-fn occt_slice_pieces(doc: &Document, op_index: usize, target_pos: usize) -> Option<Vec<crate::kernel::Shape>> {
+fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_pos: usize) -> Option<Vec<crate::kernel::Shape>> {
     use crate::kernel::BoolOp;
     const MIN_PIECE_VOLUME: f64 = 1e-6;
-    let op = doc.slice_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.slice_ops.get(op_index)?;
     let &input = op.targets.get(target_pos)?;
     // Inputs must precede this op's outputs; the guard breaks any accidental self-reference.
     if op.outputs.contains(&input) {
@@ -2131,7 +2131,7 @@ fn occt_slice_pieces(doc: &Document, op_index: usize, target_pos: usize) -> Opti
 /// outputs.
 fn occt_sliced_output_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::SliceOpKey,
     target: usize,
     piece: usize,
 ) -> Option<crate::kernel::Shape> {
@@ -2163,7 +2163,7 @@ fn occt_sliced_output_shape(
 
 /// How many (live) output bodies a slice target currently owns — the authoritative,
 /// stable fragment count, recovered from the `BodySource::Sliced` sources.
-fn slice_target_body_count(doc: &Document, op_index: usize, target: usize) -> usize {
+fn slice_target_body_count(doc: &Document, op_index: crate::model::SliceOpKey, target: usize) -> usize {
     doc.bodies
         .iter()
         .filter(|(_, b)| {
@@ -2177,7 +2177,7 @@ fn slice_target_body_count(doc: &Document, op_index: usize, target: usize) -> us
 }
 
 /// Number of fragments a slice target currently produces (commit-time output sizing).
-pub fn slice_piece_count(doc: &Document, op_index: usize, target: usize) -> Option<usize> {
+pub fn slice_piece_count(doc: &Document, op_index: crate::model::SliceOpKey, target: usize) -> Option<usize> {
     Some(occt_slice_pieces(doc, op_index, target)?.len())
 }
 

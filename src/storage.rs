@@ -252,8 +252,8 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_arena_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
     save_arena_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "edge_treatment_op", &doc.edge_treatment_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "edge_treatment_op", &doc.edge_treatment_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_offset_op", &doc.sketch_offset_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_mirror_op", &doc.sketch_mirror_ops)?;
@@ -591,8 +591,8 @@ pub fn open(path: &str) -> Result<Document> {
     let move_ops = load_arena_entities(&conn, "move_op")?;
     let mirror_ops = load_arena_entities(&conn, "mirror_op")?;
     let repeat_ops = load_arena_entities(&conn, "repeat_op")?;
-    let slice_ops = load_indexed_entities(&conn, "slice_op")?;
-    let edge_treatment_ops = load_indexed_entities(&conn, "edge_treatment_op")?;
+    let slice_ops = load_arena_entities(&conn, "slice_op")?;
+    let edge_treatment_ops = load_arena_entities(&conn, "edge_treatment_op")?;
     let sketch_repeat_ops = load_indexed_entities(&conn, "sketch_repeat_op")?;
     let sketch_offset_ops = load_indexed_entities(&conn, "sketch_offset_op")?;
     let sketch_mirror_ops = load_indexed_entities(&conn, "sketch_mirror_op")?;
@@ -660,6 +660,7 @@ pub fn open(path: &str) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
     use crate::model::{Circle, FaceId};
@@ -1388,24 +1389,23 @@ mod tests {
             shadow: true,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 0 },
+            source: crate::model::BodySource::Sliced { op: slckey(0), target: 0, piece: 0 },
             material: None,
             name: Some("Top".to_string()),
             shadow: false,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 1 },
+            source: crate::model::BodySource::Sliced { op: slckey(0), target: 0, piece: 1 },
             material: None,
             name: Some("Bottom".to_string()),
             shadow: false,
         });
-        doc.slice_ops.push(crate::model::SliceOperation {
+        doc.slice_ops.insert(crate::model::SliceOperation {
             targets: vec![bkey(0)],
             cutters: vec![crate::model::FaceId::ConstructionPlane(3)],
             extend_infinite: true,
             outputs: vec![bkey(1), bkey(2)],
             name: Some("Halved".to_string()),
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::SliceOperation);
         doc.shape_order.push(ShapeKind::Body);

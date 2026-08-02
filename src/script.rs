@@ -2021,14 +2021,16 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::SliceOp(i) => ElementScriptTokens {
             kind: "slice_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::EdgeTreatmentOp(i) => ElementScriptTokens {
             kind: "edge_treatment_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The revolve's arena slot, not its ordinal (#1070).
@@ -2098,6 +2100,16 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A slice operation's ordinal among the live ones — what a script writes (#1055).
+fn slice_op_ordinal(doc: &crate::model::Document, key: crate::model::SliceOpKey) -> Option<usize> {
+    doc.slice_ops.keys().position(|k| k == key)
+}
+
+/// The slice operation an ordinal names — the inverse of [`slice_op_ordinal`].
+fn slice_op_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::SliceOpKey> {
+    doc.slice_ops.keys().nth(ordinal)
+}
+
 /// A repeat's ordinal among the live ones — what a script writes (#1055).
 fn repeat_op_ordinal(
     doc: &crate::model::Document,
@@ -2337,7 +2349,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::EditSliceOperation { op, targets, cutters, extend_infinite } => {
             Some(Instruction::EditSliceOp {
-                op: *op,
+                op: slice_op_ordinal(doc, *op)?,
                 targets: body_ordinals(doc, targets)?,
                 cutters: cutters.clone(),
                 extend_infinite: *extend_infinite,
@@ -2855,7 +2867,7 @@ pub fn instruction_for_new_sweep(doc: &crate::model::Document) -> Option<Instruc
 pub fn instructions_for_new_edge_treatment_op(
     doc: &crate::model::Document,
 ) -> Vec<Instruction> {
-    let Some(op) = doc.edge_treatment_ops.last() else {
+    let Some(op) = doc.edge_treatment_ops.values().last() else {
         return Vec::new();
     };
     vec![Instruction::EdgeTreatment {
@@ -5449,6 +5461,10 @@ impl ScriptRunner {
             }
             Instruction::EditSliceOp { op, targets, cutters, extend_infinite } => {
                 let targets = body_keys(&state.doc, &targets);
+                let Some(op) = slice_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Slice operation {op} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::EditSliceOperation {
                     op,
                     targets,

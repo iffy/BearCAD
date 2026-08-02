@@ -1091,7 +1091,7 @@ pub struct CreatingSlice {
     pub picking_cutter: bool,
     pub extend_infinite: bool,
     /// `Some(op)` while re-editing a committed operation.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::SliceOpKey>,
 }
 
 impl Default for CreatingSlice {
@@ -1961,7 +1961,7 @@ pub enum Action {
     /// Re-open a committed edge-treatment **operation** (#531) for editing: reloads its edges,
     /// kind, and amount into `creating_edge_treatment`, tombstones the op (releasing its shadow
     /// inputs and outputs) so the gizmo commit rebuilds it, and switches to the matching tool.
-    EditEdgeTreatmentOp { op: usize },
+    EditEdgeTreatmentOp { op: crate::model::EdgeTreatmentOpKey },
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
     CreateRectangle {
         x: f32,
@@ -2531,7 +2531,7 @@ pub enum Action {
     /// Re-point an existing slice operation at new targets / cutters / extend flag. Fragment
     /// bodies are resized to the new piece counts (grow pushes bodies, shrink tombstones).
     EditSliceOperation {
-        op: usize,
+        op: crate::model::SliceOpKey,
         targets: Vec<crate::model::BodyKey>,
         cutters: Vec<FaceId>,
         extend_infinite: bool,
@@ -4465,7 +4465,6 @@ impl AppState {
         // if any beveled output fails to build while its input built — otherwise the body would
         // silently drop onto the un-beveled fallback. A no-kernel build has nothing to consult
         // (inputs don't build via the kernel there), so the mesh-bevel clamp stands.
-        let op_index = self.doc.edge_treatment_ops.len();
         let operation = EdgeTreatmentOperation {
             targets: targets.clone(),
             edges: treated,
@@ -4473,11 +4472,10 @@ impl AppState {
             amount,
             outputs: Vec::new(),
             name: None,
-            deleted: false,
         };
         {
             let mut trial = self.doc.clone();
-            trial.edge_treatment_ops.push(operation.clone());
+            let op_index = trial.edge_treatment_ops.insert(operation.clone());
             let mut trial_outputs = Vec::new();
             for target in 0..targets.len() {
                 trial_outputs.push(trial.bodies.insert(Body {
@@ -4506,7 +4504,7 @@ impl AppState {
             }
         }
         // Commit: push the op, its beveled outputs, and shadow the inputs.
-        self.doc.edge_treatment_ops.push(operation);
+        let op_index = self.doc.edge_treatment_ops.insert(operation);
         self.doc.shape_order.push(ShapeKind::EdgeTreatmentOperation);
         let mut outputs = Vec::new();
         for target in 0..targets.len() {
@@ -5908,7 +5906,7 @@ fn validate_slice_inputs(
     doc: &Document,
     targets: &[crate::model::BodyKey],
     cutters: &[FaceId],
-    editing: Option<usize>,
+    editing: Option<crate::model::SliceOpKey>,
 ) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Pick at least one body to slice".to_string());
@@ -5931,13 +5929,7 @@ fn validate_slice_inputs(
         if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
             return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
-        if let crate::model::BodySource::Sliced { op, .. } = body.source {
-            if editing.is_some_and(|e| op >= e) {
-                return Err(
-                    "Cannot use this operation's own (or a later) result as an input".to_string(),
-                );
-            }
-        }
+
         if !seen.insert(bi) {
             return Err(format!("Body {bi:?} is picked twice"));
         }
@@ -5989,8 +5981,8 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchVertexTreatmentOp(i) => format!("Sketch chamfer/fillet {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
-        SceneElement::SliceOp(i) => format!("Slice operation {i}"),
-        SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
+        SceneElement::SliceOp(i) => format!("Slice operation {}", i.index()),
+        SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {}", i.index()),
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep operation {}", i.index()),
@@ -9243,13 +9235,7 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::EditEdgeTreatmentOp { op } => {
-                let Some(operation) = self
-                    .doc
-                    .edge_treatment_ops
-                    .get(op)
-                    .filter(|o| !o.deleted)
-                    .cloned()
-                else {
+                let Some(operation) = self.doc.edge_treatment_ops.get(op).cloned() else {
                     return ActionResult::Err("Edge treatment not found".to_string());
                 };
                 let edges = operation
@@ -12129,14 +12115,12 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let op_index = self.doc.slice_ops.len();
-                self.doc.slice_ops.push(crate::model::SliceOperation {
+                let op_index = self.doc.slice_ops.insert(crate::model::SliceOperation {
                     targets: targets.clone(),
                     cutters: cutters.clone(),
                     extend_infinite,
                     outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SliceOperation);
                 // Fragment count per target = solids the kernel finds after cutting (at
@@ -12172,8 +12156,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::EditSliceOperation { op, targets, cutters, extend_infinite } => {
-                if self.doc.slice_ops.get(op).filter(|o| !o.deleted).is_none() {
-                    let e = format!("Slice operation {op} not found");
+                if self.doc.slice_ops.get(op).is_none() {
+                    let e = format!("Slice operation {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -15784,8 +15768,8 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend(doc.move_ops.keys().map(CM::MoveOp));
     members.extend(doc.mirror_ops.keys().map(CM::MirrorOp));
     members.extend(doc.repeat_ops.keys().map(CM::RepeatOp));
-    members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
-    members.extend((0..doc.edge_treatment_ops.len()).map(CM::EdgeTreatmentOp));
+    members.extend(doc.slice_ops.keys().map(CM::SliceOp));
+    members.extend(doc.edge_treatment_ops.keys().map(CM::EdgeTreatmentOp));
     members.extend(doc.revolutions.keys().map(CM::Revolution));
     members.extend(doc.sweeps.keys().map(CM::Sweep));
     members
@@ -15992,6 +15976,8 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::edge_treatment_op_key_for_slot as etkey;
+    use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::repeat_op_key_for_slot as repkey;
     use crate::model::mirror_op_key_for_slot as mirkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
@@ -22448,12 +22434,12 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.slice_ops.len(), 1);
-        let op = &state.doc.slice_ops[0];
+        let op = &state.doc.slice_ops.values().nth(0).unwrap();
         assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
         for &out in &op.outputs {
             assert!(matches!(
                 state.doc.bodies[out].source,
-                crate::model::BodySource::Sliced { op: 0, .. }
+                crate::model::BodySource::Sliced { op, .. } if op == slckey(0)
             ));
             assert!(!state.doc.bodies[out].shadow);
             assert!(
@@ -22481,7 +22467,7 @@ mod tests {
             cutters: vec![cutter],
             extend_infinite: true,
         });
-        assert_eq!(state.doc.slice_ops[0].outputs.len(), 1);
+        assert_eq!(state.doc.slice_ops.values().nth(0).unwrap().outputs.len(), 1);
     }
 
     /// Editing a slice re-points its cutters and resizes the fragment list.
@@ -22495,16 +22481,16 @@ mod tests {
             cutters: vec![miss],
             extend_infinite: true,
         });
-        assert_eq!(state.doc.slice_ops[0].outputs.len(), 1);
+        assert_eq!(state.doc.slice_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditSliceOperation {
-            op: 0,
+            op: slckey(0),
             targets: vec![bkey(0)],
             cutters: vec![hit],
             extend_infinite: true,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(
-            state.doc.slice_ops[0].outputs.len(),
+            state.doc.slice_ops.values().nth(0).unwrap().outputs.len(),
             2,
             "the mid-plane cutter now yields two fragments"
         );
@@ -23367,7 +23353,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.len(), 1, "one operation created");
-        let op = &state.doc.edge_treatment_ops[0];
+        let op = &state.doc.edge_treatment_ops.values().nth(0).unwrap();
         let treated: Vec<_> = op.edges.iter().map(|t| t.edge).collect();
         assert_eq!(treated.len(), 2, "both edges treated: {treated:?}");
         for (_, edge) in &edges {
@@ -23382,8 +23368,7 @@ mod tests {
         // operation while leaving the extrusion (and un-shadowing the input body).
         state.apply(Action::UndoLast);
         assert!(
-            state.doc.edge_treatment_ops.is_empty()
-                || state.doc.edge_treatment_ops[0].deleted,
+            state.doc.edge_treatment_ops.is_empty(),
             "one undo must remove the whole operation"
         );
         assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive the undo");
@@ -23406,8 +23391,7 @@ mod tests {
 
         state.apply(Action::UndoLast);
         assert!(
-            state.doc.edge_treatment_ops.is_empty()
-                || state.doc.edge_treatment_ops[0].deleted,
+            state.doc.edge_treatment_ops.is_empty(),
             "undo removes the operation"
         );
         assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "the input body is released from shadow");
@@ -23462,7 +23446,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
-        let op = &state.doc.edge_treatment_ops[0];
+        let op = &state.doc.edge_treatment_ops.values().nth(0).unwrap();
         assert_eq!(op.edges[0].edge, edge);
         assert_eq!(op.kind, VertexTreatmentKind::Chamfer);
         // The beveled output body's mesh differs from the (unshadowed) input's original mesh.
@@ -23484,7 +23468,7 @@ mod tests {
             amount: 1.5,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert_eq!(state.doc.edge_treatment_ops[0].kind, VertexTreatmentKind::Fillet);
+        assert_eq!(state.doc.edge_treatment_ops.values().nth(0).unwrap().kind, VertexTreatmentKind::Fillet);
     }
 
     /// #259/#531: re-opening a committed chamfer/fillet **operation** reloads it into the
@@ -23500,10 +23484,13 @@ mod tests {
             amount: 3.0,
         });
 
-        let result = state.apply(Action::EditEdgeTreatmentOp { op: 0 });
+        let result = state.apply(Action::EditEdgeTreatmentOp { op: etkey(0) });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.tool, Tool::Chamfer);
-        assert!(state.doc.edge_treatment_ops[0].deleted, "the old op is tombstoned on edit");
+        assert!(
+            state.doc.edge_treatment_ops.is_empty(),
+            "the old op is removed on edit; the commit rebuilds it"
+        );
         let cet = state
             .creating_edge_treatment
             .as_ref()
@@ -23522,8 +23509,7 @@ mod tests {
         let live: Vec<_> = state
             .doc
             .edge_treatment_ops
-            .iter()
-            .filter(|o| !o.deleted)
+            .values()
             .collect();
         assert_eq!(live.len(), 1, "exactly one live operation");
         assert_eq!(live[0].amount, 1.5);
@@ -23540,7 +23526,7 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
-        state.apply(Action::EditEdgeTreatmentOp { op: 0 });
+        state.apply(Action::EditEdgeTreatmentOp { op: etkey(0) });
         state.apply(Action::CommitEdgeTreatments {
             edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Fillet,
@@ -23549,8 +23535,7 @@ mod tests {
         let live: Vec<_> = state
             .doc
             .edge_treatment_ops
-            .iter()
-            .filter(|o| !o.deleted)
+            .values()
             .collect();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].kind, VertexTreatmentKind::Fillet);
@@ -23575,7 +23560,7 @@ mod tests {
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
         assert_eq!(
-            state.doc.edge_treatment_ops[0].edges.len(),
+            state.doc.edge_treatment_ops.values().nth(0).unwrap().edges.len(),
             1,
             "the conflicting edge is skipped"
         );

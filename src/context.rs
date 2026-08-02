@@ -138,7 +138,7 @@ pub struct ContextInput<'a> {
     /// Slice tool state: `Some` while the Slice tool is active.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" entry point.
-    pub slice_edit_start: Option<usize>,
+    pub slice_edit_start: Option<crate::model::SliceOpKey>,
     /// "Edit revolve" entry point (#211): `Some(op)` when exactly one revolution is selected.
     pub revolve_edit_start: Option<crate::model::RevolutionKey>,
     /// "Edit sweep" entry point: `Some(op)` when exactly one sweep is selected.
@@ -1040,7 +1040,7 @@ pub struct ContextPaneContent {
     /// Slice tool controls.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" button target.
-    pub slice_edit_start: Option<usize>,
+    pub slice_edit_start: Option<crate::model::SliceOpKey>,
     /// "Edit revolve" button target (#211).
     pub revolve_edit_start: Option<crate::model::RevolutionKey>,
     /// "Edit sweep" button target.
@@ -4254,7 +4254,7 @@ pub fn show_pane(
     on_drawing_align_clear: &mut impl FnMut(),
     on_repeat_edit_start: &mut impl FnMut(crate::model::RepeatOpKey),
     on_slice_edit: &mut impl FnMut(SliceEdit),
-    on_slice_edit_start: &mut impl FnMut(usize),
+    on_slice_edit_start: &mut impl FnMut(crate::model::SliceOpKey),
     on_revolve_edit_start: &mut impl FnMut(crate::model::RevolutionKey),
     on_sweep_edit_start: &mut impl FnMut(crate::model::SweepKey),
     on_calibrate_start: &mut impl FnMut(crate::model::TracingImageKey),

@@ -345,14 +345,14 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let op = doc
                 .slice_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("slice operation {index} not found"))?;
+                .ok_or_else(|| format!("slice operation {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::EdgeTreatmentOp(index) => {
             let op = doc
                 .edge_treatment_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("edge treatment operation {index} not found"))?;
+                .ok_or_else(|| format!("edge treatment operation {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::Component(index) => {
@@ -550,11 +550,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             }
             format!("Text {i} (\"{short}\")")
         }
-        HierarchyNode::SliceOp(i) => format!("Slice {i}"),
+        HierarchyNode::SliceOp(i) => format!("Slice {}", i.index()),
         HierarchyNode::EdgeTreatmentOp(i) => {
             match doc.edge_treatment_ops.get(i).map(|o| o.kind) {
-                Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {i}"),
-                _ => format!("Chamfer {i}"),
+                Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {}", i.index()),
+                _ => format!("Chamfer {}", i.index()),
             }
         }
         HierarchyNode::Revolution(i) => format!("Revolve {}", i.index()),
@@ -803,10 +803,10 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         }
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
-        SceneElement::SliceOp(i) => format!("Slice {i}"),
+        SceneElement::SliceOp(i) => format!("Slice {}", i.index()),
         SceneElement::EdgeTreatmentOp(i) => match doc.edge_treatment_ops.get(*i).map(|o| o.kind) {
-            Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {i}"),
-            _ => format!("Chamfer {i}"),
+            Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {}", i.index()),
+            _ => format!("Chamfer {}", i.index()),
         },
         SceneElement::Revolution(i) => format!("Revolve {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),

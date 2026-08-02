@@ -11715,7 +11715,7 @@ impl eframe::App for App {
             let mut import_image_on_plane: Option<usize> = None;
             let mut edit_extrusion: Option<usize> = None;
             let mut edit_edge_treatment: Option<(usize, usize)> = None;
-            let mut edit_edge_treatment_op: Option<usize> = None;
+            let mut edit_edge_treatment_op: Option<crate::model::EdgeTreatmentOpKey> = None;
             let mut edit_operation: Option<hierarchy::SceneElement> = None;
             let mut edit_drawing: Option<usize> = None;
             let mut select_drawing_element: Option<hierarchy::HierarchyNode> = None;
@@ -11767,7 +11767,7 @@ impl eframe::App for App {
                     let mut queue_edit_edge_treatment = |extrusion: usize, index: usize| {
                         edit_edge_treatment = Some((extrusion, index));
                     };
-                    let mut queue_edit_edge_treatment_op = |op: usize| {
+                    let mut queue_edit_edge_treatment_op = |op: crate::model::EdgeTreatmentOpKey| {
                         edit_edge_treatment_op = Some(op);
                     };
                     let mut queue_edit_operation = |element: hierarchy::SceneElement| {
@@ -13065,7 +13065,7 @@ impl eframe::App for App {
             let mut drawing_align_clear = false;
             let mut repeat_edit_begin: Option<crate::model::RepeatOpKey> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
-            let mut slice_edit_begin: Option<usize> = None;
+            let mut slice_edit_begin: Option<crate::model::SliceOpKey> = None;
             let mut revolve_edit_begin: Option<model::RevolutionKey> = None;
             let mut sweep_edit_begin: Option<model::SweepKey> = None;
             // Help mode (#672): the row helpers collect a note per control as the pane lays

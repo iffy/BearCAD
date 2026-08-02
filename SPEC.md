@@ -739,13 +739,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Revolve** — about an axis, full or partial angle.
 
 ### 3.3 Combining solids
-- **Operation identity (#1055):** `Document::boolean_ops` and `Document::move_ops` are
-  `arena::Arena`s, keyed by `BooleanOpKey` and `MoveOpKey` — what `BodySource::Boolean` /
-  `BodySource::Moved`, `SceneElement::BooleanOp` / `MoveOp` and their `ComponentMember`
-  variants hold. Deleting one removes it. The rule that an operation may not consume its own
-  result used to be spelled as an index comparison ("a later op"); it is now the descendant
-  walk it always meant — the input must not be one of the op's outputs, nor anything built
-  from them.
+- **Operation identity (#1055):** every body operation lives in an `arena::Arena` —
+  `boolean_ops`, `move_ops`, `mirror_ops`, `repeat_ops`, `slice_ops`,
+  `edge_treatment_ops` — keyed by `BooleanOpKey`, `MoveOpKey`, `MirrorOpKey`,
+  `RepeatOpKey`, `SliceOpKey`, `EdgeTreatmentOpKey`. Those are what the matching
+  `BodySource` variant, `SceneElement`, `HierarchyNode` and `ComponentMember` hold, plus
+  `RepeatPlaneInstance::op` and `ExtrudeTarget::RepeatedFace`. Deleting an operation removes
+  it. The rule that an operation may not consume its own result used to be spelled as an
+  index comparison ("a later op"); it is now the descendant walk it always meant — the input
+  must not be one of the op's outputs, nor anything built from them.
 - **Body identity (#1055):** `Document::bodies` is an `arena::Arena`, and a body is named by a
   `BodyKey` everywhere it is referred to — every operation's `targets`/`a`/`b`/`outputs`,
   `SceneElement::Body` and the mesh-keyed sub-elements (`BodyEdge`, `BodyVertex`, `BodyFace`,

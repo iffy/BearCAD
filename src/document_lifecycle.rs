@@ -109,14 +109,8 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sketch_slice_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
-        SceneElement::SliceOp(index) => doc
-            .slice_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
-        SceneElement::EdgeTreatmentOp(index) => doc
-            .edge_treatment_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
+        SceneElement::SliceOp(index) => doc.slice_ops.contains(index),
+        SceneElement::EdgeTreatmentOp(index) => doc.edge_treatment_ops.contains(index),
         SceneElement::Revolution(index) => doc.revolutions.contains(index),
         SceneElement::Shape(index) => doc.primitives.contains(index),
         SceneElement::SweepOp(index) => doc.sweeps.contains(index),
@@ -484,51 +478,37 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::SliceOp(index) => {
             // Deleting the operation removes its fragments and releases its inputs from
             // shadow (unless another live operation still consumes them).
-            if let Some(op) = doc.slice_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let op = doc.slice_ops[index].clone();
-                    for &out in &op.outputs {
-                        doc.bodies.remove(out);
-                    }
-                    for &input in &op.targets {
-                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, Some(index), None)
-                        {
-                            if let Some(body) = doc.bodies.get_mut(input) {
-                                body.shadow = false;
-                            }
+            if let Some(op) = doc.slice_ops.remove(index) {
+                for &out in &op.outputs {
+                    doc.bodies.remove(out);
+                }
+                for &input in &op.targets {
+                    if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, None, None)
+                    {
+                        if let Some(body) = doc.bodies.get_mut(input) {
+                            body.shadow = false;
                         }
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         SceneElement::EdgeTreatmentOp(index) => {
             // Deleting the chamfer/fillet removes its beveled outputs and releases its input
             // bodies from shadow (unless another live operation still consumes them) (#531).
-            if let Some(op) = doc.edge_treatment_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let op = doc.edge_treatment_ops[index].clone();
-                    for &out in &op.outputs {
-                        doc.bodies.remove(out);
-                    }
-                    for &input in &op.targets {
-                        if !crate::model::body_shadowed_by_other_ops(
-                            doc,
-                            input,
-                            None,
-                            None,
-                            None,
-                            Some(index),
-                        ) {
-                            if let Some(body) = doc.bodies.get_mut(input) {
-                                body.shadow = false;
-                            }
+            if let Some(op) = doc.edge_treatment_ops.remove(index) {
+                for &out in &op.outputs {
+                    doc.bodies.remove(out);
+                }
+                for &input in &op.targets {
+                    if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, None, None)
+                    {
+                        if let Some(body) = doc.bodies.get_mut(input) {
+                            body.shadow = false;
                         }
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         SceneElement::Revolution(index) => {

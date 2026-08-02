@@ -1099,8 +1099,8 @@ fn edge_treatment_count(app: &AppState, kind: VertexTreatmentKind) -> usize {
     let ops: usize = app
         .doc
         .edge_treatment_ops
-        .iter()
-        .filter(|o| !o.deleted && o.kind == kind)
+        .values()
+        .filter(|o| o.kind == kind)
         .map(|o| o.edges.len())
         .sum();
     let legacy = app

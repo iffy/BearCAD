@@ -61,10 +61,10 @@ pub enum HierarchyNode {
     /// A sketch text element (#282/#286); nests under its sketch like a line.
     SketchText(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
-    SliceOp(usize),
+    SliceOp(crate::model::SliceOpKey),
     /// An edge chamfer/fillet operation on bodies (#531); its beveled output bodies nest under
     /// it and its input bodies + treated edges feed it as graph inputs.
-    EdgeTreatmentOp(usize),
+    EdgeTreatmentOp(crate::model::EdgeTreatmentOpKey),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
     Revolution(crate::model::RevolutionKey),
     /// A primitive shape (Create Shape tool, #909); its body nests under it.
@@ -201,9 +201,9 @@ pub enum SceneElement {
     /// A sketch text element (#282): selecting it selects the whole text.
     SketchText(usize),
     /// A slice operation on bodies (Slice tool).
-    SliceOp(usize),
+    SliceOp(crate::model::SliceOpKey),
     /// An edge chamfer/fillet operation on bodies (#531).
-    EdgeTreatmentOp(usize),
+    EdgeTreatmentOp(crate::model::EdgeTreatmentOpKey),
     /// A revolved solid (Revolve tool, #211).
     Revolution(crate::model::RevolutionKey),
     /// A primitive shape placed straight into 3D (Create Shape tool, #909).
@@ -969,20 +969,14 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((HierarchyNode::Body(bi), HierarchyNode::MirrorOp(oi)));
         }
     }
-    for (oi, op) in doc.slice_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.slice_ops.iter() {
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::SliceOp(oi)));
         }
     }
     // An edge-treatment op consumes the input bodies whose edges it bevels (#531). The treated
     // edges themselves have no persistent node, so the body carries the dependency.
-    for (oi, op) in doc.edge_treatment_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.edge_treatment_ops.iter() {
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::EdgeTreatmentOp(oi)));
         }
@@ -1039,10 +1033,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A slice's cutters feed it (#449): construction planes have a node; body faces don't.
-    for (oi, op) in doc.slice_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.slice_ops.iter() {
         for cutter in &op.cutters {
             if let FaceId::ConstructionPlane(pi) = cutter {
                 edges.push((HierarchyNode::ConstructionPlane(*pi), HierarchyNode::SliceOp(oi)));
@@ -2045,10 +2036,7 @@ pub fn build_hierarchy(
     }
     // Slice operations (Slice tool): the operation is its own element, with its fragment
     // bodies nested beneath it.
-    for (oi, op) in doc.slice_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.slice_ops.iter() {
         let children = op
             .outputs
             .iter()
@@ -2065,10 +2053,7 @@ pub fn build_hierarchy(
     }
     // Edge chamfer/fillet operations (#531): the operation is its own element, with its beveled
     // output bodies nested beneath it (the shadowed input bodies stay listed, dimmed).
-    for (oi, op) in doc.edge_treatment_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.edge_treatment_ops.iter() {
         let children = op
             .outputs
             .iter()
@@ -3811,7 +3796,7 @@ pub fn show_pane(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
-    on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_edit_drawing: &mut impl FnMut(usize),
@@ -4267,7 +4252,7 @@ fn show_graph_view(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
-    on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
@@ -4889,7 +4874,7 @@ fn show_row(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
-    on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_edit_drawing: &mut impl FnMut(usize),
@@ -5342,7 +5327,7 @@ fn element_context_menu(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
@@ -5513,6 +5498,8 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::slice_op_key_for_slot as slckey;
+    use crate::model::edge_treatment_op_key_for_slot as etkey;
     use crate::model::repeat_op_key_for_slot as repkey;
     use crate::model::mirror_op_key_for_slot as mirkey;
     use crate::model::move_op_key_for_slot as mopkey;
@@ -5534,8 +5521,8 @@ mod tests {
             CM::MoveOp(mopkey(1)),
             CM::MirrorOp(mirkey(1)),
             CM::RepeatOp(repkey(1)),
-            CM::SliceOp(1),
-            CM::EdgeTreatmentOp(1),
+            CM::SliceOp(slckey(1)),
+            CM::EdgeTreatmentOp(etkey(1)),
             CM::Revolution(crate::arena::Key::from_bits(1)),
             CM::Sweep(crate::arena::Key::from_bits(1)),
         ];
