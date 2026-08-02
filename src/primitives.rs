@@ -269,14 +269,16 @@ pub fn sphere_mesh(center: Vec3, radius: f32) -> SolidMesh {
 /// which gives `X` for a `+Z` face, matching the ground.
 pub fn plane_u_axis(normal: Vec3) -> Vec3 {
     let n = normal.normalize_or_zero();
+    // Fixed preference — X, then Y, then Z — taking the first that is not near-parallel to the
+    // normal, rather than the *least* aligned of the three. Picking the minimum ties whenever
+    // two axes are both perpendicular, which is exactly the case for a lateral face (its
+    // normal is one axis, leaving the other two tied at zero). A mesh normal carries float
+    // noise, so the tie broke differently between frames and the ghost visibly swapped which
+    // corner it hung from (#1052). A threshold this loose cannot be crossed by that noise.
+    const NEAR_PARALLEL: f32 = 0.9;
     let reference = [Vec3::X, Vec3::Y, Vec3::Z]
         .into_iter()
-        .min_by(|a, b| {
-            n.dot(*a)
-                .abs()
-                .partial_cmp(&n.dot(*b).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .find(|axis| n.dot(*axis).abs() < NEAR_PARALLEL)
         .unwrap_or(Vec3::X);
     let u = (reference - n * reference.dot(n)).normalize_or_zero();
     if u.length_squared() < 0.5 {
@@ -363,6 +365,31 @@ mod tests {
         assert!((plane_u_axis(Vec3::Z) - Vec3::X).length() < 1e-5);
         // Upside down is still a horizontal plane.
         assert!((plane_u_axis(-Vec3::Z) - Vec3::X).length() < 1e-5);
+    }
+
+    /// #1052: the axis must not flip under the float noise a mesh normal carries. A lateral
+    /// face's normal is one world axis, leaving the other two exactly perpendicular — a
+    /// "least aligned" rule ties there, and the tie broke differently frame to frame, so the
+    /// preview cuboid kept swapping which corner it hung from.
+    #[test]
+    fn the_plane_axis_does_not_flip_under_normal_noise() {
+        for face in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z] {
+            let clean = plane_u_axis(face);
+            // Noise far larger than a tessellated normal's, in every direction.
+            for jitter in [
+                Vec3::new(1e-6, -2e-6, 3e-6),
+                Vec3::new(-4e-5, 5e-5, -6e-5),
+                Vec3::new(7e-4, 8e-4, -9e-4),
+                Vec3::new(-1e-3, 1e-3, 1e-3),
+            ] {
+                let noisy = plane_u_axis((face + jitter).normalize());
+                assert!(
+                    (noisy - clean).length() < 1e-2,
+                    "{face} gave {clean} but {} gave {noisy}",
+                    face + jitter
+                );
+            }
+        }
     }
 
     /// #1050: the axis stays in the plane, stays unit length, and is stable for any normal —
