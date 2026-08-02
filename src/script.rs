@@ -5273,7 +5273,21 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetBodyMaterial { body, material } => {
-                let result = state.apply(Action::SetBodyMaterial { body, material });
+                // A script names a material by its **ordinal** among the live ones (#1055):
+                // keys are not something you can write by hand, and every example and doc
+                // page says `material = 0`. Resolved here, at the boundary.
+                let key = match material {
+                    Some(ordinal) => match state.doc.materials.keys().nth(ordinal) {
+                        Some(key) => Some(key),
+                        None => {
+                            self.last_action_error =
+                                Some(format!("Unknown material {ordinal}"));
+                            return StepResult::Continue;
+                        }
+                    },
+                    None => None,
+                };
+                let result = state.apply(Action::SetBodyMaterial { body, material: key });
                 self.record_action_error(result);
                 StepResult::Continue
             }

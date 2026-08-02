@@ -1061,20 +1061,20 @@ pub struct MaterialControl {
     pub bodies: Vec<usize>,
     /// The material they all share; `None` when they disagree. `Some(None)` is the default
     /// material — no material assigned.
-    pub current: Option<Option<usize>>,
-    /// Every live material: index, name, colour.
-    pub materials: Vec<(usize, String, [u8; 3])>,
+    pub current: Option<Option<crate::model::MaterialKey>>,
+    /// Every live material: key, name, colour.
+    pub materials: Vec<(crate::model::MaterialKey, String, [u8; 3])>,
 }
 
 /// One edit from the material picker (#834).
 #[derive(Clone, Debug, PartialEq)]
 pub enum MaterialEdit {
     /// Assign this material (or the default, with `None`) to the selected bodies.
-    Assign(Option<usize>),
+    Assign(Option<crate::model::MaterialKey>),
     /// Create a material and give it to the selected bodies.
     New,
-    Rename(usize, String),
-    Recolor(usize, [u8; 3]),
+    Rename(crate::model::MaterialKey, String),
+    Recolor(crate::model::MaterialKey, [u8; 3]),
 }
 
 /// NOTE (#52 scope): this control only reads/writes the stored default-unit choice. It
@@ -3070,13 +3070,8 @@ fn material_control_from_selection(
     let material_of = |bi: &usize| {
         doc.bodies[*bi]
             .material
-            .filter(|mi| doc.materials.get(*mi).is_some_and(|m| !m.deleted))
-            .or_else(|| {
-                doc.materials
-                    .get(crate::model::DEFAULT_MATERIAL)
-                    .filter(|m| !m.deleted)
-                    .map(|_| crate::model::DEFAULT_MATERIAL)
-            })
+            .filter(|mi| doc.materials.contains(*mi))
+            .or_else(|| doc.default_material())
     };
     let first = material_of(&bodies[0]);
     let agreed = bodies.iter().all(|bi| material_of(bi) == first);
@@ -3084,9 +3079,7 @@ fn material_control_from_selection(
         materials: doc
             .materials
             .iter()
-            .enumerate()
-            .filter(|(_, m)| !m.deleted)
-            .map(|(i, m)| (i, m.name.clone(), m.color))
+            .map(|(k, m)| (k, m.name.clone(), m.color))
             .collect(),
         current: agreed.then_some(first),
         bodies,
@@ -8073,12 +8066,10 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let mut doc = Document::default();
         // The document already carries the default palette (#928); Brass lands after it.
-        let brass = doc.materials.len();
-        doc.materials.push(crate::model::Material {
-            name: "Brass".to_string(),
-            color: [1, 2, 3],
-            deleted: false,
-        });
+        let brass = doc
+            .materials
+            .insert(crate::model::Material { name: "Brass".to_string(), color: [1, 2, 3] });
+        let unobtainium = doc.default_material().expect("the seeded palette");
         for material in [Some(brass), None] {
             doc.bodies.push(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(0),
@@ -8101,8 +8092,8 @@ mod tests {
             Some(&(brass, "Brass".to_string(), [1, 2, 3]))
         );
         assert_eq!(
-            control.materials.first().map(|(i, n, _)| (*i, n.clone())),
-            Some((0, "Unobtainium".to_string())),
+            control.materials.first().map(|(k, n, _)| (*k, n.clone())),
+            Some((unobtainium, "Unobtainium".to_string())),
             "the whole palette is offered (#928)"
         );
 
@@ -8117,7 +8108,7 @@ mod tests {
         let mut lone = SceneSelection::default();
         lone.insert(SceneElement::Body(1));
         let control = context_pane_content(&input(&doc, &lone)).material.unwrap();
-        assert_eq!(control.current, Some(Some(crate::model::DEFAULT_MATERIAL)));
+        assert_eq!(control.current, Some(Some(unobtainium)));
 
         // A non-body in the selection takes the picker away.
         selection.insert(SceneElement::Line(0));

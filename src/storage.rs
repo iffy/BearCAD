@@ -241,7 +241,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
-    save_indexed_nodes(&tx, &mut row_id, "material", &doc.materials)?;
+    save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
     save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
@@ -580,7 +580,7 @@ pub fn open(path: &str) -> Result<Document> {
     let extrusions = load_indexed_entities(&conn, "extrusion")?;
     let bodies = load_indexed_entities(&conn, "body")?;
     // Materials (#834) — empty for files saved before they existed.
-    let materials = load_indexed_entities(&conn, "material")?;
+    let materials = load_arena_entities(&conn, "material")?;
     let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
     let lofts = load_arena_entities(&conn, "loft")?;
@@ -1158,14 +1158,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.materials.push(crate::model::Material {
+        // A material removed before the save: the file must not renumber Brass onto its
+        // slot, and the key the body holds has to keep meaning Brass (#1055).
+        let doomed = doc.materials.insert(crate::model::Material {
+            name: "Doomed".to_string(),
+            color: [0, 0, 0],
+        });
+        doc.materials.remove(doomed);
+        let brass = doc.materials.insert(crate::model::Material {
             name: "Brass".to_string(),
             color: [0xc8, 0x8a, 0x4a],
-            deleted: false,
         });
         doc.bodies.push(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
-            material: Some(0),
+            material: Some(brass),
             name: None,
             deleted: false,
             shadow: false,
@@ -1181,7 +1187,9 @@ mod tests {
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.materials, doc.materials);
-        assert_eq!(loaded.bodies[0].material, Some(0));
+        assert_eq!(loaded.bodies[0].material, Some(brass));
+        assert_eq!(loaded.materials[brass].name, "Brass");
+        assert_eq!(loaded.materials.get(doomed), None, "and it stays removed");
         assert_eq!(loaded.bodies[1].material, None);
 
         std::fs::remove_file(&path).unwrap();

@@ -1577,10 +1577,10 @@ pub struct Body {
     pub source: BodySource,
     #[serde(default)]
     pub name: Option<String>,
-    /// The material this body is made of (#834), indexing [`Document::materials`]. `None` is
-    /// the document's default material — the look every body has always had.
+    /// The material this body is made of (#834), a key into [`Document::materials`]. `None`
+    /// is the document's default material — the look every body has always had.
     #[serde(default)]
-    pub material: Option<usize>,
+    pub material: Option<MaterialKey>,
     #[serde(default)]
     pub deleted: bool,
     /// A consumed boolean-operation input (Combine tool): still listed in the Elements
@@ -1590,6 +1590,10 @@ pub struct Body {
     pub shadow: bool,
 }
 
+/// How a body names its material (#1055): a key, so removing a material never renames
+/// another one's colour onto a body that was never made of it.
+pub type MaterialKey = crate::arena::Key<Material>;
+
 /// A material a body can be made of (#834): a name and the colour it renders in. Documents
 /// start with none — a body with no material renders in the default body colour.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1597,8 +1601,6 @@ pub struct Material {
     pub name: String,
     /// Rendered colour, sRGB.
     pub color: [u8; 3],
-    #[serde(default)]
-    pub deleted: bool,
 }
 
 impl Material {
@@ -1642,22 +1644,23 @@ impl Material {
     ];
 
     /// The materials a fresh document is seeded with (#928).
-    pub fn defaults() -> Vec<Material> {
+    pub fn defaults() -> crate::arena::Arena<Material> {
         Self::DEFAULTS
             .iter()
-            .map(|(name, color)| Material {
-                name: (*name).to_string(),
-                color: *color,
-                deleted: false,
-            })
+            .map(|(name, color)| Material { name: (*name).to_string(), color: *color })
             .collect()
     }
 }
 
-/// What a body with no material of its own is made of (#924): the first material, which a
-/// fresh document seeds as **Unobtainium**. Older files (and any body whose material was
-/// cleared) fall back to it rather than to a colour with no entry behind it.
-pub const DEFAULT_MATERIAL: usize = 0;
+impl Document {
+    /// What a body with no material of its own is made of (#924): the document's first
+    /// material, which a fresh document seeds as **Unobtainium**. Older files (and any body
+    /// whose material was cleared) fall back to it rather than to a colour with no entry
+    /// behind it. `None` only when a document has no materials at all.
+    pub fn default_material(&self) -> Option<MaterialKey> {
+        self.materials.keys().next()
+    }
+}
 
 #[cfg(test)]
 mod material_tests {
@@ -1668,8 +1671,9 @@ mod material_tests {
     /// materials made one after the other never look alike.
     #[test]
     fn default_materials_lead_with_unobtainium_and_contrast() {
-        let defaults = Material::defaults();
-        assert_eq!(defaults.len(), Material::DEFAULTS.len());
+        let arena = Material::defaults();
+        assert_eq!(arena.len(), Material::DEFAULTS.len());
+        let defaults: Vec<&Material> = arena.values().collect();
         assert_eq!(defaults[0].name, "Unobtainium");
         assert_eq!(defaults[0].color, [150, 168, 196], "the old default body colour");
         assert_eq!(
@@ -3915,7 +3919,7 @@ pub struct Document {
     /// Materials bodies can be made of (#834). A body with no material renders in the
     /// document's default body colour.
     #[serde(default)]
-    pub materials: Vec<Material>,
+    pub materials: crate::arena::Arena<Material>,
     #[serde(default)]
     pub imported_meshes: Vec<ImportedMesh>,
     /// Reference images imported for tracing (#163/#169).

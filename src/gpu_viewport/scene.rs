@@ -115,9 +115,8 @@ pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
 /// document), and falls back to [`SOLID_FILL`] only when there isn't one.
 pub fn body_material_fill(doc: &crate::model::Document, body: &crate::model::Body) -> Color32 {
     body.material
-        .or(Some(crate::model::DEFAULT_MATERIAL))
         .and_then(|mi| doc.materials.get(mi))
-        .filter(|m| !m.deleted)
+        .or_else(|| doc.default_material().and_then(|mi| doc.materials.get(mi)))
         .map(|m| Color32::from_rgb(m.color[0], m.color[1], m.color[2]))
         .unwrap_or(SOLID_FILL)
 }

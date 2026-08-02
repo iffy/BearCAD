@@ -1233,10 +1233,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 #### 3.4.4 Materials (#834)
 - A **material** (`model::Material`) is a name plus a rendered colour, living in
-  `Document::materials`. Every body carries `Body::material: Option<usize>`; `None` means the
-  **first material** (`model::DEFAULT_MATERIAL`), which every document seeds as
-  **Unobtainium** (#924/#925) — coloured exactly like the neutral body grey bodies rendered in
-  before materials existed, so nothing looks different until another is picked. A body renders
+  `Document::materials`, an `arena::Arena` (#1055). Every body carries
+  `Body::material: Option<MaterialKey>`; `None` means the **first material**
+  (`Document::default_material`), which every document seeds as **Unobtainium** (#924/#925)
+  — coloured exactly like the neutral body grey bodies rendered in before materials existed,
+  so nothing looks different until another is picked. A body renders
   in its material's colour (`gpu_viewport::scene::body_material_fill`); selection and hover
   colours still win over it.
 - **Seeded palette (#927/#928):** a new document already holds `Material::DEFAULTS` — the whole
@@ -1260,9 +1261,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   so its extrusion starts on the default.
 - Actions: `AddMaterial { name?, color?, bodies }`, `SetBodyMaterial { body, material }`,
   `SetMaterialName`, `SetMaterialColor` — each one undoable like any other edit. Persisted as
-  `material` DAG nodes.
+  `material` DAG nodes carrying their key (`save_arena_nodes`).
 - Scripting: `bearcad.material{ name?, color? = "#rrggbb", bodies? = {..} }` and
-  `bearcad.set_material{ body, material }` (`material = nil` for the default).
+  `bearcad.set_material{ body, material }` (`material = nil` for the default). A script names
+  a material by its **ordinal** among the live ones — keys are not something you write by
+  hand — resolved to a key at the script boundary (#1055).
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two real element pickers
   (#955) — **Targets** (bodies, multi-select, refusing one already consumed by another

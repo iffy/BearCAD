@@ -1729,14 +1729,14 @@ pub enum Action {
     /// Assign (or clear, with `None`) a body's material (#834).
     SetBodyMaterial {
         body: usize,
-        material: Option<usize>,
+        material: Option<crate::model::MaterialKey>,
     },
     SetMaterialName {
-        material: usize,
+        material: crate::model::MaterialKey,
         name: String,
     },
     SetMaterialColor {
-        material: usize,
+        material: crate::model::MaterialKey,
         color: [u8; 3],
     },
     ToggleElementVisibility(SceneElement),
@@ -4610,7 +4610,7 @@ impl AppState {
     /// The material a new body from extrusion `ei` should start as (#926): whatever the
     /// body its sketch sits on is made of. `None` when the sketch is on a plane or a
     /// profile — there's no source body to inherit from.
-    fn extrusion_source_material(&self, ei: usize) -> Option<usize> {
+    fn extrusion_source_material(&self, ei: usize) -> Option<crate::model::MaterialKey> {
         let extrusion = self.doc.extrusions.get(ei)?;
         let face = self.doc.sketch_face(extrusion.sketch)?;
         let bi = crate::model::body_index_for_face(&self.doc, &face)?;
@@ -13057,31 +13057,29 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::AddMaterial { name, color, bodies } => {
-                let index = self.doc.materials.len();
-                let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
-                    format!("Material {}", self.doc.materials.iter().filter(|m| !m.deleted).count() + 1)
-                });
+                let count = self.doc.materials.len();
+                let name = name
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| format!("Material {}", count + 1));
                 if self
                     .doc
                     .materials
-                    .iter()
-                    .any(|m| !m.deleted && m.name.eq_ignore_ascii_case(name.trim()))
+                    .values()
+                    .any(|m| m.name.eq_ignore_ascii_case(name.trim()))
                 {
                     let e = format!("A material named '{name}' already exists");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let color = color.unwrap_or(
-                    crate::model::Material::NEW_COLORS[index % crate::model::Material::NEW_COLORS.len()],
-                );
-                self.doc.materials.push(crate::model::Material {
-                    name: name.clone(),
-                    color,
-                    deleted: false,
-                });
+                let palette = crate::model::Material::NEW_COLORS;
+                let color = color.unwrap_or(palette[count % palette.len()]);
+                let key = self
+                    .doc
+                    .materials
+                    .insert(crate::model::Material { name: name.clone(), color });
                 for bi in &bodies {
                     if let Some(body) = self.doc.bodies.get_mut(*bi).filter(|b| !b.deleted) {
-                        body.material = Some(index);
+                        body.material = Some(key);
                     }
                 }
                 self.status = format!("Added material '{name}'");
@@ -13089,8 +13087,8 @@ label_hidden: false,
             }
             Action::SetBodyMaterial { body, material } => {
                 if let Some(mi) = material {
-                    if !self.doc.materials.get(mi).is_some_and(|m| !m.deleted) {
-                        return ActionResult::Err(format!("Unknown material {mi}"));
+                    if !self.doc.materials.contains(mi) {
+                        return ActionResult::Err(format!("Unknown material {mi:?}"));
                     }
                 }
                 let Some(b) = self.doc.bodies.get_mut(body).filter(|b| !b.deleted) else {
@@ -13109,22 +13107,25 @@ label_hidden: false,
                 if trimmed.is_empty() {
                     return ActionResult::Err("A material needs a name".to_string());
                 }
-                if self.doc.materials.iter().enumerate().any(|(i, m)| {
-                    i != material && !m.deleted && m.name.eq_ignore_ascii_case(&trimmed)
-                }) {
+                if self
+                    .doc
+                    .materials
+                    .iter()
+                    .any(|(k, m)| k != material && m.name.eq_ignore_ascii_case(&trimmed))
+                {
                     let e = format!("A material named '{trimmed}' already exists");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let Some(m) = self.doc.materials.get_mut(material).filter(|m| !m.deleted) else {
-                    return ActionResult::Err(format!("Unknown material {material}"));
+                let Some(m) = self.doc.materials.get_mut(material) else {
+                    return ActionResult::Err(format!("Unknown material {material:?}"));
                 };
                 m.name = trimmed;
                 ActionResult::Ok
             }
             Action::SetMaterialColor { material, color } => {
-                let Some(m) = self.doc.materials.get_mut(material).filter(|m| !m.deleted) else {
-                    return ActionResult::Err(format!("Unknown material {material}"));
+                let Some(m) = self.doc.materials.get_mut(material) else {
+                    return ActionResult::Err(format!("Unknown material {material:?}"));
                 };
                 m.color = color;
                 ActionResult::Ok
@@ -19487,7 +19488,8 @@ mod tests {
         let mut state = two_box_state(false);
         // #925/#928: a document starts with the whole default palette, Unobtainium first.
         let seeded = state.doc.materials.len();
-        assert_eq!(state.doc.materials[0].name, "Unobtainium");
+        let unobtainium = state.doc.default_material().expect("a seeded palette");
+        assert_eq!(state.doc.materials[unobtainium].name, "Unobtainium");
         // A body carries no material of its own until one is picked; that reads as the
         // document's first material — Unobtainium (#924).
         assert_eq!(state.doc.bodies[0].material, None);
@@ -19497,23 +19499,24 @@ mod tests {
             color: Some([0x10, 0x20, 0x30]),
             bodies: vec![0],
         });
-        let brass = seeded;
+        let brass = state.doc.bodies[0].material.expect("Brass was handed to it");
         assert_eq!(state.doc.materials.len(), seeded + 1);
         assert_eq!(state.doc.materials[brass].name, "Brass");
-        assert_eq!(state.doc.bodies[0].material, Some(brass));
         assert_eq!(state.doc.bodies[1].material, None, "only the listed bodies get it");
 
         // A second material gets the next palette colour and its own name by default.
         state.apply(Action::AddMaterial { name: None, color: None, bodies: vec![1] });
-        assert_ne!(
-            state.doc.materials[brass + 1].color,
-            state.doc.materials[brass].color
-        );
+        let second = state.doc.bodies[1].material.expect("and this one to the other body");
+        assert_ne!(state.doc.materials[second].color, state.doc.materials[brass].color);
 
         state.apply(Action::SetBodyMaterial { body: 1, material: Some(brass) });
         assert_eq!(state.doc.bodies[1].material, Some(brass));
-        state.apply(Action::SetBodyMaterial { body: 1, material: Some(0) });
-        assert_eq!(state.doc.bodies[1].material, Some(0), "back to Unobtainium");
+        state.apply(Action::SetBodyMaterial { body: 1, material: Some(unobtainium) });
+        assert_eq!(
+            state.doc.bodies[1].material,
+            Some(unobtainium),
+            "back to Unobtainium"
+        );
         state.apply(Action::SetBodyMaterial { body: 1, material: None });
         assert_eq!(state.doc.bodies[1].material, None, "and clearing it reads the same");
 
@@ -19540,11 +19543,21 @@ mod tests {
             }),
             ActionResult::Err(_)
         ));
+        let first = state.doc.default_material().expect("a seeded palette");
         assert!(matches!(
-            state.apply(Action::SetMaterialName { material: 0, name: "  ".to_string() }),
+            state.apply(Action::SetMaterialName { material: first, name: "  ".to_string() }),
             ActionResult::Err(_)
         ));
-        let unknown = state.doc.materials.len() + 5;
+        // A key to a material that was removed: absent, not whatever took the slot (#1055).
+        let unknown = {
+            let mut doc = state.doc.clone();
+            let key = doc.materials.insert(crate::model::Material {
+                name: "Gone".to_string(),
+                color: [0, 0, 0],
+            });
+            doc.materials.remove(key);
+            key
+        };
         assert!(matches!(
             state.apply(Action::SetBodyMaterial { body: 0, material: Some(unknown) }),
             ActionResult::Err(_)

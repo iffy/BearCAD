@@ -29812,12 +29812,9 @@ mod tests {
     #[test]
     fn a_loupe_paints_a_body_in_its_own_material() {
         let mut doc = model::Document::default();
-        let pink = doc.materials.len();
-        doc.materials.push(model::Material {
-            name: "Pink".to_string(),
-            color: [230, 120, 170],
-            deleted: false,
-        });
+        let pink = doc
+            .materials
+            .insert(model::Material { name: "Pink".to_string(), color: [230, 120, 170] });
         doc.bodies.push(model::Body {
             source: model::BodySource::Extrusion(0),
             material: Some(pink),

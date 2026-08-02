@@ -6174,9 +6174,10 @@ mod tests {
         // after it.
         let seeded = crate::model::Material::DEFAULTS.len();
         assert_eq!(state.doc.materials.len(), seeded + 2);
-        assert_eq!(state.doc.materials[seeded].name, "Brass");
-        assert_eq!(state.doc.materials[seeded].color, [0xc8, 0x8a, 0x4a]);
-        assert_eq!(state.doc.bodies[0].material, Some(seeded), "Brass was handed to it");
+        let brass = state.doc.materials.keys().nth(seeded).expect("Brass");
+        assert_eq!(state.doc.materials[brass].name, "Brass");
+        assert_eq!(state.doc.materials[brass].color, [0xc8, 0x8a, 0x4a]);
+        assert_eq!(state.doc.bodies[0].material, Some(brass), "Brass was handed to it");
 
         let state = run_lua(&format!(
             r##"
@@ -6189,11 +6190,10 @@ mod tests {
         "##,
             seeded + 1
         ));
-        assert_eq!(
-            state.doc.bodies[0].material,
-            Some(seeded + 1),
-            "reassigned to Steel"
-        );
+        // A script names a material by its ordinal among the live ones; the boundary
+        // resolves that to the key the body actually holds (#1055).
+        let steel = state.doc.materials.keys().nth(seeded + 1).expect("Steel");
+        assert_eq!(state.doc.bodies[0].material, Some(steel), "reassigned to Steel");
     }
 
     #[test]
@@ -8069,7 +8069,12 @@ mod tests {
             bearcad.extrude{ circle = 0, distance = 6 }
         "##,
         );
-        let brass = crate::model::Material::DEFAULTS.len();
+        let brass = state
+            .doc
+            .materials
+            .keys()
+            .nth(crate::model::Material::DEFAULTS.len())
+            .expect("Brass");
         assert_eq!(state.doc.bodies[0].material, Some(brass));
         assert_eq!(
             state.doc.bodies.get(1).and_then(|b| b.material),
