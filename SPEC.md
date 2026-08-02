@@ -1926,9 +1926,13 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   with a segmented icon button group (New body / Add to touching / Cut, the same icons the
   Extrude "into" picker uses) (#261); cut targets are clicked in the viewport and listed in
   the context pane's generic selection picker. Data model: `Revolution { sketch, faces, axis, angle_deg, symmetric, mode }` in
-  `Document::revolutions` with `RevolveMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
-  add/cut relationships live on the revolution (bodies consult `revolutions_targeting` at
-  mesh/kernel build time), and a NewBody revolve gets `BodySource::Revolve`. One
+  `Document::revolutions`, an `arena::Arena` (#1055), with
+  `RevolveMode::{NewBody, AddTo(bodies), Cut(bodies)}`; a revolve is named by a
+  `RevolutionKey` — by `BodySource::Revolve`, by `FaceId::RevolveCap`/`RevolveSide` for a
+  sketch hosted on one of its flat faces, and by its component membership — and deleting one
+  removes it. Add/cut relationships live on the revolution (bodies consult
+  `revolutions_targeting` at mesh/kernel build time), and a NewBody revolve gets
+  `BodySource::Revolve`. One
   `ShapeKind::Revolution` undo marker covers the feature and its body. Kernel builds use
   `BRepPrimAPI_MakeRevol` (full revolutions via the no-angle constructor — the angle
   constructor normalizes mod 2π and would build a sliver from a float 2π) with symmetric

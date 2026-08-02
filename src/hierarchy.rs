@@ -66,7 +66,7 @@ pub enum HierarchyNode {
     /// it and its input bodies + treated edges feed it as graph inputs.
     EdgeTreatmentOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
-    Revolution(usize),
+    Revolution(crate::model::RevolutionKey),
     /// A primitive shape (Create Shape tool, #909); its body nests under it.
     Shape(usize),
     /// A sweep (Sweep tool); its output body nests under it.
@@ -205,7 +205,7 @@ pub enum SceneElement {
     /// An edge chamfer/fillet operation on bodies (#531).
     EdgeTreatmentOp(usize),
     /// A revolved solid (Revolve tool, #211).
-    Revolution(usize),
+    Revolution(crate::model::RevolutionKey),
     /// A primitive shape placed straight into 3D (Create Shape tool, #909).
     Shape(usize),
     /// A sweep (Sweep tool).
@@ -813,7 +813,7 @@ pub fn face_element(face: FaceId) -> SceneElement {
 pub fn face_owner_element(face: &FaceId) -> Option<SceneElement> {
     face.extrusion_index()
         .map(SceneElement::Extrusion)
-        .or_else(|| face.revolution_index().map(SceneElement::Revolution))
+        .or_else(|| face.revolution_key().map(SceneElement::Revolution))
 }
 
 /// A hierarchy entry with optional children (used to derive parent links).
@@ -1065,10 +1065,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A revolution is fed by its profile sketch, and by its axis line if any (#449).
-    for (ri, rev) in doc.revolutions.iter().enumerate() {
-        if rev.deleted {
-            continue;
-        }
+    for (ri, rev) in doc.revolutions.iter() {
         edges.push((HierarchyNode::Sketch(rev.sketch), HierarchyNode::Revolution(ri)));
         if let crate::model::RevolveAxis::Line(li) = rev.axis {
             edges.push((HierarchyNode::Line(li), HierarchyNode::Revolution(ri)));
@@ -2120,10 +2117,7 @@ pub fn build_hierarchy(
     }
     // Revolved solids (Revolve tool, #211): the operation is its own element, with its output
     // body (linked by `BodySource::Revolve`) nested beneath it.
-    for (oi, rev) in doc.revolutions.iter().enumerate() {
-        if rev.deleted {
-            continue;
-        }
+    for (oi, _rev) in doc.revolutions.iter() {
         let children = doc
             .bodies
             .iter()
@@ -5578,7 +5572,7 @@ mod tests {
             CM::RepeatOp(1),
             CM::SliceOp(1),
             CM::EdgeTreatmentOp(1),
-            CM::Revolution(1),
+            CM::Revolution(crate::arena::Key::from_bits(1)),
             CM::Sweep(1),
         ];
         for member in members {
@@ -5928,7 +5922,7 @@ mod tests {
             deleted: false,
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
-        doc.revolutions.push(crate::model::Revolution {
+        let rev = doc.revolutions.insert(crate::model::Revolution {
             sketch,
             faces: Vec::new(),
             axis: crate::model::RevolveAxis::Line(0),
@@ -5936,7 +5930,6 @@ mod tests {
             symmetric: false,
             mode: crate::model::RevolveMode::NewBody,
             name: None,
-            deleted: false,
         });
         let edges = graph_dependency_edges(&doc);
         assert!(edges.contains(&(HierarchyNode::Body(0), HierarchyNode::RepeatOp(0))));
@@ -5944,8 +5937,8 @@ mod tests {
             HierarchyNode::ConstructionPlane(0),
             HierarchyNode::RepeatOp(0)
         )));
-        assert!(edges.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::Revolution(0))));
-        assert!(edges.contains(&(HierarchyNode::Line(0), HierarchyNode::Revolution(0))));
+        assert!(edges.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::Revolution(rev))));
+        assert!(edges.contains(&(HierarchyNode::Line(0), HierarchyNode::Revolution(rev))));
     }
 
     /// #423: assigned roots nest under their component entry in the built hierarchy, and the
@@ -7565,7 +7558,7 @@ label_hidden: false,
     fn revolution_appears_in_the_tree_with_its_body(){
         use crate::model::{Body, BodySource, Revolution, RevolveAxis, RevolveMode};
         let mut doc = Document::default();
-        doc.revolutions.push(Revolution {
+        let rev_key = doc.revolutions.insert(Revolution {
             sketch: 0,
             faces: Vec::new(),
             axis: RevolveAxis::X,
@@ -7573,10 +7566,9 @@ label_hidden: false,
             symmetric: false,
             mode: RevolveMode::NewBody,
             name: None,
-            deleted: false,
         });
         doc.bodies.push(Body {
-            source: BodySource::Revolve(0),
+            source: BodySource::Revolve(rev_key),
             material: None,
             name: None,
             deleted: false,
@@ -7588,7 +7580,7 @@ label_hidden: false,
         let rev = root
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Revolution(0))
+            .find(|e| e.node == HierarchyNode::Revolution(rev_key))
             .expect("the revolution is a top-level element (#211)");
         assert!(
             rev.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
@@ -7602,8 +7594,8 @@ label_hidden: false,
         );
         // It maps to a selectable scene element.
         assert_eq!(
-            scene_element_for_node(HierarchyNode::Revolution(0)),
-            Some(SceneElement::Revolution(0))
+            scene_element_for_node(HierarchyNode::Revolution(rev_key)),
+            Some(SceneElement::Revolution(rev_key))
         );
     }
 }

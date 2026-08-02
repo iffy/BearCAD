@@ -366,7 +366,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let rev = doc
                 .revolutions
                 .get_mut(index)
-                .ok_or_else(|| format!("revolution {index} not found"))?;
+                .ok_or_else(|| format!("revolution {index:?} not found"))?;
             rev.name = stored;
         }
         SceneElement::Shape(index) => {
@@ -557,7 +557,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 _ => format!("Chamfer {i}"),
             }
         }
-        HierarchyNode::Revolution(i) => format!("Revolve {i}"),
+        HierarchyNode::Revolution(i) => format!("Revolve {}", i.index()),
         // A shape reads by what it is: "Cuboid 0", "Sphere 2" (#909).
         HierarchyNode::Shape(i) => match doc.primitives.get(i) {
             Some(shape) => format!("{} {i}", crate::names::primitive_kind_label(shape.kind)),
@@ -806,7 +806,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {i}"),
             _ => format!("Chamfer {i}"),
         },
-        SceneElement::Revolution(i) => format!("Revolve {i}"),
+        SceneElement::Revolution(i) => format!("Revolve {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {i}"),
         SceneElement::SweepOp(i) => format!("Sweep {i}"),
         SceneElement::Joint(i) => format!("Joint {i}"),

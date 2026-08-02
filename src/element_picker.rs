@@ -405,7 +405,7 @@ fn element_body(doc: &Document, element: &SceneElement) -> Option<usize> {
             .extrusion_index()
             .and_then(|e| crate::model::body_index_for_extrusion(doc, e))
             .or_else(|| {
-                face.revolution_index()
+                face.revolution_key()
                     .and_then(|r| crate::model::body_index_for_revolution(doc, r))
             }),
         SceneElement::ExtrusionEdge { extrusion, .. } => {

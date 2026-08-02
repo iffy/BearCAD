@@ -163,6 +163,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::Image(key) => {
             doc.tracing_images.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::Revolution(key) => {
+            doc.revolutions.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
@@ -182,7 +185,6 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
         | SceneElement::EdgeTreatmentOp(i)
-        | SceneElement::Revolution(i)
         | SceneElement::Shape(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i)
@@ -246,6 +248,9 @@ pub fn scene_element_from_kind(
         "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
         "image" | "tracing_image" => {
             Some(SceneElement::Image(doc.tracing_images.keys().nth(index)?))
+        }
+        "revolution" | "revolve" => {
+            Some(SceneElement::Revolution(doc.revolutions.keys().nth(index)?))
         }
         "joint" => Some(SceneElement::Joint(index)),
         "shape" | "primitive" => Some(SceneElement::Shape(index)),
@@ -370,14 +375,14 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     // there's no plain-element fallback for it.
     if kind.eq_ignore_ascii_case("face") {
         if table.get::<Option<bool>>("edge")?.unwrap_or(false) {
-            return Ok(SceneElement::FaceEdge(parse_constraint_line_table(table)?));
+            return Ok(SceneElement::FaceEdge(parse_constraint_line_table(lua, table)?));
         }
         return Ok(SceneElement::Point(parse_constraint_point_table(lua, table)?));
     }
     // A sketch origin axis (#189): `{ kind = "axis", axis = "x" | "y" }`, selectable so a
     // point can be constrained onto it.
     if kind.eq_ignore_ascii_case("axis") {
-        return Ok(SceneElement::FaceEdge(parse_constraint_line_table(table)?));
+        return Ok(SceneElement::FaceEdge(parse_constraint_line_table(lua, table)?));
     }
     // The origin (#189): `{ kind = "origin" }`.
     if kind.eq_ignore_ascii_case("origin") {
@@ -409,7 +414,7 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
 /// they can't go through the plain `(kind, index)` `FaceId::from_script` path; everything else
 /// does. Shared by `begin_sketch` and the `face` arms of `parse_constraint_point_table`/
 /// `parse_constraint_line_table` below (#26/#27's `FaceVertex`/`FaceEdge` from a script).
-fn parse_face_id_table(table: Table) -> mlua::Result<FaceId> {
+fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
         "extrude_cap" | "extrude_side" => {
@@ -464,7 +469,17 @@ fn parse_face_id_table(table: Table) -> mlua::Result<FaceId> {
         // partial sweep's start/end profile face (`end = bool`); `revolve_side` is the flat
         // washer face swept by one axis-perpendicular profile edge (`edge = i`).
         "revolve_cap" | "revolve_side" => {
-            let revolution: usize = table.get("revolution")?;
+            // The script's `revolution` is its ordinal among the live ones (#1055).
+            let ordinal: usize = table.get("revolution")?;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let revolution = unsafe { &tick.state().doc }
+                .revolutions
+                .keys()
+                .nth(ordinal)
+                .ok_or_else(|| mlua::Error::external(format!("no revolution {ordinal}")))?;
+            drop(tick);
             let profile_kind: String =
                 table.get("profile").or_else(|_| table.get("profile_kind"))?;
             let profile_index: usize = table
@@ -587,7 +602,7 @@ fn parse_extrude_target_table(
         let is_face_id_ref = face.get::<Option<String>>("kind")?.is_some()
             || face.get::<Option<String>>("type")?.is_some();
         if is_face_id_ref {
-            let face_id = parse_face_id_table(face)?;
+            let face_id = parse_face_id_table(lua, face)?;
             // A repeated instance's face (#452): `{ face = {...}, repeat_op = i,
             // instance = n }` targets the source face translated to instance `n`.
             if let Some(op) = table.get::<Option<usize>>("repeat_op")? {
@@ -614,14 +629,14 @@ fn parse_extrude_target_table(
     ))
 }
 
-fn parse_constraint_line_table(table: Table) -> mlua::Result<ConstraintLine> {
+fn parse_constraint_line_table(lua: &Lua, table: Table) -> mlua::Result<ConstraintLine> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     if kind.eq_ignore_ascii_case("face") {
         // { kind = "face", face = { kind = "extrude_cap", extrusion = 0, profile = "polygon",
         //   profile_lines = { 0, 1, 2, 3 }, top = true }, index = 2 } — edge `index` of that face's own
         // boundary loop (#26/#27's `FaceEdge`).
         let face_table: Table = table.get("face")?;
-        let face = parse_face_id_table(face_table)?;
+        let face = parse_face_id_table(lua, face_table)?;
         let index: usize = table.get("index")?;
         return Ok(ConstraintLine::FaceEdge { face, index });
     }
@@ -663,7 +678,7 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
         // { kind = "face", face = { ... }, index = 0 } — vertex `index` of that face's own
         // boundary loop (#26/#27's `FaceVertex`).
         let face_table: Table = table.get("face")?;
-        let face = parse_face_id_table(face_table)?;
+        let face = parse_face_id_table(lua, face_table)?;
         let index: usize = table.get("index")?;
         return Ok(ConstraintPoint::FaceVertex { face, index });
     }
@@ -1321,13 +1336,14 @@ fn parse_sketch_repeat_op_args(
 /// Parses `bearcad.slice{}`/`bearcad.edit_slice{}` arguments: the target body list, the
 /// planar cutters (face-spec tables), and the extend-to-infinity flag.
 fn parse_slice_op_args(
+    lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(Vec<usize>, Vec<FaceId>, bool)> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let mut cutters: Vec<FaceId> = Vec::new();
     if let Some(list) = opts.get::<Option<Vec<Table>>>("cutters")? {
         for table in list {
-            cutters.push(parse_face_id_table(table)?);
+            cutters.push(parse_face_id_table(lua, table)?);
         }
     }
     let extend_infinite: bool = opts.get::<Option<bool>>("extend")?.unwrap_or(true);
@@ -1350,10 +1366,11 @@ fn parse_sketch_mirror_op_args(
 
 /// Parse a `bearcad.mirror_bodies`/`edit_mirror` table into `(plane_face, bodies)` (#523).
 fn parse_mirror_op_args(
+    lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(FaceId, Vec<usize>, crate::model::MirrorMode)> {
     let plane_table: Table = opts.get("plane")?;
-    let plane = parse_face_id_table(plane_table)?;
+    let plane = parse_face_id_table(lua, plane_table)?;
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
     let mode = match opts.get::<Option<String>>("output")?.as_deref() {
@@ -1394,7 +1411,7 @@ fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget
         // an interactive pick, so a script only names the two things.
         "point_line" | "point_edge" => Ok(DistanceTarget::PointLineDistance {
             point: parse_constraint_point_table(lua, table.get("point")?)?,
-            line: parse_constraint_line_table(table.get("line")?)?,
+            line: parse_constraint_line_table(lua, table.get("line")?)?,
             side: crate::model::default_constraint_sign(),
         }),
         "point_point" | "points" => Ok(DistanceTarget::PointPointDistance {
@@ -1404,8 +1421,8 @@ fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget
             dir_v: 0.0,
         }),
         "line_line" | "lines" => Ok(DistanceTarget::LineLineDistance {
-            line_a: parse_constraint_line_table(table.get("a")?)?,
-            line_b: parse_constraint_line_table(table.get("b")?)?,
+            line_a: parse_constraint_line_table(lua, table.get("a")?)?,
+            line_b: parse_constraint_line_table(lua, table.get("b")?)?,
             side: crate::model::default_constraint_sign(),
         }),
         other => Err(mlua::Error::external(format!(
@@ -1939,7 +1956,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, args: MultiValue| {
             let args = args.into_vec();
             let face = if let Some(Value::Table(table)) = args.first() {
-                parse_face_id_table(table.clone())?
+                parse_face_id_table(lua, table.clone())?
             } else {
                 let kind = match args.first() {
                     Some(Value::String(s)) => s.to_str()?.to_string(),
@@ -2965,11 +2982,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
                 let (target, anchor_u, anchor_v, u, v) = match (anchor_u, anchor_v, u, v) {
                     (Some(anchor_u), Some(anchor_v), Some(u), Some(v)) => {
-                        (parse_constraint_line_table(first)?, anchor_u, anchor_v, u, v)
+                        (parse_constraint_line_table(lua, first)?, anchor_u, anchor_v, u, v)
                     }
                     _ => {
                         let line_table: Table = first.get("line")?;
-                        let target = parse_constraint_line_table(line_table)?;
+                        let target = parse_constraint_line_table(lua, line_table)?;
                         let du: Option<f32> = first.get("du")?;
                         let dv: Option<f32> = first.get("dv")?;
                         if du.is_none() && dv.is_none() {
@@ -4132,7 +4149,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let face_table: Table = opts
                 .get("face")
                 .map_err(|_| mlua::Error::external("extrude_face requires a `face` table"))?;
-            let face = parse_face_id_table(face_table)?;
+            let face = parse_face_id_table(lua, face_table)?;
             let target = match opts.get::<Option<Table>>("to")? {
                 Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
@@ -4670,7 +4687,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "mirror_bodies", &["plane", "bodies", "output", "name"])?;
-            let (plane, targets, mode) = parse_mirror_op_args(&opts)?;
+            let (plane, targets, mode) = parse_mirror_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMirrorOp { plane, targets, mode })?;
             }
@@ -4688,7 +4705,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "edit_mirror", &["index", "plane", "bodies", "output"])?;
             let op: usize = opts.get("index")?;
-            let (plane, targets, mode) = parse_mirror_op_args(&opts)?;
+            let (plane, targets, mode) = parse_mirror_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMirrorOp { op, plane, targets, mode })?;
             }
@@ -4747,7 +4764,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "slice", &["bodies", "cutters", "extend", "name"])?;
-            let (targets, cutters, extend_infinite) = parse_slice_op_args(&opts)?;
+            let (targets, cutters, extend_infinite) = parse_slice_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateSliceOp { targets, cutters, extend_infinite })?;
             }
@@ -4765,7 +4782,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "edit_slice", &["index", "bodies", "cutters", "extend"])?;
             let op: usize = opts.get("index")?;
-            let (targets, cutters, extend_infinite) = parse_slice_op_args(&opts)?;
+            let (targets, cutters, extend_infinite) = parse_slice_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })?;
             }
@@ -8961,10 +8978,11 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.revolutions.len(), 1);
+        let rev = state.doc.revolutions.keys().next().expect("the revolve");
         let bi = state.doc.bodies.len() - 1;
         assert_eq!(
             state.doc.bodies[bi].source,
-            crate::model::BodySource::Revolve(0)
+            crate::model::BodySource::Revolve(rev)
         );
         assert_eq!(state.doc.bodies[bi].name.as_deref(), Some("Ring"));
         let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("mesh");

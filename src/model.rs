@@ -33,7 +33,7 @@ pub enum FaceId {
     /// A flat side of a partial (< 360°) revolve (#621): one profile face rotated to the
     /// sweep's start (`end = false`) or end (`end = true`) angle. Full sweeps have none.
     RevolveCap {
-        revolution: usize,
+        revolution: RevolutionKey,
         profile: ExtrudeFace,
         end: bool,
     },
@@ -41,7 +41,7 @@ pub enum FaceId {
     /// `edge` whose endpoints share an axis coordinate (#621) — e.g. the flat ends of a
     /// revolved ring. Edges not perpendicular to the axis sweep curved surfaces instead.
     RevolveSide {
-        revolution: usize,
+        revolution: RevolutionKey,
         profile: ExtrudeFace,
         edge: u8,
     },
@@ -96,9 +96,9 @@ impl FaceId {
         }
     }
 
-    /// The revolution index that owns this face — the [`FaceId::extrusion_index`]
+    /// The revolution that owns this face — the [`FaceId::extrusion_index`]
     /// analogue for sketches hosted on a revolve's flat sides (#621).
-    pub fn revolution_index(&self) -> Option<usize> {
+    pub fn revolution_key(&self) -> Option<RevolutionKey> {
         match self {
             FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
                 Some(*revolution)
@@ -1242,8 +1242,8 @@ pub enum BodySource {
     Imported(ImportedMeshKey),
     /// A lofted solid; indexes `Document::lofts`.
     Loft(LoftKey),
-    /// A revolved solid (#revolve); indexes `Document::revolutions`.
-    Revolve(usize),
+    /// A revolved solid (#revolve); keys `Document::revolutions`.
+    Revolve(RevolutionKey),
     /// A primitive solid (#909); indexes `Document::primitives`.
     Primitive(usize),
     /// A swept solid (the Sweep tool, #sweep); indexes `Document::sweeps`.
@@ -1565,7 +1565,7 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<usize> {
 
 /// Body index whose source is `revolution` (#621) — the revolve analogue of
 /// [`body_index_for_extrusion`].
-pub fn body_index_for_revolution(doc: &Document, revolution: usize) -> Option<usize> {
+pub fn body_index_for_revolution(doc: &Document, revolution: RevolutionKey) -> Option<usize> {
     doc.bodies.iter().position(|body| {
         !body.deleted && matches!(body.source, BodySource::Revolve(r) if r == revolution)
     })
@@ -1904,9 +1904,11 @@ pub struct Revolution {
     pub mode: RevolveMode,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a revolve (#1055): the bodies it produced, its Elements-pane row,
+/// its scene element, and its component membership.
+pub type RevolutionKey = crate::arena::Key<Revolution>;
 
 /// How a swept solid lands in the document (#sweep): its own body, fused into
 /// existing bodies, or subtracted from existing bodies (the cut list is user-picked).
@@ -3935,7 +3937,7 @@ pub struct Document {
     pub lofts: crate::arena::Arena<Loft>,
     /// Revolved solids (#revolve).
     #[serde(default)]
-    pub revolutions: Vec<Revolution>,
+    pub revolutions: crate::arena::Arena<Revolution>,
     /// Primitive solids placed straight into 3D (#909): cuboids, cylinders, spheres.
     #[serde(default)]
     pub primitives: Vec<Primitive>,
@@ -4085,7 +4087,7 @@ pub enum ComponentMember {
     RepeatOp(usize),
     SliceOp(usize),
     EdgeTreatmentOp(usize),
-    Revolution(usize),
+    Revolution(RevolutionKey),
     Sweep(usize),
     Drawing(usize),
 }
@@ -4190,7 +4192,7 @@ impl Default for Document {
             imported_meshes: crate::arena::Arena::new(),
             tracing_images: crate::arena::Arena::new(),
             lofts: crate::arena::Arena::new(),
-            revolutions: Vec::new(),
+            revolutions: crate::arena::Arena::new(),
             primitives: Vec::new(),
             sweeps: Vec::new(),
             boolean_ops: Vec::new(),

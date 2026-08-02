@@ -7221,7 +7221,6 @@ impl App {
             symmetric: false,
             mode: model::RevolveMode::NewBody,
             name: None,
-            deleted: false,
         };
         let (origin, dir) = extrude::revolve_axis_world(&self.state.doc, &probe)?;
         let dir = dir.normalize_or_zero();
@@ -13069,7 +13068,7 @@ impl eframe::App for App {
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
-            let mut revolve_edit_begin: Option<usize> = None;
+            let mut revolve_edit_begin: Option<model::RevolutionKey> = None;
             let mut sweep_edit_begin: Option<usize> = None;
             // Help mode (#672): the row helpers collect a note per control as the pane lays
             // itself out, and the notes are drawn beside it once its rect is known.
@@ -16452,7 +16451,6 @@ fn build_viewport_scene_input<'a>(
             symmetric: cr.symmetric,
             mode: model::RevolveMode::NewBody,
             name: None,
-            deleted: false,
         };
         extrude::revolve_mesh(doc, &probe)
     })

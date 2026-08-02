@@ -2023,9 +2023,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The revolve's arena slot, not its ordinal (#1070).
         SceneElement::Revolution(i) => ElementScriptTokens {
             kind: "revolution",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::Shape(i) => ElementScriptTokens {
@@ -2695,7 +2696,7 @@ fn shape_lua_call(shape: &crate::model::Primitive, edit: Option<usize>) -> Strin
 /// Replayable `Instruction::Revolve` for the revolution the interactive tool just created
 /// (mirrors `instruction_for_new_loft`).
 pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<Instruction> {
-    let rev = doc.revolutions.last()?;
+    let rev = doc.revolutions.values().last()?;
     let (body, bodies) = match &rev.mode {
         crate::model::RevolveMode::NewBody => {
             (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
@@ -3354,8 +3355,9 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         // A polygon's full line list isn't expressible as a single index; same limitation
         // as cap/side faces above (#66).
         FaceId::Polygon(lines) => ("polygon", *lines.first().unwrap_or(&0)),
-        FaceId::RevolveCap { revolution, .. } => ("revolve_cap", *revolution),
-        FaceId::RevolveSide { revolution, .. } => ("revolve_side", *revolution),
+        // The revolve's arena slot, not its ordinal — this form has no document (#1070).
+        FaceId::RevolveCap { revolution, .. } => ("revolve_cap", revolution.index() as usize),
+        FaceId::RevolveSide { revolution, .. } => ("revolve_side", revolution.index() as usize),
     }
 }
 
@@ -3554,11 +3556,13 @@ fn face_id_lua_ref(face: &FaceId) -> String {
             extrude_face_profile_lua_fields(profile)
         ),
         FaceId::RevolveCap { revolution, profile, end } => format!(
-            "{{ kind = \"revolve_cap\", revolution = {revolution}, {}, [\"end\"] = {end} }}",
+            "{{ kind = \"revolve_cap\", revolution = {}, {}, [\"end\"] = {end} }}",
+            revolution.index(),
             extrude_face_profile_lua_fields(profile)
         ),
         FaceId::RevolveSide { revolution, profile, edge } => format!(
-            "{{ kind = \"revolve_side\", revolution = {revolution}, {}, edge = {edge} }}",
+            "{{ kind = \"revolve_side\", revolution = {}, {}, edge = {edge} }}",
+            revolution.index(),
             extrude_face_profile_lua_fields(profile)
         ),
         // The inner face rides as its JSON encoding (#725), like unit_edge_length's face.

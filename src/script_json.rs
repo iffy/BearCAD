@@ -122,6 +122,7 @@ pub fn scene_element_selection_index(
         // An arena-backed element reports its **ordinal** among the live ones of its kind
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
+        SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -167,7 +168,6 @@ pub fn scene_element_selection_index(
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
         | SceneElement::EdgeTreatmentOp(i)
-        | SceneElement::Revolution(i)
         | SceneElement::Shape(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i)

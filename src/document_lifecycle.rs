@@ -134,10 +134,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .edge_treatment_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
-        SceneElement::Revolution(index) => doc
-            .revolutions
-            .get(index)
-            .is_some_and(|rev| !rev.deleted),
+        SceneElement::Revolution(index) => doc.revolutions.contains(index),
         SceneElement::Shape(index) => doc
             .primitives
             .get(index)
@@ -580,16 +577,13 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             // Deleting the revolution removes its output body (only NewBody mode has one;
             // AddTo/Cut fuse into existing bodies at recompute, so there's nothing else to
             // release — the revolve simply stops contributing).
-            if let Some(rev) = doc.revolutions.get_mut(index) {
-                if !rev.deleted {
-                    rev.deleted = true;
-                    for body in doc.bodies.iter_mut() {
-                        if body.source == crate::model::BodySource::Revolve(index) {
-                            body.deleted = true;
-                        }
+            if doc.revolutions.remove(index).is_some() {
+                for body in doc.bodies.iter_mut() {
+                    if body.source == crate::model::BodySource::Revolve(index) {
+                        body.deleted = true;
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         SceneElement::Shape(index) => {

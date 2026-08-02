@@ -760,11 +760,11 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
             revolution, end, ..
         } => {
             let side = if end { "end" } else { "start" };
-            format!("Revolution {revolution} {side} face")
+            format!("Revolution {} {side} face", revolution.index())
         }
         FaceId::RevolveSide {
             revolution, edge, ..
-        } => format!("Revolution {revolution} side face {edge}"),
+        } => format!("Revolution {} side face {edge}", revolution.index()),
         FaceId::UnitFace { instance, .. } => format!("Unit instance {instance} face"),
     }
 }
@@ -1030,10 +1030,9 @@ pub fn pick_sketch_face(
 
     // Flat sides of revolves are sketchable too (#621): a partial sweep's start/end
     // profile caps, and the flat washer faces swept by axis-perpendicular profile edges.
-    for (ri, rev) in doc.revolutions.iter().enumerate().rev() {
-        if rev.deleted {
-            continue;
-        }
+    // Reverse slot order, so the most recently created revolve wins a tie the way the
+    // positional pass did.
+    for (ri, rev) in doc.revolutions.iter().collect::<Vec<_>>().into_iter().rev() {
         for profile in &rev.faces {
             for end in [false, true] {
                 let Some((poly, _)) =
@@ -1201,10 +1200,7 @@ pub fn sketch_faces_near(
             }
         }
     }
-    for (ri, rev) in doc.revolutions.iter().enumerate() {
-        if rev.deleted {
-            continue;
-        }
+    for (ri, rev) in doc.revolutions.iter() {
         for profile in &rev.faces {
             for end in [false, true] {
                 if let Some((poly, _)) =

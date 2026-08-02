@@ -245,7 +245,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_arena_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
-    save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
+    save_arena_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
     save_indexed_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
     save_indexed_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
@@ -584,7 +584,7 @@ pub fn open(path: &str) -> Result<Document> {
     let imported_meshes = load_arena_entities(&conn, "imported_mesh")?;
     let tracing_images = load_arena_entities(&conn, "tracing_image")?;
     let lofts = load_arena_entities(&conn, "loft")?;
-    let revolutions = load_indexed_entities(&conn, "revolution")?;
+    let revolutions = load_arena_entities(&conn, "revolution")?;
     let primitives = load_indexed_entities(&conn, "primitive")?;
     let sweeps = load_indexed_entities(&conn, "sweep")?;
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
@@ -863,6 +863,64 @@ mod tests {
             assert!(
                 loaded.lofts.get(doomed).is_none(),
                 "{suffix}: a key to a removed loft does not come back to life"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: a revolve keeps its key across a save, and so does the `FaceId::RevolveCap`
+    /// a sketch hosted on its flat face holds — a renumbering reload would host that sketch
+    /// on a different revolve.
+    #[test]
+    fn revolution_keys_survive_a_save_and_reload() {
+        let revolution = |angle: f32| crate::model::Revolution {
+            sketch: 0,
+            faces: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            angle_deg: angle,
+            symmetric: false,
+            mode: crate::model::RevolveMode::NewBody,
+            name: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.revolutions.insert(revolution(90.0));
+        let kept = doc.revolutions.insert(revolution(180.0));
+        assert!(doc.revolutions.remove(doomed).is_some());
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Revolve(kept),
+            material: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.add_sketch(crate::model::FaceId::RevolveCap {
+            revolution: kept,
+            profile: crate::model::ExtrudeFace::Circle(0),
+            end: true,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_revolve_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.revolutions.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.revolutions.get(kept).map(|r| r.angle_deg),
+                Some(180.0),
+                "{suffix}: the surviving revolve did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.bodies[0].source,
+                crate::model::BodySource::Revolve(kept),
+                "{suffix}: its body still points at it"
+            );
+            assert_eq!(
+                loaded.sketches[0].face,
+                doc.sketches[0].face,
+                "{suffix}: and so does the sketch hosted on its cap"
             );
             let _ = std::fs::remove_file(&path);
         }

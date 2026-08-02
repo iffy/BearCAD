@@ -1349,7 +1349,7 @@ pub struct CreatingRevolve {
     /// Bodies picked for Cut mode.
     pub cut_bodies: Vec<usize>,
     /// `Some(op)` while re-editing a committed revolution (#211), else a fresh revolve.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::RevolutionKey>,
 }
 
 impl Default for CreatingRevolve {
@@ -4572,7 +4572,6 @@ impl AppState {
                     symmetric,
                     mode: crate::model::RevolveMode::NewBody,
                     name: None,
-                    deleted: false,
                 };
                 let touching = crate::extrude::revolve_mesh(&self.doc, &probe)
                     .and_then(|m| m.bounds())
@@ -4685,7 +4684,6 @@ impl AppState {
             symmetric,
             mode: mode.clone(),
             name: None,
-            deleted: false,
         };
         if crate::extrude::revolve_mesh(&self.doc, &rev).is_none() {
             let e = "Revolve failed: profile must be a closed face and the axis a real line"
@@ -4693,10 +4691,10 @@ impl AppState {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
-        self.doc.revolutions.push(rev);
+        let key = self.doc.revolutions.insert(rev);
         if matches!(mode, crate::model::RevolveMode::NewBody) {
             self.doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Revolve(self.doc.revolutions.len() - 1),
+                source: crate::model::BodySource::Revolve(key),
                 material: None,
                 name: None,
                 deleted: false,
@@ -4725,7 +4723,7 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     fn edit_revolution(
         &mut self,
-        op: usize,
+        op: crate::model::RevolutionKey,
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
         axis: crate::model::RevolveAxis,
@@ -4733,8 +4731,8 @@ impl AppState {
         symmetric: bool,
         mode: crate::model::RevolveMode,
     ) -> ActionResult {
-        let Some(existing) = self.doc.revolutions.get(op).filter(|r| !r.deleted) else {
-            return ActionResult::Err(format!("no revolution {op}"));
+        let Some(existing) = self.doc.revolutions.get(op) else {
+            return ActionResult::Err(format!("no revolution {op:?}"));
         };
         let candidate = crate::model::Revolution {
             sketch,
@@ -4744,7 +4742,6 @@ impl AppState {
             symmetric,
             mode: mode.clone(),
             name: existing.name.clone(),
-            deleted: false,
         };
         if crate::extrude::revolve_mesh(&self.doc, &candidate).is_none() {
             let e = "Revolve failed: profile must be a closed face and the axis a real line"
@@ -5974,7 +5971,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
-        SceneElement::Revolution(i) => format!("Revolve operation {i}"),
+        SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {i}"),
         SceneElement::SweepOp(i) => format!("Sweep operation {i}"),
         SceneElement::Joint(i) => format!("Joint {i}"),
@@ -15813,7 +15810,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend((0..doc.repeat_ops.len()).map(CM::RepeatOp));
     members.extend((0..doc.slice_ops.len()).map(CM::SliceOp));
     members.extend((0..doc.edge_treatment_ops.len()).map(CM::EdgeTreatmentOp));
-    members.extend((0..doc.revolutions.len()).map(CM::Revolution));
+    members.extend(doc.revolutions.keys().map(CM::Revolution));
     members.extend((0..doc.sweeps.len()).map(CM::Sweep));
     members
 }
@@ -19009,10 +19006,11 @@ mod tests {
         });
         assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
         assert_eq!(state.doc.revolutions.len(), 1);
-        assert!((state.doc.revolutions[0].angle_deg - 360.0).abs() < 1e-3);
+        let rev = state.doc.revolutions.keys().next().expect("the revolve");
+        assert!((state.doc.revolutions[rev].angle_deg - 360.0).abs() < 1e-3);
         assert_eq!(
             state.doc.bodies.last().map(|b| b.source.clone()),
-            Some(crate::model::BodySource::Revolve(0))
+            Some(crate::model::BodySource::Revolve(rev))
         );
         assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Revolution));
         assert!(state.creating_revolve.is_none());
@@ -19099,6 +19097,7 @@ mod tests {
         });
         assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
         assert_eq!(state.doc.revolutions.len(), 1);
+        let rev = state.doc.revolutions.keys().next().expect("the revolve");
         let body_count = state.doc.bodies.len();
 
         // Re-open the revolution for editing with a new (180°) sweep.
@@ -19108,14 +19107,14 @@ mod tests {
             axis: Some(crate::model::RevolveAxis::Y),
             text: "180".to_string(),
             user_edited: true,
-            editing: Some(0),
+            editing: Some(rev),
             ..CreatingRevolve::default()
         });
         assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
         // Same revolution and body count; only the angle changed.
         assert_eq!(state.doc.revolutions.len(), 1);
         assert_eq!(state.doc.bodies.len(), body_count);
-        assert!((state.doc.revolutions[0].angle_deg - 180.0).abs() < 1e-3);
+        assert!((state.doc.revolutions[rev].angle_deg - 180.0).abs() < 1e-3);
         assert!(state.creating_revolve.is_none());
     }
 

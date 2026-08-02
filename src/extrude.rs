@@ -737,7 +737,7 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
             crate::primitives::kernel_shape(doc, doc.primitives.get(pi)?)?
         }
         crate::model::BodySource::Revolve(ri) => {
-            occt_revolution_shape(doc, doc.revolutions.get(ri).filter(|r| !r.deleted)?)?
+            occt_revolution_shape(doc, doc.revolutions.get(ri)?)?
         }
         crate::model::BodySource::Sweep(fi) => {
             occt_sweep_shape(doc, doc.sweeps.get(fi).filter(|f| !f.deleted)?)?
@@ -2490,12 +2490,12 @@ pub fn revolve_effective_angle(rev: &crate::model::Revolution) -> f32 {
 /// `None` for a full 360° sweep — that closes on itself and has no flat sides.
 pub fn revolve_cap_polygon_world(
     doc: &Document,
-    revolution: usize,
+    revolution: crate::model::RevolutionKey,
     profile: &crate::model::ExtrudeFace,
     end: bool,
 ) -> Option<(Vec<Vec3>, Vec3)> {
     let rev = doc.revolutions.get(revolution)?;
-    if rev.deleted || !rev.faces.contains(profile) {
+    if !rev.faces.contains(profile) {
         return None;
     }
     let (origin, dir) = revolve_axis_world(doc, rev)?;
@@ -2542,12 +2542,12 @@ pub fn revolve_side_count(profile: &ExtrudeFace) -> usize {
 /// sits in its hole, #625). `None` for edges that sweep curved surfaces.
 pub fn revolve_side_geom(
     doc: &Document,
-    revolution: usize,
+    revolution: crate::model::RevolutionKey,
     profile: &ExtrudeFace,
     edge: usize,
 ) -> Option<(Vec<Vec3>, SketchFrame, Vec3)> {
     let rev = doc.revolutions.get(revolution)?;
-    if rev.deleted || !rev.faces.contains(profile) {
+    if !rev.faces.contains(profile) {
         return None;
     }
     let (origin, dir) = revolve_axis_world(doc, rev)?;
@@ -2613,7 +2613,7 @@ pub fn revolve_side_geom(
 /// as real circles instead. Radii are measured from the axis in the face's plane.
 pub fn revolve_side_annulus(
     doc: &Document,
-    revolution: usize,
+    revolution: crate::model::RevolutionKey,
     profile: &ExtrudeFace,
     edge: usize,
 ) -> Option<(f32, f32)> {
@@ -2742,11 +2742,9 @@ fn occt_face_revolve_solid(
 pub fn revolutions_targeting(
     doc: &Document,
     body_index: usize,
-) -> Vec<(usize, bool)> {
+) -> Vec<(crate::model::RevolutionKey, bool)> {
     doc.revolutions
         .iter()
-        .enumerate()
-        .filter(|(_, r)| !r.deleted)
         .filter_map(|(ri, r)| match &r.mode {
             crate::model::RevolveMode::AddTo(bodies) if bodies.contains(&body_index) => {
                 Some((ri, false))
@@ -4523,7 +4521,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     // meshes its lathe; cut revolutions are ignored here, like cut extrusions (the
     // fallback warning covers both).
     if let crate::model::BodySource::Revolve(ri) = body.source {
-        let rev = doc.revolutions.get(ri).filter(|r| !r.deleted)?;
+        let rev = doc.revolutions.get(ri)?;
         return revolve_mesh(doc, rev);
     }
     if let crate::model::BodySource::Sweep(fi) = body.source {
@@ -8588,7 +8586,6 @@ mod tests {
             symmetric,
             mode,
             name: None,
-            deleted: false,
         }
     }
 
@@ -8598,7 +8595,7 @@ mod tests {
     fn revolve_full_sweep_makes_a_ring() {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
-        doc.revolutions.push(test_revolution(
+        let rev = doc.revolutions.insert(test_revolution(
             sketch,
             vec![profile],
             360.0,
@@ -8606,7 +8603,7 @@ mod tests {
             crate::model::RevolveMode::NewBody,
         ));
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Revolve(0),
+            source: crate::model::BodySource::Revolve(rev),
             material: None,
             name: None,
             deleted: false,
@@ -8627,7 +8624,7 @@ mod tests {
     fn revolve_flat_faces_resolve_polygons_and_frames() {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
-        doc.revolutions.push(test_revolution(
+        let rev = doc.revolutions.insert(test_revolution(
             sketch,
             vec![profile.clone()],
             90.0,
@@ -8635,15 +8632,15 @@ mod tests {
             crate::model::RevolveMode::NewBody,
         ));
         // Start cap: the profile itself, in the sketch (z = 0) plane.
-        let (start, _) = revolve_cap_polygon_world(&doc, 0, &profile, false).expect("start cap");
+        let (start, _) = revolve_cap_polygon_world(&doc, rev, &profile, false).expect("start cap");
         assert!(start.iter().all(|p| p.z.abs() < 1e-3));
         // End cap: the profile rotated 90° about +Y — (x, y, 0) lands on (0, y, −x).
-        let (end, _) = revolve_cap_polygon_world(&doc, 0, &profile, true).expect("end cap");
+        let (end, _) = revolve_cap_polygon_world(&doc, rev, &profile, true).expect("end cap");
         assert!(end.iter().all(|p| p.x.abs() < 1e-3 && p.z < 0.0));
         // Exactly the two constant-height rect edges sweep flat sides; their frames'
         // normals run along the axis, pointing away from the profile.
         let flats: Vec<(usize, SketchFrame)> = (0..revolve_side_count(&profile))
-            .filter_map(|e| revolve_side_geom(&doc, 0, &profile, e).map(|(_, f, _)| (e, f)))
+            .filter_map(|e| revolve_side_geom(&doc, rev, &profile, e).map(|(_, f, _)| (e, f)))
             .collect();
         assert_eq!(flats.len(), 2, "two axis-perpendicular edges sweep flat sides");
         for (_, frame) in &flats {
@@ -8652,9 +8649,9 @@ mod tests {
         let normal_ys: Vec<f32> = flats.iter().map(|(_, f)| f.normal.y).collect();
         assert!(normal_ys.contains(&-1.0) && normal_ys.contains(&1.0));
         // A full sweep closes on itself: no caps, but the flat washer sides remain.
-        doc.revolutions[0].angle_deg = 360.0;
-        assert!(revolve_cap_polygon_world(&doc, 0, &profile, false).is_none());
-        assert!(revolve_side_geom(&doc, 0, &profile, flats[0].0).is_some());
+        doc.revolutions[rev].angle_deg = 360.0;
+        assert!(revolve_cap_polygon_world(&doc, rev, &profile, false).is_none());
+        assert!(revolve_side_geom(&doc, rev, &profile, flats[0].0).is_some());
     }
 
     /// #626: the tessellated rims of a full revolve chain into whole curves — each circular
@@ -8663,7 +8660,7 @@ mod tests {
     fn revolve_rim_segments_chain_into_whole_curves() {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
-        doc.revolutions.push(test_revolution(
+        let rev = doc.revolutions.insert(test_revolution(
             sketch,
             vec![profile],
             360.0,
@@ -8671,7 +8668,7 @@ mod tests {
             crate::model::RevolveMode::NewBody,
         ));
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Revolve(0),
+            source: crate::model::BodySource::Revolve(rev),
             material: None,
             name: None,
             deleted: false,
@@ -8712,7 +8709,7 @@ mod tests {
             a: Box::new(ExtrudeFace::Circle(0)),
             b: Box::new(ExtrudeFace::Circle(1)),
         };
-        doc.revolutions.push(test_revolution(
+        let rev = doc.revolutions.insert(test_revolution(
             sketch,
             vec![ring],
             360.0,
@@ -8720,7 +8717,7 @@ mod tests {
             crate::model::RevolveMode::NewBody,
         ));
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Revolve(0),
+            source: crate::model::BodySource::Revolve(rev),
             material: None,
             name: None,
             deleted: false,
@@ -8744,7 +8741,7 @@ mod tests {
         for symmetric in [false, true] {
             let (mut doc, sketch) = sketch_doc();
             let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
-            doc.revolutions.push(test_revolution(
+            let rev = doc.revolutions.insert(test_revolution(
                 sketch,
                 vec![profile],
                 90.0,
@@ -8752,7 +8749,7 @@ mod tests {
                 crate::model::RevolveMode::NewBody,
             ));
             doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Revolve(0),
+                source: crate::model::BodySource::Revolve(rev),
                 material: None,
                 name: None,
                 deleted: false,
@@ -8784,7 +8781,7 @@ mod tests {
         // length 40, centered on the X axis. It pierces the plate (z 0..5), so the cut
         // carves a half-buried channel through it.
         let tube = rect_profile(&mut doc, sketch, -20.0, 3.0, 40.0, 3.0);
-        doc.revolutions.push(crate::model::Revolution {
+        let rev = doc.revolutions.insert(crate::model::Revolution {
             sketch,
             faces: vec![tube],
             axis: crate::model::RevolveAxis::X,
@@ -8792,8 +8789,8 @@ mod tests {
             symmetric: false,
             mode: crate::model::RevolveMode::Cut(vec![0]),
             name: None,
-            deleted: false,
         });
+        let _ = rev;
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         // Removed material = plate ∩ tube: for the z 0..5 slab of an annulus r 3..6 around
         // the X axis over 40 of length. Assert a meaningful bite rather than the exact
