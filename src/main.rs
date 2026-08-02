@@ -3096,7 +3096,7 @@ struct App {
     /// layout freezes so the user can read (and manually drag) a busy graph. Ephemeral.
     graph_force: bool,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
-    collapsed_components: std::collections::HashSet<usize>,
+    collapsed_components: std::collections::HashSet<model::ComponentKey>,
     /// Unit instances whose read-only contents are expanded in the Elements list (#723);
     /// UI-only state, default collapsed.
     expanded_units: std::collections::HashSet<model::UnitInstanceKey>,
@@ -4603,7 +4603,7 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Export every body inside a component (and its nested components) to an STL file (#521).
-    fn export_stl_component(&mut self, component: usize) {
+    fn export_stl_component(&mut self, component: model::ComponentKey) {
         if self.state.component_body_indices(component).is_empty() {
             self.state.status = "This component has no bodies to export".to_string();
             return;
@@ -4623,7 +4623,7 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Export every body inside a component (and its nested components) to a STEP file (#521).
-    fn export_step_component(&mut self, component: usize) {
+    fn export_step_component(&mut self, component: model::ComponentKey) {
         if self.state.component_body_indices(component).is_empty() {
             self.state.status = "This component has no bodies to export".to_string();
             return;
@@ -4991,7 +4991,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_stl_component(&mut self, component: usize) {
+    fn export_stl_component(&mut self, component: model::ComponentKey) {
         let name = format!("{}.stl", self.state.component_export_name(component));
         match self.state.export_component_stl_bytes(component) {
             Ok(bytes) => {
@@ -5002,7 +5002,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_step_component(&mut self, component: usize) {
+    fn export_step_component(&mut self, component: model::ComponentKey) {
         let name = format!("{}.step", self.state.component_export_name(component));
         match self.state.export_component_step_bytes(component) {
             Ok(bytes) => self.web_save_bytes(
@@ -11738,16 +11738,16 @@ impl eframe::App for App {
                 });
             let mut export_body: Option<model::BodyKey> = None;
             let mut export_body_step: Option<model::BodyKey> = None;
-            let mut export_component: Option<usize> = None;
-            let mut export_component_step: Option<usize> = None;
+            let mut export_component: Option<model::ComponentKey> = None;
+            let mut export_component_step: Option<model::ComponentKey> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
             let mut add_to_drawing: Option<SceneElement> = None;
             let mut rename_drawing: Option<(usize, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
-            let mut add_component: Option<Option<usize>> = None;
-            let mut move_to_component: Option<(SceneElement, Option<usize>)> = None;
-            let mut activate_component: Option<Option<usize>> = None;
+            let mut add_component: Option<Option<model::ComponentKey>> = None;
+            let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
+            let mut activate_component: Option<Option<model::ComponentKey>> = None;
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut joint_rest: Option<hierarchy::JointRestCommand> = None;
@@ -11797,10 +11797,10 @@ impl eframe::App for App {
                     let mut queue_export_body_step = |index: model::BodyKey| {
                         export_body_step = Some(index);
                     };
-                    let mut queue_export_component = |index: usize| {
+                    let mut queue_export_component = |index: model::ComponentKey| {
                         export_component = Some(index);
                     };
-                    let mut queue_export_component_step = |index: usize| {
+                    let mut queue_export_component_step = |index: model::ComponentKey| {
                         export_component_step = Some(index);
                     };
                     let mut noop_visibility = |_: SceneElement, _: bool| {};
@@ -11855,14 +11855,14 @@ impl eframe::App for App {
                     let mut queue_set_rollback = |m: Option<hierarchy::RollbackMarker>| {
                         set_rollback = Some(m);
                     };
-                    let mut queue_add_component = |parent: Option<usize>| {
+                    let mut queue_add_component = |parent: Option<model::ComponentKey>| {
                         add_component = Some(parent);
                     };
                     let mut queue_move_to_component =
-                        |element: SceneElement, component: Option<usize>| {
+                        |element: SceneElement, component: Option<model::ComponentKey>| {
                             move_to_component = Some((element, component));
                         };
-                    let mut queue_activate_component = |component: Option<usize>| {
+                    let mut queue_activate_component = |component: Option<model::ComponentKey>| {
                         activate_component = Some(component);
                     };
                     // Rows the active tool's pickers hold read as selected too (#965): the

@@ -78,10 +78,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             | crate::model::MovePointRef::FaceCenter { body, .. } => body_alive(doc, body),
         },
         SceneElement::UnitInstance(index) => doc.unit_instances.contains(index),
-        SceneElement::Component(index) => doc
-            .components
-            .get(index)
-            .is_some_and(|c| !c.deleted),
+        SceneElement::Component(index) => doc.components.contains(index),
         SceneElement::BooleanOp(index) => doc.boolean_ops.contains(index),
         SceneElement::MoveOp(index) => doc.move_ops.contains(index),
         SceneElement::MirrorOp(index) => doc.mirror_ops.contains(index),
@@ -183,19 +180,19 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         // Deleting a component re-homes its members and child components to its parent
         // (#423) — grouping is organizational, so nothing inside is deleted.
         SceneElement::Component(index) => {
-            if doc.components.get(index).is_some_and(|c| !c.deleted) {
-                let parent = doc.components[index].parent;
-                doc.components[index].deleted = true;
-                for m in doc.component_members.iter_mut() {
-                    if m.1 == index {
-                        match parent {
-                            Some(p) => m.1 = p,
-                            None => m.1 = usize::MAX, // pruned below
+            if let Some(gone) = doc.components.remove(index) {
+                let parent = gone.parent;
+                match parent {
+                    Some(p) => {
+                        for m in doc.component_members.iter_mut() {
+                            if m.1 == index {
+                                m.1 = p;
+                            }
                         }
                     }
+                    None => doc.component_members.retain(|m| m.1 != index),
                 }
-                doc.component_members.retain(|m| m.1 != usize::MAX);
-                for c in doc.components.iter_mut() {
+                for (_, c) in doc.components.iter_mut() {
                     if c.parent == Some(index) {
                         c.parent = parent;
                     }

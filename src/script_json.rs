@@ -205,10 +205,8 @@ pub fn scene_element_selection_index(
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::SketchText(i)
-
-        | SceneElement::Component(i)
-        => Some(*i),
+        | SceneElement::SketchText(i) => Some(*i),
+        SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
         SceneElement::UnitInstance(key) => doc.unit_instances.keys().position(|k| k == *key),
         SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
         SceneElement::Origin
@@ -1293,7 +1291,12 @@ fn joint_op_args(
         let index = req_usize(t, "index", what)?;
         match kind {
             "body" => Ok(crate::model::JointRef::Body(body_key_from_ordinal(doc, index)?)),
-            "component" => Ok(crate::model::JointRef::Component(index)),
+            "component" => Ok(crate::model::JointRef::Component(
+                doc.components
+                    .keys()
+                    .nth(index)
+                    .ok_or_else(|| format!("no component {index}"))?,
+            )),
             "unit_instance" | "unit" => Ok(crate::model::JointRef::UnitInstance(
                 unit_instance_key_from_ordinal(doc, index)?,
             )),

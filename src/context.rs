@@ -1085,7 +1085,7 @@ pub struct UnitsControl {
     /// Sketch this control edits; `None` for the document-level default (nothing selected).
     pub sketch: Option<SketchId>,
     /// Component this control edits (#423); mutually exclusive with `sketch`.
-    pub component: Option<usize>,
+    pub component: Option<crate::model::ComponentKey>,
     /// Effective length unit: `length_override` if set, else the document default.
     pub effective_length: LengthUnit,
     /// Effective angle unit: `angle_override` if set, else the document default.
@@ -1112,7 +1112,7 @@ pub enum UnitsChoice {
     },
     /// A component's overrides (#423); `None` inherits from the parent chain.
     Component {
-        component: usize,
+        component: crate::model::ComponentKey,
         length: Option<LengthUnit>,
         angle: Option<AngleUnit>,
     },
@@ -3102,7 +3102,7 @@ fn units_control_from_selection(doc: &Document, selection: &SceneSelection) -> O
     // A selected component gets its own units picker (#423): overrides inherit through the
     // parent chain to the document.
     if let Some(SceneElement::Component(ci)) = selection.single() {
-        let component = doc.components.get(ci).filter(|c| !c.deleted)?;
+        let component = doc.components.get(ci)?;
         return Some(UnitsControl {
             sketch: None,
             component: Some(ci),

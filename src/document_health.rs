@@ -326,7 +326,7 @@ fn mark_broken_joints(doc: &Document, health: &mut DocumentHealth) {
                 !doc.bodies.contains(bi)
             }
             crate::model::JointRef::Component(ci) => {
-                !doc.components.get(ci).is_some_and(|c| !c.deleted)
+                !doc.components.contains(ci)
             }
             crate::model::JointRef::UnitInstance(ui) => !doc.unit_instances.contains(ui),
         });

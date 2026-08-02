@@ -210,8 +210,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::Extrusion(i)
         | SceneElement::SketchText(i)
 
-        | SceneElement::Component(i)
         => i,
+        SceneElement::Component(key) => {
+            doc.components.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::UnitInstance(key) => {
             doc.unit_instances.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -267,7 +269,7 @@ pub fn scene_element_from_kind(
         }
         "move_op" | "move" => Some(SceneElement::MoveOp(doc.move_ops.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
-        "component" => Some(SceneElement::Component(index)),
+        "component" => Some(SceneElement::Component(doc.components.keys().nth(index)?)),
         "sketch_offset_op" | "offset" => {
             Some(SceneElement::SketchOffsetOp(doc.sketch_offset_ops.keys().nth(index)?))
         }
@@ -2487,7 +2489,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
                 }
-                "component" => doc.components.iter().filter(|e| !e.deleted).count(),
+                "component" => doc.components.len(),
                 "image" => doc.tracing_images.len(),
                 "joint" => doc.joints.len(),
                 other => {

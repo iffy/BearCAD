@@ -1235,6 +1235,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::component_key_for_slot as ckey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::slice_op_key_for_slot as slckey;
@@ -1359,13 +1360,13 @@ mod tests {
         // report as `Operation`, so an operations picker swallowed them.
         assert_eq!(ElementKind::of(&SceneElement::Joint(jkey(0))), ElementKind::Joint);
         assert_eq!(
-            ElementKind::of(&SceneElement::Component(0)),
+            ElementKind::of(&SceneElement::Component(ckey(0))),
             ElementKind::Component
         );
         let ops = ElementFilter::kind(ElementKind::Operation);
         assert!(ops.accepts(&Document::default(), &SceneElement::BooleanOp(bopkey(0))));
         assert!(!ops.accepts(&Document::default(), &SceneElement::Joint(jkey(0))));
-        assert!(!ops.accepts(&Document::default(), &SceneElement::Component(0)));
+        assert!(!ops.accepts(&Document::default(), &SceneElement::Component(ckey(0))));
     }
 
     #[test]
@@ -1854,7 +1855,7 @@ mod tests {
             SceneElement::Body(bkey(0)),
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
             SceneElement::Joint(jkey(0)),
-            SceneElement::Component(0),
+            SceneElement::Component(ckey(0)),
             SceneElement::BooleanOp(bopkey(0)),
         ] {
             let kind = ElementKind::of(&element);

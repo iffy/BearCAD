@@ -3762,9 +3762,8 @@ pub(crate) fn document_pose_fingerprint(doc: &Document) -> u64 {
         // Mate placement affects posed presentation of an in-progress joint.
         format!("{:?}", j.mate).hash(&mut h);
     }
-    for (i, c) in doc.components.iter().enumerate() {
+    for (i, c) in doc.components.iter() {
         i.hash(&mut h);
-        c.deleted.hash(&mut h);
         c.parent.hash(&mut h);
     }
     for entry in &doc.component_members {

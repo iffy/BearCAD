@@ -4986,6 +4986,7 @@ pub fn line_screen_quad(
 mod tests {
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::component_key_for_slot as ckey;
     use super::*;
     use crate::actions::AppState;
     use crate::model::FaceId;
@@ -5880,17 +5881,16 @@ mod tests {
         });
         assert_eq!(state.doc.bodies.len(), 2);
         // A component holding the first body, and a joint between the two.
-        state.doc.components.push(crate::model::Component {
+        state.doc.components.insert(crate::model::Component {
             name: None,
             parent: None,
             length_unit: None,
             angle_unit: None,
-            deleted: false,
         });
-        state.doc.component_members.push((
-            crate::model::ComponentMember::Body(bkey(0)),
-            state.doc.components.len() - 1,
-        ));
+        state
+            .doc
+            .component_members
+            .push((crate::model::ComponentMember::Body(bkey(0)), ckey(0)));
         state.doc.joints.insert(crate::model::Joint {
             members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
@@ -5925,7 +5925,7 @@ mod tests {
         for element in [
             SceneElement::Extrusion(0),
             SceneElement::Body(bkey(0)),
-            SceneElement::Component(state.doc.components.len() - 1),
+            SceneElement::Component(ckey(0)),
             SceneElement::Joint(jkey(0)),
             SceneElement::Image(image),
             SceneElement::Line(0),

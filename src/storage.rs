@@ -659,6 +659,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::component_key_for_slot as ckey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::boolean_op_key_for_slot as bopkey;
@@ -795,21 +796,19 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.components.push(crate::model::Component {
+        doc.components.insert(crate::model::Component {
             name: Some("Frame".to_string()),
             parent: None,
             length_unit: Some(crate::value::LengthUnit::In),
             angle_unit: None,
-            deleted: false,
         });
-        doc.components.push(crate::model::Component {
+        doc.components.insert(crate::model::Component {
             name: None,
-            parent: Some(0),
+            parent: Some(ckey(0)),
             length_unit: None,
             angle_unit: None,
-            deleted: false,
         });
-        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(0), Some(1));
+        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(0), Some(ckey(1)));
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
@@ -912,6 +911,53 @@ mod tests {
                 loaded.bodies[out].source,
                 crate::model::BodySource::Boolean { op: kept, solid: 0 },
                 "{suffix}: its output body still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: components keep their keys across a save, and so do the membership entries
+    /// and parent links that name one.
+    #[test]
+    fn component_keys_survive_a_save_and_reload() {
+        let component = |name: &str| crate::model::Component {
+            name: Some(name.to_string()),
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.components.insert(component("doomed"));
+        let kept = doc.components.insert(component("kept"));
+        assert!(doc.components.remove(doomed).is_some());
+        let nested = doc.components.insert(crate::model::Component {
+            parent: Some(kept),
+            ..component("nested")
+        });
+        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(0), Some(kept));
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_component_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.components.len(), 2, "{suffix}");
+            assert_eq!(
+                loaded.components.get(kept).and_then(|c| c.name.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.components.get(nested).and_then(|c| c.parent),
+                Some(kept),
+                "{suffix}: the child still names its parent"
+            );
+            assert_eq!(
+                loaded.component_of(crate::model::ComponentMember::ConstructionPlane(0)),
+                Some(kept),
+                "{suffix}: the membership entry still names it"
             );
             let _ = std::fs::remove_file(&path);
         }

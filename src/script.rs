@@ -2057,9 +2057,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The component's arena slot, not its ordinal (#1070).
         SceneElement::Component(i) => ElementScriptTokens {
             kind: "component",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The joint's arena slot, not its ordinal (#1070).
@@ -2116,6 +2117,22 @@ fn joint_ordinal(doc: &crate::model::Document, key: crate::model::JointKey) -> O
 /// The joint an ordinal names — the inverse of [`joint_ordinal`].
 fn joint_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::JointKey> {
     doc.joints.keys().nth(ordinal)
+}
+
+/// A component's ordinal among the live ones — what a script writes (#1055).
+fn component_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::ComponentKey,
+) -> Option<usize> {
+    doc.components.keys().position(|k| k == key)
+}
+
+/// The component an ordinal names — the inverse of [`component_ordinal`].
+fn component_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::ComponentKey> {
+    doc.components.keys().nth(ordinal)
 }
 
 /// A unit instance's ordinal among the live ones — what a script writes (#1055).
@@ -2679,15 +2696,21 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::CreateComponent { name, parent } => Some(Instruction::CreateComponent {
             name: name.clone(),
-            parent: *parent,
+            parent: match parent {
+                Some(p) => Some(component_ordinal(doc, *p)?),
+                None => None,
+            },
         }),
         Action::MoveToComponent { element, component } => Some(Instruction::MoveToComponent {
             element: element.clone(),
-            component: *component,
+            component: match component {
+                Some(c) => Some(component_ordinal(doc, *c)?),
+                None => None,
+            },
         }),
         Action::SetComponentUnits { component, length, angle } => {
             Some(Instruction::SetComponentUnits {
-                component: *component,
+                component: component_ordinal(doc, *component)?,
                 length: *length,
                 angle: *angle,
             })
@@ -3024,8 +3047,9 @@ fn mirror_op_lua(
 fn joint_member_lua(member: &crate::model::JointRef) -> String {
     match member {
         crate::model::JointRef::Body(i) => i.index().to_string(),
+        // The component's arena slot, not its ordinal — this form has no document (#1070).
         crate::model::JointRef::Component(i) => {
-            format!("{{ kind = \"component\", index = {i} }}")
+            format!("{{ kind = \"component\", index = {} }}", i.index())
         }
         // The instance's arena slot, not its ordinal — this form has no document (#1070).
         crate::model::JointRef::UnitInstance(i) => {
@@ -5601,16 +5625,34 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateComponent { name, parent } => {
+                let parent = match parent.map(|p| component_key(&state.doc, p)) {
+                    Some(None) => {
+                        self.last_action_error = Some("Component not found".to_string());
+                        return StepResult::Continue;
+                    }
+                    other => other.flatten(),
+                };
                 let result = state.apply(Action::CreateComponent { name, parent });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::MoveToComponent { element, component } => {
+                let component = match component.map(|c| component_key(&state.doc, c)) {
+                    Some(None) => {
+                        self.last_action_error = Some("Component not found".to_string());
+                        return StepResult::Continue;
+                    }
+                    other => other.flatten(),
+                };
                 let result = state.apply(Action::MoveToComponent { element, component });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetComponentUnits { component, length, angle } => {
+                let Some(component) = component_key(&state.doc, component) else {
+                    self.last_action_error = Some(format!("Component {component} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::SetComponentUnits { component, length, angle });
                 self.record_action_error(result);
                 StepResult::Continue

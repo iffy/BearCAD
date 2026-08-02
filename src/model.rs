@@ -1705,6 +1705,12 @@ pub fn joint_key_for_slot(n: usize) -> JointKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for a component (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn component_key_for_slot(n: usize) -> ComponentKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a unit instance (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn unit_instance_key_for_slot(n: usize) -> UnitInstanceKey {
@@ -2248,7 +2254,7 @@ pub type MoveOpKey = crate::arena::Key<MoveOperation>;
 #[serde(rename_all = "snake_case")]
 pub enum JointRef {
     Body(BodyKey),
-    Component(usize),
+    Component(ComponentKey),
     UnitInstance(UnitInstanceKey),
 }
 
@@ -4098,13 +4104,13 @@ pub struct Document {
     /// Components (#423): named groups of top-level elements, nestable. The document itself
     /// acts as the root component (its defaults are the top of the unit-inheritance chain).
     #[serde(default)]
-    pub components: Vec<Component>,
+    pub components: crate::arena::Arena<Component>,
     /// Component membership (#423): which component each assigned top-level element belongs
     /// to, as `(member, component index)`. Elements without an entry sit directly under the
     /// document root. Tombstoned elements may leave stale entries; lookups go through live
     /// elements only.
     #[serde(default)]
-    pub component_members: Vec<(ComponentMember, usize)>,
+    pub component_members: Vec<(ComponentMember, ComponentKey)>,
     /// Imported units (#719): one embedded copy per imported source document, placed by
     /// [`unit_instances`](Self::unit_instances).
     #[serde(default)]
@@ -4143,16 +4149,17 @@ pub struct Component {
     pub name: Option<String>,
     /// Parent component; `None` = directly under the document root.
     #[serde(default)]
-    pub parent: Option<usize>,
+    pub parent: Option<ComponentKey>,
     /// Length-unit override; `None` inherits from the parent chain, then the document.
     #[serde(default)]
     pub length_unit: Option<LengthUnit>,
     /// Angle-unit override; `None` inherits like `length_unit`.
     #[serde(default)]
     pub angle_unit: Option<AngleUnit>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// A component's identity (#1055): stable across deletions of other components.
+pub type ComponentKey = crate::arena::Key<Component>;
 
 /// A top-level element a component can hold (#423) — one of the Elements pane's root rows.
 /// Nested elements (sketches on a plane, bodies under an op) follow their root.
@@ -4180,16 +4187,20 @@ pub enum ComponentMember {
 
 impl Document {
     /// The component an assigned top-level element belongs to, if any (#423).
-    pub fn component_of(&self, member: ComponentMember) -> Option<usize> {
+    pub fn component_of(&self, member: ComponentMember) -> Option<ComponentKey> {
         self.component_members
             .iter()
             .find(|(m, _)| *m == member)
             .map(|(_, c)| *c)
-            .filter(|&c| self.components.get(c).is_some_and(|comp| !comp.deleted))
+            .filter(|&c| self.components.contains(c))
     }
 
     /// Assign (or with `None`, unassign) a top-level element to a component (#423).
-    pub fn set_component_member(&mut self, member: ComponentMember, component: Option<usize>) {
+    pub fn set_component_member(
+        &mut self,
+        member: ComponentMember,
+        component: Option<ComponentKey>,
+    ) {
         self.component_members.retain(|(m, _)| *m != member);
         if let Some(c) = component {
             self.component_members.push((member, c));
@@ -4197,11 +4208,11 @@ impl Document {
     }
 
     /// Walk a component's parent chain (self first). Cycles are cut off defensively.
-    pub fn component_chain(&self, component: usize) -> Vec<usize> {
+    pub fn component_chain(&self, component: ComponentKey) -> Vec<ComponentKey> {
         let mut chain = Vec::new();
         let mut cur = Some(component);
         while let Some(c) = cur {
-            if chain.contains(&c) || self.components.get(c).is_none_or(|comp| comp.deleted) {
+            if chain.contains(&c) || !self.components.contains(c) {
                 break;
             }
             chain.push(c);
@@ -4213,7 +4224,7 @@ impl Document {
 
 /// Effective length unit for a component (#423): its own override, else the nearest
 /// ancestor's, else the document default.
-pub fn effective_component_length_unit(doc: &Document, component: usize) -> LengthUnit {
+pub fn effective_component_length_unit(doc: &Document, component: ComponentKey) -> LengthUnit {
     doc.component_chain(component)
         .into_iter()
         .find_map(|c| doc.components[c].length_unit)
@@ -4221,7 +4232,7 @@ pub fn effective_component_length_unit(doc: &Document, component: usize) -> Leng
 }
 
 /// Effective angle unit for a component (#423), like [`effective_component_length_unit`].
-pub fn effective_component_angle_unit(doc: &Document, component: usize) -> AngleUnit {
+pub fn effective_component_angle_unit(doc: &Document, component: ComponentKey) -> AngleUnit {
     doc.component_chain(component)
         .into_iter()
         .find_map(|c| doc.components[c].angle_unit)
@@ -4231,8 +4242,8 @@ pub fn effective_component_angle_unit(doc: &Document, component: usize) -> Angle
 /// The component a sketch's geometry belongs to (#423): resolved through the sketch's host
 /// face — a construction plane's own assignment (or, for a face-anchored plane, the host
 /// sketch's component), or the owning extrusion's assignment for a body-face sketch.
-pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<usize> {
-    fn plane_component(doc: &Document, plane: usize, depth: u8) -> Option<usize> {
+pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<ComponentKey> {
+    fn plane_component(doc: &Document, plane: usize, depth: u8) -> Option<ComponentKey> {
         if depth > 8 {
             return None;
         }
@@ -4244,7 +4255,11 @@ pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<usize> {
             ConstructionPlaneParent::Sketch(s) => sketch_component_inner(doc, s, depth + 1),
         }
     }
-    fn sketch_component_inner(doc: &Document, sketch: SketchId, depth: u8) -> Option<usize> {
+    fn sketch_component_inner(
+        doc: &Document,
+        sketch: SketchId,
+        depth: u8,
+    ) -> Option<ComponentKey> {
         if depth > 8 {
             return None;
         }
@@ -4299,7 +4314,7 @@ impl Default for Document {
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),
             default_angle_unit: AngleUnit::default(),
-            components: Vec::new(),
+            components: crate::arena::Arena::new(),
             component_members: Vec::new(),
             units: Vec::new(),
             unit_instances: crate::arena::Arena::new(),
@@ -4413,17 +4428,16 @@ mod tests {
     #[test]
     fn a_membership_entry_does_not_survive_onto_whatever_reuses_the_slot() {
         let mut doc = Document::default();
-        doc.components.push(Component {
+        let comp = doc.components.insert(Component {
             name: None,
             parent: None,
             length_unit: None,
             angle_unit: None,
-            deleted: false,
         });
         let loft = || Loft { sections: Vec::new(), mode: LoftMode::NewBody, name: None };
         let old = doc.lofts.insert(loft());
-        doc.set_component_member(ComponentMember::Loft(old), Some(0));
-        assert_eq!(doc.component_of(ComponentMember::Loft(old)), Some(0));
+        doc.set_component_member(ComponentMember::Loft(old), Some(comp));
+        assert_eq!(doc.component_of(ComponentMember::Loft(old)), Some(comp));
 
         doc.lofts.remove(old);
         let new = doc.lofts.insert(loft());

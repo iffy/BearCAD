@@ -353,7 +353,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let component = doc
                 .components
                 .get_mut(index)
-                .ok_or_else(|| format!("component {index} not found"))?;
+                .ok_or_else(|| format!("component {} not found", index.index()))?;
             component.name = stored;
         }
         SceneElement::Revolution(index) => {
@@ -459,7 +459,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         // The synthetic root has no stored filename/title to draw on (#87) — `Document`
         // doesn't carry one — so it always gets this fixed label.
         HierarchyNode::Document => "Document".to_string(),
-        HierarchyNode::Component(i) => format!("Component {i}"),
+        HierarchyNode::Component(i) => format!("Component {}", i.index()),
         // The instance's own name (set at import from the file stem) lives in
         // `element_name`; this is only the fallback for an unnamed instance (#723).
         HierarchyNode::UnitInstance(i) => format!("Unit {}", i.index()),
@@ -699,7 +699,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                 format!("Construction plane {i}")
             }
         }
-        SceneElement::Component(i) => format!("Component {i}"),
+        SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),

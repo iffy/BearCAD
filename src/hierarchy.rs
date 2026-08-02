@@ -90,7 +90,7 @@ pub enum HierarchyNode {
     DrawingProjection { drawing: usize, view: usize },
     /// A component (#423): a named group row whose member roots nest beneath it; components
     /// nest inside each other via their `parent` link.
-    Component(usize),
+    Component(crate::model::ComponentKey),
     /// A text note on a drawing page (#333), nested under its [`HierarchyNode::Drawing`].
     /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
     /// leaf with no [`SceneElement`]; clicking it opens the drawing.
@@ -256,7 +256,7 @@ pub enum SceneElement {
     },
     /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
     /// everything inside it.
-    Component(usize),
+    Component(crate::model::ComponentKey),
     /// An imported unit instance (#723): one row per placement of an imported document.
     /// Selecting, renaming, hiding, and deleting act on the instance; its contents are
     /// read-only from the importing document.
@@ -599,7 +599,7 @@ impl ElementVisibility {
     }
 
     /// Whether `component` and all its ancestors are individually visible (#423).
-    fn component_chain_visible(&self, doc: &Document, component: usize) -> bool {
+    fn component_chain_visible(&self, doc: &Document, component: crate::model::ComponentKey) -> bool {
         doc.component_chain(component)
             .into_iter()
             .all(|c| self.is_visible(SceneElement::Component(c)))
@@ -916,7 +916,9 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
 
 /// Per-component sets of graph nodes inside that component's subtree (#423), nested
 /// components included in their ancestors' sets — the areas the Graph view shades.
-pub fn component_node_sets(tree: &[HierarchyEntry]) -> Vec<(usize, HashSet<HierarchyNode>)> {
+pub fn component_node_sets(
+    tree: &[HierarchyEntry],
+) -> Vec<(crate::model::ComponentKey, HashSet<HierarchyNode>)> {
     fn collect_nodes(entry: &HierarchyEntry, out: &mut HashSet<HierarchyNode>) {
         if !matches!(entry.node, HierarchyNode::Component(_)) {
             out.insert(entry.node);
@@ -925,7 +927,10 @@ pub fn component_node_sets(tree: &[HierarchyEntry]) -> Vec<(usize, HashSet<Hiera
             collect_nodes(child, out);
         }
     }
-    fn walk(entry: &HierarchyEntry, out: &mut Vec<(usize, HashSet<HierarchyNode>)>) {
+    fn walk(
+        entry: &HierarchyEntry,
+        out: &mut Vec<(crate::model::ComponentKey, HashSet<HierarchyNode>)>,
+    ) {
         if let HierarchyNode::Component(ci) = entry.node {
             let mut nodes = HashSet::new();
             for child in &entry.children {
@@ -2169,26 +2174,25 @@ pub fn build_hierarchy(
 /// Group top-level entries into their components' entries (#423). Components render even
 /// when empty; a component whose parent chain is broken surfaces at the top level.
 fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Vec<HierarchyEntry> {
-    if doc.components.iter().all(|c| c.deleted) {
+    if doc.components.is_empty() {
         return roots;
     }
-    let member_of = |node: &HierarchyNode| -> Option<usize> {
+    let member_of = |node: &HierarchyNode| -> Option<crate::model::ComponentKey> {
         doc.component_of(component_member_for_node(node)?)
     };
-    // component index -> its (initially childless) entry.
-    let mut comp_children: HashMap<usize, Vec<HierarchyEntry>> = HashMap::new();
-    for (ci, c) in doc.components.iter().enumerate() {
-        if !c.deleted {
-            comp_children.insert(ci, Vec::new());
-        }
+    // component -> its (initially childless) entry.
+    let mut comp_children: HashMap<crate::model::ComponentKey, Vec<HierarchyEntry>> =
+        HashMap::new();
+    for ci in doc.components.keys() {
+        comp_children.insert(ci, Vec::new());
     }
     // Extract assigned entries wherever they sit (#423): an assigned element that nests
     // inside another entry's subtree (an extrusion under its sketch's plane, a body under
     // an op) moves — with its own subtree — into the component's entry.
     fn extract_members(
         entries: &mut Vec<HierarchyEntry>,
-        member_of: &impl Fn(&HierarchyNode) -> Option<usize>,
-        comp_children: &mut HashMap<usize, Vec<HierarchyEntry>>,
+        member_of: &impl Fn(&HierarchyNode) -> Option<crate::model::ComponentKey>,
+        comp_children: &mut HashMap<crate::model::ComponentKey, Vec<HierarchyEntry>>,
     ) {
         let mut i = 0;
         while i < entries.len() {
@@ -2208,7 +2212,7 @@ fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Ve
     extract_members(&mut top, &member_of, &mut comp_children);
     // Assigned entries may themselves contain nested assigned entries; extract within the
     // component buckets too (one pass per bucket is enough for direct nesting).
-    let keys: Vec<usize> = comp_children.keys().copied().collect();
+    let keys: Vec<crate::model::ComponentKey> = comp_children.keys().copied().collect();
     for c in keys {
         let mut bucket = comp_children.remove(&c).unwrap();
         extract_members(&mut bucket, &member_of, &mut comp_children);
@@ -2221,10 +2225,10 @@ fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Ve
     }
     // Attach child components to their parents, deepest-first so nested chains assemble.
     // Order components by index; children append after member elements.
-    let mut order: Vec<usize> = comp_children.keys().copied().collect();
+    let mut order: Vec<crate::model::ComponentKey> = comp_children.keys().copied().collect();
     order.sort_unstable();
     // Depth of each component (root = 0), cycles cut by component_chain.
-    let depth = |c: usize| doc.component_chain(c).len();
+    let depth = |c: crate::model::ComponentKey| doc.component_chain(c).len();
     order.sort_by_key(|&c| std::cmp::Reverse(depth(c)));
     for c in order {
         let children = comp_children.remove(&c).unwrap();
@@ -2546,7 +2550,10 @@ pub fn component_member_for_node(node: &HierarchyNode) -> Option<crate::model::C
 /// The component a scene element belongs to (#423): a direct membership for top-level
 /// kinds, or the membership of the root it nests under (a body via its producing
 /// operation/extrusion, an extrusion or image via its sketch's host plane).
-pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize> {
+pub fn owning_component(
+    doc: &Document,
+    element: &SceneElement,
+) -> Option<crate::model::ComponentKey> {
     use crate::model::ComponentMember as CM;
     match element {
         SceneElement::Component(i) => doc.components.get(*i).and_then(|c| c.parent),
@@ -2736,7 +2743,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     collect_descendants(doc, e, out);
                 }
             }
-            for (ci, comp) in doc.components.iter().enumerate() {
+            for (ci, comp) in doc.components.iter() {
                 if comp.parent == Some(index) {
                     out.insert(SceneElement::Component(ci));
                     collect_descendants(doc, SceneElement::Component(ci), out);
@@ -3771,8 +3778,8 @@ pub fn show_pane(
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
-    on_export_component: &mut impl FnMut(usize),
-    on_export_component_step: &mut impl FnMut(usize),
+    on_export_component: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
@@ -3790,14 +3797,14 @@ pub fn show_pane(
     // The current timeline rollback marker (#524), if any, and a setter (None clears it).
     rollback_marker: Option<&RollbackMarker>,
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
-    collapsed_components: &mut HashSet<usize>,
+    collapsed_components: &mut HashSet<crate::model::ComponentKey>,
     // Unit instances whose read-only contents are expanded in the List (#723); default
     // collapsed, so an instance reads as one row.
     expanded_units: &mut HashSet<crate::model::UnitInstanceKey>,
-    on_add_component: &mut impl FnMut(Option<usize>),
-    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
-    active_component: Option<usize>,
-    on_activate_component: &mut impl FnMut(Option<usize>),
+    on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
+    active_component: Option<crate::model::ComponentKey>,
+    on_activate_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
 ) {
     ui.horizontal(|ui| {
         ui.heading(PANE_TITLE);
@@ -4223,7 +4230,7 @@ fn show_graph_view(
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
-    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_edit_drawing: &mut impl FnMut(usize),
     on_rename_drawing: &mut impl FnMut(usize, String),
@@ -4625,12 +4632,12 @@ fn truncate_label(label: &str, max_width: f32, painter: &egui::Painter) -> Strin
 fn component_list_rows(
     tree: &[HierarchyEntry],
     doc: &Document,
-    collapsed: &HashSet<usize>,
+    collapsed: &HashSet<crate::model::ComponentKey>,
 ) -> Vec<(HierarchyNode, usize)> {
     fn level(
         entries: &[HierarchyEntry],
         doc: &Document,
-        collapsed: &HashSet<usize>,
+        collapsed: &HashSet<crate::model::ComponentKey>,
         base: usize,
         out: &mut Vec<(HierarchyNode, usize)>,
     ) {
@@ -4664,7 +4671,7 @@ fn component_list_rows(
 fn show_component_row(
     ui: &mut egui::Ui,
     doc: &Document,
-    ci: usize,
+    ci: crate::model::ComponentKey,
     depth: usize,
     visibility: &mut ElementVisibility,
     selection: &SceneSelection,
@@ -4674,15 +4681,15 @@ fn show_component_row(
     style_selection: bool,
     highlight_elements: &HashSet<SceneElement>,
     rolled_back: &HashSet<SceneElement>,
-    collapsed_components: &mut HashSet<usize>,
-    active_component: Option<usize>,
+    collapsed_components: &mut HashSet<crate::model::ComponentKey>,
+    active_component: Option<crate::model::ComponentKey>,
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_delete_element: &mut impl FnMut(SceneElement),
-    on_add_component: &mut impl FnMut(Option<usize>),
-    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
-    on_export_component: &mut impl FnMut(usize),
-    on_export_component_step: &mut impl FnMut(usize),
+    on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
+    on_export_component: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
 ) {
     let element = SceneElement::Component(ci);
     let visible = visibility.effective_visible(doc, element.clone());
@@ -4859,9 +4866,9 @@ fn show_row(
     highlight_elements: &HashSet<SceneElement>,
     armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
-    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
-    active_component: Option<usize>,
-    on_activate_component: &mut impl FnMut(Option<usize>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
+    active_component: Option<crate::model::ComponentKey>,
+    on_activate_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
     // otherwise dispatched through the scene graph — so it gets a minimal, always-shown row
@@ -4873,8 +4880,7 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let active_root =
-                active_component.is_none() && doc.components.iter().any(|c| !c.deleted);
+            let active_root = active_component.is_none() && !doc.components.is_empty();
             if active_root {
                 // With components present, mark where new elements land (#429): the
                 // document root, unless a component is active. Painted dot, not a `●`
@@ -5298,7 +5304,7 @@ fn element_context_menu(
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
-    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_delete_element: &mut impl FnMut(SceneElement),
 ) {
@@ -5395,18 +5401,13 @@ fn element_context_menu(
     }
     // Move to component (#423): every top-level row can be filed into a component
     // (or back to the document root) from its context menu; dragging works too.
-    if component_member_node(node)
-        && doc.components.iter().any(|c| !c.deleted)
-    {
+    if component_member_node(node) && !doc.components.is_empty() {
         ui.menu_button("Move to", |ui| {
             if ui.button("Document").clicked() {
                 on_move_to_component(element.clone(), None);
                 ui.close();
             }
-            for (ci, c) in doc.components.iter().enumerate() {
-                if c.deleted {
-                    continue;
-                }
+            for (ci, _c) in doc.components.iter() {
                 if ui
                     .button(node_label(doc, HierarchyNode::Component(ci)))
                     .clicked()
@@ -5462,6 +5463,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
@@ -5543,15 +5545,14 @@ mod tests {
         );
 
         // A component lights every body under it.
-        doc.components.push(Component {
+        doc.components.insert(Component {
             name: None,
             parent: None,
             length_unit: None,
             angle_unit: None,
-            deleted: false,
         });
-        doc.component_members.push((ComponentMember::Body(bkey(1)), 0));
-        assert_eq!(produced_bodies(&doc, &SceneElement::Component(0)), vec![bkey(1)]);
+        doc.component_members.push((ComponentMember::Body(bkey(1)), ckey(0)));
+        assert_eq!(produced_bodies(&doc, &SceneElement::Component(ckey(0))), vec![bkey(1)]);
 
         // A joint has no descendants at all — what it holds together is the answer.
         doc.joints.insert(crate::model::Joint {
@@ -5860,23 +5861,22 @@ mod tests {
     fn components_group_roots_in_hierarchy_and_list() {
         use crate::model::ComponentMember as CM;
         let mut doc = Document::default();
-        doc.components.push(crate::model::Component {
+        doc.components.insert(crate::model::Component {
             name: Some("Frame".to_string()),
             parent: None,
             length_unit: None,
             angle_unit: None,
-            deleted: false,
         });
         let plane = doc.construction_planes.len();
         doc.construction_planes.push(crate::face::default_xy_plane());
-        doc.set_component_member(CM::ConstructionPlane(plane), Some(0));
+        doc.set_component_member(CM::ConstructionPlane(plane), Some(ckey(0)));
 
         let tree = build_hierarchy(&doc, None);
         let root = &tree[0];
         let comp = root
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Component(0))
+            .find(|e| e.node == HierarchyNode::Component(ckey(0)))
             .expect("component entry present");
         assert!(
             comp.children.iter().any(|e| e.node == HierarchyNode::ConstructionPlane(plane)),
@@ -5889,14 +5889,14 @@ mod tests {
 
         // List rows: the component at depth 1, its plane at depth 2; collapsing hides it.
         let rows = component_list_rows(&tree, &doc, &HashSet::new());
-        let comp_row = rows.iter().find(|(n, _)| *n == HierarchyNode::Component(0)).unwrap();
+        let comp_row = rows.iter().find(|(n, _)| *n == HierarchyNode::Component(ckey(0))).unwrap();
         assert_eq!(comp_row.1, 1);
         let plane_row = rows
             .iter()
             .find(|(n, _)| *n == HierarchyNode::ConstructionPlane(plane))
             .unwrap();
         assert_eq!(plane_row.1, 2, "component contents indent one level");
-        let collapsed: HashSet<usize> = [0].into_iter().collect();
+        let collapsed: HashSet<crate::model::ComponentKey> = [ckey(0)].into_iter().collect();
         let rows = component_list_rows(&tree, &doc, &collapsed);
         assert!(
             !rows.iter().any(|(n, _)| *n == HierarchyNode::ConstructionPlane(plane)),

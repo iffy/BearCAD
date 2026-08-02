@@ -66,7 +66,7 @@ element — and an imported unit instance as the **assembly** icon (#923): two o
 components meshed together, the back one in the accent blue, the front in the theme colour.
 
 **Implemented today (#423) — components as organizational groups:** `model::Component`
-(`name`, `parent`, per-component `length_unit`/`angle_unit` overrides, tombstoned) plus
+(`name`, `parent`, per-component `length_unit`/`angle_unit` overrides) plus
 `Document::component_members` mapping top-level elements
 (`model::ComponentMember`: planes, extrusions, bodies, lofts, boolean/move/mirror/repeat/
 slice/edge-treatment ops, revolutions, sweeps, drawings) to a component; the document acts
@@ -74,6 +74,14 @@ as the root component. Grouping never changes geometry. Each `ComponentMember` v
 carries the identity its own collection uses — an index for a `Vec`-backed one, a key for
 an arena-backed one (#1055) — so the kind and the reference are one value that cannot
 disagree.
+
+**Component identity (#1055):** `Document::components` is an `arena::Arena`, and a
+component is named by a `ComponentKey` — `SceneElement::Component`,
+`HierarchyNode::Component`, `JointRef::Component`, a component's own `parent`, the
+membership entries, and `AppState::active_component`. Deleting a component removes it and
+re-homes its members and child components to its parent (grouping is organizational, so
+nothing inside is deleted). A script names a component by its **ordinal** among the live
+ones, resolved to a key at the script boundary.
 
 - **Active component (#429):** `AppState::active_component` (UI-only) is set when a
   component is created (the new component is also selected) or clicked; while set, the

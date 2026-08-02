@@ -1594,8 +1594,8 @@ pub enum Action {
     ExportStepBody { path: String, body: crate::model::BodyKey },
     /// Export every body inside a component (and its nested components) to an STL/STEP file
     /// (#521) — used by the component row's context menu.
-    ExportComponentStl { path: String, component: usize },
-    ExportComponentStep { path: String, component: usize },
+    ExportComponentStl { path: String, component: crate::model::ComponentKey },
+    ExportComponentStep { path: String, component: crate::model::ComponentKey },
     /// Import an STL file (ASCII or binary, #70) as a new body.
     ImportStl { path: String },
     /// Import a PNG/JPEG as a tracing image (#163/#169) on a construction plane (defaults
@@ -1701,17 +1701,17 @@ pub enum Action {
     /// Create a component (#423), optionally nested under a parent component.
     CreateComponent {
         name: Option<String>,
-        parent: Option<usize>,
+        parent: Option<crate::model::ComponentKey>,
     },
     /// Move a top-level element (or a component) into a component — or with `None`, back to
     /// the document root (#423).
     MoveToComponent {
         element: crate::hierarchy::SceneElement,
-        component: Option<usize>,
+        component: Option<crate::model::ComponentKey>,
     },
     /// Set a component's unit overrides (#423); `None` inherits from the parent chain.
     SetComponentUnits {
-        component: usize,
+        component: crate::model::ComponentKey,
         length: Option<crate::value::LengthUnit>,
         angle: Option<crate::value::AngleUnit>,
     },
@@ -3114,7 +3114,7 @@ pub struct AppState {
     /// The active component (#429): set when a component is created or selected; newly
     /// created top-level elements are filed into it. `None` = the document root. UI-only
     /// state (never persisted); cleared when the component is deleted.
-    pub active_component: Option<usize>,
+    pub active_component: Option<crate::model::ComponentKey>,
     pub tool: Tool,
     pub sketch_session: Option<SketchSession>,
     pub cam: Camera,
@@ -4353,7 +4353,7 @@ impl AppState {
     /// STL of every body in a component (and its nested components) as bytes (#521), for the
     /// web build's download path.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn export_component_stl_bytes(&self, ci: usize) -> Result<Vec<u8>, String> {
+    pub fn export_component_stl_bytes(&self, ci: crate::model::ComponentKey) -> Result<Vec<u8>, String> {
         let bodies = self.component_body_indices(ci);
         let mesh = self
             .combined_body_mesh(&bodies)
@@ -4363,7 +4363,7 @@ impl AppState {
 
     /// STEP (faceted BREP) of every body in a component as bytes (#521), for the web build.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn export_component_step_bytes(&self, ci: usize) -> Result<Vec<u8>, String> {
+    pub fn export_component_step_bytes(&self, ci: crate::model::ComponentKey) -> Result<Vec<u8>, String> {
         let bodies = self.component_body_indices(ci);
         let mesh = self
             .combined_body_mesh(&bodies)
@@ -4941,7 +4941,7 @@ impl AppState {
     /// Every live body that belongs to component `ci` or one of its nested components (#521),
     /// in body-index order. A body's component is resolved through its producing operation, so
     /// this covers bodies filed into the component directly and via their source.
-    pub fn component_body_indices(&self, ci: usize) -> Vec<crate::model::BodyKey> {
+    pub fn component_body_indices(&self, ci: crate::model::ComponentKey) -> Vec<crate::model::BodyKey> {
         self.doc
             .bodies
             .keys()
@@ -4958,12 +4958,12 @@ impl AppState {
     }
 
     /// A filename-friendly default name for a component export (#521): its name, or a fallback.
-    pub fn component_export_name(&self, ci: usize) -> String {
+    pub fn component_export_name(&self, ci: crate::model::ComponentKey) -> String {
         self.doc
             .components
             .get(ci)
             .and_then(|c| c.name.clone())
-            .unwrap_or_else(|| format!("component-{ci}"))
+            .unwrap_or_else(|| format!("component-{}", ci.index()))
     }
 
     /// Concatenate the solid meshes of `bodies` into one mesh (#521). Like the non-kernel
@@ -5623,8 +5623,8 @@ fn validate_joint_inputs(
                 }
             }
             crate::model::JointRef::Component(ci) => {
-                if doc.components.get(ci).filter(|c| !c.deleted).is_none() {
-                    return Err(format!("Component {ci} not found"));
+                if !doc.components.contains(ci) {
+                    return Err(format!("Component {} not found", ci.index()));
                 }
             }
             crate::model::JointRef::UnitInstance(ui) => {
@@ -5948,7 +5948,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::DrawingElement { drawing, element } => {
             format!("{element:?} on drawing {drawing}")
         }
-        SceneElement::Component(i) => format!("Component {i}"),
+        SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
@@ -6255,12 +6255,7 @@ impl AppState {
         let result = self.apply_inner(action);
         self.undo_group_depth = self.undo_group_depth.saturating_sub(1);
         if let (Some(before_members), Some(active)) = (members_before, self.active_component) {
-            if self
-                .doc
-                .components
-                .get(active)
-                .is_some_and(|c| !c.deleted)
-            {
+            if self.doc.components.contains(active) {
                 assign_new_members(&mut self.doc, &before_members, active);
             } else {
                 self.active_component = None;
@@ -12903,22 +12898,20 @@ label_hidden: false,
             }
             Action::CreateComponent { name, parent } => {
                 if let Some(p) = parent {
-                    if self.doc.components.get(p).is_none_or(|c| c.deleted) {
-                        let e = format!("Component {p} not found");
+                    if !self.doc.components.contains(p) {
+                        let e = format!("Component {} not found", p.index());
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
                 }
-                self.doc.components.push(crate::model::Component {
+                let index = self.doc.components.insert(crate::model::Component {
                     name: name.filter(|n| !n.trim().is_empty()),
                     parent,
                     length_unit: None,
                     angle_unit: None,
-                    deleted: false,
                 });
                 // The new component becomes selected and active (#429): what you create
                 // next lands inside it.
-                let index = self.doc.components.len() - 1;
                 self.scene_selection.clear();
                 self.scene_selection.insert(crate::hierarchy::SceneElement::Component(index));
                 self.active_component = Some(index);
@@ -12928,8 +12921,8 @@ label_hidden: false,
             Action::MoveToComponent { element, component } => {
                 use crate::hierarchy::SceneElement;
                 if let Some(c) = component {
-                    if self.doc.components.get(c).is_none_or(|comp| comp.deleted) {
-                        let e = format!("Component {c} not found");
+                    if !self.doc.components.contains(c) {
+                        let e = format!("Component {} not found", c.index());
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
@@ -12937,8 +12930,8 @@ label_hidden: false,
                 // A component moves by reparenting (cycles refused); anything else moves by
                 // membership, resolved to a top-level member kind.
                 if let SceneElement::Component(i) = element {
-                    if self.doc.components.get(i).is_none_or(|c| c.deleted) {
-                        let e = format!("Component {i} not found");
+                    if !self.doc.components.contains(i) {
+                        let e = format!("Component {} not found", i.index());
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
@@ -12968,13 +12961,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::SetComponentUnits { component, length, angle } => {
-                let Some(c) = self
-                    .doc
-                    .components
-                    .get_mut(component)
-                    .filter(|c| !c.deleted)
-                else {
-                    let e = format!("Component {component} not found");
+                let Some(c) = self.doc.components.get_mut(component) else {
+                    let e = format!("Component {} not found", component.index());
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -15765,7 +15753,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
 fn assign_new_members(
     doc: &mut Document,
     before: &[crate::model::ComponentMember],
-    component: usize,
+    component: crate::model::ComponentKey,
 ) {
     let before: std::collections::HashSet<_> = before.iter().copied().collect();
     for member in assignable_members(doc) {
@@ -15960,6 +15948,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::sketch_op_key_for_slot as skop;
@@ -16092,13 +16081,13 @@ mod tests {
         use crate::model::ComponentMember as CM;
         let mut state = AppState::default();
         state.apply(Action::CreateComponent { name: Some("Frame".to_string()), parent: None });
-        assert_eq!(state.active_component, Some(0));
-        assert!(state.scene_selection.is_selected(SceneElement::Component(0)));
+        assert_eq!(state.active_component, Some(ckey(0)));
+        assert!(state.scene_selection.is_selected(SceneElement::Component(ckey(0))));
 
         // A plane created now lands in the component.
         state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 20.0 });
         let plane = state.doc.construction_planes.len() - 1;
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(0));
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(ckey(0)));
 
         // Deactivating (the Document row) stops the filing.
         state.active_component = None;
@@ -16436,7 +16425,7 @@ mod tests {
         use crate::model::ComponentMember as CM;
         let mut state = AppState::default();
         state.apply(Action::CreateComponent { name: Some("Frame".to_string()), parent: None }); // 0
-        state.apply(Action::CreateComponent { name: None, parent: Some(0) }); // 1 (nested in 0)
+        state.apply(Action::CreateComponent { name: None, parent: Some(ckey(0)) }); // 1 (nested in 0)
         state.apply(Action::CreateComponent { name: Some("Other".to_string()), parent: None }); // 2
 
         // Three imported-mesh bodies (each a tetrahedron so meshing yields triangles).
@@ -16450,31 +16439,31 @@ mod tests {
             state.import_mesh_body(name, tetra.clone(), None);
         }
         // Body 0 → Frame (0), body 1 → nested (1), body 2 → the unrelated Other (2).
-        state.doc.set_component_member(CM::Body(bkey(0)), Some(0));
-        state.doc.set_component_member(CM::Body(bkey(1)), Some(1));
-        state.doc.set_component_member(CM::Body(bkey(2)), Some(2));
+        state.doc.set_component_member(CM::Body(bkey(0)), Some(ckey(0)));
+        state.doc.set_component_member(CM::Body(bkey(1)), Some(ckey(1)));
+        state.doc.set_component_member(CM::Body(bkey(2)), Some(ckey(2)));
 
         // Exporting Frame gathers its own body and the nested component's, not Other's.
-        let mut frame = state.component_body_indices(0);
+        let mut frame = state.component_body_indices(ckey(0));
         frame.sort_unstable();
         assert_eq!(frame, vec![bkey(0), bkey(1)], "Frame export = its body + the nested body");
-        assert_eq!(state.component_body_indices(1), vec![bkey(1)], "the nested component alone");
-        assert_eq!(state.component_body_indices(2), vec![bkey(2)], "Other is independent");
+        assert_eq!(state.component_body_indices(ckey(1)), vec![bkey(1)], "the nested component alone");
+        assert_eq!(state.component_body_indices(ckey(2)), vec![bkey(2)], "Other is independent");
 
         // The export produces real geometry.
         let stl = state
-            .export_component_stl_bytes(0)
+            .export_component_stl_bytes(ckey(0))
             .expect("frame STL export");
         assert!(!stl.is_empty(), "STL bytes produced");
         assert!(
-            state.export_component_step_bytes(0).is_ok_and(|b| !b.is_empty()),
+            state.export_component_step_bytes(ckey(0)).is_ok_and(|b| !b.is_empty()),
             "STEP bytes produced"
         );
 
         // An empty component reports an error rather than an empty file.
         state.apply(Action::CreateComponent { name: Some("Empty".to_string()), parent: None }); // 3
-        assert!(state.component_body_indices(3).is_empty());
-        assert!(state.export_component_stl_bytes(3).is_err());
+        assert!(state.component_body_indices(ckey(3)).is_empty());
+        assert!(state.export_component_stl_bytes(ckey(3)).is_err());
     }
 
     /// #423: components group elements; membership, nesting, visibility cascade, and
@@ -16486,14 +16475,14 @@ mod tests {
         let mut state = AppState::default();
 
         state.apply(Action::CreateComponent { name: Some("Frame".to_string()), parent: None });
-        state.apply(Action::CreateComponent { name: None, parent: Some(0) });
+        state.apply(Action::CreateComponent { name: None, parent: Some(ckey(0)) });
         assert_eq!(state.doc.components.len(), 2);
-        assert_eq!(state.doc.components[1].parent, Some(0));
+        assert_eq!(state.doc.components[ckey(1)].parent, Some(ckey(0)));
 
         // A cycle is refused.
         let r = state.apply(Action::MoveToComponent {
-            element: SceneElement::Component(0),
-            component: Some(1),
+            element: SceneElement::Component(ckey(0)),
+            component: Some(ckey(1)),
         });
         assert!(matches!(r, ActionResult::Err(_)), "cycle must be refused");
 
@@ -16503,26 +16492,26 @@ mod tests {
         let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(plane));
         state.apply(Action::MoveToComponent {
             element: SceneElement::ConstructionPlane(plane),
-            component: Some(1),
+            component: Some(ckey(1)),
         });
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(1));
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(ckey(1)));
 
         // Hiding the OUTER component hides the plane and sketch inside the inner one.
         assert!(state
             .element_visibility
             .effective_visible(&state.doc, SceneElement::ConstructionPlane(plane)));
-        state.element_visibility.set_visible(SceneElement::Component(0), false);
+        state.element_visibility.set_visible(SceneElement::Component(ckey(0)), false);
         assert!(!state
             .element_visibility
             .effective_visible(&state.doc, SceneElement::ConstructionPlane(plane)));
         assert!(!state
             .element_visibility
             .effective_visible(&state.doc, SceneElement::Sketch(sketch)));
-        state.element_visibility.set_visible(SceneElement::Component(0), true);
+        state.element_visibility.set_visible(SceneElement::Component(ckey(0)), true);
 
         // Units: the sketch inherits the outer component's override through the chain.
         state.apply(Action::SetComponentUnits {
-            component: 0,
+            component: ckey(0),
             length: Some(crate::value::LengthUnit::In),
             angle: None,
         });
@@ -16532,7 +16521,7 @@ mod tests {
         );
         // The inner component's own override wins over the outer's.
         state.apply(Action::SetComponentUnits {
-            component: 1,
+            component: ckey(1),
             length: Some(crate::value::LengthUnit::Cm),
             angle: None,
         });
@@ -16542,9 +16531,9 @@ mod tests {
         );
 
         // Deleting the inner component re-homes its member to the outer one.
-        state.apply(Action::DeleteElement { element: SceneElement::Component(1) });
-        assert!(state.doc.components[1].deleted);
-        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(0));
+        state.apply(Action::DeleteElement { element: SceneElement::Component(ckey(1)) });
+        assert!(!state.doc.components.contains(ckey(1)));
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(ckey(0)));
         assert_eq!(
             crate::model::effective_length_unit(&state.doc, sketch),
             crate::value::LengthUnit::In,
