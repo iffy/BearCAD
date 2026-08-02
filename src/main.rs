@@ -16,6 +16,8 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports, unused_variables))]
 
 mod actions;
+#[cfg(not(target_arch = "wasm32"))]
+mod window_probe;
 mod projection;
 mod style_swatches;
 mod app_icon;
@@ -234,6 +236,16 @@ fn tick_launch_maximize(
         // presentation fault rather than a startup one. Without a line here the last thing
         // stderr says is "frame 1", which reads like a stall whether or not it was.
         diag::info("launch: ready");
+        // Come to the front (#1032). An unbundled binary does not activate itself on macOS,
+        // and a window that never becomes frontmost is reported **occluded** by the window
+        // server, which then stops handing it drawable updates — the app keeps painting into
+        // a surface nothing displays and the window stays grey. Activating is also what makes
+        // a scripted screenshot reliable: the same occlusion is why captures intermittently
+        // reported that the window never painted.
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::window_probe::activate_app() {
+            diag::log("launch: asked the window server to bring us to the front");
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         // The resize maximize causes often needs a second push to reconfigure the surface
         // on a cold Metal start (#1032).
@@ -11197,6 +11209,16 @@ impl eframe::App for App {
                     vp.maximized,
                 ));
             });
+            // What the window server says, which is the only side of this egui cannot see
+            // (#1032). Sampled here because AppKit is main-thread only and the watchdog is
+            // not; throttled because a grey window stays grey — one sample a second is
+            // plenty, and the answer is only ever read on failure.
+            #[cfg(not(target_arch = "wasm32"))]
+            if diag::frames_drawn() % 120 == 0 {
+                if let Some(state) = window_probe::appkit_window_state() {
+                    diag::note_platform_window_state(state);
+                }
+            }
         }
         // Everything below still works off the context, so clone it out once.
         let ctx = &ui.ctx().clone();

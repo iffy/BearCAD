@@ -77,7 +77,7 @@ features = ["rwh_06"]
 # between them (#1023). Same multi-process shape; just coordinated activation.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSEvent", "libc", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSEvent", "NSApplication", "NSWindow", "NSView", "NSResponder", "libc", "block2"] }
 block2 = "0.6"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

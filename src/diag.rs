@@ -213,6 +213,17 @@ pub fn note_window_state(state: impl std::fmt::Display) {
     }
 }
 
+/// What the **window server** says, as opposed to what egui believes (#1032). Separate
+/// because it answers a different question — whether the window is on screen at all — and
+/// because it is sampled less often.
+static PLATFORM_WINDOW_STATE: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn note_platform_window_state(state: impl std::fmt::Display) {
+    if let Ok(mut slot) = PLATFORM_WINDOW_STATE.lock() {
+        *slot = Some(state.to_string());
+    }
+}
+
 pub fn frame(size: (f32, f32), gpu_viewport: bool) {
     // A window that maximizes after launch, or one whose surface never follows a resize,
     // both look like "frame 1 — 960×640" and then silence. Report the size *changing*, not
@@ -391,6 +402,9 @@ fn presentation_snapshot() -> String {
     }
     if let Some(state) = WINDOW_STATE.lock().ok().and_then(|s| s.clone()) {
         out.push_str(&format!(" Window: {state}."));
+    }
+    if let Some(state) = PLATFORM_WINDOW_STATE.lock().ok().and_then(|s| s.clone()) {
+        out.push_str(&format!(" {state}."));
     }
     out.push_str(&where_to_look());
     out
