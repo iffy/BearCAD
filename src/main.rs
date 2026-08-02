@@ -16,6 +16,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports, unused_variables))]
 
 mod actions;
+mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_probe;
 mod projection;
