@@ -2610,7 +2610,8 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
 /// created (the last entry in `doc.lofts`) — `Action::CommitLoft` carries no fields, so
 /// like `instruction_for_new_extrusion` the sections come from post-commit state.
 pub fn instruction_for_new_loft(doc: &crate::model::Document) -> Option<Instruction> {
-    let loft = doc.lofts.last()?;
+    // Slot order is creation order here, so the newest loft is the last live one.
+    let loft = doc.lofts.values().last()?;
     let (body, bodies) = match &loft.mode {
         crate::model::LoftMode::NewBody => {
             (crate::actions::RevolveBodyChoice::NewBody, Vec::new())

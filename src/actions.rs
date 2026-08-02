@@ -9933,7 +9933,6 @@ impl AppState {
                     sections: crate::extrude::order_loft_sections(&self.doc, cl.sections.clone()),
                     mode: crate::model::LoftMode::NewBody,
                     name: None,
-                    deleted: false,
                 };
                 if crate::extrude::loft_mesh(&self.doc, &loft).is_none() {
                     self.creating_loft = Some(cl);
@@ -9979,10 +9978,10 @@ impl AppState {
                 };
                 let count = loft.sections.len();
                 let mode = loft.mode.clone();
-                self.doc.lofts.push(loft);
+                let loft_key = self.doc.lofts.insert(loft);
                 if matches!(mode, crate::model::LoftMode::NewBody) {
                     self.doc.bodies.push(crate::model::Body {
-                        source: crate::model::BodySource::Loft(self.doc.lofts.len() - 1),
+                        source: crate::model::BodySource::Loft(loft_key),
                         material: None,
                         name: None,
                         deleted: false,
@@ -19365,10 +19364,11 @@ mod tests {
         }
         assert!(matches!(state.apply(Action::CommitLoft), ActionResult::Ok));
         assert_eq!(state.doc.lofts.len(), 1);
-        assert_eq!(state.doc.lofts[0].sections.len(), 2);
+        let loft_key = state.doc.lofts.keys().next().expect("one loft");
+        assert_eq!(state.doc.lofts[loft_key].sections.len(), 2);
         assert_eq!(
             state.doc.bodies.last().map(|b| b.source.clone()),
-            Some(crate::model::BodySource::Loft(0))
+            Some(crate::model::BodySource::Loft(loft_key))
         );
         assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Loft));
         assert!(state.creating_loft.is_none());

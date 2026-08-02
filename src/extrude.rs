@@ -740,7 +740,7 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
             occt_sweep_shape(doc, doc.sweeps.get(fi).filter(|f| !f.deleted)?)?
         }
         crate::model::BodySource::Loft(li) => {
-            occt_loft_shape(doc, doc.lofts.get(li).filter(|l| !l.deleted)?)?
+            occt_loft_shape(doc, doc.lofts.get(li)?)?
         }
         crate::model::BodySource::Boolean { op, solid } => {
             return occt_boolean_output_shape(doc, op, solid);
@@ -3155,11 +3155,12 @@ pub fn occt_loft_shape(
 }
 
 /// The lofts fusing into (`false`) or cutting (`true`) `body_index` (#479).
-pub fn lofts_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)> {
+pub fn lofts_targeting(
+    doc: &Document,
+    body_index: usize,
+) -> Vec<(crate::model::LoftKey, bool)> {
     doc.lofts
         .iter()
-        .enumerate()
-        .filter(|(_, l)| !l.deleted)
         .filter_map(|(li, l)| match &l.mode {
             crate::model::LoftMode::AddTo(bodies) if bodies.contains(&body_index) => {
                 Some((li, false))
@@ -4527,7 +4528,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         return sweep_mesh(doc, fp);
     }
     if let crate::model::BodySource::Loft(li) = body.source {
-        let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
+        let loft = doc.lofts.get(li)?;
         return loft_mesh(doc, loft);
     }
     let mut mesh = SolidMesh::default();
@@ -8961,14 +8962,13 @@ mod tests {
         ));
         let top = doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1));
         doc.circles.push(Circle::from_local_center_radius(top, 0.0, 0.0, 3.0, 0.0));
-        doc.lofts.push(crate::model::Loft {
+        doc.lofts.insert(crate::model::Loft {
             sections: vec![
                 crate::model::LoftSection { sketch, face: ExtrudeFace::Circle(0) },
                 crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
             ],
             mode: crate::model::LoftMode::Cut(vec![0]),
             name: None,
-            deleted: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let plain = 60.0 * 60.0 * 5.0;
@@ -9008,7 +9008,6 @@ mod tests {
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,
-            deleted: false,
         };
         let mesh = loft_mesh(&doc, &loft).expect("loft builds");
         let (min, max) = mesh.bounds().unwrap();
@@ -9051,7 +9050,6 @@ mod tests {
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,
-            deleted: false,
         };
         let mesh = loft_mesh(&doc, &loft).expect("two closed sections should loft");
         // Cross section is the inscribed n-gon of the r=5 circle, so slightly under pi*25.
@@ -9078,7 +9076,6 @@ mod tests {
             }],
             mode: crate::model::LoftMode::NewBody,
             name: None,
-            deleted: false,
         };
         assert!(loft_mesh(&doc, &loft).is_none());
     }

@@ -42,6 +42,17 @@ impl<T> Key<T> {
     pub fn generation(self) -> u32 {
         self.generation
     }
+
+    /// The key as one integer, for the few tables that still store element references
+    /// untyped (component membership, #1055). Lossless and round-trips through
+    /// [`Key::from_bits`]; not an index, and not usable as one.
+    pub fn to_bits(self) -> u64 {
+        ((self.index as u64) << 32) | self.generation as u64
+    }
+
+    pub fn from_bits(bits: u64) -> Self {
+        Self::new((bits >> 32) as u32, bits as u32)
+    }
 }
 
 // Derived impls would demand `T: Clone`/`T: PartialEq` and so on; a key's identity is its two
@@ -233,6 +244,33 @@ impl<T> std::ops::IndexMut<Key<T>> for Arena<T> {
     }
 }
 
+impl<T> Arena<T> {
+    /// Rebuild from elements that already have keys — a file's contents (#1055). The keys are
+    /// preserved exactly, so every reference stored elsewhere in the document still resolves;
+    /// slots no entry claims are free for reuse.
+    pub fn from_keyed(entries: impl IntoIterator<Item = (Key<T>, T)>) -> Self {
+        let entries: Vec<(Key<T>, T)> = entries.into_iter().collect();
+        let mut arena = Self::new();
+        let Some(top) = entries.iter().map(|(k, _)| k.index).max() else {
+            return arena;
+        };
+        arena.slots = (0..=top).map(|_| Slot::Vacant { generation: 0 }).collect();
+        for (key, value) in entries {
+            arena.slots[key.index as usize] =
+                Slot::Occupied { generation: key.generation, value };
+            arena.len += 1;
+        }
+        arena.free = arena
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s, Slot::Vacant { .. }))
+            .map(|(i, _)| i as u32)
+            .collect();
+        arena
+    }
+}
+
 impl<T> FromIterator<T> for Arena<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut arena = Self::new();
@@ -383,6 +421,19 @@ mod tests {
         assert_ne!(fresh, b, "the live key is not reissued");
         assert_eq!(back.get(b), Some(&2), "and still resolves to its own element");
         assert_eq!(back.get(fresh), Some(&3));
+    }
+
+    #[test]
+    fn a_key_round_trips_through_its_bit_form() {
+        let mut arena = Arena::new();
+        let a = arena.insert("a");
+        arena.remove(a);
+        let b = arena.insert("b");
+        for key in [a, b] {
+            assert_eq!(Key::<&str>::from_bits(key.to_bits()), key);
+        }
+        // The two share a slot and differ only by generation; the packing must keep them apart.
+        assert_ne!(a.to_bits(), b.to_bits());
     }
 
     #[test]

@@ -16472,7 +16472,6 @@ fn build_viewport_scene_input<'a>(
             sections: extrude::order_loft_sections(doc, cl.sections.clone()),
             mode: model::LoftMode::NewBody,
             name: None,
-            deleted: false,
         };
         extrude::loft_mesh(doc, &loft)
     });

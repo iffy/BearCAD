@@ -244,7 +244,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "material", &doc.materials)?;
     save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
-    save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
+    save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
     save_indexed_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
     save_indexed_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
@@ -280,6 +280,47 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Save an arena's live elements, one row each, keyed by [`crate::arena::Key::to_bits`]
+/// rather than by position (#1055) — position is no longer identity, so the file has to
+/// carry the key itself or a reload would hand every element a different one.
+fn save_arena_nodes<T: serde::Serialize>(
+    tx: &rusqlite::Transaction<'_>,
+    row_id: &mut i64,
+    kind: &str,
+    arena: &crate::arena::Arena<T>,
+) -> Result<()> {
+    for (key, entity) in arena.iter() {
+        let payload = serde_json::to_string(&(key, entity)).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO dag_nodes (id, component_id, kind, payload)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![*row_id, key.to_bits() as i64, kind, payload],
+        )
+        .map_err(|e| e.to_string())?;
+        *row_id += 1;
+    }
+    Ok(())
+}
+
+/// Rebuild an arena from the rows [`save_arena_nodes`] wrote, keys intact.
+fn load_arena_entities<T: serde::de::DeserializeOwned>(
+    conn: &rusqlite::Connection,
+    kind: &str,
+) -> Result<crate::arena::Arena<T>> {
+    let mut stmt = conn
+        .prepare("SELECT payload FROM dag_nodes WHERE kind = ?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([kind], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut entries: Vec<(crate::arena::Key<T>, T)> = Vec::new();
+    for row in rows {
+        let payload = row.map_err(|e| e.to_string())?;
+        entries.push(serde_json::from_str(&payload).map_err(|e| e.to_string())?);
+    }
+    Ok(crate::arena::Arena::from_keyed(entries))
 }
 
 fn save_indexed_nodes<T: serde::Serialize>(
@@ -542,7 +583,7 @@ pub fn open(path: &str) -> Result<Document> {
     let materials = load_indexed_entities(&conn, "material")?;
     let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
-    let lofts = load_indexed_entities(&conn, "loft")?;
+    let lofts = load_arena_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
     let primitives = load_indexed_entities(&conn, "primitive")?;
     let sweeps = load_indexed_entities(&conn, "sweep")?;
@@ -776,6 +817,57 @@ mod tests {
     }
 
     /// A `.json` path saves the web JSON codec, and `open` sniffs and loads it — the
+    /// #1055: an arena-backed collection survives both file formats with its keys intact —
+    /// a reload must not renumber elements, or every reference stored elsewhere in the
+    /// document would point at the wrong one.
+    #[test]
+    fn loft_keys_survive_a_save_and_reload() {
+        let mut doc = Document::default();
+        let first = doc.lofts.insert(crate::model::Loft {
+            sections: Vec::new(),
+            mode: crate::model::LoftMode::NewBody,
+            name: Some("first".to_string()),
+        });
+        let doomed = doc.lofts.insert(crate::model::Loft {
+            sections: Vec::new(),
+            mode: crate::model::LoftMode::NewBody,
+            name: Some("doomed".to_string()),
+        });
+        let last = doc.lofts.insert(crate::model::Loft {
+            sections: Vec::new(),
+            mode: crate::model::LoftMode::NewBody,
+            name: Some("last".to_string()),
+        });
+        // Removed for real — the tombstone this replaces would have left it in the file.
+        assert!(doc.lofts.remove(doomed).is_some());
+        assert_eq!(doc.lofts.len(), 2);
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_loft_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.lofts.len(), 2, "{suffix}: the removed loft stayed gone");
+            assert_eq!(
+                loaded.lofts.get(first).and_then(|l| l.name.as_deref()),
+                Some("first"),
+                "{suffix}: the first key still resolves to its own loft"
+            );
+            assert_eq!(
+                loaded.lofts.get(last).and_then(|l| l.name.as_deref()),
+                Some("last"),
+                "{suffix}: and so does the one that used to shift when its neighbour went"
+            );
+            assert!(
+                loaded.lofts.get(doomed).is_none(),
+                "{suffix}: a key to a removed loft does not come back to life"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// `?open=<url>` document a screenshot scene publishes.
     #[test]
     fn json_path_saves_the_web_codec() {

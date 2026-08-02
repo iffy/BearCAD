@@ -8988,11 +8988,12 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.lofts.len(), 1);
-        assert_eq!(state.doc.lofts[0].sections.len(), 2);
+        let loft_key = state.doc.lofts.keys().next().expect("one loft");
+        assert_eq!(state.doc.lofts[loft_key].sections.len(), 2);
         let bi = state.doc.bodies.len() - 1;
         assert_eq!(
             state.doc.bodies[bi].source,
-            crate::model::BodySource::Loft(0)
+            crate::model::BodySource::Loft(loft_key)
         );
         assert_eq!(state.doc.bodies[bi].name.as_deref(), Some("Horn"));
         let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("loft mesh");

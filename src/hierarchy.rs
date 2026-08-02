@@ -73,7 +73,7 @@ pub enum HierarchyNode {
     SweepOp(usize),
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
     /// it as graph inputs (#252). Display-only for now (no `SceneElement`).
-    Loft(usize),
+    Loft(crate::model::LoftKey),
     /// A technical drawing (#180). A display-only top-level leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
     /// (opening the drawing pane), but isn't a selectable/hideable scene element.
@@ -999,10 +999,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
 
     // A loft is fed by its cross-section sketches (#252) — the user's canonical example: three
     // sketches feeding one loft that outputs a body.
-    for (li, loft) in doc.lofts.iter().enumerate() {
-        if loft.deleted {
-            continue;
-        }
+    for (li, loft) in doc.lofts.iter() {
         let mut seen = std::collections::HashSet::new();
         for section in &loft.sections {
             if seen.insert(section.sketch) {
@@ -1881,10 +1878,7 @@ pub fn build_hierarchy(
     // Lofts (#252): the loft is an operation node with its output body nested beneath it (its
     // cross-section sketches feed it as graph inputs, see `graph_dependency_edges`). Previously
     // the loft body surfaced as a bare top-level element with no sign of what produced it.
-    for (li, loft) in doc.lofts.iter().enumerate() {
-        if loft.deleted {
-            continue;
-        }
+    for (li, _loft) in doc.lofts.iter() {
         let children = doc
             .bodies
             .iter()
@@ -2276,7 +2270,8 @@ fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Ve
             HierarchyNode::ConstructionPlane(i) => (CM::ConstructionPlane, *i),
             HierarchyNode::Extrusion(i) => (CM::Extrusion, *i),
             HierarchyNode::Body(i) => (CM::Body, *i),
-            HierarchyNode::Loft(i) => (CM::Loft, *i),
+            // Component membership is still an untyped table, so a key rides as bits (#1055).
+            HierarchyNode::Loft(i) => (CM::Loft, i.to_bits() as usize),
             HierarchyNode::BooleanOp(i) => (CM::BooleanOp, *i),
             HierarchyNode::MoveOp(i) => (CM::MoveOp, *i),
             HierarchyNode::MirrorOp(i) => (CM::MirrorOp, *i),
@@ -2644,7 +2639,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                     .iter()
                     .find_map(|e| owning_component(doc, &SceneElement::Extrusion(*e))),
                 BodySource::Imported(_) => None,
-                BodySource::Loft(l) => doc.component_of(CM::Loft, *l),
+                BodySource::Loft(l) => doc.component_of(CM::Loft, l.to_bits() as usize),
                 BodySource::Revolve(r) => doc.component_of(CM::Revolution, *r),
                 // A shape has no component membership of its own (#909); the body's does.
                 BodySource::Primitive(_) => None,
@@ -7368,7 +7363,7 @@ label_hidden: false,
     fn loft_is_an_operation_with_body_output_and_sketch_inputs() {
         use crate::model::{Body, BodySource, ExtrudeFace, Loft, LoftSection};
         let mut doc = Document::default();
-        doc.lofts.push(Loft {
+        let loft_key = doc.lofts.insert(Loft {
             sections: vec![
                 LoftSection { sketch: 0, face: ExtrudeFace::Circle(0) },
                 LoftSection { sketch: 1, face: ExtrudeFace::Circle(1) },
@@ -7376,10 +7371,9 @@ label_hidden: false,
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,
-            deleted: false,
         });
         doc.bodies.push(Body {
-            source: BodySource::Loft(0),
+            source: BodySource::Loft(loft_key),
             material: None,
             name: None,
             deleted: false,
@@ -7390,7 +7384,7 @@ label_hidden: false,
         let loft = tree[0]
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Loft(0))
+            .find(|e| e.node == HierarchyNode::Loft(loft_key))
             .expect("loft is a top-level operation, not a bare body");
         assert!(
             loft.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
@@ -7400,7 +7394,7 @@ label_hidden: false,
         let deps = graph_dependency_edges(&doc);
         for si in 0..3 {
             assert!(
-                deps.contains(&(HierarchyNode::Sketch(si), HierarchyNode::Loft(0))),
+                deps.contains(&(HierarchyNode::Sketch(si), HierarchyNode::Loft(loft_key))),
                 "sketch {si} feeds the loft"
             );
         }

@@ -607,7 +607,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             .and_then(|l| l.name.as_deref())
             .filter(|n| !n.trim().is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| format!("Loft {i}")),
+            .unwrap_or_else(|| format!("Loft {}", i.index())),
         HierarchyNode::DrawingProjection { drawing, view } => {
             match doc.drawings.get(drawing).and_then(|d| d.views.get(view)) {
                 Some(v) => {

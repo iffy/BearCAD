@@ -1241,7 +1241,7 @@ pub enum BodySource {
     /// rather than depending on a sketch-based feature.
     Imported(usize),
     /// A lofted solid; indexes `Document::lofts`.
-    Loft(usize),
+    Loft(LoftKey),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
     Revolve(usize),
     /// A primitive solid (#909); indexes `Document::primitives`.
@@ -1716,6 +1716,10 @@ mod material_tests {
     }
 }
 
+/// Stable handle to a [`Loft`] (#1055). Replaces the positional index, so removing one loft
+/// cannot renumber another.
+pub type LoftKey = crate::arena::Key<Loft>;
+
 /// A loft: a solid blended through two or more cross-section profiles on (usually)
 /// different planes. Parametric like everything else — the mesh is rebuilt from the live
 /// section profiles on every geometry recompute, so editing a section reshapes the loft.
@@ -1730,8 +1734,6 @@ pub struct Loft {
     pub mode: LoftMode,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
 
 /// How a lofted solid lands in the document (#479), mirroring [`SweepMode`].
@@ -3921,7 +3923,7 @@ pub struct Document {
     pub tracing_images: Vec<TracingImage>,
     /// Loft features (solids blended through cross sections).
     #[serde(default)]
-    pub lofts: Vec<Loft>,
+    pub lofts: crate::arena::Arena<Loft>,
     /// Revolved solids (#revolve).
     #[serde(default)]
     pub revolutions: Vec<Revolution>,
@@ -4180,7 +4182,7 @@ impl Default for Document {
             materials: Material::defaults(),
             imported_meshes: Vec::new(),
             tracing_images: Vec::new(),
-            lofts: Vec::new(),
+            lofts: crate::arena::Arena::new(),
             revolutions: Vec::new(),
             primitives: Vec::new(),
             sweeps: Vec::new(),
