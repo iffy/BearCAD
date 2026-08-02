@@ -174,10 +174,7 @@ pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
             None => (p, p),
         });
     };
-    for (i, body) in doc.bodies.iter().enumerate() {
-        if body.deleted {
-            continue;
-        }
+    for (i, _body) in doc.bodies.iter() {
         if let Some((min, max)) = body_solid_mesh(doc, i).and_then(|m| m.bounds()) {
             extend(min);
             extend(max);
@@ -675,11 +672,8 @@ pub fn occt_unit_instance_shape(doc: &Document, instance: usize) -> Option<crate
     let eval = crate::units::evaluate_instance(doc, instance)?;
     let inner = &eval.document;
     let mut solid: Option<crate::kernel::Shape> = None;
-    for bi in 0..inner.bodies.len() {
-        if inner.bodies[bi].deleted {
-            continue;
-        }
-        let shape = occt_body_shape(inner, bi)?;
+    for bi in inner.bodies.keys().collect::<Vec<_>>() {
+                let shape = occt_body_shape(inner, bi)?;
         solid = Some(match solid {
             Some(fused) => fused.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
             None => shape,
@@ -724,11 +718,8 @@ fn imported_step_shape(
 /// whose geometry isn't fully kernel-representable (the caller then falls back to the mesh
 /// path). A STEP import that kept its original bytes (#1029) re-reads them here so booleans
 /// and other kernel ops still see a solid.
-pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kernel::Shape> {
+pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Option<crate::kernel::Shape> {
     let body = doc.bodies.get(body_index)?;
-    if body.deleted {
-        return None;
-    }
     if let Some(mi) = body.source.imported_mesh_key() {
         return imported_step_shape(doc, mi);
     }
@@ -832,13 +823,13 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
         }
         // A point along an edge (#670) is its own position; it only needs its body alive.
         crate::model::MovePointRef::OnEdge { body, p } => {
-            doc.bodies.get(*body).filter(|b| !b.deleted)?;
+            doc.bodies.get(*body)?;
             Some(crate::hierarchy::dequantize_body_point(*p))
         }
         // A face centre (#738): re-find the coplanar group by its key; its live centre is
         // the point. Uncached mesher for the same borrow reason as the vertex arm.
         crate::model::MovePointRef::FaceCenter { body, centroid, normal } => {
-            doc.bodies.get(*body).filter(|b| !b.deleted)?;
+            doc.bodies.get(*body)?;
             let solid = body_solid_mesh_uncached_pub(doc, *body)?;
             face_group_matching(&solid, *centroid, *normal)
                 .map(|tris| face_group_center(&tris))
@@ -919,16 +910,16 @@ pub const SNAP_ROTATION_TOLERANCE_MM: f32 = 0.05;
 /// `p(t) = a + t(b - a)`, `t ∈ [0, 1]`.
 pub fn snap_rotation_candidates(
     doc: &Document,
-    moving: &[usize],
+    moving: &[crate::model::BodyKey],
     centre: Vec3,
     radius: f32,
-) -> Vec<(usize, Vec3)> {
-    let mut out: Vec<(usize, Vec3)> = Vec::new();
+) -> Vec<(crate::model::BodyKey, Vec3)> {
+    let mut out: Vec<(crate::model::BodyKey, Vec3)> = Vec::new();
     if !(radius.is_finite() && radius > 1e-4) {
         return out;
     }
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow || moving.contains(&bi) {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow || moving.contains(&bi) {
             continue;
         }
         let Some(solid) = body_solid_mesh(doc, bi) else { continue };
@@ -1239,16 +1230,16 @@ pub fn snap_spin_candidates(
 /// the pivot to each of these.
 pub fn snap_rotation_axis_candidates(
     doc: &Document,
-    moving: &[usize],
+    moving: &[crate::model::BodyKey],
     centre: Vec3,
     radius: f32,
-) -> Vec<(usize, Vec3)> {
-    let mut out: Vec<(usize, Vec3)> = Vec::new();
+) -> Vec<(crate::model::BodyKey, Vec3)> {
+    let mut out: Vec<(crate::model::BodyKey, Vec3)> = Vec::new();
     if !(radius.is_finite() && radius > 1e-4) {
         return out;
     }
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow || moving.contains(&bi) {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow || moving.contains(&bi) {
             continue;
         }
         let Some(solid) = body_solid_mesh(doc, bi) else { continue };
@@ -1435,7 +1426,7 @@ pub fn axis_world(doc: &Document, axis: crate::model::RevolveAxis) -> Option<(Ve
         // A body edge (#643) keeps its world endpoints; it resolves as long as the body it
         // was picked on is still around.
         crate::model::RevolveAxis::BodyEdge { body, a, b } => {
-            let alive = doc.bodies.get(body).is_some_and(|b| !b.deleted);
+            let alive = doc.bodies.contains(body);
             if !alive {
                 return None;
             }
@@ -1484,7 +1475,7 @@ fn edge_treated_input_doc(
     doc: &Document,
     op_index: usize,
     target: usize,
-) -> Option<(Document, usize)> {
+) -> Option<(Document, crate::model::BodyKey)> {
     let op = doc.edge_treatment_ops.get(op_index).filter(|o| !o.deleted)?;
     let &input = op.targets.get(target)?;
     if op.outputs.contains(&input) {
@@ -1727,13 +1718,13 @@ pub fn sketch_repeat_offsets(
 
 /// Every body strictly **downstream** of `seeds` (#260): bodies produced by an operation that
 /// consumes a seed body, transitively. Used to fade the descendants of an operation being edited.
-pub fn descendant_bodies(doc: &Document, seeds: &[usize]) -> std::collections::HashSet<usize> {
+pub fn descendant_bodies(doc: &Document, seeds: &[crate::model::BodyKey]) -> std::collections::HashSet<crate::model::BodyKey> {
     use std::collections::{HashSet, VecDeque};
     let mut result = HashSet::new();
-    let mut queue: VecDeque<usize> = seeds.iter().copied().collect();
-    let mut visited: HashSet<usize> = seeds.iter().copied().collect();
+    let mut queue: VecDeque<crate::model::BodyKey> = seeds.iter().copied().collect();
+    let mut visited: HashSet<crate::model::BodyKey> = seeds.iter().copied().collect();
     while let Some(bi) = queue.pop_front() {
-        let mut outs: Vec<usize> = Vec::new();
+        let mut outs: Vec<crate::model::BodyKey> = Vec::new();
         for op in doc.boolean_ops.iter().filter(|o| !o.deleted) {
             if op.a.contains(&bi) || op.b.contains(&bi) {
                 outs.extend(op.outputs.iter().copied());
@@ -1773,7 +1764,7 @@ pub fn descendant_bodies(doc: &Document, seeds: &[usize]) -> std::collections::H
 /// at `anchor + dir * distance`. `None` without a resolvable axis or any meshed target.
 pub fn repeat_gizmo_anchor(
     doc: &Document,
-    targets: &[usize],
+    targets: &[crate::model::BodyKey],
     axis: crate::model::RevolveAxis,
 ) -> Option<(Vec3, Vec3)> {
     let (_, dir) = axis_world(doc, axis)?;
@@ -2058,7 +2049,7 @@ fn occt_slice_halfspace(
     doc: &Document,
     cutter: &FaceId,
     extend_infinite: bool,
-    target: usize,
+    target: crate::model::BodyKey,
 ) -> Option<crate::kernel::Shape> {
     let frame = sketch_frame(doc, cutter.clone())?;
     let n = frame.normal.normalize_or_zero();
@@ -2175,9 +2166,8 @@ fn occt_sliced_output_shape(
 fn slice_target_body_count(doc: &Document, op_index: usize, target: usize) -> usize {
     doc.bodies
         .iter()
-        .filter(|b| {
-            !b.deleted
-                && matches!(
+        .filter(|(_, b)| {
+            matches!(
                     b.source,
                     crate::model::BodySource::Sliced { op, target: t, .. }
                         if op == op_index && t == target
@@ -2201,7 +2191,7 @@ fn occt_boolean_result_shape(
 ) -> Option<crate::kernel::Shape> {
     use crate::kernel::BoolOp;
     let op = doc.boolean_ops.get(op_index).filter(|o| !o.deleted)?;
-    let fuse_all = |list: &[usize]| -> Option<crate::kernel::Shape> {
+    let fuse_all = |list: &[crate::model::BodyKey]| -> Option<crate::kernel::Shape> {
         let mut acc: Option<crate::kernel::Shape> = None;
         for &bi in list {
             // Inputs must precede this op's outputs; the index guard breaks any accidental
@@ -2300,8 +2290,8 @@ pub fn boolean_result_meshes(doc: &Document, op_index: usize) -> Option<Vec<Soli
 pub fn precompute_boolean(
     doc: &Document,
     kind: crate::model::BooleanOpKind,
-    a: &[usize],
-    b: &[usize],
+    a: &[crate::model::BodyKey],
+    b: &[crate::model::BodyKey],
     keep_b: bool,
 ) -> Result<Vec<SolidMesh>, String> {
     let mut probe = doc.clone();
@@ -2334,8 +2324,8 @@ thread_local! {
 pub fn preview_boolean_meshes(
     doc: &Document,
     kind: crate::model::BooleanOpKind,
-    a: &[usize],
-    b: &[usize],
+    a: &[crate::model::BodyKey],
+    b: &[crate::model::BodyKey],
 ) -> Option<Vec<SolidMesh>> {
     use std::hash::{Hash, Hasher};
     // Combine unions one picked set; the two-sided operations need both sides.
@@ -2369,7 +2359,7 @@ pub fn preview_boolean_meshes(
 
 /// Seed the per-thread mesh cache with a precomputed body mesh so the first paint after a
 /// background boolean does not re-run the kernel (#1031).
-pub fn warm_body_mesh_cache(doc: &Document, body_index: usize, mesh: SolidMesh) {
+pub fn warm_body_mesh_cache(doc: &Document, body_index: crate::model::BodyKey, mesh: SolidMesh) {
     let fingerprint = document_mesh_fingerprint(doc);
     BODY_MESH_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -2411,7 +2401,7 @@ pub fn occt_edge_treatments_feasible(
     if let Some(bi) = doc
         .bodies
         .iter()
-        .position(|b| !b.deleted && b.source.owns_extrusion(extrusion))
+        .find_map(|(k, b)| b.source.owns_extrusion(extrusion).then_some(k))
     {
         if occt_body_shape(doc, bi).is_none() {
             return true;
@@ -2434,12 +2424,11 @@ pub fn occt_edge_treatments_feasible(
 /// [`crate::actions::AppState::refresh_document_health`] at every document mutation point
 /// (and on open), never per-frame.
 pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
-    for (i, body) in doc.bodies.iter().enumerate() {
+    for (i, body) in doc.bodies.iter() {
         let cut_by_revolve = revolutions_targeting(doc, i).iter().any(|(_, cut)| *cut);
         let cut_by_sweep = sweeps_targeting(doc, i).iter().any(|(_, cut)| *cut);
         let cut_by_loft = lofts_targeting(doc, i).iter().any(|(_, cut)| *cut);
-        if body.deleted
-            || body.source.imported_mesh_key().is_some()
+        if body.source.imported_mesh_key().is_some()
             || (body.source.cut_extrusion_indices().is_empty()
                 && !cut_by_revolve
                 && !cut_by_sweep
@@ -2451,7 +2440,7 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
             let label = body
                 .name
                 .clone()
-                .unwrap_or_else(|| format!("body {i}"));
+                .unwrap_or_else(|| format!("body {}", i.index()));
             return Some(format!(
                 "Warning: {label} couldn't be built by the kernel — cuts are not shown \
                  (falling back to approximate geometry)"
@@ -2741,7 +2730,7 @@ fn occt_face_revolve_solid(
 /// The revolutions fusing into (`false`) or cutting (`true`) `body_index`.
 pub fn revolutions_targeting(
     doc: &Document,
-    body_index: usize,
+    body_index: crate::model::BodyKey,
 ) -> Vec<(crate::model::RevolutionKey, bool)> {
     doc.revolutions
         .iter()
@@ -2975,7 +2964,7 @@ fn occt_face_sweep_solid(
 thread_local! {
     /// Single-slot memo for [`preview_sweep_cut_meshes`]: `(key, meshes)`. The draft only
     /// changes on a pick (no gizmo drag), so idle frames are free.
-    static SWEEP_CUT_PREVIEW_CACHE: std::cell::RefCell<((u64, u64), Vec<(usize, SolidMesh)>)> =
+    static SWEEP_CUT_PREVIEW_CACHE: std::cell::RefCell<((u64, u64), Vec<(crate::model::BodyKey, SolidMesh)>)> =
         std::cell::RefCell::new(((0, 0), Vec::new()));
 }
 
@@ -2986,7 +2975,7 @@ thread_local! {
 pub fn preview_sweep_cut_meshes(
     doc: &Document,
     fp: &crate::model::Sweep,
-) -> Vec<(usize, SolidMesh)> {
+) -> Vec<(crate::model::BodyKey, SolidMesh)> {
     let crate::model::SweepMode::Cut(bodies) = &fp.mode else {
         return Vec::new();
     };
@@ -3000,7 +2989,7 @@ pub fn preview_sweep_cut_meshes(
         }
         let mut scratch = doc.clone();
         scratch.sweeps.insert(fp.clone());
-        let meshes: Vec<(usize, SolidMesh)> = bodies
+        let meshes: Vec<(crate::model::BodyKey, SolidMesh)> = bodies
             .iter()
             .filter_map(|&bi| body_solid_mesh_uncached(&scratch, bi).map(|m| (bi, m)))
             .collect();
@@ -3038,7 +3027,7 @@ fn resample_polyline_by_arc_length(path: &[Vec3], n: usize) -> Vec<Vec3> {
 /// The sweeps fusing into (`false`) or cutting (`true`) `body_index`.
 pub fn sweeps_targeting(
     doc: &Document,
-    body_index: usize,
+    body_index: crate::model::BodyKey,
 ) -> Vec<(crate::model::SweepKey, bool)> {
     doc.sweeps
         .iter()
@@ -3159,7 +3148,7 @@ pub fn occt_loft_shape(
 /// The lofts fusing into (`false`) or cutting (`true`) `body_index` (#479).
 pub fn lofts_targeting(
     doc: &Document,
-    body_index: usize,
+    body_index: crate::model::BodyKey,
 ) -> Vec<(crate::model::LoftKey, bool)> {
     doc.lofts
         .iter()
@@ -3338,7 +3327,7 @@ pub fn order_loft_sections(
 /// has moved the face so no group matches the key anymore.
 pub fn body_face_triangles(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<Vec<[Vec3; 3]>> {
@@ -3474,7 +3463,7 @@ pub fn selection_world_bounds(
             }
             SceneElement::Revolution(op) => {
                 // The revolved solid's body is linked by `BodySource::Revolve` (NewBody mode).
-                for bi in 0..doc.bodies.len() {
+                for bi in doc.bodies.keys().collect::<Vec<_>>() {
                     if doc.bodies[bi].source == crate::model::BodySource::Revolve(op) {
                         if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
                         {
@@ -3486,7 +3475,7 @@ pub fn selection_world_bounds(
             }
             SceneElement::Shape(op) => {
                 // A shape's body is linked by `BodySource::Primitive` (#909).
-                for bi in 0..doc.bodies.len() {
+                for bi in doc.bodies.keys().collect::<Vec<_>>() {
                     if doc.bodies[bi].source == crate::model::BodySource::Primitive(op) {
                         if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
                         {
@@ -3498,7 +3487,7 @@ pub fn selection_world_bounds(
             }
             SceneElement::SweepOp(op) => {
                 // The swept solid's body is linked by `BodySource::Sweep` (NewBody mode).
-                for bi in 0..doc.bodies.len() {
+                for bi in doc.bodies.keys().collect::<Vec<_>>() {
                     if doc.bodies[bi].source == crate::model::BodySource::Sweep(op) {
                         if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
                         {
@@ -3738,7 +3727,7 @@ thread_local! {
     /// one frame calls `body_solid_mesh` several times per body (scene build, hover picking,
     /// occlusion, the selection aura) — without this the viewer visibly slows down. Any
     /// change to the fingerprinted geometry clears the memo.
-    static BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<usize, Option<SolidMesh>>)> =
+    static BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, Option<SolidMesh>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
@@ -3785,7 +3774,7 @@ pub(crate) fn document_pose_fingerprint(doc: &Document) -> u64 {
 /// safe both outside and *inside* the mesh cache's own borrow (a Move's transform
 /// resolves its snap points from within it, #650). What feature inputs and the joint
 /// frame resolvers read; the posed presentation is [`body_solid_mesh`].
-pub(crate) fn body_solid_mesh_unposed(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+pub(crate) fn body_solid_mesh_unposed(doc: &Document, body_index: crate::model::BodyKey) -> Option<SolidMesh> {
     let fingerprint = document_mesh_fingerprint(doc);
     let outcome = BODY_MESH_CACHE.with(|cache| match cache.try_borrow_mut() {
         Ok(mut cache) => {
@@ -3812,7 +3801,7 @@ thread_local! {
     /// Per-thread memo for smooth vertex normals (#1037), keyed by the pose fingerprint so
     /// it invalidates exactly when [`body_solid_mesh`] does. Normals cost a hash of every
     /// corner to compute, which is fine once per edit and far too much once per frame.
-    static BODY_NORMALS_CACHE: std::cell::RefCell<(u64, HashMap<usize, Option<std::rc::Rc<Vec<[Vec3; 3]>>>>)> =
+    static BODY_NORMALS_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, Option<std::rc::Rc<Vec<[Vec3; 3]>>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
@@ -3823,7 +3812,7 @@ thread_local! {
 /// imported mesh's normals are megabytes.
 pub fn body_smooth_normals(
     doc: &Document,
-    body_index: usize,
+    body_index: crate::model::BodyKey,
 ) -> Option<std::rc::Rc<Vec<[Vec3; 3]>>> {
     let fingerprint = document_pose_fingerprint(doc);
     let cached = BODY_NORMALS_CACHE.with(|cache| match cache.try_borrow_mut() {
@@ -3854,7 +3843,7 @@ thread_local! {
     /// fingerprint, whose misses cost one rigid transform of the cached un-posed mesh —
     /// never a kernel rebuild. This is what makes dragging a joint through its motion
     /// interactive.
-    static POSED_BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<usize, Option<SolidMesh>>)> =
+    static POSED_BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, Option<SolidMesh>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
@@ -3864,7 +3853,7 @@ thread_local! {
 /// viewport, exports, and measures read, while feature inputs (booleans, moves) keep
 /// reading the un-jointed geometry — a joint is an assembly relationship, not a modelling
 /// operation.
-pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+pub fn body_solid_mesh(doc: &Document, body_index: crate::model::BodyKey) -> Option<SolidMesh> {
     let unposed = body_solid_mesh_unposed(doc, body_index);
     if doc.joints.iter().all(|j| j.deleted) {
         return unposed;
@@ -3888,7 +3877,7 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
 /// A body's kernel solid **with its joint pose applied** (#893) — what STEP export and
 /// anything else presenting the assembly should read, while feature inputs keep the
 /// un-jointed [`occt_body_shape`].
-pub fn posed_body_shape(doc: &Document, body_index: usize) -> Option<crate::kernel::Shape> {
+pub fn posed_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Option<crate::kernel::Shape> {
     let shape = occt_body_shape(doc, body_index)?;
     match crate::joints::body_joint_pose(doc, body_index) {
         Some(pose) => shape.transformed(&mat4_to_rows_3x4(&pose)),
@@ -3902,11 +3891,11 @@ thread_local! {
     /// live and die with the same document fingerprint the mesh cache uses. Recomputing them
     /// per body per frame is what made a document with engraved text lag while zooming — the
     /// cursor hovering the model re-derived every face group of every body, every frame.
-    static BODY_FACE_GROUP_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<Vec<[Vec3; 3]>>>>)> =
+    static BODY_FACE_GROUP_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<Vec<[Vec3; 3]>>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
-    static BODY_EDGE_CHAIN_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>>>)> =
+    static BODY_EDGE_CHAIN_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
-    static BODY_FEATURE_EDGE_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
+    static BODY_FEATURE_EDGE_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
@@ -3917,7 +3906,7 @@ pub fn tests_tube(centre: Vec3, radius: f32, height: f32) -> Vec<[Vec3; 3]> {
 }
 
 /// A body's coplanar face groups, memoized per document state (#845).
-pub fn body_face_groups(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<[Vec3; 3]>>> {
+pub fn body_face_groups(doc: &Document, body_index: crate::model::BodyKey) -> std::rc::Rc<Vec<Vec<[Vec3; 3]>>> {
     let fingerprint = document_pose_fingerprint(doc);
     // The mesh itself comes from its own cache; take it before borrowing this one.
     let mesh = body_solid_mesh(doc, body_index);
@@ -3942,7 +3931,7 @@ pub fn body_face_groups(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Ve
 /// A body's feature-edge **chains** (#626), memoized per document state (#845): the pick and
 /// hover paths walk these every frame, and rebuilding them per body per frame is what made a
 /// heavy document lag.
-pub fn body_edge_chains(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>> {
+pub fn body_edge_chains(doc: &Document, body_index: crate::model::BodyKey) -> std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>> {
     let fingerprint = document_pose_fingerprint(doc);
     let mesh = body_solid_mesh(doc, body_index);
     BODY_EDGE_CHAIN_CACHE.with(|cache| {
@@ -4140,9 +4129,11 @@ thread_local! {
     /// every frame the camera moves, and without these it projects **every triangle of every
     /// body** to answer "what is under the cursor" — which is why zooming over a large
     /// document lagged while orbiting (which suppresses hover) did not.
-    static BODY_BOUNDS_CACHE: std::cell::RefCell<(u64, std::rc::Rc<Vec<Option<(Vec3, Vec3)>>>)> =
-        std::cell::RefCell::new((0, std::rc::Rc::new(Vec::new())));
-    static BODY_FACE_GROUP_BOUNDS_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
+    static BODY_BOUNDS_CACHE: std::cell::RefCell<(
+        u64,
+        std::rc::Rc<HashMap<crate::model::BodyKey, Option<(Vec3, Vec3)>>>,
+    )> = std::cell::RefCell::new((0, std::rc::Rc::new(HashMap::new())));
+    static BODY_FACE_GROUP_BOUNDS_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
@@ -4161,7 +4152,9 @@ pub fn triangle_bounds(triangles: &[[Vec3; 3]]) -> Option<(Vec3, Vec3)> {
 /// asking per body inside a loop costs one full document hash per body per frame, which on a
 /// large document dwarfs the triangle walk this was meant to avoid. The pick walks fetch this
 /// once and then index it.
-pub fn body_world_bounds_all(doc: &Document) -> std::rc::Rc<Vec<Option<(Vec3, Vec3)>>> {
+pub fn body_world_bounds_all(
+    doc: &Document,
+) -> std::rc::Rc<HashMap<crate::model::BodyKey, Option<(Vec3, Vec3)>>> {
     let fingerprint = document_pose_fingerprint(doc);
     {
         let hit = BODY_BOUNDS_CACHE.with(|cache| {
@@ -4174,15 +4167,10 @@ pub fn body_world_bounds_all(doc: &Document) -> std::rc::Rc<Vec<Option<(Vec3, Ve
     }
     // Built outside the cache's borrow: meshing a body re-enters these caches.
     let bounds = std::rc::Rc::new(
-        (0..doc.bodies.len())
-            .map(|bi| {
-                doc.bodies
-                    .get(bi)
-                    .filter(|b| !b.deleted)
-                    .and_then(|_| body_solid_mesh(doc, bi))
-                    .and_then(|m| m.bounds())
-            })
-            .collect::<Vec<_>>(),
+        doc.bodies
+            .keys()
+            .map(|bi| (bi, body_solid_mesh(doc, bi).and_then(|m| m.bounds())))
+            .collect::<HashMap<_, _>>(),
     );
     BODY_BOUNDS_CACHE.with(|cache| {
         *cache.borrow_mut() = (fingerprint, bounds.clone());
@@ -4192,7 +4180,7 @@ pub fn body_world_bounds_all(doc: &Document) -> std::rc::Rc<Vec<Option<(Vec3, Ve
 
 /// One world bounding box per coplanar face group, in the same order as
 /// [`body_face_groups`], memoized per document state (#1026).
-pub fn body_face_group_bounds(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
+pub fn body_face_group_bounds(doc: &Document, body_index: crate::model::BodyKey) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
     let fingerprint = document_pose_fingerprint(doc);
     let groups = body_face_groups(doc, body_index);
     BODY_FACE_GROUP_BOUNDS_CACHE.with(|cache| {
@@ -4218,7 +4206,7 @@ pub fn body_face_group_bounds(doc: &Document, body_index: usize) -> std::rc::Rc<
 thread_local! {
     /// A body's fitted cylinders, keyed like every other mesh analysis (#845/#1013): the
     /// pick and hover paths ask for these every frame.
-    static BODY_CYLINDER_CACHE: std::cell::RefCell<(u64, HashMap<usize, std::rc::Rc<Vec<BodyCylinder>>>)> =
+    static BODY_CYLINDER_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<BodyCylinder>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
 
@@ -4226,7 +4214,7 @@ thread_local! {
 /// what a mate resolves against, exactly like the vertex and face keys beside it. The posed
 /// [`body_cylinders`] can't serve here: it goes through the posed mesh cache, which is being
 /// filled by the very joint resolution asking the question.
-pub fn body_cylinders_unposed(doc: &Document, body_index: usize) -> Vec<BodyCylinder> {
+pub fn body_cylinders_unposed(doc: &Document, body_index: crate::model::BodyKey) -> Vec<BodyCylinder> {
     let Some(mesh) = body_solid_mesh_unposed(doc, body_index) else {
         return Vec::new();
     };
@@ -4240,7 +4228,7 @@ pub fn body_cylinders_unposed(doc: &Document, body_index: usize) -> Vec<BodyCyli
 /// the un-posed twin of [`body_axis_segment`], for mate resolution.
 pub fn body_axis_segment_unposed(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     origin: [i32; 3],
     dir: [i32; 3],
 ) -> Option<(Vec3, Vec3)> {
@@ -4255,7 +4243,7 @@ pub fn body_axis_segment_unposed(
 }
 
 /// A body's cylindrical surfaces, memoized per document state (#1013).
-pub fn body_cylinders(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<BodyCylinder>> {
+pub fn body_cylinders(doc: &Document, body_index: crate::model::BodyKey) -> std::rc::Rc<Vec<BodyCylinder>> {
     let fingerprint = document_pose_fingerprint(doc);
     let groups = body_face_groups(doc, body_index);
     BODY_CYLINDER_CACHE.with(|cache| {
@@ -4279,7 +4267,7 @@ pub fn body_cylinders(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<Body
 /// rebuild takes it away.
 pub fn body_cylinder_matching(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     origin: [i32; 3],
     dir: [i32; 3],
     radius: i32,
@@ -4299,7 +4287,7 @@ pub fn body_cylinder_matching(
 /// surface it belongs to.
 pub fn body_axis_segment(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     origin: [i32; 3],
     dir: [i32; 3],
 ) -> Option<(Vec3, Vec3)> {
@@ -4315,7 +4303,7 @@ pub fn body_axis_segment(
 }
 
 /// The scene element a fitted cylinder is (#1013).
-pub fn cylinder_scene_element(body: usize, cyl: &BodyCylinder) -> crate::hierarchy::SceneElement {
+pub fn cylinder_scene_element(body: crate::model::BodyKey, cyl: &BodyCylinder) -> crate::hierarchy::SceneElement {
     let q = crate::hierarchy::quantize_body_point;
     crate::hierarchy::SceneElement::BodyCylinder {
         body,
@@ -4327,7 +4315,7 @@ pub fn cylinder_scene_element(body: usize, cyl: &BodyCylinder) -> crate::hierarc
 
 /// A body's **flat** face groups (#1013): the coplanar groups that aren't cylinders, which is
 /// what a face pick, a face key and a mating plane all mean by "a face".
-pub fn body_flat_face_groups(doc: &Document, body_index: usize) -> Vec<Vec<[Vec3; 3]>> {
+pub fn body_flat_face_groups(doc: &Document, body_index: crate::model::BodyKey) -> Vec<Vec<[Vec3; 3]>> {
     body_face_groups(doc, body_index)
         .iter()
         .filter(|tris| fit_cylinder(tris).is_none())
@@ -4336,7 +4324,7 @@ pub fn body_flat_face_groups(doc: &Document, body_index: usize) -> Vec<Vec<[Vec3
 }
 
 /// A body's feature edges (mesh boundaries and creases), memoized per document state (#845).
-pub fn body_feature_edges(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
+pub fn body_feature_edges(doc: &Document, body_index: crate::model::BodyKey) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
     let fingerprint = document_pose_fingerprint(doc);
     let mesh = body_solid_mesh(doc, body_index);
     BODY_FEATURE_EDGE_CACHE.with(|cache| {
@@ -4361,15 +4349,12 @@ pub fn body_feature_edges(doc: &Document, body_index: usize) -> std::rc::Rc<Vec<
 /// the in-progress-edit descendant preview (#260), which meshes a throwaway scratch document each
 /// frame — routing that through the cache would evict the real document's warm meshes every frame
 /// (the two docs fingerprint differently), forcing a full rebuild of the whole scene.
-pub fn body_solid_mesh_uncached_pub(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+pub fn body_solid_mesh_uncached_pub(doc: &Document, body_index: crate::model::BodyKey) -> Option<SolidMesh> {
     body_solid_mesh_uncached(doc, body_index)
 }
 
-fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -> Option<SolidMesh> {
     let body = doc.bodies.get(body_index)?;
-    if body.deleted {
-        return None;
-    }
     // A primitive shape (#909): meshed analytically, no sketch behind it.
     if let crate::model::BodySource::Primitive(pi) = body.source {
         let shape = doc.primitives.get(pi)?;
@@ -4576,7 +4561,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
 /// a hash of the preview extrusion itself (and the target body, for cuts). One entry suffices —
 /// there is at most one live preview at a time — and it makes idle frames free: the expensive
 /// kernel rebuild only reruns when the drag actually changes something.
-fn preview_cache_key(doc: &Document, extrusion: &Extrusion, body_index: usize) -> (u64, u64) {
+fn preview_cache_key(doc: &Document, extrusion: &Extrusion, body_index: crate::model::BodyKey) -> (u64, u64) {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{extrusion:?}").hash(&mut h);
@@ -4606,7 +4591,8 @@ fn has_text_faces(extrusion: &Extrusion) -> bool {
 /// through per-glyph kernel booleans every frame was unusably laggy. The commit still builds
 /// the real kernel solid.
 pub fn preview_extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh> {
-    let key = preview_cache_key(doc, extrusion, usize::MAX);
+    // No body: a fresh preview belongs to nothing yet, so key it on a slot no body has.
+    let key = preview_cache_key(doc, extrusion, crate::arena::Key::from_bits(u64::MAX));
     PREVIEW_MESH_CACHE.with(|cache| {
         if let Some((cached_key, mesh)) = cache.borrow().as_ref() {
             if *cached_key == key {
@@ -4633,7 +4619,7 @@ pub fn preview_extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<S
 /// distance on a side face, which extrudes along the outward normal — used to commit as a
 /// silent no-op. `None` when the kernel can't answer (non-`occt` build, unbuildable tool or
 /// body), in which case callers skip the check.
-pub fn cut_tool_bites(doc: &Document, body_index: usize, cut: &Extrusion) -> Option<bool> {
+pub fn cut_tool_bites(doc: &Document, body_index: crate::model::BodyKey, cut: &Extrusion) -> Option<bool> {
     {
         let distance = effective_distance(doc, cut);
         if cut.faces.is_empty() || distance.abs() < 1e-4 {
@@ -4656,10 +4642,10 @@ pub fn cut_tool_bites(doc: &Document, body_index: usize, cut: &Extrusion) -> Opt
 /// per-glyph boolean chain per frame made the drag unusably laggy; text cuts preview as the
 /// additive block instead), or the kernel can't build the result. Cached per
 /// (document, cut, body) so unchanged frames are free.
-pub fn preview_cut_body_mesh(doc: &Document, body_index: usize, cut: &Extrusion) -> Option<SolidMesh> {
+pub fn preview_cut_body_mesh(doc: &Document, body_index: crate::model::BodyKey, cut: &Extrusion) -> Option<SolidMesh> {
     {
         let body = doc.bodies.get(body_index)?;
-        if body.deleted || body.source.imported_mesh_key().is_some() {
+        if body.source.imported_mesh_key().is_some() {
             return None;
         }
         if cut.faces.is_empty() || effective_distance(doc, cut).abs() < 1e-4 {
@@ -4713,7 +4699,7 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
         return mesh;
     }
     let mut mesh = SolidMesh::default();
-    for bi in 0..doc.bodies.len() {
+    for bi in doc.bodies.keys().collect::<Vec<_>>() {
         if let Some(solid) = body_solid_mesh(doc, bi) {
             mesh.triangles.extend(solid.triangles);
         }
@@ -4731,10 +4717,7 @@ fn occt_document_union_mesh(doc: &Document) -> Option<SolidMesh> {
     let mut fused: Option<crate::kernel::Shape> = None;
     let mut imported_triangles: Vec<[Vec3; 3]> = Vec::new();
     let mut saw_kernel_body = false;
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted {
-            continue;
-        }
+    for (bi, body) in doc.bodies.iter() {
         if body.source.imported_mesh_key().is_some() {
             // Prefer BREP when the import still has it (#1029); otherwise concatenate triangles.
             if let Some(shape) = occt_body_shape(doc, bi) {
@@ -5328,7 +5311,7 @@ pub fn face_region_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3
 fn raw_faces_in_sketch(doc: &Document, sketch: crate::model::SketchId) -> Vec<ExtrudeFace> {
     let mut out = Vec::new();
     for (i, c) in doc.circles.iter().enumerate() {
-        if !c.deleted && c.sketch == sketch {
+        if c.sketch == sketch {
             out.push(ExtrudeFace::Circle(i));
         }
     }
@@ -5841,7 +5824,7 @@ pub fn extrusion_edge_exists(doc: &Document, extrusion: usize, edge: ExtrusionEd
 /// seam, an imported-mesh edge, or a boolean-result edge).
 pub fn treatable_edge_for_selection(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     a: [i32; 3],
     b: [i32; 3],
 ) -> Option<(usize, ExtrusionEdgeRef)> {
@@ -6477,6 +6460,7 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
 
@@ -6526,14 +6510,13 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let face = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         doc.extrusions.push(extrusion(sketch, vec![face], 10.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
         });
-        let mesh = body_solid_mesh(&doc, 0).expect("the cube meshes");
+        let mesh = body_solid_mesh(&doc, bkey(0)).expect("the cube meshes");
         let normals = smooth_normals(&mesh);
         for (tri, ns) in mesh.triangles.iter().zip(normals.iter()) {
             let flat = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
@@ -6726,16 +6709,15 @@ mod tests {
         use crate::model::MovePointRef;
         let mut doc = Document::default();
         // One body is enough: the points are read by position, not by which body they name.
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let at = |p: [f32; 3]| {
             Some(MovePointRef::OnEdge {
-                body: 0,
+                body: bkey(0),
                 p: crate::hierarchy::quantize_body_point(Vec3::from_array(p)),
             })
         };
@@ -6787,16 +6769,15 @@ mod tests {
     fn spin_candidates_refuse_a_point_on_the_axis() {
         use crate::model::MovePointRef;
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let at = |p: [f32; 3]| {
             Some(MovePointRef::OnEdge {
-                body: 0,
+                body: bkey(0),
                 p: crate::hierarchy::quantize_body_point(Vec3::from_array(p)),
             })
         };
@@ -6827,19 +6808,18 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vertex = |p: Vec3| Some(MovePointRef::Vertex { body: 0, p: q(p) });
+        let vertex = |p: Vec3| Some(MovePointRef::Vertex { body: bkey(0), p: q(p) });
 
         // Start A = origin, end A = origin: no translation, so the rotation stands alone.
         // Start B = +10X; end B = +10Y is exactly 10 from the pivot, so it's reachable.
         let op = MoveOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Snap,
             start_point_a: vertex(o),
             end_point_a: vertex(o),
@@ -6913,22 +6893,21 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vertex = |p: Vec3| Some(MovePointRef::Vertex { body: 0, p: q(p) });
+        let vertex = |p: Vec3| Some(MovePointRef::Vertex { body: bkey(0), p: q(p) });
         // Targets are picked as points *on* geometry rather than corners (what the end-point
         // pickers hand back), so they can sit anywhere in space.
-        let at = |p: Vec3| Some(MovePointRef::OnEdge { body: 0, p: q(p) });
+        let at = |p: Vec3| Some(MovePointRef::OnEdge { body: bkey(0), p: q(p) });
 
         // A holds the origin still and B keeps +10X where it is, so B's turn is the identity
         // and the bodies are free to spin about the X axis — exactly the ambiguity C fixes.
         let base = MoveOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Snap,
             start_point_a: vertex(o),
             end_point_a: vertex(o),
@@ -7008,11 +6987,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -7028,14 +7006,14 @@ mod tests {
                 && xs.iter().any(|x| (x + 5.0).abs() < 1e-3),
             "expected crossings at ±5 along X, got {xs:?}"
         );
-        assert!(found.iter().all(|(bi, _)| *bi == 0), "each candidate names its body");
+        assert!(found.iter().all(|(bi, _)| *bi == bkey(0)), "each candidate names its body");
         // Every candidate really is on the sphere.
         for (_, p) in &found {
             assert!((p.length() - 5.0).abs() < 1e-3, "{p:?} is off the sphere");
         }
 
         // A body that's being moved offers nothing, and a sphere that misses entirely too.
-        assert!(snap_rotation_candidates(&doc, &[0], Vec3::ZERO, 5.0).is_empty());
+        assert!(snap_rotation_candidates(&doc, &[bkey(0)], Vec3::ZERO, 5.0).is_empty());
         assert!(snap_rotation_candidates(&doc, &[], Vec3::new(0.0, 0.0, 100.0), 5.0).is_empty());
         // A degenerate radius offers nothing rather than dividing by zero.
         assert!(snap_rotation_candidates(&doc, &[], Vec3::ZERO, 0.0).is_empty());
@@ -7057,20 +7035,19 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let op = MoveOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Snap,
-            start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::ZERO) }),
-            end_point_a: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::new(10.0, 0.0, 0.0)) }),
-            start_point_b: Some(MovePointRef::Vertex { body: 0, p: q(Vec3::new(10.0, 0.0, 0.0)) }),
-            end_point_b: Some(MovePointRef::OnEdge { body: 0, p: q(Vec3::new(10.0, 10.0, 0.0)) }),
+            start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::ZERO) }),
+            end_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::new(10.0, 0.0, 0.0)) }),
+            start_point_b: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::new(10.0, 0.0, 0.0)) }),
+            end_point_b: Some(MovePointRef::OnEdge { body: bkey(0), p: q(Vec3::new(10.0, 10.0, 0.0)) }),
             start_point_c: None,
             end_point_c: None,
             plane_targets: Vec::new(),
@@ -7110,11 +7087,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -7132,7 +7108,7 @@ mod tests {
             assert!((p.length() - 40.0).abs() < 1e-3, "{p:?} is off the sphere");
         }
         // Moving bodies and degenerate radii offer nothing.
-        assert!(snap_rotation_axis_candidates(&doc, &[0], Vec3::ZERO, 40.0).is_empty());
+        assert!(snap_rotation_axis_candidates(&doc, &[bkey(0)], Vec3::ZERO, 40.0).is_empty());
         assert!(snap_rotation_axis_candidates(&doc, &[], Vec3::ZERO, 0.0).is_empty());
     }
 
@@ -7170,7 +7146,7 @@ mod tests {
         );
         // One point isn't enough either.
         let half = MoveOperation {
-            start_point_a: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
+            start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: [0; 3] }),
             ..base.clone()
         };
         assert!(!half.has_snap_translation());
@@ -7178,7 +7154,7 @@ mod tests {
         // With both, the snap takes over — and points that no longer resolve contribute
         // nothing rather than killing the op.
         let full = MoveOperation {
-            end_point_a: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
+            end_point_a: Some(MovePointRef::Vertex { body: bkey(1), p: [100, 0, 0] }),
             start_point_b: None,
             end_point_b: None,
             start_point_c: None,
@@ -7202,16 +7178,15 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // A pair pins the origin in place; start B points along +X from it.
-        let start_a = MovePointRef::Vertex { body: 0, p: q(Vec3::ZERO) };
-        let start_b = MovePointRef::Vertex { body: 0, p: q(Vec3::X * 10.0) };
+        let start_a = MovePointRef::Vertex { body: bkey(0), p: q(Vec3::ZERO) };
+        let start_b = MovePointRef::Vertex { body: bkey(0), p: q(Vec3::X * 10.0) };
         let axis = |target: Vec3| {
             snap_rotation_axis_toward(&doc, Some(&start_a), Some(&start_b), Some(&start_a), target)
         };
@@ -7240,7 +7215,7 @@ mod tests {
         // An empty document has no bodies at all, and the origin still resolves — a corner
         // of a body that isn't there doesn't.
         assert_eq!(
-            move_point_world(&empty, &MovePointRef::Vertex { body: 0, p: [0; 3] }),
+            move_point_world(&empty, &MovePointRef::Vertex { body: bkey(0), p: [0; 3] }),
             None
         );
 
@@ -7252,17 +7227,16 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let op = MoveOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Snap,
-            start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(corner) }),
+            start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(corner) }),
             end_point_a: Some(MovePointRef::Origin),
             start_point_b: None,
             end_point_b: None,
@@ -7300,14 +7274,13 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let (anchor, dir) = repeat_gizmo_anchor(&doc, &[0], crate::model::RevolveAxis::X)
+        let (anchor, dir) = repeat_gizmo_anchor(&doc, &[bkey(0)], crate::model::RevolveAxis::X)
             .expect("anchor resolves");
         assert_eq!(dir, Vec3::X);
         // Along X the anchor pins to the minimum (10); across it, the centroid (y = 2).
@@ -7315,7 +7288,7 @@ mod tests {
         assert!((anchor.y - 2.0).abs() < 1e-4, "centroid across the axis, got {anchor:?}");
         // No targets, or an axis that can't resolve, gives no gizmo.
         assert!(repeat_gizmo_anchor(&doc, &[], crate::model::RevolveAxis::X).is_none());
-        assert!(repeat_gizmo_anchor(&doc, &[0], crate::model::RevolveAxis::Line(9)).is_none());
+        assert!(repeat_gizmo_anchor(&doc, &[bkey(0)], crate::model::RevolveAxis::Line(9)).is_none());
     }
 
     /// #643: a body feature edge resolves as an axis (origin `a`, unit direction `a → b`) and
@@ -7323,15 +7296,14 @@ mod tests {
     #[test]
     fn axis_world_resolves_a_body_edge() {
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let axis = crate::model::RevolveAxis::BodyEdge {
-            body: 0,
+            body: bkey(0),
             a: Vec3::new(1.0, 2.0, 3.0),
             b: Vec3::new(1.0, 7.0, 3.0),
         };
@@ -7341,14 +7313,14 @@ mod tests {
         // A degenerate edge has no direction.
         assert!(axis_world(
             &doc,
-            crate::model::RevolveAxis::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::ZERO }
+            crate::model::RevolveAxis::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::ZERO }
         )
         .is_none());
         // A deleted body takes its edges with it.
-        doc.bodies[0].deleted = true;
+        doc.bodies.remove(bkey(0));
         assert!(axis_world(&doc, axis).is_none());
         assert!(axis_world(&doc, crate::model::RevolveAxis::BodyEdge {
-            body: 9,
+            body: bkey(9),
             a: Vec3::ZERO,
             b: Vec3::X
         })
@@ -7361,21 +7333,20 @@ mod tests {
     fn descendant_bodies_walks_downstream_operations() {
         let mut doc = Document::default();
         for _ in 0..5 {
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
         // body0 + body1 -> boolean -> body2; body2 -> move -> body3. body4 is unrelated.
         doc.boolean_ops.push(crate::model::BooleanOperation {
             kind: crate::model::BooleanOpKind::Combine,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: false,
-            outputs: vec![2],
+            outputs: vec![bkey(2)],
             name: None,
             deleted: false,
         });
@@ -7387,23 +7358,23 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            targets: vec![2],
+            targets: vec![bkey(2)],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
-            outputs: vec![3],
+            outputs: vec![bkey(3)],
             name: None,
             deleted: false,
         });
 
-        let d = descendant_bodies(&doc, &[0]);
-        assert!(d.contains(&2), "boolean output is downstream of body 0");
-        assert!(d.contains(&3), "moved output is downstream transitively");
-        assert!(!d.contains(&0) && !d.contains(&1), "seeds/siblings aren't descendants");
-        assert!(!d.contains(&4), "unrelated body isn't a descendant");
+        let d = descendant_bodies(&doc, &[bkey(0)]);
+        assert!(d.contains(&bkey(2)), "boolean output is downstream of body 0");
+        assert!(d.contains(&bkey(3)), "moved output is downstream transitively");
+        assert!(!d.contains(&bkey(0)) && !d.contains(&bkey(1)), "seeds/siblings aren't descendants");
+        assert!(!d.contains(&bkey(4)), "unrelated body isn't a descendant");
     }
 
     fn sketch_doc() -> (Document, crate::model::SketchId) {
@@ -7576,25 +7547,24 @@ mod tests {
     fn body_mesh_analyses_are_cached_and_invalidated() {
         let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
         doc.extrusions.push(ext);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
-        let first = body_face_groups(&doc, 0);
-        let again = body_face_groups(&doc, 0);
+        let first = body_face_groups(&doc, bkey(0));
+        let again = body_face_groups(&doc, bkey(0));
         assert!(std::rc::Rc::ptr_eq(&first, &again), "the second call reuses the first");
         assert_eq!(first.len(), 6, "a box has six faces");
-        assert!(!body_feature_edges(&doc, 0).is_empty());
-        assert!(!body_edge_chains(&doc, 0).is_empty());
+        assert!(!body_feature_edges(&doc, bkey(0)).is_empty());
+        assert!(!body_edge_chains(&doc, bkey(0)).is_empty());
 
         // Changing the geometry invalidates it: the taller box's faces are recomputed.
         let before = first.clone();
         doc.extrusions[0].distance = 40.0;
-        let after = body_face_groups(&doc, 0);
+        let after = body_face_groups(&doc, bkey(0));
         assert!(!std::rc::Rc::ptr_eq(&before, &after), "a geometry edit rebuilds the groups");
         let height = |groups: &Vec<Vec<[Vec3; 3]>>| {
             groups
@@ -7731,11 +7701,10 @@ mod tests {
         let (mut doc, _sketch, ext) = box_doc();
         doc.extrusions.push(ext);
         // body 0: the extruded box; body 1: a moved copy of it.
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
@@ -7746,30 +7715,29 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
             tx: "0mm".to_string(),
             ty: String::new(),
             tz: String::new(),
-            outputs: vec![1],
+            outputs: vec![bkey(1)],
             name: None,
             deleted: false,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Moved { op: 0, target: 0 },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
-        let before = body_solid_mesh_uncached_pub(&doc, 1).and_then(|m| m.bounds()).unwrap();
+        let before = body_solid_mesh_uncached_pub(&doc, bkey(1)).and_then(|m| m.bounds()).unwrap();
         // Simulate an in-progress move-gizmo drag on a scratch clone: shift tx by 20mm.
         let mut scratch = doc.clone();
         scratch.move_ops[0].tx = "20mm".to_string();
-        let after = body_solid_mesh_uncached_pub(&scratch, 1).and_then(|m| m.bounds()).unwrap();
+        let after = body_solid_mesh_uncached_pub(&scratch, scratch.body_at(1).unwrap()).and_then(|m| m.bounds()).unwrap();
 
         assert!(
             (after.0.x - before.0.x - 20.0).abs() < 1e-3,
@@ -7801,14 +7769,13 @@ mod tests {
         let inner = rect_profile(&mut doc, sketch, 3.0, 3.0, 4.0, 4.0);
         doc.extrusions.push(extrusion(sketch, vec![outer], 5.0));
         doc.extrusions.push(extrusion(sketch, vec![inner], 5.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid {
                 add: vec![0],
                 cut: vec![1],
             },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc
@@ -7828,14 +7795,13 @@ mod tests {
     fn selection_bounds_cover_a_body_faces_full_extent() {
         let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
         doc.extrusions.push(ext);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let solid = body_solid_mesh(&doc, 0).unwrap();
+        let solid = body_solid_mesh(&doc, bkey(0)).unwrap();
         let cap = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
             .into_iter()
             .find(|tris| {
@@ -7854,7 +7820,7 @@ mod tests {
         let q = crate::hierarchy::quantize_body_point;
         let mut selection = crate::selection::SceneSelection::default();
         selection.insert(crate::hierarchy::SceneElement::BodyFace {
-            body: 0,
+            body: bkey(0),
             centroid: q(centroid),
             normal: q(normal),
         });
@@ -7904,11 +7870,10 @@ mod tests {
         let (mut doc, sketch, ext) = box_doc(); // 10x10x5 box, x∈[0,10]
         let _ = sketch;
         doc.extrusions.push(ext);
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Solid { add: vec![0], cut: vec![] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // A target plane at x = 30, normal +X (an X-facing wall the repeat fills up to).
@@ -7927,7 +7892,7 @@ mod tests {
         let plane_index = doc.construction_planes.len() - 1;
 
         let mut op = RepeatOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -7971,11 +7936,10 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![a], 5.0));
         doc.extrusions.push(extrusion(sketch, vec![b], 5.0));
         for ei in 0..2 {
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(ei),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -8081,14 +8045,13 @@ mod tests {
             a.abs() * 0.5
         };
         doc.extrusions.push(extrusion(sketch, vec![glyph_face], 5.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("o mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("o mesh")).abs();
         let solid_fill = outer_area * 5.0;
         assert!(
             vol > 1.0 && vol < solid_fill * 0.85,
@@ -8110,14 +8073,13 @@ mod tests {
             b: Box::new(ExtrudeFace::Circle(1)),
         };
         doc.extrusions.push(extrusion(sketch, vec![ring], h));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("tube mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("tube mesh")).abs();
         let expected = std::f32::consts::PI * (big_r * big_r - small_r * small_r) * h;
         assert!(
             (vol - expected).abs() / expected < 0.02,
@@ -8173,14 +8135,13 @@ mod tests {
             amount: 2.0,
         });
         doc.extrusions.push(ext);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let cylinder = std::f32::consts::PI * 100.0 * 20.0;
         let ring = std::f32::consts::PI * 2.0 * (10.0 - 2.0 / 3.0) * 2.0;
         let expected = cylinder - ring;
@@ -8206,14 +8167,13 @@ mod tests {
             amount: 1.0,
         });
         doc.extrusions.push(hole);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let plain = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
         // Rounded-over ring: (1 - pi/4) r^2 cross-section revolved near the hole radius.
         let ring = (1.0 - std::f32::consts::FRAC_PI_4)
@@ -8238,15 +8198,14 @@ mod tests {
         // A 2.5mm-radius hole at x = -6.
         doc.circles.push(Circle::from_local_center_radius(sketch, -6.0, 0.0, 2.5, 0.0));
         doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let one_hole = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
-        assert!((mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs() - one_hole).abs() < 3.0);
+        assert!((mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs() - one_hole).abs() < 3.0);
 
         // Replay the hole (extrusion 1) ×3 along X at 6mm gap → holes at x = -6, 0, +6.
         doc.repeat_ops.push(RepeatOperation {
@@ -8271,7 +8230,7 @@ mod tests {
             deleted: false,
         });
         let three_holes = 2000.0 - 3.0 * std::f32::consts::PI * 2.5 * 2.5 * 5.0;
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs();
         assert!(
             (vol - three_holes).abs() < 6.0,
             "expected ~{three_holes} (3 holes), got {vol} (one hole is ~{one_hole})"
@@ -8286,14 +8245,13 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let box_face = rect_profile(&mut doc, sketch, 0.0, 0.0, 4.0, 4.0); // 4×4
         doc.extrusions.push(extrusion(sketch, vec![box_face], 5.0)); // ×5 = 80
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        assert!((mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs() - 80.0).abs() < 1.0);
+        assert!((mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs() - 80.0).abs() < 1.0);
 
         // Replay the add ×3 along X at 10mm gap → boxes at x = 0, 10, 20 (disjoint).
         doc.repeat_ops.push(RepeatOperation {
@@ -8317,7 +8275,7 @@ mod tests {
             name: None,
             deleted: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).unwrap()).abs();
         assert!((vol - 240.0).abs() < 3.0, "expected ~240 (3 boxes), got {vol}");
     }
 
@@ -8329,11 +8287,10 @@ mod tests {
         use crate::model::{Body, BodySource, MoveOperation, Parameter};
         let (mut doc, _sketch, ext) = box_doc(); // box x ∈ [0, 10]
         doc.extrusions.push(ext);
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Solid { add: vec![0], cut: vec![] },
             material: None,
             name: None,
-            deleted: false,
             shadow: true, // consumed by the move
         });
         doc.parameters.insert(Parameter {
@@ -8350,25 +8307,24 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
-            outputs: vec![1],
+            outputs: vec![bkey(1)],
             name: None,
             deleted: false,
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Moved { op: 0, target: 0 },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let min_x = |doc: &Document, bi: usize| {
+        let min_x = |doc: &Document, bi: crate::model::BodyKey| {
             body_solid_mesh(doc, bi)
                 .unwrap()
                 .triangles
@@ -8378,11 +8334,11 @@ mod tests {
                 .fold(f32::INFINITY, f32::min)
         };
         // The moved copy starts at x = 0 + gap(10).
-        assert!((min_x(&doc, 1) - 10.0).abs() < 1e-3, "moved by gap = 10");
+        assert!((min_x(&doc, bkey(1)) - 10.0).abs() < 1e-3, "moved by gap = 10");
         // Editing the parameter the move references must propagate to the descendant body.
         doc.parameters.values_mut().next().unwrap().expression = "25".to_string();
         assert!(
-            (min_x(&doc, 1) - 25.0).abs() < 1e-3,
+            (min_x(&doc, bkey(1)) - 25.0).abs() < 1e-3,
             "descendant follows the parameter edit (fingerprint includes parameters/move_ops)"
         );
     }
@@ -8404,14 +8360,13 @@ mod tests {
             amount: 1.0,
         });
         doc.extrusions.push(hole);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let plain = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
         let countersink = std::f32::consts::PI * 2.0 * (2.5 + 1.0 / 3.0) * 0.5;
         let expected = plain - countersink;
@@ -8468,14 +8423,13 @@ mod tests {
             vec![ExtrudeFace::Circle(0), ExtrudeFace::Circle(1)],
             6.0,
         ));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let expected = 10000.0 - 2.0 * std::f32::consts::PI * 2.5 * 2.5 * 5.0;
         assert!(
             (vol - expected).abs() < 20.0,
@@ -8491,20 +8445,19 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let outer = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         doc.extrusions.push(extrusion(sketch, vec![outer], 5.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let intact = body_solid_mesh(&doc, 0).expect("intact box");
+        let intact = body_solid_mesh(&doc, bkey(0)).expect("intact box");
         let intact_vol = mesh_signed_volume(&intact).abs();
 
         // A 4x4 column overlapping the box, extruded through it — the pending cut.
         let hole = rect_profile(&mut doc, sketch, 3.0, 3.0, 4.0, 4.0);
         let cut = extrusion(sketch, vec![hole], 5.0);
-        let preview = preview_cut_body_mesh(&doc, 0, &cut).expect("cut preview");
+        let preview = preview_cut_body_mesh(&doc, bkey(0), &cut).expect("cut preview");
         let preview_vol = mesh_signed_volume(&preview).abs();
 
         assert!(
@@ -8602,14 +8555,13 @@ mod tests {
             false,
             crate::model::RevolveMode::NewBody,
         ));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Revolve(rev),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let expected = std::f32::consts::PI * (400.0 - 100.0) * 10.0;
         assert!(
             (vol - expected).abs() < expected * 0.02,
@@ -8667,14 +8619,13 @@ mod tests {
             false,
             crate::model::RevolveMode::NewBody,
         ));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Revolve(rev),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let solid = body_solid_mesh(&doc, 0).expect("mesh");
+        let solid = body_solid_mesh(&doc, bkey(0)).expect("mesh");
         let chains = crate::gpu_viewport::solid_mesh_edge_chains(&solid);
         // The ring's only feature edges are its 4 circular rims (inner/outer × both flat
         // ends) — each must gather into a single many-segment chain.
@@ -8716,14 +8667,13 @@ mod tests {
             false,
             crate::model::RevolveMode::NewBody,
         ));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Revolve(rev),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("torus mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("torus mesh")).abs();
         let expected = std::f32::consts::TAU
             * d
             * std::f32::consts::PI
@@ -8748,14 +8698,13 @@ mod tests {
                 symmetric,
                 crate::model::RevolveMode::NewBody,
             ));
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Revolve(rev),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
-            let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+            let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
             assert!(
                 (vol - expected).abs() < expected * 0.02,
                 "symmetric={symmetric}: expected ~{expected}, got {vol}"
@@ -8769,11 +8718,10 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // Cut tool: a rect profile (x -20..20, y 3..6 in the ground plane) revolved 360
@@ -8787,11 +8735,11 @@ mod tests {
             axis: crate::model::RevolveAxis::X,
             angle_deg: 360.0,
             symmetric: false,
-            mode: crate::model::RevolveMode::Cut(vec![0]),
+            mode: crate::model::RevolveMode::Cut(vec![bkey(0)]),
             name: None,
         });
         let _ = rev;
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         // Removed material = plate ∩ tube: for the z 0..5 slab of an annulus r 3..6 around
         // the X axis over 40 of length. Assert a meaningful bite rather than the exact
         // integral: well below the intact plate, well above nothing.
@@ -8900,11 +8848,10 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // Cut tool: a 4x4 profile swept straight through the plate (z -10..10).
@@ -8915,10 +8862,10 @@ mod tests {
             sketch,
             faces: vec![bit],
             path: vec![doc.lines.len() - 1],
-            mode: crate::model::SweepMode::Cut(vec![0]),
+            mode: crate::model::SweepMode::Cut(vec![bkey(0)]),
             name: None,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let plain = 60.0 * 60.0 * 5.0;
         let expected = plain - 4.0 * 4.0 * 5.0;
         assert!(
@@ -8934,11 +8881,10 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // Cut tool: two circles on planes below and above the plate loft into a frustum
@@ -8963,10 +8909,10 @@ mod tests {
                 crate::model::LoftSection { sketch, face: ExtrudeFace::Circle(0) },
                 crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
             ],
-            mode: crate::model::LoftMode::Cut(vec![0]),
+            mode: crate::model::LoftMode::Cut(vec![bkey(0)]),
             name: None,
         });
-        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("mesh")).abs();
         let plain = 60.0 * 60.0 * 5.0;
         // The cylinder-ish column removes ~pi*r^2*h through the 5mm plate.
         let expected = plain - std::f32::consts::PI * 3.0 * 3.0 * 5.0;
@@ -9447,14 +9393,13 @@ mod tests {
         doc.extrusions.push(extrusion(sketch, vec![outer], LETTER_B_DEPTH)); // 0: the B
         doc.extrusions.push(extrusion(sketch, vec![upper], LETTER_B_DEPTH)); // 1: upper cut
         doc.extrusions.push(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1, 2] },
             material: None,
             name: Some("B".to_string()),
-            deleted: false,
             shadow: false,
         });
-        let cut_vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("occt B mesh")).abs();
+        let cut_vol = mesh_signed_volume(&body_solid_mesh(&doc, bkey(0)).expect("occt B mesh")).abs();
 
         // Each D removes ≈ (π·w·hh / 2) × depth (a half-ellipse, tessellated), fully enclosed
         // in its bowl => a clean through-hole, independent of the curved outer area.
@@ -9475,7 +9420,7 @@ mod tests {
         // leaving ~420. The result is meshed via the kernel's Cut boolean (#35); its
         // divergence-theorem volume should match.
         let doc = cut_body_doc();
-        let mesh = body_solid_mesh(&doc, 0).expect("occt cut-body mesh");
+        let mesh = body_solid_mesh(&doc, bkey(0)).expect("occt cut-body mesh");
         let volume = mesh_signed_volume(&mesh).abs();
         assert!(
             (volume - 420.0).abs() < 5.0,
@@ -9793,11 +9738,10 @@ mod tests {
         let (doc, _sketch, ext) = box_doc();
         let mut doc = doc;
         doc.extrusions.push(ext);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -9807,18 +9751,18 @@ mod tests {
 
         // Forward and reversed endpoint order both resolve to the same analytic edge.
         assert_eq!(
-            treatable_edge_for_selection(&doc, 0, qa, qb),
+            treatable_edge_for_selection(&doc, bkey(0), qa, qb),
             Some((expect_ei, expect_edge)),
         );
         assert_eq!(
-            treatable_edge_for_selection(&doc, 0, qb, qa),
+            treatable_edge_for_selection(&doc, bkey(0), qb, qa),
             Some((expect_ei, expect_edge)),
         );
         // A different body index does not match.
-        assert_eq!(treatable_edge_for_selection(&doc, 7, qa, qb), None);
+        assert_eq!(treatable_edge_for_selection(&doc, bkey(7), qa, qb), None);
         // An edge that isn't in the analytic list resolves to None.
         assert_eq!(
-            treatable_edge_for_selection(&doc, 0, [123456, 0, 0], [123456, 100, 0]),
+            treatable_edge_for_selection(&doc, bkey(0), [123456, 0, 0], [123456, 100, 0]),
             None
         );
 
@@ -9827,10 +9771,10 @@ mod tests {
         let mut selection = crate::selection::SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selection,
-            SceneElement::BodyEdge { body: 0, a: qa, b: qb },
+            SceneElement::BodyEdge { body: bkey(0), a: qa, b: qb },
             true,
         );
-        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(0), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(bkey(0)), true);
         let resolved = treatable_edges_in_selection(&doc, &selection);
         assert_eq!(resolved, vec![(expect_ei, expect_edge)]);
     }
@@ -9842,20 +9786,19 @@ mod tests {
     fn body_mesh_cache_invalidates_on_in_place_geometry_edits() {
         let (mut doc, _sketch, ext) = box_doc();
         doc.extrusions.push(ext);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let before = body_solid_mesh(&doc, 0).expect("box mesh");
+        let before = body_solid_mesh(&doc, bkey(0)).expect("box mesh");
         let (_, before_max) = before.bounds().unwrap();
         // Cached call returns the same mesh.
-        assert_eq!(body_solid_mesh(&doc, 0).unwrap(), before);
+        assert_eq!(body_solid_mesh(&doc, bkey(0)).unwrap(), before);
 
         doc.extrusions[0].distance = 9.0;
-        let after = body_solid_mesh(&doc, 0).expect("re-meshed box");
+        let after = body_solid_mesh(&doc, bkey(0)).expect("re-meshed box");
         let (_, after_max) = after.bounds().unwrap();
         assert!(
             (after_max.z - 9.0).abs() < 1e-3 && (before_max.z - 5.0).abs() < 1e-3,
@@ -10056,7 +9999,7 @@ mod tests {
         assert!(warning.contains("cuts are not shown"), "{warning}");
         // Without cuts there's nothing to silently drop: no warning even though the body
         // still falls back to the mesh-bevel path.
-        doc.bodies[0].source = crate::model::BodySource::Solid { add: vec![0], cut: vec![] };
+        doc.bodies.values_mut().nth(0).unwrap().source = crate::model::BodySource::Solid { add: vec![0], cut: vec![] };
         assert_eq!(kernel_fallback_cut_warning(&doc), None);
     }
 }

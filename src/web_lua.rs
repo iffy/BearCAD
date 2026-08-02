@@ -266,7 +266,7 @@ fn run_command(
         )?;
     }
 
-    let instr = script_json::instruction_from_json(name, &args)?;
+    let instr = script_json::instruction_from_json(&state.doc, name, &args)?;
     exec(runner, instr, state, synthetic, viewport, ctx)?;
     Ok(Value::Null)
 }

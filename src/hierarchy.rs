@@ -38,7 +38,7 @@ pub enum HierarchyNode {
     Circle(usize),
     Constraint(usize),
     Extrusion(usize),
-    Body(usize),
+    Body(crate::model::BodyKey),
     /// A tracing image (#163/#169).
     Image(crate::model::TracingImageKey),
     /// A boolean operation between bodies (Combine tool); its output bodies nest under it.
@@ -133,7 +133,7 @@ pub enum SceneElement {
     Point(ConstraintPoint),
     Constraint(usize),
     Extrusion(usize),
-    Body(usize),
+    Body(crate::model::BodyKey),
     /// An edge of an extrusion-backed body face's own boundary loop (#26/#27), for
     /// constraint-authoring selection — mirrors `Point` wrapping the whole `ConstraintPoint`
     /// enum; only ever constructed with `ConstraintLine::FaceEdge` (the `Line`
@@ -144,13 +144,13 @@ pub enum SceneElement {
     /// transient, geometry-keyed identity: if a rebuild moves the edge, the selection simply
     /// drops, which is acceptable for ephemeral (never persisted) selection state.
     BodyEdge {
-        body: usize,
+        body: crate::model::BodyKey,
         a: [i32; 3],
         b: [i32; 3],
     },
     /// A corner of a body's solid mesh, selectable in 3D select mode (#156); quantized like
     /// [`SceneElement::BodyEdge`].
-    BodyVertex { body: usize, p: [i32; 3] },
+    BodyVertex { body: crate::model::BodyKey, p: [i32; 3] },
     /// A planar face of a body's solid mesh, selectable in 3D select mode (#555/#557). A face
     /// has no stable index, so — like [`SceneElement::BodyEdge`] — its identity is its quantized
     /// geometry: the average of its triangle vertices (`centroid`) plus its `normal`, both
@@ -158,7 +158,7 @@ pub enum SceneElement {
     /// picks of the same face compare equal; a rebuild that moves the face simply drops the
     /// (ephemeral, never persisted) selection.
     BodyFace {
-        body: usize,
+        body: crate::model::BodyKey,
         centroid: [i32; 3],
         normal: [i32; 3],
     },
@@ -166,7 +166,7 @@ pub enum SceneElement {
     /// round shaft. Keyed by its fitted axis and radius — quantized like every other
     /// mesh-derived identity — so clicking a hole picks the hole, not one facet of it.
     BodyCylinder {
-        body: usize,
+        body: crate::model::BodyKey,
         origin: [i32; 3],
         dir: [i32; 3],
         radius: i32,
@@ -175,7 +175,7 @@ pub enum SceneElement {
     /// entity, the way [`SceneElement::GlobalAxis`] gave the world axes an identity. This is
     /// what "put this hole on that shaft" and "slide along this bore" are actually about.
     BodyAxis {
-        body: usize,
+        body: crate::model::BodyKey,
         origin: [i32; 3],
         dir: [i32; 3],
     },
@@ -1840,9 +1840,8 @@ pub fn build_hierarchy(
     }
     // Bodies with no source extrusion (e.g. STL imports, #70) have no sketch/feature to nest
     // under, so they surface at the top level, same as an orphaned extrusion above.
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if !body.deleted
-            && body.source.extrusion_indices().is_empty()
+    for (bi, body) in doc.bodies.iter() {
+        if body.source.extrusion_indices().is_empty()
             && !matches!(
                 body.source,
                 crate::model::BodySource::Boolean { .. }
@@ -1876,8 +1875,7 @@ pub fn build_hierarchy(
         let children = doc
             .bodies
             .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.deleted && matches!(b.source, crate::model::BodySource::Loft(l) if l == li))
+            .filter(|(_, b)| matches!(b.source, crate::model::BodySource::Loft(l) if l == li))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -1898,7 +1896,7 @@ pub fn build_hierarchy(
         let children = op
             .outputs
             .iter()
-            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .filter(|&&bi| doc.bodies.contains(bi))
             .map(|&bi| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -1916,7 +1914,7 @@ pub fn build_hierarchy(
         let children = op
             .outputs
             .iter()
-            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .filter(|&&bi| doc.bodies.contains(bi))
             .map(|&bi| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -1934,7 +1932,7 @@ pub fn build_hierarchy(
         let children = op
             .outputs
             .iter()
-            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .filter(|&&bi| doc.bodies.contains(bi))
             .map(|&bi| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -1952,7 +1950,7 @@ pub fn build_hierarchy(
         let mut children: Vec<HierarchyEntry> = op
             .outputs
             .iter()
-            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .filter(|&&bi| doc.bodies.contains(bi))
             .map(|&bi| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2081,7 +2079,7 @@ pub fn build_hierarchy(
         let children = op
             .outputs
             .iter()
-            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .filter(|&&bi| doc.bodies.contains(bi))
             .map(|&bi| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2101,7 +2099,7 @@ pub fn build_hierarchy(
         let children = op
             .outputs
             .iter()
-            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .filter(|&&bi| doc.bodies.contains(bi))
             .map(|&bi| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2118,8 +2116,7 @@ pub fn build_hierarchy(
         let children = doc
             .bodies
             .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Revolve(oi))
+            .filter(|(_, b)| b.source == crate::model::BodySource::Revolve(oi))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2136,8 +2133,7 @@ pub fn build_hierarchy(
         let children = doc
             .bodies
             .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Primitive(oi))
+            .filter(|(_, b)| b.source == crate::model::BodySource::Primitive(oi))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2157,8 +2153,7 @@ pub fn build_hierarchy(
         let children = doc
             .bodies
             .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Sweep(oi))
+            .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(oi))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2817,7 +2812,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
             }
             for (ci, comp) in doc.components.iter().enumerate() {
-                if !comp.deleted && comp.parent == Some(index) {
+                if comp.parent == Some(index) {
                     out.insert(SceneElement::Component(ci));
                     collect_descendants(doc, SceneElement::Component(ci), out);
                 }
@@ -2847,7 +2842,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
             }
             for (ti, text) in doc.sketch_texts.iter().enumerate() {
-                if !text.deleted && text.sketch == sketch {
+                if text.sketch == sketch {
                     out.insert(SceneElement::SketchText(ti));
                 }
             }
@@ -2858,7 +2853,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
             }
             for (ei, extrusion) in doc.extrusions.iter().enumerate() {
-                if !extrusion.deleted && extrusion.sketch == sketch {
+                if extrusion.sketch == sketch {
                     out.insert(SceneElement::Extrusion(ei));
                     collect_descendants(doc, SceneElement::Extrusion(ei), out);
                 }
@@ -2871,8 +2866,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
             }
         }
         SceneElement::Extrusion(index) => {
-            for (bi, body) in doc.bodies.iter().enumerate() {
-                if !body.deleted && body.source.owns_extrusion(index) {
+            for (bi, body) in doc.bodies.iter() {
+                if body.source.owns_extrusion(index) {
                     out.insert(SceneElement::Body(bi));
                 }
             }
@@ -3006,8 +3001,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         SceneElement::Revolution(index) => {
             // The revolved solid's output body is linked by `BodySource::Revolve`, not an
             // `outputs` list.
-            for (bi, body) in doc.bodies.iter().enumerate() {
-                if !body.deleted && body.source == crate::model::BodySource::Revolve(index) {
+            for (bi, body) in doc.bodies.iter() {
+                if body.source == crate::model::BodySource::Revolve(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -3015,8 +3010,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::Shape(index) => {
             // A shape's body is linked by `BodySource::Primitive` (#909).
-            for (bi, body) in doc.bodies.iter().enumerate() {
-                if !body.deleted && body.source == crate::model::BodySource::Primitive(index) {
+            for (bi, body) in doc.bodies.iter() {
+                if body.source == crate::model::BodySource::Primitive(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -3024,8 +3019,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::SweepOp(index) => {
             // The swept solid's output body is linked by `BodySource::Sweep`.
-            for (bi, body) in doc.bodies.iter().enumerate() {
-                if !body.deleted && body.source == crate::model::BodySource::Sweep(index) {
+            for (bi, body) in doc.bodies.iter() {
+                if body.source == crate::model::BodySource::Sweep(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -3162,16 +3157,16 @@ pub fn selection_related_constraints(
 /// body under it, recursively, and a joint lights the parts it joins. Descendants, filtered to
 /// live bodies: `collect_descendants` already knows every operation's outputs, so this doesn't
 /// re-derive them per op kind.
-pub fn produced_bodies(doc: &Document, element: &SceneElement) -> Vec<usize> {
+pub fn produced_bodies(doc: &Document, element: &SceneElement) -> Vec<crate::model::BodyKey> {
     let mut out = HashSet::new();
     collect_descendants(doc, element.clone(), &mut out);
-    let mut bodies: Vec<usize> = out
+    let mut bodies: Vec<crate::model::BodyKey> = out
         .into_iter()
         .filter_map(|e| match e {
             SceneElement::Body(bi) => Some(bi),
             _ => None,
         })
-        .filter(|bi| doc.bodies.get(*bi).is_some_and(|b| !b.deleted && !b.shadow))
+        .filter(|bi| doc.bodies.get(*bi).is_some_and(|b| !b.shadow))
         .collect();
     // A joint has no descendants — what it "produces" is the parts it holds together (#891),
     // the same set hovering its badge in the viewport already glows (#899).
@@ -3467,10 +3462,9 @@ pub fn unit_child_rows(doc: &Document, instance: usize) -> Vec<(IconId, String)>
             rows.push((IconId::Sketch, node_label(inner, HierarchyNode::Sketch(i))));
         }
     }
-    for (i, body) in inner.bodies.iter().enumerate() {
+    for (i, body) in inner.bodies.iter() {
         // A unit's own materialized instance bodies show as nested-unit rows below.
-        if !body.deleted
-            && !body.shadow
+        if !body.shadow
             && !matches!(body.source, crate::model::BodySource::UnitInstance(_))
         {
             rows.push((IconId::Body, node_label(inner, HierarchyNode::Body(i))));
@@ -3738,7 +3732,7 @@ fn build_sketch_entry(
     // Offsets of this sketch's geometry nest under it (#941): the op belongs to the sketch,
     // so it reads as a sketch feature rather than a document-level sibling.
     for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
-        if !op.deleted && op.sketch == sketch {
+        if op.sketch == sketch {
             children.push(build_sketch_offset_entry(doc, oi));
         }
     }
@@ -3754,8 +3748,7 @@ fn build_sketch_entry(
         let bodies = doc
             .bodies
             .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Sweep(oi))
+            .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(oi))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -3788,8 +3781,7 @@ fn build_sketch_extrusions(
             let mut children: Vec<HierarchyEntry> = doc
                 .bodies
                 .iter()
-                .enumerate()
-                .filter(|(_, body)| !body.deleted && body.source.owns_extrusion(ei))
+                .filter(|(_, body)| body.source.owns_extrusion(ei))
                 .map(|(bi, _)| HierarchyEntry {
                     node: HierarchyNode::Body(bi),
                     children: Vec::new(),
@@ -3854,8 +3846,8 @@ pub fn show_pane(
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(usize, String),
-    on_export_body: &mut impl FnMut(usize),
-    on_export_body_step: &mut impl FnMut(usize),
+    on_export_body: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_export_component: &mut impl FnMut(usize),
     on_export_component_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -4306,8 +4298,8 @@ fn show_graph_view(
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
-    on_export_body: &mut impl FnMut(usize),
-    on_export_body_step: &mut impl FnMut(usize),
+    on_export_body: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_edit_drawing: &mut impl FnMut(usize),
@@ -4932,8 +4924,8 @@ fn show_row(
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(usize, String),
-    on_export_body: &mut impl FnMut(usize),
-    on_export_body_step: &mut impl FnMut(usize),
+    on_export_body: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
@@ -5381,8 +5373,8 @@ fn element_context_menu(
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
     on_add_to_drawing: &mut impl FnMut(SceneElement),
-    on_export_body: &mut impl FnMut(usize),
-    on_export_body_step: &mut impl FnMut(usize),
+    on_export_body: &mut impl FnMut(crate::model::BodyKey),
+    on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_delete_element: &mut impl FnMut(SceneElement),
@@ -5547,6 +5539,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::ShapeKind;
 
@@ -5559,7 +5552,7 @@ mod tests {
         let members = [
             CM::ConstructionPlane(1),
             CM::Extrusion(1),
-            CM::Body(1),
+            CM::Body(bkey(1)),
             CM::BooleanOp(1),
             CM::MoveOp(1),
             CM::MirrorOp(1),
@@ -5601,20 +5594,19 @@ mod tests {
             source,
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         };
-        doc.bodies.push(live(BodySource::Extrusion(0))); // body 0
-        doc.bodies.push(live(BodySource::Extrusion(0))); // body 1
+        doc.bodies.insert(live(BodySource::Extrusion(0))); // body 0
+        doc.bodies.insert(live(BodySource::Extrusion(0))); // body 1
         // A consumed input, which is not an output of anything the user can point at.
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             shadow: true,
             ..live(BodySource::Extrusion(0))
         });
 
         assert_eq!(
             produced_bodies(&doc, &SceneElement::Extrusion(0)),
-            vec![0, 1],
+            vec![bkey(0), bkey(1)],
             "an operation's outputs, and not the input it consumed"
         );
 
@@ -5626,12 +5618,12 @@ mod tests {
             angle_unit: None,
             deleted: false,
         });
-        doc.component_members.push((ComponentMember::Body(1), 0));
-        assert_eq!(produced_bodies(&doc, &SceneElement::Component(0)), vec![1]);
+        doc.component_members.push((ComponentMember::Body(bkey(1)), 0));
+        assert_eq!(produced_bodies(&doc, &SceneElement::Component(0)), vec![bkey(1)]);
 
         // A joint has no descendants at all — what it holds together is the answer.
         doc.joints.push(crate::model::Joint {
-            members: vec![JointRef::Body(0), JointRef::Body(1)],
+            members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind: JointKind::Rigid,
             mate: crate::model::JointMate::default(),
@@ -5645,10 +5637,10 @@ mod tests {
             name: None,
             deleted: false,
         });
-        assert_eq!(produced_bodies(&doc, &SceneElement::Joint(0)), vec![0, 1]);
+        assert_eq!(produced_bodies(&doc, &SceneElement::Joint(0)), vec![bkey(0), bkey(1)]);
 
         // A body isn't an operation; it has nothing downstream to stand in for it.
-        assert!(produced_bodies(&doc, &SceneElement::Body(0)).is_empty());
+        assert!(produced_bodies(&doc, &SceneElement::Body(bkey(0))).is_empty());
     }
 
     #[test]
@@ -5686,11 +5678,10 @@ mod tests {
         let mut inner = Document::default();
         let sketch = inner.add_sketch(FaceId::ConstructionPlane(0));
         crate::construction::add_line_rectangle(&mut inner, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        inner.bodies.push(crate::model::Body {
+        inner.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: Some("Inner body".to_string()),
-            deleted: false,
             shadow: false,
         });
         let mut doc = Document::default();
@@ -5775,7 +5766,7 @@ mod tests {
     fn graph_layering_enforcement_keeps_inputs_above_consumers() {
         let a = HierarchyNode::Sketch(0);
         let b = HierarchyNode::Extrusion(0);
-        let c = HierarchyNode::Body(0);
+        let c = HierarchyNode::Body(bkey(0));
         let edges = vec![(a, b), (b, c)];
         // b dragged above its input a: a slides up; c stays below b.
         let mut ys: HashMap<HierarchyNode, f32> =
@@ -5796,12 +5787,12 @@ mod tests {
     /// position. A changed node set or a drag wakes it again.
     #[test]
     fn settled_graph_layout_holds_still_across_repaints() {
-        let node = |i| GraphNodePosition {
-            node: HierarchyNode::Body(i),
+        let node = |i: usize| GraphNodePosition {
+            node: HierarchyNode::Body(bkey(i)),
             depth: i,
             column: 0,
             row: 0,
-            parent: (i > 0).then(|| HierarchyNode::Body(i - 1)),
+            parent: (i > 0).then(|| HierarchyNode::Body(bkey(i - 1))),
         };
         let positions: Vec<_> = (0..4).map(node).collect();
         let mut layout = GraphLayout::default();
@@ -5848,7 +5839,7 @@ mod tests {
     fn graph_layering_stops_a_drag_once_its_inputs_hit_the_top() {
         let a = HierarchyNode::Sketch(0);
         let b = HierarchyNode::Extrusion(0);
-        let c = HierarchyNode::Body(0);
+        let c = HierarchyNode::Body(bkey(0));
         let edges = vec![(a, b), (b, c)];
         // c is dragged far above the top. It has two inputs stacked above it (a → b → c),
         // so it can rise no further than 2 gaps below the top.
@@ -5872,7 +5863,7 @@ mod tests {
         let a = HierarchyNode::Sketch(0);
         let b = HierarchyNode::Sketch(1);
         let c = HierarchyNode::Extrusion(0);
-        let d = HierarchyNode::Body(0);
+        let d = HierarchyNode::Body(bkey(0));
         // a → c → d and b → d: d's longest chain is a → c → d, i.e. 2 above it.
         let edges = vec![(a, c), (c, d), (b, d)];
         assert_eq!(input_chain_depth(a, &edges), 0);
@@ -5887,15 +5878,14 @@ mod tests {
     #[test]
     fn graph_dependency_edges_cover_operation_inputs() {
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc.repeat_ops.push(crate::model::RepeatOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: vec![0],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -5926,7 +5916,7 @@ mod tests {
             name: None,
         });
         let edges = graph_dependency_edges(&doc);
-        assert!(edges.contains(&(HierarchyNode::Body(0), HierarchyNode::RepeatOp(0))));
+        assert!(edges.contains(&(HierarchyNode::Body(bkey(0)), HierarchyNode::RepeatOp(0))));
         assert!(edges.contains(&(
             HierarchyNode::ConstructionPlane(0),
             HierarchyNode::RepeatOp(0)
@@ -6000,17 +5990,16 @@ mod tests {
             source_name: "part".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let mut visibility = ElementVisibility::default();
-        assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
-        visibility.set_visible(SceneElement::Body(0), false);
-        assert!(!visibility.effective_visible(&doc, SceneElement::Body(0)));
+        assert!(visibility.effective_visible(&doc, SceneElement::Body(bkey(0))));
+        visibility.set_visible(SceneElement::Body(bkey(0)), false);
+        assert!(!visibility.effective_visible(&doc, SceneElement::Body(bkey(0))));
     }
 
     /// #667: hiding a construction plane hides the plane itself, **not** the sketches drawn on
@@ -6080,28 +6069,27 @@ mod tests {
     fn boolean_op_inputs_are_graph_dependencies() {
         let mut doc = Document::default();
         for _ in 0..3 {
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
         doc.boolean_ops.push(crate::model::BooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: false,
-            outputs: vec![2],
+            outputs: vec![bkey(2)],
             name: None,
             deleted: false,
         });
         let edges = graph_dependency_edges(&doc);
-        assert!(edges.contains(&(HierarchyNode::Body(0), HierarchyNode::BooleanOp(0))));
-        assert!(edges.contains(&(HierarchyNode::Body(1), HierarchyNode::BooleanOp(0))));
+        assert!(edges.contains(&(HierarchyNode::Body(bkey(0)), HierarchyNode::BooleanOp(0))));
+        assert!(edges.contains(&(HierarchyNode::Body(bkey(1)), HierarchyNode::BooleanOp(0))));
         // The output body is a tree child, not a dependency input.
-        assert!(!edges.contains(&(HierarchyNode::Body(2), HierarchyNode::BooleanOp(0))));
+        assert!(!edges.contains(&(HierarchyNode::Body(bkey(2)), HierarchyNode::BooleanOp(0))));
     }
 
     /// #281: each placed drawing view is a "projection" child of its drawing node, labelled by
@@ -6109,16 +6097,15 @@ mod tests {
     #[test]
     fn drawing_views_nest_as_projections_under_the_drawing() {
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: Some("Plate".to_string()),
-            deleted: false,
             shadow: false,
         });
         doc.drawings.push(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
-                body: 0,
+                body: bkey(0),
                 sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
@@ -6165,7 +6152,7 @@ label_hidden: false,
         let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
         doc.drawings.push(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
-                body: 0,
+                body: bkey(0),
                 sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,
                 dimensioned_edges: vec![(a, b)],
@@ -6248,7 +6235,7 @@ label_hidden: false,
             children: vec![HierarchyEntry {
                 node: HierarchyNode::BooleanOp(0),
                 children: vec![HierarchyEntry {
-                    node: HierarchyNode::Body(3),
+                    node: HierarchyNode::Body(bkey(3)),
                     children: Vec::new(),
                 }],
             }],
@@ -6263,7 +6250,7 @@ label_hidden: false,
         assert_eq!(out[0].node, HierarchyNode::Document);
         assert_eq!(
             out[0].children.iter().map(|c| c.node).collect::<Vec<_>>(),
-            vec![HierarchyNode::Body(3)]
+            vec![HierarchyNode::Body(bkey(3))]
         );
 
         // Hiding Bodies too removes it entirely.
@@ -6283,7 +6270,7 @@ label_hidden: false,
         let f = ElementFilter::for_drawing_workbench();
         assert!(f.sketches && f.bodies && f.drawings);
         assert!(!f.planes && !f.operations && !f.sketch_geometry && !f.images);
-        assert!(f.shows(HierarchyNode::Body(0)));
+        assert!(f.shows(HierarchyNode::Body(bkey(0))));
         assert!(f.shows(HierarchyNode::Sketch(0)));
         assert!(f.shows(HierarchyNode::Document), "the root is always shown");
         assert!(f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
@@ -6374,11 +6361,10 @@ label_hidden: false,
             source_name: "part".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -6389,7 +6375,7 @@ label_hidden: false,
         assert!(children.contains(&HierarchyNode::ConstructionPlane(0)));
         assert!(children.contains(&HierarchyNode::ConstructionPlane(1)));
         assert!(children.contains(&HierarchyNode::Extrusion(0)));
-        assert!(children.contains(&HierarchyNode::Body(0)));
+        assert!(children.contains(&HierarchyNode::Body(bkey(0))));
     }
 
     #[test]
@@ -6400,21 +6386,20 @@ label_hidden: false,
             source_name: "part".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: Some("part".to_string()),
-            deleted: false,
             shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
 
         let list = build_element_list(&doc, None);
         assert!(
-            list.contains(&HierarchyNode::Body(0)),
+            list.contains(&HierarchyNode::Body(bkey(0))),
             "imported body should be visible in the elements list, got {list:?}"
         );
-        assert_eq!(parent_element(&doc, SceneElement::Body(0)), None);
+        assert_eq!(parent_element(&doc, SceneElement::Body(bkey(0))), None);
     }
 
     #[test]
@@ -6451,8 +6436,8 @@ label_hidden: false,
     fn flat_sort_orders_by_inputs_then_kind_index() {
         let nodes = vec![
             HierarchyNode::BooleanOp(0),
-            HierarchyNode::Body(5),
-            HierarchyNode::Body(2),
+            HierarchyNode::Body(bkey(5)),
+            HierarchyNode::Body(bkey(2)),
         ];
         let parent_of = HashMap::new();
         let mut input_sources = HashMap::new();
@@ -6460,14 +6445,14 @@ label_hidden: false,
         // enum order (a Body sorts before a BooleanOp only because inputs come first here).
         input_sources.insert(
             HierarchyNode::BooleanOp(0),
-            vec![HierarchyNode::Body(5), HierarchyNode::Body(2)],
+            vec![HierarchyNode::Body(bkey(5)), HierarchyNode::Body(bkey(2))],
         );
         let out = topological_flat_sort(nodes, parent_of, input_sources);
         assert_eq!(
             out,
             vec![
-                HierarchyNode::Body(2), // input, lower index first
-                HierarchyNode::Body(5), // input
+                HierarchyNode::Body(bkey(2)), // input, lower index first
+                HierarchyNode::Body(bkey(5)), // input
                 HierarchyNode::BooleanOp(0), // consumer, after its inputs
             ]
         );
@@ -7088,7 +7073,7 @@ label_hidden: false,
         // extrusion, and the body — but not the sketch itself or its host plane.
         let rb = rolled_back_elements(&doc, &here(SceneElement::Sketch(sketch)));
         assert!(rb.contains(&SceneElement::Extrusion(0)), "extrusion depends on the sketch");
-        assert!(rb.contains(&SceneElement::Body(0)), "body depends on the extrusion");
+        assert!(rb.contains(&SceneElement::Body(bkey(0))), "body depends on the extrusion");
         assert!(!rb.contains(&SceneElement::Sketch(sketch)), "the marker itself stays");
         assert!(!rb.contains(&SceneElement::ConstructionPlane(0)), "ancestors stay active");
 
@@ -7099,10 +7084,10 @@ label_hidden: false,
 
         // Rolling back to the body (a leaf nothing consumes) suppresses nothing — unless
         // inclusive, which hides just the body.
-        assert!(rolled_back_elements(&doc, &here(SceneElement::Body(0))).is_empty());
-        let body_before = rolled_back_elements(&doc, &before(SceneElement::Body(0)));
+        assert!(rolled_back_elements(&doc, &here(SceneElement::Body(bkey(0)))).is_empty());
+        let body_before = rolled_back_elements(&doc, &before(SceneElement::Body(bkey(0))));
         assert_eq!(body_before.len(), 1);
-        assert!(body_before.contains(&SceneElement::Body(0)));
+        assert!(body_before.contains(&SceneElement::Body(bkey(0))));
         // An unknown / non-graph marker suppresses nothing.
         assert!(rolled_back_elements(&doc, &here(SceneElement::Sketch(99))).is_empty());
         assert!(rolled_back_elements(&doc, &here(SceneElement::Origin)).is_empty());
@@ -7126,11 +7111,10 @@ label_hidden: false,
             symmetric: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         (doc, sketch)
@@ -7412,11 +7396,10 @@ label_hidden: false,
             mode: crate::model::LoftMode::NewBody,
             name: None,
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Loft(loft_key),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -7427,7 +7410,7 @@ label_hidden: false,
             .find(|e| e.node == HierarchyNode::Loft(loft_key))
             .expect("loft is a top-level operation, not a bare body");
         assert!(
-            loft.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            loft.children.iter().any(|c| c.node == HierarchyNode::Body(bkey(0))),
             "the loft body nests under the loft as its output"
         );
         // The three section sketches feed the loft as dependency inputs.
@@ -7456,11 +7439,10 @@ label_hidden: false,
             mode: SweepMode::NewBody,
             name: None,
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Sweep(sweep),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -7500,7 +7482,7 @@ label_hidden: false,
             "the sweep op nests under its profile sketch"
         );
         assert!(
-            op.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            op.children.iter().any(|c| c.node == HierarchyNode::Body(bkey(0))),
             "the swept body nests under the sweep op as its output"
         );
         let deps = graph_dependency_edges(&doc);
@@ -7517,11 +7499,10 @@ label_hidden: false,
         let mut shape = Primitive::new(PrimitiveKind::Sphere);
         shape.radius = "6".to_string();
         let key = doc.primitives.insert(shape);
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Primitive(key),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -7533,11 +7514,11 @@ label_hidden: false,
             .find(|e| e.node == HierarchyNode::Shape(key))
             .expect("the shape is a top-level element");
         assert!(
-            entry.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            entry.children.iter().any(|c| c.node == HierarchyNode::Body(bkey(0))),
             "its body nests under it",
         );
         assert!(
-            !root.children.iter().any(|e| e.node == HierarchyNode::Body(0)),
+            !root.children.iter().any(|e| e.node == HierarchyNode::Body(bkey(0))),
             "and isn't also a Document-level orphan",
         );
         assert_eq!(
@@ -7563,11 +7544,10 @@ label_hidden: false,
             mode: RevolveMode::NewBody,
             name: None,
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Revolve(rev_key),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -7579,13 +7559,13 @@ label_hidden: false,
             .find(|e| e.node == HierarchyNode::Revolution(rev_key))
             .expect("the revolution is a top-level element (#211)");
         assert!(
-            rev.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            rev.children.iter().any(|c| c.node == HierarchyNode::Body(bkey(0))),
             "the revolved body nests under the revolution",
         );
         // The body's *only* parent is the revolution (#305): it must not also surface as a
         // top-level orphan under Document.
         assert!(
-            !root.children.iter().any(|e| e.node == HierarchyNode::Body(0)),
+            !root.children.iter().any(|e| e.node == HierarchyNode::Body(bkey(0))),
             "a revolved body is not a Document-level orphan",
         );
         // It maps to a selectable scene element.

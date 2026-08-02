@@ -1145,7 +1145,7 @@ fn profile_sketch(app: &AppState) -> Option<crate::model::SketchId> {
 fn bend_edge_point(app: &AppState, nth: usize) -> Option<glam::Vec3> {
     let frame = crate::face::sketch_geometry_frame(&app.doc, profile_sketch(app)?)?;
     let corner = profile_polyline(app, nth)?.first().copied()?;
-    let body = app.doc.bodies.iter().position(|b| !b.deleted)?;
+    let body = app.doc.bodies.keys().next()?;
     let solid = crate::extrude::body_solid_mesh(&app.doc, body)?;
     let normal = frame.normal.normalize_or_zero();
     let mut best: Option<(f32, glam::Vec3)> = None;
@@ -1212,7 +1212,7 @@ fn first_hole_drawn(app: &AppState) -> bool {
 /// How deep the body runs along the sketch normal (the extrusion's `width`).
 fn body_depth(app: &AppState) -> Option<(glam::Vec3, f32)> {
     let frame = crate::face::sketch_geometry_frame(&app.doc, profile_sketch(app)?)?;
-    let body = app.doc.bodies.iter().position(|b| !b.deleted)?;
+    let body = app.doc.bodies.keys().next()?;
     let (min, max) = crate::extrude::body_solid_mesh(&app.doc, body)?.bounds()?;
     let n = frame.normal.normalize_or_zero();
     let depth = (max - min).dot(n).abs();
@@ -1501,8 +1501,7 @@ fn hole_dimension_orb(app: &AppState) -> Option<StepTarget> {
 fn cut_extrusion_count(app: &AppState) -> usize {
     app.doc
         .bodies
-        .iter()
-        .filter(|b| !b.deleted)
+        .values()
         .map(|b| b.source.cut_extrusion_indices().len())
         .sum()
 }

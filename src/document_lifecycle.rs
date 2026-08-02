@@ -148,8 +148,8 @@ pub fn extrusion_alive(doc: &Document, index: usize) -> bool {
     doc.extrusions.get(index).is_some_and(|e| !e.deleted)
 }
 
-pub fn body_alive(doc: &Document, index: usize) -> bool {
-    doc.bodies.get(index).is_some_and(|b| !b.deleted)
+pub fn body_alive(doc: &Document, index: crate::model::BodyKey) -> bool {
+    doc.bodies.contains(index)
 }
 
 fn point_owner_alive(
@@ -319,9 +319,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     let outputs = doc.repeat_ops[index].outputs.clone();
                     for out in outputs {
-                        if let Some(body) = doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        doc.bodies.remove(out);
                     }
                     // Generated plane instances go with the op (#221).
                     let plane_outputs = doc.repeat_ops[index].plane_outputs.clone();
@@ -476,9 +474,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     let op = doc.move_ops[index].clone();
                     for &out in &op.outputs {
-                        if let Some(body) = doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        doc.bodies.remove(out);
                     }
                     for &input in &op.targets {
                         if !crate::model::body_shadowed_by_other_ops(doc, input, None, Some(index), None, None)
@@ -500,9 +496,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     let op = doc.mirror_ops[index].clone();
                     for &out in &op.outputs {
-                        if let Some(body) = doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        doc.bodies.remove(out);
                     }
                     changed = true;
                 }
@@ -516,9 +510,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     let op = doc.slice_ops[index].clone();
                     for &out in &op.outputs {
-                        if let Some(body) = doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        doc.bodies.remove(out);
                     }
                     for &input in &op.targets {
                         if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, Some(index), None)
@@ -540,9 +532,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     let op = doc.edge_treatment_ops[index].clone();
                     for &out in &op.outputs {
-                        if let Some(body) = doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        doc.bodies.remove(out);
                     }
                     for &input in &op.targets {
                         if !crate::model::body_shadowed_by_other_ops(
@@ -567,10 +557,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             // AddTo/Cut fuse into existing bodies at recompute, so there's nothing else to
             // release — the revolve simply stops contributing).
             if doc.revolutions.remove(index).is_some() {
-                for body in doc.bodies.iter_mut() {
-                    if body.source == crate::model::BodySource::Revolve(index) {
-                        body.deleted = true;
-                    }
+                let produced: Vec<crate::model::BodyKey> = doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| b.source == crate::model::BodySource::Revolve(index))
+                    .map(|(k, _)| k)
+                    .collect();
+                for key in produced {
+                    doc.bodies.remove(key);
                 }
                 changed = true;
             }
@@ -578,10 +572,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::Shape(index) => {
             // Deleting a shape (#909) takes its body with it.
             if doc.primitives.remove(index).is_some() {
-                for body in doc.bodies.iter_mut() {
-                    if body.source == crate::model::BodySource::Primitive(index) {
-                        body.deleted = true;
-                    }
+                let produced: Vec<crate::model::BodyKey> = doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| b.source == crate::model::BodySource::Primitive(index))
+                    .map(|(k, _)| k)
+                    .collect();
+                for key in produced {
+                    doc.bodies.remove(key);
                 }
                 changed = true;
             }
@@ -590,10 +588,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             // Deleting the sweep removes its output body (only NewBody mode has one;
             // AddTo/Cut fuse into existing bodies at recompute).
             if doc.sweeps.remove(index).is_some() {
-                for body in doc.bodies.iter_mut() {
-                    if body.source == crate::model::BodySource::Sweep(index) {
-                        body.deleted = true;
-                    }
+                let produced: Vec<crate::model::BodyKey> = doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(index))
+                    .map(|(k, _)| k)
+                    .collect();
+                for key in produced {
+                    doc.bodies.remove(key);
                 }
                 changed = true;
             }
@@ -606,9 +608,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     let op = doc.boolean_ops[index].clone();
                     for &out in &op.outputs {
-                        if let Some(body) = doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        doc.bodies.remove(out);
                     }
                     for &input in op.a.iter().chain(op.b.iter()) {
                         if !crate::model::body_shadowed_by_other_ops(doc, input, Some(index), None, None, None)
@@ -651,11 +651,10 @@ fn tombstone_extrusion(doc: &mut Document, index: usize) -> bool {
     remove_shape_order_entry(doc, ShapeKind::Extrusion, index);
     // A body that depends solely on this extrusion is removed with it; a body merging this
     // extrusion with others (#32) just drops this one and keeps the rest.
-    let dependent: Vec<usize> = doc
+    let dependent: Vec<crate::model::BodyKey> = doc
         .bodies
         .iter()
-        .enumerate()
-        .filter(|(_, body)| !body.deleted && body.source.owns_extrusion(index))
+        .filter(|(_, body)| body.source.owns_extrusion(index))
         .map(|(i, _)| i)
         .collect();
     for bi in dependent {
@@ -669,15 +668,14 @@ fn tombstone_extrusion(doc: &mut Document, index: usize) -> bool {
     true
 }
 
-fn tombstone_body(doc: &mut Document, index: usize) -> bool {
-    let Some(body) = doc.bodies.get_mut(index) else {
+fn tombstone_body(doc: &mut Document, index: crate::model::BodyKey) -> bool {
+    // The history-tape marker to drop is the one for this body's place among the live ones,
+    // read before the removal (#1055).
+    let Some(ordinal) = doc.bodies.keys().position(|k| k == index) else {
         return false;
     };
-    if body.deleted {
-        return false;
-    }
-    body.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Body, index);
+    doc.bodies.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::Body, ordinal);
     tombstone_joints_referencing(doc, crate::model::JointRef::Body(index));
     true
 }
@@ -1029,16 +1027,15 @@ mod tests {
         );
     }
 
-    fn push_test_body(doc: &mut Document) -> usize {
-        doc.bodies.push(crate::model::Body {
+    fn push_test_body(doc: &mut Document) -> crate::model::BodyKey {
+        let key = doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
-        doc.bodies.len() - 1
+        key
     }
 
     fn push_test_joint(doc: &mut Document, members: Vec<crate::model::JointRef>) -> usize {

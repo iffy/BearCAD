@@ -50,7 +50,7 @@ impl MateGeom {
 pub fn resolve(doc: &Document, r: &MateRef) -> Option<MateGeom> {
     match r {
         MateRef::Face { body, centroid, normal } => {
-            doc.bodies.get(*body).filter(|b| !b.deleted)?;
+            doc.bodies.get(*body)?;
             let solid = crate::extrude::body_solid_mesh_unposed(doc, *body)?;
             let tris = crate::extrude::face_group_matching(&solid, *centroid, *normal)?;
             let origin = crate::extrude::face_group_center(&tris);
@@ -544,25 +544,23 @@ pub mod tests {
         t
     }
 
-    pub fn cube_body(doc: &mut Document, origin: Vec3, size: Vec3) -> usize {
+    pub fn cube_body(doc: &mut Document, origin: Vec3, size: Vec3) -> crate::model::BodyKey {
         let mesh = doc.imported_meshes.insert(ImportedMesh {
             triangles: cube_tris(origin, size),
             source_name: format!("part{}", doc.imported_meshes.len()),
             step_bytes: None,
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Imported(mesh),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
-        });
-        doc.bodies.len() - 1
+        })
     }
 
     /// The face of `body` whose middle is nearest `near` — how the tests name a face without
     /// hand-quantizing a key.
-    pub fn face_ref(doc: &Document, body: usize, near: Vec3) -> MateRef {
+    pub fn face_ref(doc: &Document, body: crate::model::BodyKey, near: Vec3) -> MateRef {
         let solid = crate::extrude::body_solid_mesh_unposed(doc, body).unwrap();
         let groups = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid);
         let best = groups
@@ -583,7 +581,7 @@ pub mod tests {
         }
     }
 
-    pub fn vertex_ref(body: usize, p: Vec3) -> MateRef {
+    pub fn vertex_ref(body: crate::model::BodyKey, p: Vec3) -> MateRef {
         MateRef::Point(crate::model::MovePointRef::Vertex {
             body,
             p: crate::hierarchy::quantize_body_point(p),

@@ -560,7 +560,7 @@ pub struct ViewportPlaneGizmo {
 #[derive(Clone, Debug, Default)]
 pub struct PreviewReplacement {
     /// Bodies hidden while the preview is up, because it shows what becomes of them.
-    pub bodies: Vec<usize>,
+    pub bodies: Vec<crate::model::BodyKey>,
     /// The solids drawn in their place, in the shared translucent preview style.
     pub solids: Vec<crate::extrude::SolidMesh>,
 }
@@ -576,10 +576,10 @@ pub struct ViewportSceneInput<'a> {
     /// Bodies to fill in the red "cut" highlight (#213): the active tool's destructive picker
     /// contents (Revolve cut bodies, a Combine Cut's B side). Takes precedence over the blue
     /// selection fill.
-    pub cut_highlight_bodies: Vec<usize>,
+    pub cut_highlight_bodies: Vec<crate::model::BodyKey>,
     /// Bodies to render dimmed/translucent because they are descendants of the operation being
     /// edited (#260), so the edit's downstream effects are visually de-emphasized.
-    pub faded_bodies: Vec<usize>,
+    pub faded_bodies: Vec<crate::model::BodyKey>,
     /// Dashed ghost world-segments previewing an in-progress in-sketch repeat's duplicates
     /// (#232) — the sketch-plane equivalent of the 3D repeat ghost meshes.
     pub sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
@@ -592,7 +592,7 @@ pub struct ViewportSceneInput<'a> {
     /// dragged, `faded_bodies[bi]` renders this preview mesh (recomputed from a scratch document
     /// with the edit applied) instead of its stale committed geometry, so downstream bodies
     /// follow the drag. Keyed by body index; a faded body absent here just fades in place.
-    pub edit_preview_meshes: std::collections::HashMap<usize, crate::extrude::SolidMesh>,
+    pub edit_preview_meshes: std::collections::HashMap<crate::model::BodyKey, crate::extrude::SolidMesh>,
     pub element_visibility: &'a ElementVisibility,
     pub preview_rect: Option<PreviewRect>,
     pub preview_line: Option<Line>,
@@ -614,7 +614,7 @@ pub struct ViewportSceneInput<'a> {
     /// `preview_extrusion` subtracted) rather than the additive block, so the preview looks
     /// like the finished cut. `None` for add/new-body extrudes (block preview) or when the
     /// kernel can't build the cut result.
-    pub preview_cut_body: Option<usize>,
+    pub preview_cut_body: Option<crate::model::BodyKey>,
     /// Bodies a tool's live result preview stands in for, and the solids drawn in their
     /// place — what `preview_cut_body` does for one in-progress extrusion, generalized to
     /// the tools whose result isn't one-mesh-per-body: a Sweep cut (one solid per carved
@@ -658,7 +658,7 @@ pub struct ViewportSceneInput<'a> {
     /// two sides, green for the one that moves and blue for the one holding it. A fill, not an
     /// aura, because for a solid the fill *is* the visual — and it outranks the selection blue,
     /// which would otherwise paint both sides the same and answer the wrong question.
-    pub tinted_bodies: Vec<(usize, Color32)>,
+    pub tinted_bodies: Vec<(crate::model::BodyKey, Color32)>,
     /// Pick targets to highlight in a colour of their own rather than the shared hover colour
     /// (#660): the Move tool marks start point A green and end point A red.
     pub colored_pick_highlights: Vec<(crate::construction::PickTargetKind, Color32)>,
@@ -814,7 +814,7 @@ impl ViewportScene {
         // A shadow body (a boolean operation's consumed input) renders only while hovered
         // or selected in the Elements pane; hovering the operation row ghosts all of its
         // inputs at once.
-        let shadow_shown = |bi: usize| -> bool {
+        let shadow_shown = |bi: crate::model::BodyKey| -> bool {
             if input.selection.is_selected(SceneElement::Body(bi)) {
                 return true;
             }
@@ -833,13 +833,14 @@ impl ViewportScene {
                 _ => false,
             }
         };
-        let body_meshes: Vec<Option<crate::extrude::SolidMesh>> = (0..input.doc.bodies.len())
-            .map(|bi| {
-                let body = &input.doc.bodies[bi];
-                let mut visible = !body.deleted
-                    && input
-                        .element_visibility
-                        .effective_visible(input.doc, SceneElement::Body(bi))
+        let body_meshes: std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>> = input
+            .doc
+            .bodies
+            .iter()
+            .map(|(bi, body)| {
+                let mut visible = input
+                    .element_visibility
+                    .effective_visible(input.doc, SceneElement::Body(bi))
                     && (!body.shadow || shadow_shown(bi));
                 // A unit's materialized body follows its instance row's eye toggle (#724).
                 if let crate::model::BodySource::UnitInstance(instance) = body.source {
@@ -848,11 +849,12 @@ impl ViewportScene {
                             .element_visibility
                             .effective_visible(input.doc, SceneElement::UnitInstance(instance));
                 }
-                if visible {
+                let mesh = if visible {
                     crate::extrude::body_solid_mesh(input.doc, bi)
                 } else {
                     None
-                }
+                };
+                (bi, mesh)
             })
             .collect();
         // Smooth per-vertex normals for the shaded modes (#1037), shared out of the same
@@ -864,16 +866,19 @@ impl ViewportScene {
                 | crate::camera::ShadingMode::SolidWireframe
                 | crate::camera::ShadingMode::Realistic
         );
-        let body_normals: Vec<Option<std::rc::Rc<Vec<[Vec3; 3]>>>> = (0..input.doc.bodies.len())
-            .map(|bi| {
-                (shaded && body_meshes[bi].is_some())
-                    .then(|| crate::extrude::body_smooth_normals(input.doc, bi))
-                    .flatten()
-            })
-            .collect();
+        let body_normals: std::collections::HashMap<crate::model::BodyKey, Option<std::rc::Rc<Vec<[Vec3; 3]>>>> =
+            body_meshes
+                .iter()
+                .map(|(bi, mesh)| {
+                    let normals = (shaded && mesh.is_some())
+                        .then(|| crate::extrude::body_smooth_normals(input.doc, *bi))
+                        .flatten();
+                    (*bi, normals)
+                })
+                .collect();
 
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
-        for (bi, body) in input.doc.bodies.iter().enumerate() {
+        for (bi, body) in input.doc.bodies.iter() {
             if let Some(editing) = input.editing_extrusion {
                 if body.source.owns_extrusion(editing) {
                     continue;
@@ -886,10 +891,13 @@ impl ViewportScene {
             {
                 continue;
             }
-            let Some(solid) = body_meshes[bi].as_ref() else {
+            let Some(solid) = body_meshes.get(&bi).and_then(|m| m.as_ref()) else {
                 continue;
             };
-            let normals = body_normals[bi].as_deref().map(|n| n.as_slice());
+            let normals = body_normals
+                .get(&bi)
+                .and_then(|n| n.as_deref())
+                .map(|n| n.as_slice());
             // Shadow bodies render as a translucent ghost with a wireframe, whatever the
             // shading mode — visually distinct from every real body.
             if body.shadow {
@@ -2532,7 +2540,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         health: &DocumentHealth,
         selection: &SceneSelection,
-        _body_meshes: &[Option<crate::extrude::SolidMesh>],
+        _body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2644,7 +2652,7 @@ impl<'a> SceneMesh<'a> {
                         doc,
                         element.clone(),
                         color,
-                        &[],
+                        &std::collections::HashMap::new(),
                         cam,
                         viewport,
                         view_proj,
@@ -2945,7 +2953,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         hover: &ViewportHoverHighlight,
         color: Color32,
-        body_meshes: &[Option<crate::extrude::SolidMesh>],
+        body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -3176,7 +3184,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         element: crate::hierarchy::SceneElement,
         color: Color32,
-        _body_meshes: &[Option<crate::extrude::SolidMesh>],
+        _body_meshes: &std::collections::HashMap<crate::model::BodyKey, Option<crate::extrude::SolidMesh>>,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -3230,7 +3238,11 @@ impl<'a> SceneMesh<'a> {
                     self.push_pick_target_highlight(
                         doc,
                         &PickTargetKind::BodyVertex {
-                            body: point.body().unwrap_or(0),
+                            // The origin belongs to no body; a highlight on it needs a
+                            // key all the same, and a vacant slot resolves to nothing.
+                            body: point
+                                .body()
+                                .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
                             position: world,
                         },
                         color,
@@ -3324,7 +3336,7 @@ impl<'a> SceneMesh<'a> {
             // A sketch highlights as all of its entities.
             SceneElement::Sketch(sketch) => {
                 for (li, line) in doc.lines.iter().enumerate() {
-                    if !line.deleted && line.sketch == sketch {
+                    if line.sketch == sketch {
                         self.push_pick_target_highlight(
                             doc,
                             &PickTargetKind::Line(li),
@@ -3337,7 +3349,7 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
                 for (ci, circle) in doc.circles.iter().enumerate() {
-                    if !circle.deleted && circle.sketch == sketch {
+                    if circle.sketch == sketch {
                         self.push_pick_target_highlight(
                             doc,
                             &PickTargetKind::Circle(ci),
@@ -4973,6 +4985,7 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::AppState;
     use crate::model::FaceId;
@@ -5875,11 +5888,11 @@ mod tests {
             deleted: false,
         });
         state.doc.component_members.push((
-            crate::model::ComponentMember::Body(0),
+            crate::model::ComponentMember::Body(bkey(0)),
             state.doc.components.len() - 1,
         ));
         state.doc.joints.push(crate::model::Joint {
-            members: vec![JointRef::Body(0), JointRef::Body(1)],
+            members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind: JointKind::Rigid,
             mate: crate::model::JointMate::default(),
@@ -5912,7 +5925,7 @@ mod tests {
         };
         for element in [
             SceneElement::Extrusion(0),
-            SceneElement::Body(0),
+            SceneElement::Body(bkey(0)),
             SceneElement::Component(state.doc.components.len() - 1),
             SceneElement::Joint(0),
             SceneElement::Image(image),
@@ -5945,7 +5958,7 @@ mod tests {
     fn every_crowd_kind_lights_up_when_hovered() {
         use crate::construction::GlobalAxis;
         let state = state_with_one_body();
-        let solid = crate::extrude::body_solid_mesh(&state.doc, 0).expect("body mesh");
+        let solid = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("body mesh");
         let tri = solid.triangles.first().copied().expect("a triangle");
         let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
         let line = *state.doc.lines.iter().position(|l| !l.deleted).get_or_insert(0);
@@ -5960,17 +5973,17 @@ mod tests {
                 end: crate::model::LineEnd::Start,
             }),
             PickTargetKind::BodyEdge {
-                body: 0,
+                body: bkey(0),
                 a: tri[0],
                 b: tri[1],
             },
             PickTargetKind::BodyFace {
-                body: 0,
+                body: bkey(0),
                 triangles: vec![tri],
                 normal,
             },
             PickTargetKind::BodyVertex {
-                body: 0,
+                body: bkey(0),
                 position: tri[0],
             },
             PickTargetKind::GlobalAxis(GlobalAxis::X),
@@ -5985,7 +5998,7 @@ mod tests {
         }
         // The two that draw elsewhere in the frame, by design.
         assert_eq!(drawn(PickTargetKind::Constraint(0)), 0);
-        assert_eq!(drawn(PickTargetKind::Body(0)), 0);
+        assert_eq!(drawn(PickTargetKind::Body(bkey(0))), 0);
     }
 
     /// #974: a datum plane reaches the crowd **twice** — as itself and as the analytic face
@@ -6082,7 +6095,7 @@ mod tests {
         let base = build(None);
         let hovered = build(Some(ViewportHoverHighlight::PickTarget(
             crate::construction::PickTargetKind::BodyEdge {
-                body: 0,
+                body: bkey(0),
                 a: Vec3::new(0.0, 0.0, 0.0),
                 b: Vec3::new(50.0, 0.0, 0.0),
             },
@@ -7450,7 +7463,7 @@ mod tests {
         };
         let base = build(None);
         let hovered = build(Some(ViewportHoverHighlight::Element(
-            crate::hierarchy::SceneElement::Body(0),
+            crate::hierarchy::SceneElement::Body(bkey(0)),
         )));
         // Hover recolors the body fill (#455): shaded triangles pick up the hover fill's
         // channel ratios (r > g > b), which the plain render never produces.
@@ -7542,7 +7555,7 @@ mod tests {
         let base = build(None, Vec::new());
         let leaf = build(
             Some(ViewportHoverHighlight::PickTarget(
-                crate::construction::PickTargetKind::Body(0),
+                crate::construction::PickTargetKind::Body(bkey(0)),
             )),
             Vec::new(),
         );
@@ -7552,7 +7565,7 @@ mod tests {
         );
         let group = build(
             None,
-            vec![crate::construction::PickTargetKind::Body(0)],
+            vec![crate::construction::PickTargetKind::Body(bkey(0))],
         );
         assert!(
             hover_tinted(&group) > hover_tinted(&base),
@@ -7679,12 +7692,12 @@ mod tests {
         let mut selected = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selected,
-            crate::hierarchy::SceneElement::Body(0),
+            crate::hierarchy::SceneElement::Body(bkey(0)),
             false,
         );
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        let build = |tint: Vec<(usize, Color32)>| {
+        let build = |tint: Vec<(crate::model::BodyKey, Color32)>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
@@ -7743,7 +7756,7 @@ mod tests {
                     && (g / b - cg / cb).abs() < 0.02
             })
         };
-        let mobile = build(vec![(0, SOLID_FILL_JOINT_MOBILE)]);
+        let mobile = build(vec![(bkey(0), SOLID_FILL_JOINT_MOBILE)]);
         assert!(
             ratios_of(&mobile, SOLID_FILL_JOINT_MOBILE),
             "the mobile side takes the joint green even though it is selected"
@@ -7752,7 +7765,7 @@ mod tests {
             !ratios_of(&mobile, SOLID_FILL_SELECTED),
             "and not the selection blue underneath it"
         );
-        let fixed = build(vec![(0, SOLID_FILL_JOINT_FIXED)]);
+        let fixed = build(vec![(bkey(0), SOLID_FILL_JOINT_FIXED)]);
         assert!(ratios_of(&fixed, SOLID_FILL_JOINT_FIXED), "the fixed side takes the joint blue");
         // The two really are distinguishable, which is the whole point.
         assert!(
@@ -7770,7 +7783,7 @@ mod tests {
         let mut selected = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selected,
-            crate::hierarchy::SceneElement::Body(0),
+            crate::hierarchy::SceneElement::Body(bkey(0)),
             false,
         );
         let has_selected_hue = |scene: &ViewportScene| {
@@ -7847,7 +7860,7 @@ mod tests {
         let mut selected = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selected,
-            crate::hierarchy::SceneElement::Body(0),
+            crate::hierarchy::SceneElement::Body(bkey(0)),
             false,
         );
         // SOLID_FILL_CUT (210:120:120) has r > g ≈ b; flat shading preserves channel ratios.
@@ -7861,7 +7874,7 @@ mod tests {
         };
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        let build = |cut: Vec<usize>, sel: &SceneSelection| {
+        let build = |cut: Vec<crate::model::BodyKey>, sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
@@ -7914,7 +7927,7 @@ mod tests {
             "a merely-selected body must not use the red cut fill"
         );
         assert!(
-            has_cut_hue(&build(vec![0], &selected)),
+            has_cut_hue(&build(vec![bkey(0)], &selected)),
             "a cut-highlighted body must fill red even when also selected"
         );
     }
@@ -8527,6 +8540,7 @@ mod tests {
 /// default (timing-based, machine-dependent) — for eyeballing regressions, not CI.
 #[cfg(test)]
 mod perf_probe {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::{Action, AppState, Tool};
     use crate::hierarchy::{ElementVisibility, SceneElement};
@@ -8549,7 +8563,7 @@ mod perf_probe {
 
         let viewport = UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1700.0, 1700.0));
         let mut selection = SceneSelection::default();
-        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(0), false);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(bkey(0)), false);
         let empty = SceneSelection::default();
 
         let build = |sel: &SceneSelection| {
@@ -8616,6 +8630,7 @@ mod perf_probe {
 
 #[cfg(test)]
 mod cut_preview_tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::{Action, AppState, Tool};
     use crate::hierarchy::ElementVisibility;
@@ -8643,7 +8658,10 @@ mod cut_preview_tests {
         state
     }
 
-    fn scene_with_cut(state: &AppState, cut_highlight_bodies: Vec<usize>) -> ViewportScene {
+    fn scene_with_cut(
+        state: &AppState,
+        cut_highlight_bodies: Vec<crate::model::BodyKey>,
+    ) -> ViewportScene {
         let viewport = UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 800.0));
         let selection = SceneSelection::default();
         let input = ViewportSceneInput {
@@ -8701,7 +8719,7 @@ mod cut_preview_tests {
     fn cut_body_recolors_red() {
         let state = one_body_state();
         let plain = scene_with_cut(&state, Vec::new());
-        let cut = scene_with_cut(&state, vec![0]);
+        let cut = scene_with_cut(&state, vec![bkey(0)]);
         let red_tinted = |scene: &ViewportScene| {
             scene
                 .vertices

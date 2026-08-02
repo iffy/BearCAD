@@ -1313,7 +1313,7 @@ pub enum PickTargetKind {
     /// `solid_mesh_unique_edges`. Works for any body (extrusion-sourced or STL/STEP-imported),
     /// since it's derived from the triangle mesh rather than an analytic profile.
     BodyEdge {
-        body: usize,
+        body: crate::model::BodyKey,
         a: Vec3,
         b: Vec3,
     },
@@ -1322,7 +1322,7 @@ pub enum PickTargetKind {
     /// Lets any face of any body — extrusion-sourced, boolean-cut, or imported — be hover-
     /// highlighted and referenced in 3D. `normal` orients the highlight fill toward the camera.
     BodyFace {
-        body: usize,
+        body: crate::model::BodyKey,
         triangles: Vec<[Vec3; 3]>,
         normal: Vec3,
     },
@@ -1330,21 +1330,21 @@ pub enum PickTargetKind {
     /// shaft — the whole round wall, not one facet of it. Boxed because it carries the fitted
     /// surface's triangles alongside its axis and radius.
     BodyCylinder {
-        body: usize,
+        body: crate::model::BodyKey,
         cylinder: Box<crate::extrude::BodyCylinder>,
     },
     /// A cylindrical surface's centre line (#1013), as the world segment it spans.
-    BodyAxis { body: usize, a: Vec3, b: Vec3 },
+    BodyAxis { body: crate::model::BodyKey, a: Vec3, b: Vec3 },
     /// A vertex (corner) of a 3D body's solid mesh (#144), for 3D hover/selection.
     BodyVertex {
-        body: usize,
+        body: crate::model::BodyKey,
         position: Vec3,
     },
     /// A **whole** solid body (#902). The Select tool resolves a click on a body's flat face to
     /// this — bodies outrank faces, while edges and corners still outrank bodies — and the
     /// Selection Exploder fans it as a leaf of its own, so the face under it stays reachable.
-    /// Carries only the body index: everything else resolves from the document.
-    Body(usize),
+    /// Carries only the body key: everything else resolves from the document.
+    Body(crate::model::BodyKey),
     GlobalAxis(GlobalAxis),
     ConstructionPlane(usize),
     Ground(Vec3),
@@ -1404,11 +1404,9 @@ impl PickOcclusion {
         let meshes = doc
             .bodies
             .iter()
-            .enumerate()
             .filter(|(bi, body)| {
                 // Shadow bodies neither render nor occlude/catch picks.
-                !body.deleted
-                    && !body.shadow
+                !body.shadow
                     && visibility
                         .effective_visible(doc, crate::hierarchy::SceneElement::Body(*bi))
             })
@@ -1936,7 +1934,7 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
 
 /// Every feature edge of a body's solid mesh (#902), in world space — what a whole-body
 /// hover/loupe draws. Empty when the body doesn't mesh.
-pub fn body_feature_edges(doc: &Document, body: usize) -> Vec<(Vec3, Vec3)> {
+pub fn body_feature_edges(doc: &Document, body: crate::model::BodyKey) -> Vec<(Vec3, Vec3)> {
     crate::extrude::body_solid_mesh(doc, body)
         .map(|solid| crate::gpu_viewport::solid_mesh_unique_edges(&solid))
         .unwrap_or_default()
@@ -2730,12 +2728,12 @@ fn nearest_body_axis(
 ) -> Option<(PickTargetKind, Vec3, Vec3, f32)> {
     let mut best: Option<(PickTargetKind, Vec3, Vec3, f32)> = None;
     let bounds = crate::extrude::body_world_bounds_all(doc);
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
             continue;
         }
         // A body nowhere near the cursor can't own the nearest axis (#1026).
-        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+        if !bounds.get(&bi).copied().flatten().is_some_and(|b| {
             screen_bounds_hit(screen, project, b, LINE_PICK_RADIUS_PX)
         }) {
             continue;
@@ -2784,12 +2782,12 @@ fn nearest_body_edge(
     };
 
     let bounds = crate::extrude::body_world_bounds_all(doc);
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
             continue;
         }
         // No edge of a body can be nearer than the body is (#1026).
-        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+        if !bounds.get(&bi).copied().flatten().is_some_and(|b| {
             screen_bounds_hit(screen, project, b, LINE_PICK_RADIUS_PX)
         }) {
             continue;
@@ -2833,12 +2831,12 @@ pub fn nearest_body_vertex_where(
 ) -> Option<(PickTargetKind, f32)> {
     let mut best: Option<(PickTargetKind, f32)> = None;
     let bounds = crate::extrude::body_world_bounds_all(doc);
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
             continue;
         }
         // Every corner of a body far from the cursor is far from the cursor (#1026).
-        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+        if !bounds.get(&bi).copied().flatten().is_some_and(|b| {
             screen_bounds_hit(screen, project, b, POINT_PICK_RADIUS_PX)
         }) {
             continue;
@@ -3001,8 +2999,8 @@ pub fn collect_pick_candidates(
             }
         }
     }
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
             continue;
         }
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
@@ -3100,7 +3098,7 @@ pub fn collect_pick_candidates(
     // The whole bodies (#902): one candidate per body already represented in the crowd by a
     // face, edge, or corner, anchored at its nearest of those — so the exploder always offers
     // "the body" next to "this face of it".
-    let mut bodies: std::collections::BTreeMap<usize, (Vec3, f32)> =
+    let mut bodies: std::collections::BTreeMap<crate::model::BodyKey, (Vec3, f32)> =
         std::collections::BTreeMap::new();
     for (kind, anchor, dist) in &raw {
         let bi = match kind {
@@ -3399,6 +3397,7 @@ pub fn add_line_rectangle(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use eframe::egui::Pos2;
 
@@ -4046,11 +4045,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc
@@ -4063,7 +4061,9 @@ mod tests {
         let (kind, _) = nearest_body_vertex(Pos2::new(10.0, 1.0), &project, &doc).unwrap();
         assert!(matches!(
             kind,
-            PickTargetKind::BodyVertex { body: 0, position } if (position - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-4
+            PickTargetKind::BodyVertex { body, position }
+                if body == bkey(0)
+                    && (position - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-4
         ));
     }
 
@@ -4092,11 +4092,10 @@ mod tests {
             source_name: "blocker".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -4120,7 +4119,7 @@ mod tests {
 
         // Hiding the body restores pickability: an invisible body must not occlude.
         let mut visibility = crate::hierarchy::ElementVisibility::default();
-        visibility.set_visible(crate::hierarchy::SceneElement::Body(0), false);
+        visibility.set_visible(crate::hierarchy::SceneElement::Body(bkey(0)), false);
         let occ = PickOcclusion::new(&doc, &visibility, eye);
         let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
         assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(0))));
@@ -4187,14 +4186,14 @@ mod tests {
 
         let a = Vec3::new(0.0, 0.0, 10.0);
         let b = Vec3::new(80.0, 0.0, 10.0);
-        let forward = scene_element_from_pick(&PickTargetKind::BodyEdge { body: 0, a, b });
-        let backward = scene_element_from_pick(&PickTargetKind::BodyEdge { body: 0, a: b, b: a });
-        assert!(matches!(forward, Some(SceneElement::BodyEdge { body: 0, .. })));
+        let forward = scene_element_from_pick(&PickTargetKind::BodyEdge { body: bkey(0), a, b });
+        let backward = scene_element_from_pick(&PickTargetKind::BodyEdge { body: bkey(0), a: b, b: a });
+        assert!(matches!(forward, Some(SceneElement::BodyEdge { body, .. }) if body == bkey(0)));
         assert_eq!(forward, backward, "edge identity must not depend on direction");
 
         let vertex =
-            scene_element_from_pick(&PickTargetKind::BodyVertex { body: 2, position: a });
-        assert!(matches!(vertex, Some(SceneElement::BodyVertex { body: 2, .. })));
+            scene_element_from_pick(&PickTargetKind::BodyVertex { body: bkey(2), position: a });
+        assert!(matches!(vertex, Some(SceneElement::BodyVertex { body, .. }) if body == bkey(2)));
 
         // Click round trip: selecting the picked edge lands in the scene selection.
         let mut state = crate::actions::AppState::default();
@@ -4222,11 +4221,10 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc
@@ -4243,16 +4241,16 @@ mod tests {
         ];
         let normal = Vec3::Z;
         let a = scene_element_from_pick(&PickTargetKind::BodyFace {
-            body: 3,
+            body: bkey(3),
             triangles: triangles.clone(),
             normal,
         });
-        assert!(matches!(a, Some(SceneElement::BodyFace { body: 3, .. })));
+        assert!(matches!(a, Some(SceneElement::BodyFace { body, .. }) if body == bkey(3)));
         // Same face, triangles listed in a different order → same centroid/normal → equal key.
         let mut reordered = triangles.clone();
         reordered.reverse();
         let b = scene_element_from_pick(&PickTargetKind::BodyFace {
-            body: 3,
+            body: bkey(3),
             triangles: reordered,
             normal,
         });
@@ -4263,7 +4261,7 @@ mod tests {
             .map(|t| [t[0].with_z(0.0), t[1].with_z(0.0), t[2].with_z(0.0)])
             .collect();
         let c = scene_element_from_pick(&PickTargetKind::BodyFace {
-            body: 3,
+            body: bkey(3),
             triangles: lower,
             normal: -Vec3::Z,
         });
@@ -4297,8 +4295,8 @@ mod tests {
     fn body_pick_becomes_the_whole_body_element() {
         use crate::hierarchy::SceneElement;
         assert_eq!(
-            scene_element_from_pick(&PickTargetKind::Body(4)),
-            Some(SceneElement::Body(4))
+            scene_element_from_pick(&PickTargetKind::Body(bkey(4))),
+            Some(SceneElement::Body(bkey(4)))
         );
     }
 
@@ -4312,7 +4310,7 @@ mod tests {
         assert_eq!(
             cands
                 .iter()
-                .filter(|c| matches!(c.kind, PickTargetKind::Body(0)))
+                .filter(|c| matches!(c.kind, PickTargetKind::Body(b) if b == bkey(0)))
                 .count(),
             1,
             "exactly one whole-body candidate: {:?}",
@@ -4718,11 +4716,10 @@ mod tests {
             source_name: "box".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // ×20 scale so the box spans 200 px — a real on-screen size, keeping the face
@@ -4809,11 +4806,10 @@ mod tests {
             source_name: "box".to_string(),
             step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let project = |p: Vec3| Some(egui::pos2(p.x, p.y));

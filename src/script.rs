@@ -1611,13 +1611,16 @@ impl Instruction {
                     // Body geometry (#647) is keyed on quantized world points; scripts spell
                     // them as plain **mm** coordinates, which the parser re-quantizes.
                     PS::BodyEdgeLength { body, a, b } => format!(
-                        "kind = \"body_edge_length\", body = {body}, a = {}, b = {}",
+                        "kind = \"body_edge_length\", body = {}, a = {}, b = {}",
+                        body.index(),
                         mm_point_lua(*a),
                         mm_point_lua(*b)
                     ),
                     PS::BodyVertexDistance { body_a, a, body_b, b } => format!(
-                        "kind = \"body_vertex_distance\", body = {body_a}, a = {}, body_b = {body_b}, b = {}",
+                        "kind = \"body_vertex_distance\", body = {}, a = {}, body_b = {}, b = {}",
+                        body_a.index(),
                         mm_point_lua(*a),
+                        body_b.index(),
                         mm_point_lua(*b)
                     ),
                     // Analytic unit edge (#724): the face has no flat Lua spelling, so it
@@ -1896,9 +1899,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The body's arena slot, not its ordinal (#1070).
         SceneElement::Body(i) => ElementScriptTokens {
             kind: "body",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // Handled directly in `element_lua_ref` before this is reached (a `FaceEdge` doesn't
@@ -2090,6 +2094,29 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A body's ordinal among the live ones — what a script writes (#1055).
+fn body_ordinal(doc: &crate::model::Document, key: crate::model::BodyKey) -> Option<usize> {
+    doc.bodies.keys().position(|k| k == key)
+}
+
+/// The same for a whole list; `None` if any entry has stopped resolving.
+fn body_ordinals(
+    doc: &crate::model::Document,
+    keys: &[crate::model::BodyKey],
+) -> Option<Vec<usize>> {
+    keys.iter().map(|k| body_ordinal(doc, *k)).collect()
+}
+
+/// The body an ordinal names — the inverse of [`body_ordinal`].
+fn body_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::BodyKey> {
+    doc.body_at(ordinal)
+}
+
+/// The same for a whole list, dropping ordinals that name nothing.
+fn body_keys(doc: &crate::model::Document, ordinals: &[usize]) -> Vec<crate::model::BodyKey> {
+    ordinals.iter().filter_map(|o| body_key(doc, *o)).collect()
+}
+
 /// A parameter's ordinal among the live ones — what a script writes (#1055).
 fn parameter_ordinal(
     doc: &crate::model::Document,
@@ -2128,8 +2155,8 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::CreateBooleanOperation { kind, a, b, keep_b, solid_count: _ } => {
             Some(Instruction::CreateBooleanOp {
                 kind: *kind,
-                a: a.clone(),
-                b: b.clone(),
+                a: body_ordinals(doc, a)?,
+                b: body_ordinals(doc, b)?,
                 keep_b: *keep_b,
             })
         }
@@ -2137,14 +2164,14 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             Some(Instruction::EditBooleanOp {
                 op: *op,
                 kind: *kind,
-                a: a.clone(),
-                b: b.clone(),
+                a: body_ordinals(doc, a)?,
+                b: body_ordinals(doc, b)?,
                 keep_b: *keep_b,
             })
         }
         Action::CreateMoveOperation { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::CreateMoveOp {
-                targets: targets.clone(),
+                targets: body_ordinals(doc, targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
                 tz: tz.clone(),
@@ -2159,7 +2186,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::EditMoveOperation { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::EditMoveOp {
                 op: *op,
-                targets: targets.clone(),
+                targets: body_ordinals(doc, targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
                 tz: tz.clone(),
@@ -2173,20 +2200,20 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::CreateMirrorOperation { plane, targets, mode } => Some(Instruction::CreateMirrorOp {
             plane: plane.clone(),
-            targets: targets.clone(),
+            targets: body_ordinals(doc, targets)?,
             mode: *mode,
         }),
         Action::EditMirrorOperation { op, plane, targets, mode } => Some(Instruction::EditMirrorOp {
             op: *op,
             plane: plane.clone(),
-            targets: targets.clone(),
+            targets: body_ordinals(doc, targets)?,
             mode: *mode,
         }),
         // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
         // the Move op's plane/image targets — they replay as body-only operations.
         Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, path_circle: _, around_axis, flip, mode, count, spacing, length, length_target } => {
             Some(Instruction::CreateRepeatOp {
-                targets: targets.clone(),
+                targets: body_ordinals(doc, targets)?,
                 axis: *axis,
                 around_axis: *around_axis,
                 flip: *flip,
@@ -2200,7 +2227,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, path_circle: _, around_axis, flip, mode, count, spacing, length, length_target } => {
             Some(Instruction::EditRepeatOp {
                 op: *op,
-                targets: targets.clone(),
+                targets: body_ordinals(doc, targets)?,
                 axis: *axis,
                 around_axis: *around_axis,
                 flip: *flip,
@@ -2241,7 +2268,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::RevertAllJoints => Some(Instruction::RevertAllJoints),
         Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
             Some(Instruction::CreateSliceOp {
-                targets: targets.clone(),
+                targets: body_ordinals(doc, targets)?,
                 cutters: cutters.clone(),
                 extend_infinite: *extend_infinite,
             })
@@ -2249,7 +2276,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::EditSliceOperation { op, targets, cutters, extend_infinite } => {
             Some(Instruction::EditSliceOp {
                 op: *op,
-                targets: targets.clone(),
+                targets: body_ordinals(doc, targets)?,
                 cutters: cutters.clone(),
                 extend_infinite: *extend_infinite,
             })
@@ -2669,7 +2696,7 @@ pub fn instruction_for_new_loft(doc: &crate::model::Document) -> Option<Instruct
     Some(Instruction::Loft {
         faces: loft.sections.iter().map(|sec| sec.face.clone()).collect(),
         body,
-        bodies,
+        bodies: body_ordinals(doc, &bodies)?,
     })
 }
 
@@ -2735,7 +2762,7 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
         angle_deg: rev.angle_deg,
         symmetric: rev.symmetric,
         body,
-        bodies,
+        bodies: body_ordinals(doc, &bodies)?,
     })
 }
 
@@ -2756,7 +2783,7 @@ pub fn instruction_for_new_sweep(doc: &crate::model::Document) -> Option<Instruc
         faces: fp.faces.clone(),
         path: fp.path.clone(),
         body,
-        bodies,
+        bodies: body_ordinals(doc, &bodies)?,
     })
 }
 
@@ -2884,7 +2911,7 @@ fn mirror_op_lua(
 /// table for components and unit instances.
 fn joint_member_lua(member: &crate::model::JointRef) -> String {
     match member {
-        crate::model::JointRef::Body(i) => i.to_string(),
+        crate::model::JointRef::Body(i) => i.index().to_string(),
         crate::model::JointRef::Component(i) => {
             format!("{{ kind = \"component\", index = {i} }}")
         }
@@ -2899,13 +2926,15 @@ fn joint_member_lua(member: &crate::model::JointRef) -> String {
 pub fn mate_ref_lua(r: &crate::model::MateRef) -> String {
     match r {
         crate::model::MateRef::Face { body, centroid, normal } => format!(
-            "{{ body = {body}, face = {}, normal = {} }}",
+            "{{ body = {}, face = {}, normal = {} }}",
+            body.index(),
             mm_point_lua(*centroid),
             mm_point_lua(*normal)
         ),
         crate::model::MateRef::Plane(i) => format!("{{ plane = {i} }}"),
         crate::model::MateRef::Edge { body, a, b } => format!(
-            "{{ body = {body}, edge = {{ {}, {} }} }}",
+            "{{ body = {}, edge = {{ {}, {} }} }}",
+            body.index(),
             mm_point_lua(*a),
             mm_point_lua(*b)
         ),
@@ -2918,13 +2947,15 @@ pub fn mate_ref_lua(r: &crate::model::MateRef) -> String {
             }
         ),
         crate::model::MateRef::HoleAxis { body, origin, dir } => format!(
-            "{{ body = {body}, hole_axis = {}, direction = {} }}",
+            "{{ body = {}, hole_axis = {}, direction = {} }}",
+            body.index(),
             mm_point_lua(*origin),
             mm_point_lua(*dir)
         ),
         crate::model::MateRef::Point(crate::model::MovePointRef::EdgeMidpoint { body, a, b }) => {
             format!(
-                "{{ body = {body}, midpoint = {{ {}, {} }} }}",
+                "{{ body = {}, midpoint = {{ {}, {} }} }}",
+                body.index(),
                 mm_point_lua(*a),
                 mm_point_lua(*b)
             )
@@ -3513,21 +3544,23 @@ pub fn move_translate_mode(
 pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
     match point {
         crate::model::MovePointRef::Vertex { body, p } => {
-            format!("{{ body = {body}, vertex = {} }}", mm_point_lua(*p))
+            format!("{{ body = {}, vertex = {} }}", body.index(), mm_point_lua(*p))
         }
         crate::model::MovePointRef::EdgeMidpoint { body, a, b } => format!(
-            "{{ body = {body}, edge = {{ {}, {} }} }}",
+            "{{ body = {}, edge = {{ {}, {} }} }}",
+            body.index(),
             mm_point_lua(*a),
             mm_point_lua(*b)
         ),
         // A point along an edge (#670) is spelled by its position, like a corner — the
         // parser doesn't need to know which edge it came from.
         crate::model::MovePointRef::OnEdge { body, p } => {
-            format!("{{ body = {body}, on_edge = {} }}", mm_point_lua(*p))
+            format!("{{ body = {}, on_edge = {} }}", body.index(), mm_point_lua(*p))
         }
         // A face centre (#738) spells its selection key: the face's centroid plus normal.
         crate::model::MovePointRef::FaceCenter { body, centroid, normal } => format!(
-            "{{ body = {body}, face_center = {}, normal = {} }}",
+            "{{ body = {}, face_center = {}, normal = {} }}",
+            body.index(),
             mm_point_lua(*centroid),
             mm_point_lua(*normal)
         ),
@@ -3553,7 +3586,8 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
         crate::model::RevolveAxis::Z => "\"z\"".to_string(),
         crate::model::RevolveAxis::Line(li) => format!("{{ line = {li} }}"),
         crate::model::RevolveAxis::BodyEdge { body, a, b } => format!(
-            "{{ body = {body}, from = {{ {}, {}, {} }}, to = {{ {}, {}, {} }} }}",
+            "{{ body = {}, from = {{ {}, {}, {} }}, to = {{ {}, {}, {} }} }}",
+            body.index(),
             a.x, a.y, a.z, b.x, b.y, b.z
         ),
     }
@@ -4862,6 +4896,7 @@ impl ScriptRunner {
                     });
                     self.record_action_error(result);
                 }
+                let bodies = body_keys(&state.doc, &bodies);
                 if let Some(cl) = state.creating_loft.as_mut() {
                     cl.body_choice = body;
                     cl.cut_bodies = bodies;
@@ -4900,6 +4935,10 @@ impl ScriptRunner {
                 body,
                 orientation,
             } => {
+                let Some(body) = body_key(&state.doc, body) else {
+                    self.last_action_error = Some(format!("No body {body}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::AddDrawingView {
                     drawing,
                     body,
@@ -5058,6 +5097,7 @@ impl ScriptRunner {
                     ));
                     return StepResult::Continue;
                 };
+                let bodies = body_keys(&state.doc, &bodies);
                 let result = state.apply(Action::CreateRevolution {
                     sketch,
                     faces,
@@ -5080,6 +5120,7 @@ impl ScriptRunner {
                     ));
                     return StepResult::Continue;
                 };
+                let bodies = body_keys(&state.doc, &bodies);
                 let result = state.apply(Action::CreateSweep {
                     sketch,
                     faces,
@@ -5101,6 +5142,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
+                let (a, b) = (body_keys(&state.doc, &a), body_keys(&state.doc, &b));
                 let result = state.apply(Action::CreateBooleanOperation {
                     kind,
                     a,
@@ -5112,6 +5154,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::BeginBooleanOp { kind, a, b, keep_b } => {
+                let (a, b) = (body_keys(&state.doc, &a), body_keys(&state.doc, &b));
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Combine));
                 state.creating_boolean = Some(crate::actions::CreatingBoolean {
                     kind,
@@ -5124,12 +5167,14 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
+                let (a, b) = (body_keys(&state.doc, &a), body_keys(&state.doc, &b));
                 let result =
                     state.apply(Action::EditBooleanOperation { op, kind, a, b, keep_b });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a),
                     start_point_a,
@@ -5150,6 +5195,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::EditMoveOperation {
                     op,
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a),
@@ -5171,6 +5217,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                let targets = body_keys(&state.doc, &targets);
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Move));
                 state.creating_move = Some(crate::actions::CreatingMove {
                     targets,
@@ -5258,16 +5305,19 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::CreateMirrorOperation { plane, targets, mode });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::EditMirrorOp { op, plane, targets, mode } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::EditMirrorOperation { op, plane, targets, mode });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CreateRepeatOp { targets, axis, around_axis, flip, mode, count, spacing, length, length_target } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::CreateRepeatOperation {
                     path_circle: None,
                     around_axis,
@@ -5287,6 +5337,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EditRepeatOp { op, targets, axis, around_axis, flip, mode, count, spacing, length, length_target } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::EditRepeatOperation {
                     op,
                     targets,
@@ -5307,6 +5358,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateSliceOp { targets, cutters, extend_infinite } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::CreateSliceOperation {
                     targets,
                     cutters,
@@ -5316,6 +5368,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EditSliceOp { op, targets, cutters, extend_infinite } => {
+                let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::EditSliceOperation {
                     op,
                     targets,
@@ -5333,6 +5386,7 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::AddMaterial { name, color, bodies } => {
+                let bodies = body_keys(&state.doc, &bodies);
                 let result = state.apply(Action::AddMaterial { name, color, bodies });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -5351,6 +5405,10 @@ impl ScriptRunner {
                         }
                     },
                     None => None,
+                };
+                let Some(body) = body_key(&state.doc, body) else {
+                    self.last_action_error = Some(format!("Unknown body {body}"));
+                    return StepResult::Continue;
                 };
                 let result = state.apply(Action::SetBodyMaterial { body, material: key });
                 self.record_action_error(result);

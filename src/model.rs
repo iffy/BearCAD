@@ -128,7 +128,7 @@ pub enum ParameterSource {
     /// length; if a rebuild moves the edge off that key, the parameter reads as unavailable
     /// (the same way a deleted line's does).
     BodyEdgeLength {
-        body: usize,
+        body: BodyKey,
         a: [i32; 3],
         b: [i32; 3],
     },
@@ -136,9 +136,9 @@ pub enum ParameterSource {
     /// [`crate::hierarchy::SceneElement::BodyVertex`]. The two corners may sit on different
     /// bodies.
     BodyVertexDistance {
-        body_a: usize,
+        body_a: BodyKey,
         a: [i32; 3],
-        body_b: usize,
+        body_b: BodyKey,
         b: [i32; 3],
     },
     /// Length of an **imported unit's feature edge** (#724), stored analytically: the
@@ -246,7 +246,7 @@ pub struct Line {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ProjectionSource {
     BodyEdge {
-        body: usize,
+        body: BodyKey,
         a: [i32; 3],
         b: [i32; 3],
     },
@@ -1522,7 +1522,7 @@ impl BodySource {
 /// whether an input body stays a shadow.
 pub fn body_shadowed_by_other_ops(
     doc: &Document,
-    body: usize,
+    body: BodyKey,
     skip_boolean: Option<usize>,
     skip_move: Option<usize>,
     skip_slice: Option<usize>,
@@ -1541,17 +1541,17 @@ pub fn body_shadowed_by_other_ops(
     })
 }
 
-/// Body index whose source includes `extrusion` (added or cut), if any.
-pub fn body_index_for_extrusion(doc: &Document, extrusion: usize) -> Option<usize> {
-    doc.bodies.iter().position(|body| {
-        !body.deleted && body.source.owns_extrusion(extrusion)
-    })
+/// The body whose source includes `extrusion` (added or cut), if any.
+pub fn body_index_for_extrusion(doc: &Document, extrusion: usize) -> Option<BodyKey> {
+    doc.bodies
+        .iter()
+        .find_map(|(key, body)| body.source.owns_extrusion(extrusion).then_some(key))
 }
 
 /// The body a face belongs to (#926), when it has one: a cap/side wall belongs to its
 /// extrusion's body, a revolve's flat side to the revolution's. Sketch profiles and
 /// construction planes belong to no body.
-pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<usize> {
+pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
     match face {
         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
             body_index_for_extrusion(doc, *extrusion)
@@ -1566,9 +1566,9 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<usize> {
 
 /// Body index whose source is `revolution` (#621) — the revolve analogue of
 /// [`body_index_for_extrusion`].
-pub fn body_index_for_revolution(doc: &Document, revolution: RevolutionKey) -> Option<usize> {
-    doc.bodies.iter().position(|body| {
-        !body.deleted && matches!(body.source, BodySource::Revolve(r) if r == revolution)
+pub fn body_index_for_revolution(doc: &Document, revolution: RevolutionKey) -> Option<BodyKey> {
+    doc.bodies.iter().find_map(|(key, body)| {
+        matches!(body.source, BodySource::Revolve(r) if r == revolution).then_some(key)
     })
 }
 
@@ -1582,14 +1582,17 @@ pub struct Body {
     /// is the document's default material — the look every body has always had.
     #[serde(default)]
     pub material: Option<MaterialKey>,
-    #[serde(default)]
-    pub deleted: bool,
     /// A consumed boolean-operation input (Combine tool): still listed in the Elements
     /// pane (dimmed, its own icon) but hidden in the viewport except while hovered or
     /// selected there, where it renders ghosted.
     #[serde(default)]
     pub shadow: bool,
 }
+
+/// How everything names a body (#1055): every operation's inputs and outputs, every
+/// mesh-keyed sub-element (edge, vertex, face, cylinder, axis), every joint member, and
+/// every pick. Deleting a body used to renumber all of them.
+pub type BodyKey = crate::arena::Key<Body>;
 
 /// How a body names its material (#1055): a key, so removing a material never renames
 /// another one's colour onto a body that was never made of it.
@@ -1653,7 +1656,22 @@ impl Material {
     }
 }
 
+/// The key a body gets from slot `n` alone (#1055) — **tests only**. A body inserted into a
+/// document that has never had one removed lands in slot `n` at generation 0, so this is that
+/// body's real key. It is not a substitute for asking the document: after any removal the slot
+/// is reused at a higher generation and this stops matching, which is the point of the type.
+#[cfg(test)]
+pub fn body_key_for_slot(n: usize) -> BodyKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 impl Document {
+    /// The body at ordinal `n` among the live ones (#1055) — what a script names, and how
+    /// to say "the first body" now that a position is not an identity.
+    pub fn body_at(&self, n: usize) -> Option<BodyKey> {
+        self.bodies.keys().nth(n)
+    }
+
     /// What a body with no material of its own is made of (#924): the document's first
     /// material, which a fresh document seeds as **Unobtainium**. Older files (and any body
     /// whose material was cleared) fall back to it rather than to a colour with no entry
@@ -1747,8 +1765,8 @@ pub struct Loft {
 pub enum LoftMode {
     #[default]
     NewBody,
-    AddTo(Vec<usize>),
-    Cut(Vec<usize>),
+    AddTo(Vec<BodyKey>),
+    Cut(Vec<BodyKey>),
 }
 
 /// One loft cross section: a closed profile (`ExtrudeFace`) plus the sketch it lives in.
@@ -1770,7 +1788,7 @@ pub enum RevolveAxis {
     /// identity [`crate::construction::PickTargetKind::BodyEdge`] carries. Only the direction
     /// `a → b` matters to a linear repeat; a revolve/rotation also uses `a` as the pivot.
     BodyEdge {
-        body: usize,
+        body: BodyKey,
         a: glam::Vec3,
         b: glam::Vec3,
     },
@@ -1785,8 +1803,8 @@ pub enum RevolveAxis {
 #[serde(rename_all = "snake_case")]
 pub enum RevolveMode {
     NewBody,
-    AddTo(Vec<usize>),
-    Cut(Vec<usize>),
+    AddTo(Vec<BodyKey>),
+    Cut(Vec<BodyKey>),
 }
 
 /// Which primitive a [`Primitive`] is (#909): the shapes the Create Shape tool places
@@ -1917,8 +1935,8 @@ pub type RevolutionKey = crate::arena::Key<Revolution>;
 #[serde(rename_all = "snake_case")]
 pub enum SweepMode {
     NewBody,
-    AddTo(Vec<usize>),
-    Cut(Vec<usize>),
+    AddTo(Vec<BodyKey>),
+    Cut(Vec<BodyKey>),
 }
 
 /// A swept solid (the Sweep tool, #sweep): one or more coplanar closed
@@ -1986,16 +2004,16 @@ impl BooleanOpKind {
 pub struct BooleanOperation {
     pub kind: BooleanOpKind,
     /// Input bodies on the A side (the only side for `Combine`).
-    pub a: Vec<usize>,
+    pub a: Vec<BodyKey>,
     /// Input bodies on the B side (cut/intersect/difference).
     #[serde(default)]
-    pub b: Vec<usize>,
+    pub b: Vec<BodyKey>,
     /// Keep the B-side inputs as real bodies after the operation instead of shadowing them.
     #[serde(default)]
     pub keep_b: bool,
-    /// Output body indices, in solid-ordinal order.
+    /// Output bodies, in solid-ordinal order.
     #[serde(default)]
-    pub outputs: Vec<usize>,
+    pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -2034,11 +2052,11 @@ impl MoveTranslateMode {
 #[serde(rename_all = "snake_case")]
 pub enum MovePointRef {
     Vertex {
-        body: usize,
+        body: BodyKey,
         p: [i32; 3],
     },
     EdgeMidpoint {
-        body: usize,
+        body: BodyKey,
         a: [i32; 3],
         b: [i32; 3],
     },
@@ -2047,14 +2065,14 @@ pub enum MovePointRef {
     /// re-found by matching; it keeps its own quantized world position and simply stops
     /// resolving if the body goes away.
     OnEdge {
-        body: usize,
+        body: BodyKey,
         p: [i32; 3],
     },
     /// The middle of one of a body's planar faces (#738), keyed by quantized
     /// centroid+normal exactly like [`crate::hierarchy::SceneElement::BodyFace`] — resolved
     /// against the live mesh's coplanar-triangle groups, so it follows the geometry.
     FaceCenter {
-        body: usize,
+        body: BodyKey,
         centroid: [i32; 3],
         normal: [i32; 3],
     },
@@ -2095,7 +2113,7 @@ impl MoveOperation {
 impl MovePointRef {
     /// The body this point lives on — what tells a *moving* point from a stationary one.
     /// `None` for the document-level [`Self::Origin`] (#946), which no body owns.
-    pub fn body(&self) -> Option<usize> {
+    pub fn body(&self) -> Option<BodyKey> {
         match self {
             MovePointRef::Vertex { body, .. }
             | MovePointRef::EdgeMidpoint { body, .. }
@@ -2113,8 +2131,8 @@ impl MovePointRef {
 /// now (#663) — the tool translates only.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoveOperation {
-    /// Input body indices, one output per entry (same order).
-    pub targets: Vec<usize>,
+    /// Input bodies, one output per entry (same order).
+    pub targets: Vec<BodyKey>,
     /// How the translation is specified (#648).
     #[serde(default)]
     pub translate_mode: MoveTranslateMode,
@@ -2160,9 +2178,9 @@ pub struct MoveOperation {
     pub ty: String,
     #[serde(default)]
     pub tz: String,
-    /// Output body indices, matching `targets` order.
+    /// Output bodies, matching `targets` order.
     #[serde(default)]
-    pub outputs: Vec<usize>,
+    pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -2174,7 +2192,7 @@ pub struct MoveOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JointRef {
-    Body(usize),
+    Body(BodyKey),
     Component(usize),
     UnitInstance(usize),
 }
@@ -2216,7 +2234,7 @@ pub enum MateRef {
     /// A planar face of a body's mesh, keyed by quantized centroid + normal exactly like
     /// [`crate::hierarchy::SceneElement::BodyFace`].
     Face {
-        body: usize,
+        body: BodyKey,
         centroid: [i32; 3],
         normal: [i32; 3],
     },
@@ -2224,7 +2242,7 @@ pub enum MateRef {
     Plane(usize),
     /// A straight edge of a body's mesh, keyed like [`crate::hierarchy::SceneElement::BodyEdge`].
     Edge {
-        body: usize,
+        body: BodyKey,
         a: [i32; 3],
         b: [i32; 3],
     },
@@ -2233,7 +2251,7 @@ pub enum MateRef {
     /// A cylindrical surface's centre line (#1013): a hole's or a shaft's axis, which is what
     /// "line these two up" usually means. Keyed by the fitted axis, re-found on the live mesh.
     HoleAxis {
-        body: usize,
+        body: BodyKey,
         origin: [i32; 3],
         dir: [i32; 3],
     },
@@ -2244,7 +2262,7 @@ pub enum MateRef {
 impl MateRef {
     /// The body this reference lives on. `None` for the world-fixed ones (a datum plane, a
     /// world axis, the origin), which no body owns and no joint pose carries.
-    pub fn body(&self) -> Option<usize> {
+    pub fn body(&self) -> Option<BodyKey> {
         match self {
             MateRef::Face { body, .. }
             | MateRef::Edge { body, .. }
@@ -2480,14 +2498,14 @@ impl MirrorMode {
 pub struct MirrorOperation {
     /// The mirror plane: a construction plane or a planar body face.
     pub plane: FaceId,
-    /// Input body indices, one reflected output per entry (same order).
-    pub targets: Vec<usize>,
+    /// Input bodies, one reflected output per entry (same order).
+    pub targets: Vec<BodyKey>,
     /// How each reflection lands (#639).
     #[serde(default)]
     pub mode: MirrorMode,
-    /// Output body indices, matching `targets` order.
+    /// Output bodies, matching `targets` order.
     #[serde(default)]
-    pub outputs: Vec<usize>,
+    pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -2651,7 +2669,7 @@ pub enum RepeatVar {
 /// parametrically.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RepeatOperation {
-    pub targets: Vec<usize>,
+    pub targets: Vec<BodyKey>,
     /// Source construction plane indices to repeat as offset copies (#221). Separate from
     /// `targets` (bodies) because a plane instance is a generated [`ConstructionPlane`] carrying
     /// a [`RepeatPlaneInstance`], not a [`BodySource::Repeated`] body.
@@ -2708,10 +2726,10 @@ pub struct RepeatOperation {
     /// moves — overriding the `length` expression (#186).
     #[serde(default)]
     pub length_target: Option<ExtrudeTarget>,
-    /// Output body indices: instance-major, then target (instance 1 of each target, then
+    /// Output bodies: instance-major, then target (instance 1 of each target, then
     /// instance 2 of each target, …).
     #[serde(default)]
-    pub outputs: Vec<usize>,
+    pub outputs: Vec<BodyKey>,
     /// Generated construction-plane instance indices for [`plane_targets`] (#221), laid out
     /// instance-major then target, exactly like [`outputs`]. Each entry is a
     /// [`ConstructionPlane`] whose `repeat_instance` points back here.
@@ -2746,8 +2764,8 @@ pub struct RepeatPlaneInstance {
 /// depends on every target and cutter.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SliceOperation {
-    /// Input body indices (the A side); each is sliced independently.
-    pub targets: Vec<usize>,
+    /// Input bodies (the A side); each is sliced independently.
+    pub targets: Vec<BodyKey>,
     /// Planar cutters (the B side): construction planes and/or planar body faces.
     #[serde(default)]
     pub cutters: Vec<FaceId>,
@@ -2755,11 +2773,11 @@ pub struct SliceOperation {
     /// When clear, a cutter only separates material within its own face footprint.
     #[serde(default)]
     pub extend_infinite: bool,
-    /// Output body indices: target-major, then piece (all fragments of target 0, then
+    /// Output bodies: target-major, then piece (all fragments of target 0, then
     /// target 1, …). The last fragment of each target absorbs any extra solids a rebuild
     /// produces, so the pane's element list stays stable while geometry changes.
     #[serde(default)]
-    pub outputs: Vec<usize>,
+    pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -2790,16 +2808,16 @@ pub struct TreatedEdge {
 /// `crate::extrude::occt_edge_treated_output_shape`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EdgeTreatmentOperation {
-    /// Input body indices — each is shadowed and gets one chamfered/filleted output.
-    pub targets: Vec<usize>,
+    /// Input bodies — each is shadowed and gets one chamfered/filleted output.
+    pub targets: Vec<BodyKey>,
     /// Edges to treat, each tagged with the `targets` entry it lives on.
     pub edges: Vec<TreatedEdge>,
     pub kind: VertexTreatmentKind,
     /// Chamfer distance / fillet radius (mm); must be positive to have any effect.
     pub amount: f32,
-    /// Output body indices, matching `targets` order.
+    /// Output bodies, matching `targets` order.
     #[serde(default)]
-    pub outputs: Vec<usize>,
+    pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -3458,8 +3476,8 @@ impl DrawingOrientation {
 /// One view on a technical [`Drawing`] (#180): a body projected in a fixed orientation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DrawingView {
-    /// Index into [`Document::bodies`] (the source when `sketch` is `None`).
-    pub body: usize,
+    /// The body this view projects (the source when `sketch` is `None`).
+    pub body: BodyKey,
     /// When `Some`, this view projects a **sketch** rather than a body (#278). Kept as an
     /// optional field (rather than replacing `body` with an enum) so older saved drawings —
     /// which only ever had `body` — deserialize unchanged.
@@ -3924,7 +3942,7 @@ pub struct Document {
     #[serde(default)]
     pub extrusions: Vec<Extrusion>,
     #[serde(default)]
-    pub bodies: Vec<Body>,
+    pub bodies: crate::arena::Arena<Body>,
     /// Materials bodies can be made of (#834). A body with no material renders in the
     /// document's default body colour.
     #[serde(default)]
@@ -4081,7 +4099,7 @@ pub struct Component {
 pub enum ComponentMember {
     ConstructionPlane(usize),
     Extrusion(usize),
-    Body(usize),
+    Body(BodyKey),
     Loft(LoftKey),
     BooleanOp(usize),
     MoveOp(usize),
@@ -4189,7 +4207,7 @@ impl Default for Document {
             constraints: Vec::new(),
             construction_planes: crate::face::default_datum_planes(),
             extrusions: Vec::new(),
-            bodies: Vec::new(),
+            bodies: crate::arena::Arena::new(),
             materials: Material::defaults(),
             imported_meshes: crate::arena::Arena::new(),
             tracing_images: crate::arena::Arena::new(),

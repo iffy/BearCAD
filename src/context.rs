@@ -51,7 +51,7 @@ pub struct ContextInput<'a> {
     /// Current snapping on/off state (shown as a toggle for snapping tools).
     pub snapping_enabled: bool,
     /// Body an in-progress/edited extrusion would join by default, if any (#32).
-    pub extrude_merge_candidate: Option<usize>,
+    pub extrude_merge_candidate: Option<crate::model::BodyKey>,
     /// Whether the in-progress extrusion's profiles form more than one disjoint solid (#837).
     pub extrude_disjoint_profiles: bool,
     /// Current new-body/merge-into choice for the in-progress/edited extrusion.
@@ -172,7 +172,7 @@ pub struct RevolveControl {
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
     /// In Cut mode, the picked bodies to cut (rendered through the unified element picker, #213).
-    pub cut_bodies: Vec<usize>,
+    pub cut_bodies: Vec<crate::model::BodyKey>,
 }
 
 /// What the Sweep tool's context section shows (#sweep): the picked profile
@@ -188,7 +188,7 @@ pub struct SweepControl {
     pub path_focused: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
     /// In Cut mode, the picked bodies to cut (rendered through the unified element picker).
-    pub cut_bodies: Vec<usize>,
+    pub cut_bodies: Vec<crate::model::BodyKey>,
 }
 
 /// What the Construction Plane tool's context section shows (#474 / #483): the picked
@@ -223,7 +223,7 @@ pub struct PlaneToolControl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoftBodyControl {
     pub body_choice: crate::actions::RevolveBodyChoice,
-    pub cut_bodies: Vec<usize>,
+    pub cut_bodies: Vec<crate::model::BodyKey>,
     /// Ready to commit — at least two sections picked (#586).
     pub can_commit: bool,
 }
@@ -255,8 +255,8 @@ pub enum PlaneToolEdit {
 pub struct BooleanControl {
     pub kind: crate::model::BooleanOpKind,
     /// Side-A / side-B picked bodies (rendered through the unified element picker, #213).
-    pub a: Vec<usize>,
-    pub b: Vec<usize>,
+    pub a: Vec<crate::model::BodyKey>,
+    pub b: Vec<crate::model::BodyKey>,
     pub picking_b: bool,
     pub keep_b: bool,
     /// `true` while re-editing a committed operation (changes the commit label).
@@ -271,7 +271,7 @@ pub struct BooleanControl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MoveControl {
     /// Picked bodies to move (rendered through the unified element picker, #213).
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     /// Construction planes (#217) and tracing images (#217) moving with them. They share the
     /// **one** Bodies picker rather than getting rows of their own — a Move takes "the things
     /// that move", and splitting them by kind would be three near-empty inputs (#963).
@@ -384,8 +384,8 @@ pub struct JointControl {
     /// Every mate pick sits on one side or the other (#953/#1014): moving picks on the
     /// driven part, fixed picks on the base — each picker holds that rule, so a click on the
     /// wrong part is simply not a pick.
-    pub driven_bodies: Vec<usize>,
-    pub base_bodies: Vec<usize>,
+    pub driven_bodies: Vec<crate::model::BodyKey>,
+    pub base_bodies: Vec<crate::model::BodyKey>,
     /// The face pair (#1014) and what it holds the part off by.
     pub moving_face: Option<crate::model::MateRef>,
     pub moving_face_focused: bool,
@@ -493,7 +493,7 @@ pub struct MirrorControl {
     /// face, #566), or `None` until one is picked. Drives the plane element picker.
     pub plane: Option<SceneElement>,
     /// Picked bodies to mirror (rendered through the unified element picker).
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     /// How each reflection lands (#639): its own body, or joined to / cut from its source.
     pub mode: crate::model::MirrorMode,
     pub editing: bool,
@@ -514,7 +514,7 @@ pub enum MirrorEdit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepeatControl {
     /// Picked bodies to repeat (rendered through the unified element picker, #213).
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     /// Picked construction planes to repeat as offset copies (#221).
     pub plane_targets: Vec<usize>,
     /// Picked sketches to repeat as offset copies (#231/#234).
@@ -697,7 +697,7 @@ pub struct SliceControl {
     /// The bodies being sliced, and the planar faces/planes doing the slicing (#955). The
     /// pane renders both through real [`ElementPicker`]s, so they carry their own filters,
     /// focus, and — for the cutters, which are consumed — the red highlight.
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     pub cutters: Vec<crate::model::FaceId>,
     /// `true` while the cutter picker is active (the next viewport click adds a cutter).
     pub picking_cutter: bool,
@@ -1058,7 +1058,7 @@ pub struct ContextPaneContent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialControl {
     /// The selected bodies this assigns to.
-    pub bodies: Vec<usize>,
+    pub bodies: Vec<crate::model::BodyKey>,
     /// The material they all share; `None` when they disagree. `Some(None)` is the default
     /// material — no material assigned.
     pub current: Option<Option<crate::model::MaterialKey>>,
@@ -1122,7 +1122,7 @@ pub enum UnitsChoice {
 pub struct ExtrudeBodyControl {
     pub mode: ExtrudeBodyMode,
     /// Host body for Add/Cut when the sketch sits on a body face; `None` disables those modes.
-    pub merge_body: Option<usize>,
+    pub merge_body: Option<crate::model::BodyKey>,
     pub merge_body_label: String,
     /// Whether the picked profiles fall into more than one disjoint solid (#837). With no host
     /// body, that's what **Join** joins: one body instead of one per profile.
@@ -1560,7 +1560,7 @@ fn body_tool_picker(
     doc: &Document,
     heading: &'static str,
     target: PickerTarget,
-    bodies: &[usize],
+    bodies: &[crate::model::BodyKey],
     selected_color: Option<eframe::egui::Color32>,
     focused: bool,
 ) -> ToolPickerView {
@@ -3055,7 +3055,7 @@ fn material_control_from_selection(
     let mut bodies = Vec::new();
     for element in selection.iter() {
         match element {
-            SceneElement::Body(bi) if doc.bodies.get(bi).is_some_and(|b| !b.deleted) => {
+            SceneElement::Body(bi) if doc.bodies.contains(bi) => {
                 bodies.push(bi)
             }
             _ => return None,
@@ -3067,7 +3067,7 @@ fn material_control_from_selection(
     // A body with no material of its own is made of the document's first one (#924), so
     // the picker shows that material selected — swatch, name and colour included — rather
     // than a "Default" entry standing in for it.
-    let material_of = |bi: &usize| {
+    let material_of = |bi: &crate::model::BodyKey| {
         doc.bodies[*bi]
             .material
             .filter(|mi| doc.materials.contains(*mi))
@@ -6994,7 +6994,13 @@ pub fn show_pane(
                             join_enabled,
                         ),
                         (
-                            ExtrudeBodyMode::Cut(control.merge_body.unwrap_or(0)),
+                            // With no host body the Cut button is disabled anyway; a vacant
+                            // slot stands in so the mode value is still well-typed (#1055).
+                            ExtrudeBodyMode::Cut(
+                                control
+                                    .merge_body
+                                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
+                            ),
                             crate::icons::IconId::CutBody,
                             if add_cut_enabled {
                                 format!("Cut {}", control.merge_body_label)
@@ -7381,6 +7387,7 @@ fn orientation_pick_to_drawing(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
 
     /// #982: with a sketch open, the Select tool's picker view carries the sketch-only rule
@@ -7400,7 +7407,7 @@ mod tests {
             .expect("Select always has its picker");
         assert!(open.accepts(&doc, &SceneElement::Line(0)));
         assert!(!open.accepts(&doc, &SceneElement::ConstructionPlane(1)));
-        assert!(!open.accepts(&doc, &SceneElement::Body(0)));
+        assert!(!open.accepts(&doc, &SceneElement::Body(bkey(0))));
 
         // Outside a sketch it takes everything again.
         let closed = selection_picker_for(&doc, Tool::Select, None, &selection)
@@ -7511,11 +7518,10 @@ mod tests {
     fn doc_with_bodies(n: usize) -> Document {
         let mut doc = Document::default();
         for _ in 0..n {
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -7772,7 +7778,7 @@ mod tests {
             "profiles keep their analytic-face identity (#955)"
         );
         assert!(picker.picker.is_focused(), "Extrude has only the one picker");
-        assert!(!picker.picker.accepts(&doc, &SceneElement::Body(0)));
+        assert!(!picker.picker.accepts(&doc, &SceneElement::Body(bkey(0))));
     }
 
     /// #584: the Extrude tool surfaces its in-context distance/target/commit controls.
@@ -7863,9 +7869,9 @@ mod tests {
         );
         assert!(view.picker.accepts(
             &doc,
-            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+            &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
-        assert!(!view.picker.accepts(&doc, &SceneElement::Body(0)));
+        assert!(!view.picker.accepts(&doc, &SceneElement::Body(bkey(0))));
 
         // An empty set still shows the picker — that's how you see what to pick.
         let empty = ContextInput { edge_treatment_edges: Some(Vec::new()), ..base };
@@ -7959,7 +7965,7 @@ mod tests {
             &[SceneElement::Line(0), SceneElement::Circle(1)]
         );
         assert!(picker.is_focused(), "the selection picker is the Select tool's only one");
-        assert!(picker.accepts(&doc, &SceneElement::Body(0)), "Select accepts everything");
+        assert!(picker.accepts(&doc, &SceneElement::Body(bkey(0))), "Select accepts everything");
 
         // Empty selection: the picker is still shown (an always-present input), just empty.
         let empty_selection = SceneSelection::default();
@@ -7977,7 +7983,7 @@ mod tests {
         let mut selection = SceneSelection::default();
         // A constrainable line plus a body (which the constraint picker should reject).
         crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
-        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(3), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(bkey(3)), true);
         let input = ContextInput {
             tool: Tool::Constraint,
             in_sketch: true,
@@ -7992,7 +7998,7 @@ mod tests {
             .expect("constraint picker");
         assert_eq!(picker.picked(), &[SceneElement::Line(0)], "body filtered out");
         assert!(picker.is_focused(), "active tool's picker is focused");
-        assert!(!picker.accepts(&doc, &SceneElement::Body(0)));
+        assert!(!picker.accepts(&doc, &SceneElement::Body(bkey(0))));
     }
 
     #[test]
@@ -8010,7 +8016,7 @@ mod tests {
                 axis_focused: false,
                 symmetric: false,
                 body_choice: crate::actions::RevolveBodyChoice::Cut,
-                cut_bodies: vec![2, 5],
+                cut_bodies: vec![bkey(2), bkey(5)],
             }),
             ..input(&doc, &selection)
         };
@@ -8025,10 +8031,10 @@ mod tests {
             .expect("the cut-bodies picker");
         assert_eq!(
             view.picker.picked(),
-            &[SceneElement::Body(2), SceneElement::Body(5)]
+            &[SceneElement::Body(bkey(2)), SceneElement::Body(bkey(5))]
         );
         // Body-only filter, and the red "cut" highlight override in place of the default.
-        assert!(view.picker.accepts(&doc, &SceneElement::Body(0)));
+        assert!(view.picker.accepts(&doc, &SceneElement::Body(bkey(0))));
         assert!(!view.picker.accepts(&doc, &SceneElement::Line(0)));
         assert_eq!(
             view.picker.selected_color(crate::theme::FOCUS_ACCENT),
@@ -8071,11 +8077,10 @@ mod tests {
             .insert(crate::model::Material { name: "Brass".to_string(), color: [1, 2, 3] });
         let unobtainium = doc.default_material().expect("the seeded palette");
         for material in [Some(brass), None] {
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(0),
                 material,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -8083,9 +8088,9 @@ mod tests {
         let mut selection = SceneSelection::default();
         assert!(context_pane_content(&input(&doc, &selection)).material.is_none());
 
-        selection.insert(SceneElement::Body(0));
+        selection.insert(SceneElement::Body(bkey(0)));
         let control = context_pane_content(&input(&doc, &selection)).material.unwrap();
-        assert_eq!(control.bodies, vec![0]);
+        assert_eq!(control.bodies, vec![bkey(0)]);
         assert_eq!(control.current, Some(Some(brass)));
         assert_eq!(
             control.materials.last(),
@@ -8099,14 +8104,14 @@ mod tests {
 
         // Two bodies that disagree read as mixed — the second has no material of its own,
         // which reads as Unobtainium (#924).
-        selection.insert(SceneElement::Body(1));
+        selection.insert(SceneElement::Body(bkey(1)));
         let control = context_pane_content(&input(&doc, &selection)).material.unwrap();
         assert_eq!(control.current, None);
 
         // A body with no material of its own reads as Unobtainium, the first material
         // (#924) — the picker shows it selected, not a "Default" stand-in.
         let mut lone = SceneSelection::default();
-        lone.insert(SceneElement::Body(1));
+        lone.insert(SceneElement::Body(bkey(1)));
         let control = context_pane_content(&input(&doc, &lone)).material.unwrap();
         assert_eq!(control.current, Some(Some(unobtainium)));
 
@@ -8116,7 +8121,7 @@ mod tests {
 
         // And so does running a tool (#934): the pane is that tool's controls then.
         let mut bodies = SceneSelection::default();
-        bodies.insert(SceneElement::Body(0));
+        bodies.insert(SceneElement::Body(bkey(0)));
         let mut tool_input = input(&doc, &bodies);
         tool_input.tool = Tool::Move;
         assert!(context_pane_content(&tool_input).material.is_none());
@@ -8150,7 +8155,7 @@ mod tests {
                 start_c_focused: false,
                 end_c: None,
                 end_c_focused: false,
-                targets: vec![1, 4],
+                targets: vec![bkey(1), bkey(4)],
                 tx: String::new(),
                 ty: String::new(),
                 tz: String::new(),
@@ -8178,7 +8183,7 @@ mod tests {
         assert_eq!(pickers[0].target, PickerTarget::MoveTargets);
         assert_eq!(
             pickers[0].picker.picked(),
-            &[SceneElement::Body(1), SceneElement::Body(4)]
+            &[SceneElement::Body(bkey(1)), SceneElement::Body(bkey(4))]
         );
         assert!(!pickers[0].picker.accepts(&doc, &SceneElement::Line(0)));
         // Move doesn't consume its bodies, so it keeps the default (non-red) highlight.
@@ -8195,7 +8200,7 @@ mod tests {
                 around_axis: false,
                 flip: false,
                 can_turn_about_path: true,
-                targets: vec![7],
+                targets: vec![bkey(7)],
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
                 extrusion_targets: Vec::new(),
@@ -8223,7 +8228,7 @@ mod tests {
         // Bodies plus the inline "Path" and "Distance to" (#958).
         assert_eq!(pickers.len(), 3);
         assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
-        assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(7)]);
+        assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(bkey(7))]);
     }
 
     /// #646: typing in the Repeat section's Count/Offset/Distance fields blurs the Bodies
@@ -8239,7 +8244,7 @@ mod tests {
             around_axis: false,
             flip: false,
             can_turn_about_path: true,
-            targets: vec![7],
+            targets: vec![bkey(7)],
             plane_targets: Vec::new(),
             sketch_targets: Vec::new(),
             extrusion_targets: Vec::new(),
@@ -8293,11 +8298,10 @@ mod tests {
         // A real body: the side pickers carry `PickRule::LiveBody`, so a part that isn't there
         // is refused — as it should be.
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let doc = doc;
@@ -8374,7 +8378,7 @@ mod tests {
 
         // One ring at a time, and it steps mobile → fixed as they fill.
         assert!(slider[mobile_at].picker.is_focused() && !slider[fixed_at].picker.is_focused());
-        let half = pickers(control(JointKind::Slider, Some(JointRef::Body(0)), None));
+        let half = pickers(control(JointKind::Slider, Some(JointRef::Body(bkey(0))), None));
         let m = half.iter().find(|v| v.target == PickerTarget::JointMobile).unwrap();
         let f = half.iter().find(|v| v.target == PickerTarget::JointFixed).unwrap();
         assert_eq!(m.picker.picked().len(), 1, "the mobile slot holds its part");
@@ -8401,7 +8405,7 @@ mod tests {
                     in_sketch,
                     open_sketch: in_sketch.then_some(0),
                     slice_op: (tool == Tool::Slice).then_some(SliceControl {
-                        targets: vec![1],
+                        targets: vec![bkey(1)],
                         cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
                         picking_cutter: false,
                         extend_infinite: true,
@@ -8414,14 +8418,14 @@ mod tests {
                         axis_focused: true,
                         symmetric: false,
                         body_choice: crate::actions::RevolveBodyChoice::Cut,
-                        cut_bodies: vec![2],
+                        cut_bodies: vec![bkey(2)],
                     }),
                     sweep: (tool == Tool::Sweep).then_some(SweepControl {
                         faces: vec![crate::model::ExtrudeFace::Circle(0)],
                         path: Vec::new(),
                         path_focused: true,
                         body_choice: crate::actions::RevolveBodyChoice::Cut,
-                        cut_bodies: vec![2],
+                        cut_bodies: vec![bkey(2)],
                     }),
                     extrude_faces: (tool == Tool::Extrude)
                         .then_some(vec![crate::model::ExtrudeFace::Circle(0)]),
@@ -8437,7 +8441,7 @@ mod tests {
                     ]),
                     loft_body: (tool == Tool::Loft).then_some(LoftBodyControl {
                         body_choice: crate::actions::RevolveBodyChoice::Cut,
-                        cut_bodies: vec![2],
+                        cut_bodies: vec![bkey(2)],
                         can_commit: true,
                     }),
                     plane_tool: (tool == Tool::ConstructionPlane).then_some(PlaneToolControl {
@@ -8605,7 +8609,7 @@ mod tests {
             "a revolve axis has to be straight"
         );
         assert!(
-            !axis.picker.accepts(&doc, &SceneElement::Body(0)),
+            !axis.picker.accepts(&doc, &SceneElement::Body(bkey(0))),
             "a whole body is not an axis"
         );
     }
@@ -8620,7 +8624,7 @@ mod tests {
         let slice_input = ContextInput {
             tool: Tool::Slice,
             slice_op: Some(SliceControl {
-                targets: vec![1],
+                targets: vec![bkey(1)],
                 cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
                 picking_cutter: true,
                 extend_infinite: true,
@@ -8634,8 +8638,8 @@ mod tests {
 
         let targets = &pickers[0];
         assert_eq!(targets.target, PickerTarget::SliceTargets);
-        assert_eq!(targets.picker.picked(), &[SceneElement::Body(1)]);
-        assert!(targets.picker.accepts(&doc, &SceneElement::Body(0)));
+        assert_eq!(targets.picker.picked(), &[SceneElement::Body(bkey(1))]);
+        assert!(targets.picker.accepts(&doc, &SceneElement::Body(bkey(0))));
         assert!(!targets.picker.is_focused(), "the cutter picker has focus");
 
         let cutters = &pickers[1];
@@ -8647,7 +8651,7 @@ mod tests {
         );
         assert!(cutters.picker.is_focused());
         assert!(
-            !cutters.picker.accepts(&doc, &SceneElement::Body(0)),
+            !cutters.picker.accepts(&doc, &SceneElement::Body(bkey(0))),
             "a whole body is not a cutter"
         );
         assert_eq!(
@@ -8662,7 +8666,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let doc = doc_with_bodies(8);
         let selection = SceneSelection::default();
-        let make = |kind, a: Vec<usize>, b: Vec<usize>, picking_b| ContextInput {
+        let make = |kind, a: Vec<crate::model::BodyKey>, b: Vec<crate::model::BodyKey>, picking_b| ContextInput {
             tool: Tool::Combine,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -8682,7 +8686,7 @@ mod tests {
         // Combine kind: a single side-A picker, default highlight, focused.
         let single = context_pane_content(&make(
             crate::model::BooleanOpKind::Combine,
-            vec![0, 1],
+            vec![bkey(0), bkey(1)],
             vec![],
             false,
         ))
@@ -8694,8 +8698,8 @@ mod tests {
         // Cut kind, picking B: two pickers; B is focused and red (it gets consumed).
         let cut = context_pane_content(&make(
             crate::model::BooleanOpKind::Cut,
-            vec![0],
-            vec![2],
+            vec![bkey(0)],
+            vec![bkey(2)],
             true,
         ))
         .tool_pickers;
@@ -8704,7 +8708,7 @@ mod tests {
         assert!(!cut[0].picker.is_focused());
         assert_eq!(cut[1].target, PickerTarget::CombineB);
         assert!(cut[1].picker.is_focused());
-        assert_eq!(cut[1].picker.picked(), &[SceneElement::Body(2)]);
+        assert_eq!(cut[1].picker.picked(), &[SceneElement::Body(bkey(2))]);
         assert_eq!(
             cut[1].picker.selected_color(crate::theme::FOCUS_ACCENT),
             crate::theme::CUT_ACCENT
@@ -9527,13 +9531,13 @@ mod tests {
 
         let with_host = context_pane_content(&ContextInput {
             tool: Tool::Extrude,
-            extrude_body_mode: Some(ExtrudeBodyMode::MergeInto(0)),
-            extrude_merge_candidate: Some(0),
+            extrude_body_mode: Some(ExtrudeBodyMode::MergeInto(bkey(0))),
+            extrude_merge_candidate: Some(bkey(0)),
             extrude_symmetric: Some(true),
             ..input(&doc, &selection)
         });
         let control = with_host.extrude_body.expect("body control with host");
-        assert_eq!(control.merge_body, Some(0));
+        assert_eq!(control.merge_body, Some(bkey(0)));
         assert!(control.symmetric);
     }
 }

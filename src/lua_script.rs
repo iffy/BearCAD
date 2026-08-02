@@ -93,7 +93,8 @@ fn face_element_label(doc: &crate::model::Document, element: &SceneElement) -> O
     match element {
         SceneElement::SketchFace(face) => Some(crate::face::face_label(doc, face.clone())),
         SceneElement::BodyFace { body, centroid, .. } => Some(format!(
-            "Body {body} face at ({:.3}, {:.3}, {:.3})",
+            "Body {} face at ({:.3}, {:.3}, {:.3})",
+            body.index(),
             centroid[0] as f32 / 1000.0,
             centroid[1] as f32 / 1000.0,
             centroid[2] as f32 / 1000.0
@@ -168,13 +169,13 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         }
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::Body(key) => doc.bodies.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::Body(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
@@ -236,7 +237,7 @@ pub fn scene_element_from_kind(
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(index)),
         "extrusion" => Some(SceneElement::Extrusion(index)),
-        "body" => Some(SceneElement::Body(index)),
+        "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
         "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
@@ -307,6 +308,16 @@ fn make_element(lua: &Lua, element: SceneElement) -> mlua::Result<Value> {
     let index = element_index(unsafe { &tick.state().doc }, element.clone());
     drop(tick);
     Ok(Value::UserData(lua.create_userdata(LuaElement { element, index })?))
+}
+
+/// The body a script's ordinal names (#1055) — a script counts live bodies, it cannot spell
+/// a key.
+fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model::BodyKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.body_at(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
 }
 
 /// A `#rrggbb` (or bare `rrggbb`) colour string (#834).
@@ -809,7 +820,11 @@ fn parse_boolean_op_args(
 /// Parses an `axis = …` argument into a [`crate::model::RevolveAxis`]: `"x"`/`"y"`/`"z"` for
 /// an origin axis, `{ line = i }` for a sketch line, or `{ body = i, from = {x,y,z},
 /// to = {x,y,z} }` for a body edge (#643). `what` names the call in error messages.
-fn parse_revolve_axis(value: Value, what: &str) -> mlua::Result<crate::model::RevolveAxis> {
+fn parse_revolve_axis(
+    lua: &Lua,
+    value: Value,
+    what: &str,
+) -> mlua::Result<crate::model::RevolveAxis> {
     const SHAPES: &str = "\"x\"|\"y\"|\"z\", {line = i}, or {body = i, from = {x,y,z}, to = {x,y,z}}";
     match value {
         Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
@@ -824,9 +839,10 @@ fn parse_revolve_axis(value: Value, what: &str) -> mlua::Result<crate::model::Re
             if let Some(li) = t.get::<Option<usize>>("line")? {
                 return Ok(crate::model::RevolveAxis::Line(li));
             }
-            let body: usize = t.get("body").map_err(|_| {
+            let ordinal: usize = t.get("body").map_err(|_| {
                 mlua::Error::external(format!("{what} `axis` table needs `line` or `body` ({SHAPES})"))
             })?;
+            let body = body_key_from_ordinal(lua, ordinal)?;
             let point = |key: &str| -> mlua::Result<glam::Vec3> {
                 let v: Vec<f32> = t.get(key)?;
                 if v.len() != 3 {
@@ -852,6 +868,7 @@ fn parse_revolve_axis(value: Value, what: &str) -> mlua::Result<crate::model::Re
 /// for the expression fields and stringified.
 #[allow(clippy::type_complexity)]
 fn parse_move_op_args(
+    lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<(
     Vec<usize>,
@@ -882,14 +899,14 @@ fn parse_move_op_args(
     let (tx, ty, tz) = (expr("x")?, expr("y")?, expr("z")?);
     // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
     // `from` exactly on `to`, and x/y/z are ignored.
-    let start_point_a = parse_move_point(opts.get::<Value>("from")?, "from")?;
-    let end_point_a = parse_move_point(opts.get::<Value>("to")?, "to")?;
+    let start_point_a = parse_move_point(lua, opts.get::<Value>("from")?, "from")?;
+    let end_point_a = parse_move_point(lua, opts.get::<Value>("to")?, "to")?;
     // The optional B pair (#669) adds the rotation about end point A.
-    let start_point_b = parse_move_point(opts.get::<Value>("from_b")?, "from_b")?;
-    let end_point_b = parse_move_point(opts.get::<Value>("to_b")?, "to_b")?;
+    let start_point_b = parse_move_point(lua, opts.get::<Value>("from_b")?, "from_b")?;
+    let end_point_b = parse_move_point(lua, opts.get::<Value>("to_b")?, "to_b")?;
     // The optional C pair pins the spin about `end A → end B` that B leaves free.
-    let start_point_c = parse_move_point(opts.get::<Value>("from_c")?, "from_c")?;
-    let end_point_c = parse_move_point(opts.get::<Value>("to_c")?, "to_c")?;
+    let start_point_c = parse_move_point(lua, opts.get::<Value>("from_c")?, "from_c")?;
+    let end_point_c = parse_move_point(lua, opts.get::<Value>("to_c")?, "to_c")?;
     Ok((
         targets,
         tx,
@@ -908,6 +925,7 @@ fn parse_move_op_args(
 /// `{ body = i, edge = { {x,y,z}, {x,y,z} } }` table (#649/#650). Coordinates are plain
 /// millimetres on the body's mesh, re-quantized to the selection grid.
 fn parse_move_point(
+    lua: &Lua,
     value: Value,
     what: &str,
 ) -> mlua::Result<Option<crate::model::MovePointRef>> {
@@ -924,7 +942,7 @@ fn parse_move_point(
     if t.get::<Option<bool>>("origin")?.unwrap_or(false) {
         return Ok(Some(crate::model::MovePointRef::Origin));
     }
-    let body: usize = t.get("body")?;
+    let body = body_key_from_ordinal(lua, t.get("body")?)?;
     let mm = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
         if v.len() != 3 {
             return Err(mlua::Error::external(format!(
@@ -972,7 +990,11 @@ fn parse_move_point(
 /// One side of a mate pick (#1020): a body face, a datum plane, a body edge, a world axis,
 /// or a point. The point spellings are the Move tool's, except that an edge **midpoint** is
 /// `midpoint` here — `edge` names the whole edge, which is what a line-up row lines up.
-fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model::MateRef>> {
+fn parse_mate_ref(
+    lua: &Lua,
+    value: Value,
+    what: &str,
+) -> mlua::Result<Option<crate::model::MateRef>> {
     let Value::Table(t) = value else {
         return match value {
             Value::Nil => Ok(None),
@@ -998,7 +1020,7 @@ fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model:
     }
     // A hole's or a shaft's centre line (#1013).
     if let Some(v) = t.get::<Option<Vec<f32>>>("hole_axis")? {
-        let body: usize = t.get("body")?;
+        let body = body_key_from_ordinal(lua, t.get("body")?)?;
         let d: Vec<f32> = t
             .get("direction")
             .map_err(|_| mlua::Error::external(format!("`{what}.hole_axis` needs a `direction`")))?;
@@ -1022,7 +1044,7 @@ fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model:
         return Ok(Some(crate::model::MateRef::Axis(axis)));
     }
     if let Some(v) = t.get::<Option<Vec<f32>>>("face")? {
-        let body: usize = t.get("body")?;
+        let body = body_key_from_ordinal(lua, t.get("body")?)?;
         let n: Vec<f32> = t
             .get("normal")
             .map_err(|_| mlua::Error::external(format!("`{what}.face` needs a `normal`")))?;
@@ -1033,7 +1055,7 @@ fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model:
         }));
     }
     if let Some(ends) = t.get::<Option<Vec<Vec<f32>>>>("edge")? {
-        let body: usize = t.get("body")?;
+        let body = body_key_from_ordinal(lua, t.get("body")?)?;
         if ends.len() != 2 {
             return Err(mlua::Error::external(format!(
                 "`{what}.edge` must be two {{x, y, z}} points"
@@ -1046,7 +1068,7 @@ fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model:
         }));
     }
     if let Some(ends) = t.get::<Option<Vec<Vec<f32>>>>("midpoint")? {
-        let body: usize = t.get("body")?;
+        let body = body_key_from_ordinal(lua, t.get("body")?)?;
         if ends.len() != 2 {
             return Err(mlua::Error::external(format!(
                 "`{what}.midpoint` must be two {{x, y, z}} points"
@@ -1060,16 +1082,16 @@ fn parse_mate_ref(value: Value, what: &str) -> mlua::Result<Option<crate::model:
             },
         )));
     }
-    parse_move_point(Value::Table(t), what).map(|p| p.map(crate::model::MateRef::Point))
+    parse_move_point(lua, Value::Table(t), what).map(|p| p.map(crate::model::MateRef::Point))
 }
 
 /// The `face = {…}` block of a joint call (#1020).
-fn parse_mate(opts: &Table) -> mlua::Result<crate::model::JointMate> {
+fn parse_mate(lua: &Lua, opts: &Table) -> mlua::Result<crate::model::JointMate> {
     let mut mate = crate::model::JointMate::default();
     if let Some(face) = opts.get::<Option<Table>>("face")? {
         check_keys(&face, "joint face", &["moving", "fixed", "flip", "offset"])?;
-        mate.moving_face = parse_mate_ref(face.get("moving")?, "face.moving")?;
-        mate.fixed_face = parse_mate_ref(face.get("fixed")?, "face.fixed")?;
+        mate.moving_face = parse_mate_ref(lua, face.get("moving")?, "face.moving")?;
+        mate.fixed_face = parse_mate_ref(lua, face.get("fixed")?, "face.fixed")?;
         mate.flip = face.get::<Option<bool>>("flip")?.unwrap_or(false);
         mate.offset = joint_position_arg(&face, "offset")?;
     }
@@ -1078,8 +1100,8 @@ fn parse_mate(opts: &Table) -> mlua::Result<crate::model::JointMate> {
             let row = row?;
             check_keys(&row, "joint line_up row", &["moving", "fixed"])?;
             mate.line_up.push(crate::model::MateLineUp {
-                moving: parse_mate_ref(row.get("moving")?, "line_up.moving")?,
-                fixed: parse_mate_ref(row.get("fixed")?, "line_up.fixed")?,
+                moving: parse_mate_ref(lua, row.get("moving")?, "line_up.moving")?,
+                fixed: parse_mate_ref(lua, row.get("fixed")?, "line_up.fixed")?,
             });
         }
     }
@@ -1162,7 +1184,7 @@ fn parse_repeat_op_args(
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let axis = match opts.get::<Value>("axis")? {
         Value::Nil => crate::model::RevolveAxis::X,
-        value => parse_revolve_axis(value, "repeat")?,
+        value => parse_revolve_axis(lua, value, "repeat")?,
     };
     let mode_name: String = opts
         .get::<Option<String>>("mode")?
@@ -1506,8 +1528,14 @@ fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, O
 /// `resolve_element` takes — as long as it lands on a body, component, or unit instance.
 fn parse_joint_member(lua: &Lua, value: Value) -> mlua::Result<crate::model::JointRef> {
     match value {
-        Value::Integer(i) => Ok(crate::model::JointRef::Body(i as usize)),
-        Value::Number(n) => Ok(crate::model::JointRef::Body(n as usize)),
+        Value::Integer(i) => Ok(crate::model::JointRef::Body(body_key_from_ordinal(
+            lua,
+            i as usize,
+        )?)),
+        Value::Number(n) => Ok(crate::model::JointRef::Body(body_key_from_ordinal(
+            lua,
+            n as usize,
+        )?)),
         other => match resolve_element(lua, other)? {
             SceneElement::Body(i) => Ok(crate::model::JointRef::Body(i)),
             SceneElement::Component(i) => Ok(crate::model::JointRef::Component(i)),
@@ -1609,7 +1637,7 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
             )))
         }
     };
-    let mate = parse_mate(opts)?;
+    let mate = parse_mate(lua, opts)?;
     // Travel limits (#896): expressions on either end, or a stop picked as geometry.
     let limits = crate::model::JointLimits {
         slide_min: joint_position_arg(opts, "slide_min")?,
@@ -2119,16 +2147,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "line_distance" => PS::LineDistance(opts.get("a")?, opts.get("b")?),
                 "line_angle" => PS::LineAngle(opts.get("a")?, opts.get("b")?),
                 "body_edge_length" => PS::BodyEdgeLength {
-                    body: opts.get("body")?,
+                    body: body_key_from_ordinal(lua, opts.get("body")?)?,
                     a: mm_point("a")?,
                     b: mm_point("b")?,
                 },
                 "body_vertex_distance" => {
-                    let body_a: usize = opts.get("body")?;
+                    let ordinal_a: usize = opts.get("body")?;
+                    let ordinal_b = opts.get::<Option<usize>>("body_b")?.unwrap_or(ordinal_a);
                     PS::BodyVertexDistance {
-                        body_a,
+                        body_a: body_key_from_ordinal(lua, ordinal_a)?,
                         a: mm_point("a")?,
-                        body_b: opts.get::<Option<usize>>("body_b")?.unwrap_or(body_a),
+                        body_b: body_key_from_ordinal(lua, ordinal_b)?,
                         b: mm_point("b")?,
                     }
                 }
@@ -2396,7 +2425,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
                 }
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
-                "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
+                "body" => doc.bodies.len(),
                 "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
@@ -2521,7 +2550,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                 }
                 "body" => {
-                    let Some(body) = doc.bodies.get(index).filter(|e| !e.deleted) else {
+                    // The script's `index` is the body's ordinal among the live ones (#1055).
+                    let Some(body) = doc.bodies.keys().nth(index).map(|k| &doc.bodies[k]) else {
                         return Ok(Value::Nil);
                     };
                     if let Some(name) = &body.name {
@@ -2565,9 +2595,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
-            if !doc.bodies.get(index).is_some_and(|b| !b.deleted) {
+            let Some(index) = doc.bodies.keys().nth(index) else {
                 return Ok(Value::Nil);
-            }
+            };
             let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
                 return Ok(Value::Nil);
             };
@@ -2596,7 +2626,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
             let out = lua.create_table()?;
-            let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, index) else {
+            let Some(key) = doc.bodies.keys().nth(index) else {
+                return Ok(Value::Table(out));
+            };
+            let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, key) else {
                 return Ok(Value::Table(out));
             };
             // Flat faces only (#1013): a round wall is a cylinder, reported by
@@ -2638,7 +2671,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
             let out = lua.create_table()?;
-            for (i, cyl) in crate::extrude::body_cylinders(doc, index).iter().enumerate() {
+            let Some(key) = doc.bodies.keys().nth(index) else {
+                return Ok(Value::Table(out));
+            };
+            for (i, cyl) in crate::extrude::body_cylinders(doc, key).iter().enumerate() {
                 let entry = lua.create_table()?;
                 entry.set("body", index)?;
                 entry.set("cylinder", vec3_lua(lua, cyl.origin)?)?;
@@ -2666,7 +2702,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
             let out = lua.create_table()?;
-            let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, index) else {
+            let Some(key) = doc.bodies.keys().nth(index) else {
+                return Ok(Value::Table(out));
+            };
+            let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, key) else {
                 return Ok(Value::Table(out));
             };
             for (i, chain) in crate::gpu_viewport::solid_mesh_edge_chains(&mesh)
@@ -4557,7 +4596,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = parse_move_op_args(&opts)?;
+                 start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
                     targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -4579,7 +4618,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = parse_move_op_args(&opts)?;
+                 start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::BeginMoveOp {
                     targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -4596,7 +4635,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = parse_move_op_args(&opts)?;
+                 start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
                     op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
@@ -4810,7 +4849,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "revolve requires a `circle`/`circles`/`polygon` face",
                 ));
             }
-            let axis = parse_revolve_axis(opts.get::<mlua::Value>("axis")?, "revolve")?;
+            let axis = parse_revolve_axis(lua, opts.get::<mlua::Value>("axis")?, "revolve")?;
             let angle_deg: f32 = opts.get::<Option<f32>>("angle")?.unwrap_or(360.0);
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
@@ -4829,9 +4868,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     bodies,
                 })?;
             }
-            let element = SceneElement::Body(unsafe {
-                tick.state().doc.bodies.len().saturating_sub(1)
-            });
+            let key = unsafe { tick.state().doc.bodies.keys().last() };
+            let element =
+                SceneElement::Body(key.ok_or_else(|| mlua::Error::external("no body was made"))?);
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;
@@ -4944,9 +4983,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe {
                 tick.exec(Instruction::Sweep { faces, path, body, bodies })?;
             }
-            let element = SceneElement::Body(unsafe {
-                tick.state().doc.bodies.len().saturating_sub(1)
-            });
+            let key = unsafe { tick.state().doc.bodies.keys().last() };
+            let element =
+                SceneElement::Body(key.ok_or_else(|| mlua::Error::external("no body was made"))?);
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;
@@ -4986,9 +5025,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe {
                 tick.exec(Instruction::Loft { faces, body, bodies })?;
             }
-            let element = SceneElement::Body(unsafe {
-                tick.state().doc.bodies.len().saturating_sub(1)
-            });
+            let key = unsafe { tick.state().doc.bodies.keys().last() };
+            let element =
+                SceneElement::Body(key.ok_or_else(|| mlua::Error::external("no body was made"))?);
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;
@@ -5484,6 +5523,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::AppState;
     use crate::model::FaceId;
@@ -6254,7 +6294,7 @@ mod tests {
         assert!(op.around_axis);
         assert_eq!(op.outputs.len(), 3, "4 instances = the original plus 3 copies");
         // The first copy is a quarter turn round: its bounds swap x for y.
-        let source = crate::extrude::body_solid_mesh(&state.doc, 0).expect("source mesh");
+        let source = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("source mesh");
         let copy = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]).expect("copy mesh");
         let (smin, smax) = source.bounds().unwrap();
         let (cmin, cmax) = copy.bounds().unwrap();
@@ -6282,7 +6322,7 @@ mod tests {
         let brass = state.doc.materials.keys().nth(seeded).expect("Brass");
         assert_eq!(state.doc.materials[brass].name, "Brass");
         assert_eq!(state.doc.materials[brass].color, [0xc8, 0x8a, 0x4a]);
-        assert_eq!(state.doc.bodies[0].material, Some(brass), "Brass was handed to it");
+        assert_eq!(state.doc.bodies[bkey(0)].material, Some(brass), "Brass was handed to it");
 
         let state = run_lua(&format!(
             r##"
@@ -6298,7 +6338,7 @@ mod tests {
         // A script names a material by its ordinal among the live ones; the boundary
         // resolves that to the key the body actually holds (#1055).
         let steel = state.doc.materials.keys().nth(seeded + 1).expect("Steel");
-        assert_eq!(state.doc.bodies[0].material, Some(steel), "reassigned to Steel");
+        assert_eq!(state.doc.bodies[bkey(0)].material, Some(steel), "reassigned to Steel");
     }
 
     #[test]
@@ -6336,11 +6376,11 @@ mod tests {
         "#;
         let split = run_lua(&source.replace("BODY", ""));
         assert_eq!(split.doc.extrusions.iter().filter(|e| !e.deleted).count(), 2);
-        assert_eq!(split.doc.bodies.iter().filter(|b| !b.deleted).count(), 2);
+        assert_eq!(split.doc.bodies.values().count(), 2);
 
         let joined = run_lua(&source.replace("BODY", r#", body = "join""#));
         assert_eq!(joined.doc.extrusions.iter().filter(|e| !e.deleted).count(), 1);
-        assert_eq!(joined.doc.bodies.iter().filter(|b| !b.deleted).count(), 1);
+        assert_eq!(joined.doc.bodies.values().count(), 1);
         assert_eq!(joined.doc.extrusions[0].faces.len(), 2, "both profiles in the one solid");
     }
 
@@ -7154,7 +7194,7 @@ mod tests {
         assert_eq!(state.doc.imported_meshes.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
-            state.doc.bodies[0].source,
+            state.doc.bodies.values().nth(0).unwrap().source,
             crate::model::BodySource::Imported(crate::arena::Key::from_bits(0))
         );
         let _ = std::fs::remove_file(&path);
@@ -7181,7 +7221,7 @@ mod tests {
         assert_eq!(state.doc.imported_meshes.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
-            state.doc.bodies[0].source,
+            state.doc.bodies.values().nth(0).unwrap().source,
             crate::model::BodySource::Imported(crate::arena::Key::from_bits(0))
         );
         let _ = std::fs::remove_file(&path);
@@ -7205,13 +7245,13 @@ mod tests {
         // The extrusion produces a body that depends on it.
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
-            state.doc.bodies[0].source,
+            state.doc.bodies.values().nth(0).unwrap().source,
             crate::model::BodySource::Extrusion(0)
         );
         // Both appear as elements; the body nests under its extrusion.
         let nodes = crate::hierarchy::build_element_list(&state.doc, state.sketch_session);
         assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Extrusion(0)));
-        assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Body(0)));
+        assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Body(bkey(0))));
         let mesh =
             crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
         assert_eq!(mesh.triangles.len(), 12);
@@ -7278,7 +7318,7 @@ mod tests {
         );
         assert_eq!(state.doc.extrusions.len(), 2);
         assert_eq!(state.doc.bodies.len(), 1, "the second extrusion should join body 0");
-        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0, 1]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0, 1]);
     }
 
     #[test]
@@ -7297,8 +7337,8 @@ mod tests {
         );
         assert_eq!(state.doc.extrusions.len(), 2);
         assert_eq!(state.doc.bodies.len(), 1, "the cut should not create a new body");
-        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0]);
-        assert_eq!(state.doc.bodies[0].source.cut_extrusion_indices(), [1]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [1]);
     }
 
     /// #178 part 1: `body = "cut"` (or `"merge"`) explicitly requested, but the sketch isn't
@@ -7344,8 +7384,8 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 1, "the cut must not create a new body");
-        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0]);
-        assert_eq!(state.doc.bodies[0].source.cut_extrusion_indices(), [1]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [1]);
     }
 
     /// #178 part 2: `side_quad_world`'s `edge` indexes the profile's lines analytically. The
@@ -7417,7 +7457,7 @@ mod tests {
             SceneElement::Extrusion(0),
         );
         assert!(state.doc.extrusions[0].deleted);
-        assert!(state.doc.bodies[0].deleted, "body should be removed with its extrusion");
+        assert!(!state.doc.bodies.contains(bkey(0)), "body should be removed with its extrusion");
     }
 
     #[test]
@@ -7932,7 +7972,7 @@ mod tests {
         assert_eq!(state.tool, crate::actions::Tool::Move, "the Move tool comes up armed");
         assert!(state.doc.move_ops.is_empty(), "nothing is committed");
         let cm = state.creating_move.as_ref().expect("a move in progress");
-        assert_eq!(cm.targets, vec![1]);
+        assert_eq!(cm.targets, vec![bkey(1)]);
         assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Snap);
         for (what, point) in [
             ("start A", cm.start_point_a),
@@ -7979,7 +8019,7 @@ mod tests {
         assert_eq!(joint.members.len(), 2);
         assert_eq!(joint.name.as_deref(), Some("Hinge"));
         assert_eq!(joint.rest, "90", "rest pose captured from creation (#898)");
-        let pose = crate::joints::body_joint_pose(&state.doc, 1).expect("driven body posed");
+        let pose = crate::joints::body_joint_pose(&state.doc, bkey(1)).expect("driven body posed");
         // B's underside lands on A's top (z = 5) keeping its place in the plane, so its
         // face middle sits at (45, 5, 5); the 90° turn about that normal swings B's far
         // corner (50, 0, 0) — 5 mm along +X and 5 mm along -Y of it — round to (50, 10, 5).
@@ -8028,7 +8068,7 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints.len(), 1);
-        let mesh = crate::extrude::body_solid_mesh(&state.doc, 1).expect("the peg meshes");
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bkey(1)).expect("the peg meshes");
         let (min, max) = mesh.bounds().expect("bounds");
         // The peg stands on the plate's top face (z = 6) and its axis lands on the hole's,
         // so it is centred on (20, 20).
@@ -8137,7 +8177,7 @@ mod tests {
             bearcad.combine{ op = "cut", a = {0}, b = {1}, keep_b = true }
             "#,
         );
-        let volume = |i: usize| {
+        let volume = |i: crate::model::BodyKey| {
             crate::extrude::body_solid_mesh(&state.doc, i)
                 .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
                 .unwrap_or(0.0)
@@ -8146,7 +8186,7 @@ mod tests {
             .doc
             .bodies
             .iter()
-            .position(|b| !b.deleted && matches!(b.source, crate::model::BodySource::Boolean { .. }))
+            .find_map(|(k, b)| matches!(b.source, crate::model::BodySource::Boolean { .. }).then_some(k))
             .expect("the cut lands an output body");
         let carved = volume(cut);
         assert!(carved > 0.0, "the cut body has geometry");
@@ -8180,9 +8220,9 @@ mod tests {
             .keys()
             .nth(crate::model::Material::DEFAULTS.len())
             .expect("Brass");
-        assert_eq!(state.doc.bodies[0].material, Some(brass));
+        assert_eq!(state.doc.bodies[bkey(0)].material, Some(brass));
         assert_eq!(
-            state.doc.bodies.get(1).and_then(|b| b.material),
+            state.doc.bodies.get(bkey(1)).and_then(|b| b.material),
             Some(brass),
             "the boss inherits the block's material"
         );
@@ -8219,16 +8259,16 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 3, "each shape owns a body");
         let first = state.doc.primitives.keys().next().expect("the first shape");
         assert_eq!(state.doc.primitives[first].name.as_deref(), Some("Block"));
-        let volume = |i: usize| {
+        let volume = |i: crate::model::BodyKey| {
             crate::extrude::body_solid_mesh(&state.doc, i)
                 .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
                 .unwrap_or(0.0)
         };
-        assert!((volume(0) - 8000.0).abs() < 1.0, "cuboid {}", volume(0));
+        assert!((volume(bkey(0)) - 8000.0).abs() < 1.0, "cuboid {}", volume(bkey(0)));
         let cylinder = std::f32::consts::PI * 25.0 * 20.0;
-        assert!((volume(1) - cylinder).abs() / cylinder < 0.02, "cylinder {}", volume(1));
+        assert!((volume(bkey(1)) - cylinder).abs() / cylinder < 0.02, "cylinder {}", volume(bkey(1)));
         let sphere = 4.0 / 3.0 * std::f32::consts::PI * 512.0;
-        assert!((volume(2) - sphere).abs() / sphere < 0.03, "sphere {}", volume(2));
+        assert!((volume(bkey(2)) - sphere).abs() / sphere < 0.03, "sphere {}", volume(bkey(2)));
     }
 
     /// #909: a shape's dimensions are expressions, so it follows its parameters — and
@@ -8251,7 +8291,7 @@ mod tests {
             "the name survives"
         );
         assert_eq!(state.doc.bodies.len(), 1, "editing reuses the body");
-        let stats = crate::extrude::body_solid_mesh(&state.doc, 0)
+        let stats = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
             .and_then(|m| m.bounds())
             .expect("the cube meshes");
         assert!((stats.1.z - 30.0).abs() < 1e-3, "3 x side tall, got {}", stats.1.z);
@@ -8269,7 +8309,7 @@ mod tests {
             "#,
         );
         assert!(state.doc.primitives.is_empty(), "the shape is gone for real (#1055)");
-        assert!(state.doc.bodies[0].deleted, "and so is its body");
+        assert!(!state.doc.bodies.contains(bkey(0)), "and so is its body");
         let mut runner =
             ScriptRunner::from_lua_source("bearcad.cylinder{ radius = 5 }").unwrap();
         runner.verbose = false;
@@ -8323,11 +8363,12 @@ mod tests {
             "Rigid group 0"
         );
         // Tying in place moves nothing: every driven pose is identity.
-        for bi in 1..=2 {
+        for n in 1..=2 {
+            let bi = state.doc.body_at(n).unwrap();
             let pose = crate::joints::body_joint_pose(&state.doc, bi).unwrap();
             assert!(
                 pose.abs_diff_eq(glam::Mat4::IDENTITY, 1e-5),
-                "body {bi} must stay put"
+                "body {n} must stay put"
             );
         }
         // Selected parts walk straight into the tool (#900).
@@ -8455,7 +8496,7 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.mirror_ops[0].mode, crate::model::MirrorMode::Join);
-        assert!(state.doc.bodies[0].shadow, "a join consumes its source");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "a join consumes its source");
         let out = state.doc.mirror_ops[0].outputs[0];
         let (min, max) = crate::extrude::body_solid_mesh(&state.doc, out)
             .and_then(|m| m.bounds())
@@ -8525,7 +8566,7 @@ mod tests {
         assert_eq!(
             op.axis,
             crate::model::RevolveAxis::BodyEdge {
-                body: 0,
+                body: bkey(0),
                 a: glam::Vec3::ZERO,
                 b: glam::Vec3::new(20.0, 0.0, 0.0),
             }
@@ -8991,7 +9032,7 @@ mod tests {
         );
         assert_eq!(state.doc.revolutions.len(), 1);
         let rev = state.doc.revolutions.keys().next().expect("the revolve");
-        let bi = state.doc.bodies.len() - 1;
+        let bi = state.doc.bodies.keys().last().unwrap();
         assert_eq!(
             state.doc.bodies[bi].source,
             crate::model::BodySource::Revolve(rev)
@@ -9065,8 +9106,8 @@ mod tests {
         let op = &state.doc.boolean_ops[0];
         assert_eq!(op.kind, crate::model::BooleanOpKind::Cut);
         assert_eq!(op.name.as_deref(), Some("Slot"));
-        assert!(state.doc.bodies[0].shadow);
-        assert!(state.doc.bodies[1].shadow);
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
+        assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
         assert!(!op.outputs.is_empty());
     }
 
@@ -9087,7 +9128,7 @@ mod tests {
         let op = &state.doc.slice_ops[0];
         assert_eq!(op.name.as_deref(), Some("Halved"));
         assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
-        assert!(state.doc.bodies[0].shadow, "the sliced input becomes a shadow body");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "the sliced input becomes a shadow body");
     }
 
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two
@@ -9107,7 +9148,7 @@ mod tests {
         assert_eq!(state.doc.lofts.len(), 1);
         let loft_key = state.doc.lofts.keys().next().expect("one loft");
         assert_eq!(state.doc.lofts[loft_key].sections.len(), 2);
-        let bi = state.doc.bodies.len() - 1;
+        let bi = state.doc.bodies.keys().last().unwrap();
         assert_eq!(
             state.doc.bodies[bi].source,
             crate::model::BodySource::Loft(loft_key)

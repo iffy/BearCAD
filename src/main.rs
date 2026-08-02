@@ -747,7 +747,7 @@ enum MoveSurface {
 /// doesn't announce that it can't be dragged).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct JointSelectGrab {
-    body: usize,
+    body: crate::model::BodyKey,
     start_screen: egui::Pos2,
 }
 
@@ -1951,7 +1951,7 @@ fn loupe_face_shade(tri: &[Vec3; 3]) -> f32 {
 /// whole visual for a body and a thin ring around the disc isn't the signal a hover needs.
 fn loupe_solid_fill(
     doc: &model::Document,
-    body: usize,
+    body: crate::model::BodyKey,
     shade: f32,
     state: LoupeState,
 ) -> egui::Color32 {
@@ -1973,7 +1973,7 @@ fn loupe_solid_fill(
 
 fn body_loupe_faces(
     doc: &model::Document,
-    body: usize,
+    body: crate::model::BodyKey,
     eye: Vec3,
 ) -> Option<Vec<([Vec3; 3], u8)>> {
     let solid = extrude::body_solid_mesh(doc, body)?;
@@ -3013,7 +3013,7 @@ struct App {
     pending_extrude_target: Option<model::ExtrudeTarget>,
     /// The end-point-B candidate under the cursor (#670), so the click path takes exactly the
     /// spot the viewport is highlighting.
-    move_b_hover: Option<(usize, Vec3)>,
+    move_b_hover: Option<(model::BodyKey, Vec3)>,
     /// A Select-tool drag moving a part through its joint (#897).
     joint_select_drag: Option<JointSelectDrag>,
     /// A press on a jointed part, waiting to become one (#903).
@@ -3644,7 +3644,8 @@ impl App {
                 // The extrude Output row's Cut button (#804), reported the same way.
                 tutorial::UiAnchor::ExtrudeCut => context::extrude_output_button_rect(
                     ctx,
-                    &actions::ExtrudeBodyMode::Cut(0),
+                    // A tutorial anchor only needs the button's identity, not a real body.
+                    &actions::ExtrudeBodyMode::Cut(crate::arena::Key::from_bits(u64::MAX)),
                 ),
                 other => self.state.tutorial_anchor_rects.get(&other).copied(),
             }
@@ -4558,14 +4559,14 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Export a single body (by index) to an STL file chosen via a save dialog.
-    fn export_stl_body(&mut self, body: usize) {
+    fn export_stl_body(&mut self, body: crate::model::BodyKey) {
         let default_name = self
             .state
             .doc
             .bodies
             .get(body)
             .and_then(|b| b.name.clone())
-            .unwrap_or_else(|| format!("body-{body}"));
+            .unwrap_or_else(|| format!("body-{}", body.index()));
         let picked = rfd::FileDialog::new()
             .add_filter("STL mesh", &["stl"])
             .set_file_name(format!("{default_name}.stl"))
@@ -4580,14 +4581,14 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Export a single body (by index) to a STEP file chosen via a save dialog.
-    fn export_step_body(&mut self, body: usize) {
+    fn export_step_body(&mut self, body: crate::model::BodyKey) {
         let default_name = self
             .state
             .doc
             .bodies
             .get(body)
             .and_then(|b| b.name.clone())
-            .unwrap_or_else(|| format!("body-{body}"));
+            .unwrap_or_else(|| format!("body-{}", body.index()));
         let picked = rfd::FileDialog::new()
             .add_filter("STEP model", &["step", "stp"])
             .set_file_name(format!("{default_name}.step"))
@@ -4964,7 +4965,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_stl_body(&mut self, body: usize) {
+    fn export_stl_body(&mut self, body: crate::model::BodyKey) {
         let name = self.web_body_export_name(body, "stl");
         match self.state.export_stl_bytes(Some(body)) {
             Ok(bytes) => {
@@ -4975,7 +4976,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_step_body(&mut self, body: usize) {
+    fn export_step_body(&mut self, body: crate::model::BodyKey) {
         let name = self.web_body_export_name(body, "step");
         match self.state.export_step_bytes(Some(body)) {
             Ok(bytes) => self.web_save_bytes(
@@ -5016,14 +5017,14 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn web_body_export_name(&self, body: usize, ext: &str) -> String {
+    fn web_body_export_name(&self, body: crate::model::BodyKey, ext: &str) -> String {
         let stem = self
             .state
             .doc
             .bodies
             .get(body)
             .and_then(|b| b.name.clone())
-            .unwrap_or_else(|| format!("body-{body}"));
+            .unwrap_or_else(|| format!("body-{}", body.index()));
         format!("{stem}.{ext}")
     }
 
@@ -6841,7 +6842,7 @@ impl App {
     /// Project body edges into the open sketch and add every resulting line to the offset set
     /// (#595/#938). Each edge becomes one construction line; edges already projected reuse
     /// their line rather than adding a duplicate.
-    fn add_projected_edges_to_offset(&mut self, edges: Vec<(usize, Vec3, Vec3)>) {
+    fn add_projected_edges_to_offset(&mut self, edges: Vec<(model::BodyKey, Vec3, Vec3)>) {
         let sources: Vec<model::ProjectionSource> = edges
             .into_iter()
             .map(|(body, a, b)| {
@@ -7087,7 +7088,7 @@ impl App {
         }
     }
 
-    fn edited_operation_output_bodies(&self) -> Vec<usize> {
+    fn edited_operation_output_bodies(&self) -> Vec<model::BodyKey> {
         let s = &self.state;
         // Editing an extrusion: its body (bodies whose source owns that extrusion).
         if let Some(ei) = s.creating_extrusion.as_ref().and_then(|ce| ce.edit_index) {
@@ -7095,8 +7096,7 @@ impl App {
                 .doc
                 .bodies
                 .iter()
-                .enumerate()
-                .filter(|(_, b)| !b.deleted && b.source.owns_extrusion(ei))
+                .filter(|(_, b)| b.source.owns_extrusion(ei))
                 .map(|(bi, _)| bi)
                 .collect();
         }
@@ -7117,8 +7117,7 @@ impl App {
                 .doc
                 .bodies
                 .iter()
-                .enumerate()
-                .filter(|(_, b)| !b.deleted && b.source == model::BodySource::Revolve(op))
+                .filter(|(_, b)| b.source == model::BodySource::Revolve(op))
                 .map(|(bi, _)| bi)
                 .collect();
         }
@@ -7127,8 +7126,7 @@ impl App {
                 .doc
                 .bodies
                 .iter()
-                .enumerate()
-                .filter(|(_, b)| !b.deleted && b.source == model::BodySource::Sweep(op))
+                .filter(|(_, b)| b.source == model::BodySource::Sweep(op))
                 .map(|(bi, _)| bi)
                 .collect();
         }
@@ -7140,7 +7138,9 @@ impl App {
     /// Rendered in preview styling in place of the stale (faded) geometry so downstream bodies
     /// visibly follow the drag. Empty when the edit type isn't one we can replay onto a scratch
     /// doc (then the fade alone stands in).
-    fn edit_preview_descendant_meshes(&self) -> std::collections::HashMap<usize, extrude::SolidMesh> {
+    fn edit_preview_descendant_meshes(
+        &self,
+    ) -> std::collections::HashMap<model::BodyKey, extrude::SolidMesh> {
         use std::collections::HashMap;
         let seeds = self.edited_operation_output_bodies();
         if seeds.is_empty() {
@@ -7611,7 +7611,7 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         cam: &camera::Camera,
         target_kind: &construction::PickTargetKind,
-    ) -> Option<usize> {
+    ) -> Option<model::BodyKey> {
         body_index_from_pick(target_kind).or_else(|| {
             crate::face::pick_body_face(pp, project, &self.state.doc, cam.eye())
                 .as_ref()
@@ -8156,7 +8156,7 @@ impl App {
         } {
             // Moving picks sit on the driven member's bodies; fixed picks on the base's —
             // plus, on the fixed side, the world's own geometry (#1018).
-            let side_bodies: Vec<usize> = self
+            let side_bodies: Vec<model::BodyKey> = self
                 .state
                 .creating_joint
                 .as_ref()
@@ -8478,7 +8478,7 @@ impl App {
         }
     }
 
-    fn joint_preview_sides(&self) -> Vec<(usize, egui::Color32)> {
+    fn joint_preview_sides(&self) -> Vec<(model::BodyKey, egui::Color32)> {
         if self.state.tool != Tool::Joint || self.state.sketch_session.is_some() {
             return Vec::new();
         }
@@ -9047,7 +9047,7 @@ impl App {
     /// a stationary body's feature edge crosses the constraint sphere, plus the mid-air
     /// spots where edges through end point A, extended, leave it — the latter each paired
     /// with a dashed pivot guide. `None` unless the Move tool has End point B focused.
-    fn move_end_b_candidates(&self) -> Option<(Vec<(usize, Vec3)>, Vec<(Vec3, Vec3)>)> {
+    fn move_end_b_candidates(&self) -> Option<(Vec<(model::BodyKey, Vec3)>, Vec<(Vec3, Vec3)>)> {
         let armed = self.state.tool == Tool::Move
             && self.state.sketch_session.is_none()
             && self.move_focus() == MoveFocus::EndPointB;
@@ -9063,7 +9063,7 @@ impl App {
         // Mid-air spots along edges through the pivot (#745), skipping any an on-edge
         // crossing already offers; each gets a dashed guide from the pivot so the
         // reachable direction reads in space.
-        let axis: Vec<(usize, Vec3)> = extrude::snap_rotation_axis_candidates(
+        let axis: Vec<(model::BodyKey, Vec3)> = extrude::snap_rotation_axis_candidates(
             &self.state.doc,
             &cm.targets,
             centre,
@@ -9103,7 +9103,7 @@ impl App {
     /// End-point-C candidates (#914): the four quarter-turn spots on the circle start
     /// point C can reach once A and B are fixed, plus a guide from the circle's centre to
     /// each. `None` unless that picker is armed with everything it needs.
-    fn move_end_c_candidates(&self) -> Option<(Vec<(usize, Vec3)>, Vec<(Vec3, Vec3)>)> {
+    fn move_end_c_candidates(&self) -> Option<(Vec<(model::BodyKey, Vec3)>, Vec<(Vec3, Vec3)>)> {
         let armed = self.state.tool == Tool::Move
             && self.state.sketch_session.is_none()
             && self.move_focus() == MoveFocus::EndPointC;
@@ -9188,12 +9188,12 @@ impl App {
         pp: egui::Pos2,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pick_occlusion: Option<&construction::PickOcclusion>,
-        bodies: &[usize],
+        bodies: &[crate::model::BodyKey],
         faces_only: bool,
         world_ok: bool,
     ) -> Option<model::MateRef> {
         let doc = &self.state.doc;
-        let unpose = |body: usize| {
+        let unpose = |body: crate::model::BodyKey| {
             joints::body_joint_pose(doc, body)
                 .map(|m| m.inverse())
                 .unwrap_or(glam::Mat4::IDENTITY)
@@ -9521,13 +9521,13 @@ impl App {
         pick_occlusion: Option<&construction::PickOcclusion>,
         moving: Option<bool>,
     ) -> Option<model::MovePointRef> {
-        let targets: Vec<usize> = self
+        let targets: Vec<model::BodyKey> = self
             .state
             .creating_move
             .as_ref()
             .map(|cm| cm.targets.clone())
             .unwrap_or_default();
-        let allowed = |body: usize| moving.is_none_or(|m| targets.contains(&body) == m);
+        let allowed = |body: crate::model::BodyKey| moving.is_none_or(|m| targets.contains(&body) == m);
         self.pick_body_point(pp, project, pick_occlusion, &allowed, moving != Some(true))
     }
 
@@ -9540,7 +9540,7 @@ impl App {
         pp: egui::Pos2,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pick_occlusion: Option<&construction::PickOcclusion>,
-        allowed: &dyn Fn(usize) -> bool,
+        allowed: &dyn Fn(model::BodyKey) -> bool,
         origin_allowed: bool,
     ) -> Option<model::MovePointRef> {
         // The world origin (#946): a fixed point of the document, so it wins over the geometry
@@ -10443,7 +10443,7 @@ impl App {
         cam: &camera::Camera,
         viewport: egui::Rect,
         vp: &glam::Mat4,
-    ) -> Option<(usize, Vec3, MoveSurface)> {
+    ) -> Option<(model::BodyKey, Vec3, MoveSurface)> {
         if self.state.tool != Tool::Move || self.state.sketch_session.is_some() {
             return None;
         }
@@ -11737,8 +11737,8 @@ impl eframe::App for App {
                         hierarchy::HierarchyNode::DrawingDimension { drawing: d, view: v, a, b }
                     })
                 });
-            let mut export_body: Option<usize> = None;
-            let mut export_body_step: Option<usize> = None;
+            let mut export_body: Option<model::BodyKey> = None;
+            let mut export_body_step: Option<model::BodyKey> = None;
             let mut export_component: Option<usize> = None;
             let mut export_component_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
@@ -11792,10 +11792,10 @@ impl eframe::App for App {
                     let mut queue_rename_drawing = |index: usize, name: String| {
                         rename_drawing = Some((index, name));
                     };
-                    let mut queue_export_body = |index: usize| {
+                    let mut queue_export_body = |index: model::BodyKey| {
                         export_body = Some(index);
                     };
-                    let mut queue_export_body_step = |index: usize| {
+                    let mut queue_export_body_step = |index: model::BodyKey| {
                         export_body_step = Some(index);
                     };
                     let mut queue_export_component = |index: usize| {
@@ -14474,7 +14474,7 @@ impl eframe::App for App {
             }
             // Material picker (#834): assign, create, rename, recolour.
             if let Some(edit) = material_edit {
-                let bodies: Vec<usize> = self
+                let bodies: Vec<crate::model::BodyKey> = self
                     .state
                     .scene_selection
                     .iter()
@@ -15121,7 +15121,7 @@ fn next_length(doc: &model::Document, expression: &str) -> f32 {
 
 /// The body index a pick target identifies, if it's a body sub-element (#218): an edge, vertex,
 /// or face all belong to one body.
-fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<usize> {
+fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<model::BodyKey> {
     match kind {
         construction::PickTargetKind::BodyEdge { body, .. }
         | construction::PickTargetKind::BodyVertex { body, .. }
@@ -15171,7 +15171,7 @@ fn mirror_plane_scene_element(face: &model::FaceId) -> hierarchy::SceneElement {
 /// because the viewport was told about that tool.
 fn picker_highlights(
     views: &[context::ToolPickerView],
-) -> (Vec<SceneElement>, Vec<usize>, Vec<(SceneElement, egui::Color32)>) {
+) -> (Vec<SceneElement>, Vec<model::BodyKey>, Vec<(SceneElement, egui::Color32)>) {
     let mut folded = Vec::new();
     let mut cut_bodies = Vec::new();
     let mut coloured = Vec::new();
@@ -16331,15 +16331,15 @@ fn build_viewport_scene_input<'a>(
     parameter_highlight_elements: Vec<SceneElement>,
     colored_element_highlights: Vec<(SceneElement, egui::Color32)>,
     // Bodies whose fill a tool overrides while it previews (#992) — the Joint tool's two sides.
-    tinted_bodies: Vec<(usize, egui::Color32)>,
+    tinted_bodies: Vec<(model::BodyKey, egui::Color32)>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
-    cut_highlight_bodies: Vec<usize>,
-    faded_bodies: Vec<usize>,
+    cut_highlight_bodies: Vec<model::BodyKey>,
+    faded_bodies: Vec<model::BodyKey>,
     sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
     sketch_ghost_lines: Vec<(Vec3, Vec3, bool)>,
-    edit_preview_meshes: std::collections::HashMap<usize, extrude::SolidMesh>,
+    edit_preview_meshes: std::collections::HashMap<model::BodyKey, extrude::SolidMesh>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
@@ -19892,7 +19892,7 @@ impl App {
         let mut pending_angle: Option<(usize, model::DrawingEdgeKey)> =
             ui.data(|d| d.get_temp(pending_angle_id));
 
-        let body_label = |doc: &model::Document, bi: usize| {
+        let body_label = |doc: &model::Document, bi: crate::model::BodyKey| {
             crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
         };
 
@@ -24533,7 +24533,9 @@ impl App {
                     Some((
                         construction::PickTargetKind::BodyVertex {
                             // Only `position` is drawn; the world origin (#946) has no body.
-                            body: point.body().unwrap_or(usize::MAX),
+                            body: point
+                                .body()
+                                .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
                             position,
                         },
                         color,
@@ -24566,7 +24568,9 @@ impl App {
                         Some((
                             construction::PickTargetKind::BodyVertex {
                                 // Only `position` is drawn; world geometry has no body.
-                                body: pick.body().unwrap_or(usize::MAX),
+                                body: pick
+                                .body()
+                                .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
                                 position: crate::mate::geom_point(&geom),
                             },
                             color,
@@ -24768,7 +24772,7 @@ impl App {
         };
         // Fade the descendants of the operation being edited (#260): the bodies downstream of the
         // edited op's outputs, so its live changes are visually de-emphasized.
-        let mut faded_bodies: Vec<usize> = {
+        let mut faded_bodies: Vec<model::BodyKey> = {
             let seeds = self.edited_operation_output_bodies();
             if seeds.is_empty() {
                 Vec::new()
@@ -27362,6 +27366,7 @@ fn draw_ground(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
 
     /// #942: hovering the wall between two nested loops highlights the wall — the resolved
@@ -27716,13 +27721,13 @@ mod tests {
             0,
             &SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
         ));
-        assert!(!element_in_sketch(&doc, 0, &SceneElement::Body(0)));
+        assert!(!element_in_sketch(&doc, 0, &SceneElement::Body(bkey(0))));
         assert!(!element_in_sketch(
             &doc,
             0,
-            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+            &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
-        assert!(!element_in_sketch(&doc, 0, &SceneElement::BodyVertex { body: 0, p: [0; 3] }));
+        assert!(!element_in_sketch(&doc, 0, &SceneElement::BodyVertex { body: bkey(0), p: [0; 3] }));
     }
 
     /// Auto-zoom's selection watch keys off an order-independent fingerprint of the
@@ -27733,16 +27738,16 @@ mod tests {
         use hierarchy::SceneElement;
         let mut a = selection::SceneSelection::default();
         assert_eq!(scene_selection_fingerprint(&a), None);
-        a.insert(SceneElement::Body(0));
-        a.insert(SceneElement::Body(1));
+        a.insert(SceneElement::Body(bkey(0)));
+        a.insert(SceneElement::Body(bkey(1)));
         let mut b = selection::SceneSelection::default();
-        b.insert(SceneElement::Body(1));
-        b.insert(SceneElement::Body(0));
+        b.insert(SceneElement::Body(bkey(1)));
+        b.insert(SceneElement::Body(bkey(0)));
         assert_eq!(
             scene_selection_fingerprint(&a),
             scene_selection_fingerprint(&b)
         );
-        b.insert(SceneElement::Body(2));
+        b.insert(SceneElement::Body(bkey(2)));
         assert_ne!(
             scene_selection_fingerprint(&a),
             scene_selection_fingerprint(&b)
@@ -27819,20 +27824,20 @@ mod tests {
         use crate::construction::PickTargetKind;
         use super::body_index_from_pick;
         assert_eq!(
-            body_index_from_pick(&PickTargetKind::BodyVertex { body: 3, position: Vec3::ZERO }),
-            Some(3)
+            body_index_from_pick(&PickTargetKind::BodyVertex { body: bkey(3), position: Vec3::ZERO }),
+            Some(bkey(3))
         );
         assert_eq!(
-            body_index_from_pick(&PickTargetKind::BodyEdge { body: 5, a: Vec3::ZERO, b: Vec3::X }),
-            Some(5)
+            body_index_from_pick(&PickTargetKind::BodyEdge { body: bkey(5), a: Vec3::ZERO, b: Vec3::X }),
+            Some(bkey(5))
         );
         assert_eq!(
             body_index_from_pick(&PickTargetKind::BodyFace {
-                body: 2,
+                body: bkey(2),
                 triangles: vec![],
                 normal: Vec3::Z,
             }),
-            Some(2)
+            Some(bkey(2))
         );
         assert_eq!(body_index_from_pick(&PickTargetKind::Line(0)), None);
         assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(0)), None);
@@ -27862,31 +27867,31 @@ mod tests {
         use crate::construction::PickTargetKind;
         assert_eq!(
             select_tool_element_from_pick(&PickTargetKind::BodyFace {
-                body: 2,
+                body: bkey(2),
                 triangles: vec![],
                 normal: Vec3::Z,
             }),
-            Some(SceneElement::Body(2))
+            Some(SceneElement::Body(bkey(2)))
         );
         assert!(matches!(
             select_tool_element_from_pick(&PickTargetKind::BodyEdge {
-                body: 2,
+                body: bkey(2),
                 a: Vec3::ZERO,
                 b: Vec3::X,
             }),
-            Some(SceneElement::BodyEdge { body: 2, .. })
+            Some(SceneElement::BodyEdge { body, .. }) if body == bkey(2)
         ));
         assert!(matches!(
             select_tool_element_from_pick(&PickTargetKind::BodyVertex {
-                body: 2,
+                body: bkey(2),
                 position: Vec3::ZERO,
             }),
-            Some(SceneElement::BodyVertex { body: 2, .. })
+            Some(SceneElement::BodyVertex { body, .. }) if body == bkey(2)
         ));
         // The exploder's own body leaf resolves the same way.
         assert_eq!(
-            select_tool_element_from_pick(&PickTargetKind::Body(7)),
-            Some(SceneElement::Body(7))
+            select_tool_element_from_pick(&PickTargetKind::Body(bkey(7))),
+            Some(SceneElement::Body(bkey(7)))
         );
         // Sketch geometry is untouched.
         assert_eq!(
@@ -28052,11 +28057,11 @@ mod tests {
             face: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
         });
         state.apply(Action::CommitExtrusion);
-        assert!(state.doc.bodies.iter().any(|b| !b.deleted), "an extruded body exists");
+        assert!(state.doc.bodies.len() > 0, "an extruded body exists");
 
         state.tool = Tool::Repeat;
         state.creating_repeat = Some(CreatingRepeat {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             axis: Some(RevolveAxis::X),
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
@@ -28192,11 +28197,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        state.doc.bodies.push(crate::model::Body {
+        state.doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let cam = crate::camera::Camera::default();
@@ -28260,9 +28264,9 @@ mod tests {
         // Nothing picked yet, or a move that resolves to no motion: no ghost to draw.
         assert_eq!(ghosts(None).len(), 0);
         let picking = actions::CreatingMove {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Snap,
-            start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) }),
+            start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(glam::Vec3::ZERO) }),
             ..Default::default()
         };
         assert_eq!(ghosts(Some(&picking)).len(), 0, "an identity move has nothing to preview");
@@ -28270,7 +28274,7 @@ mod tests {
         // Both points picked: one ghost, at the destination.
         let snapped = actions::CreatingMove {
             end_point_a: Some(MovePointRef::Vertex {
-                            body: 0,
+                            body: bkey(0),
                 p: q(glam::Vec3::new(10.0, 0.0, 0.0)),
             }),
             ..picking
@@ -28282,11 +28286,11 @@ mod tests {
         // rode the translation to (20, 0, 0) previews at (10, 10, 0).
         let rotated = actions::CreatingMove {
             start_point_b: Some(MovePointRef::Vertex {
-                body: 0,
+                body: bkey(0),
                 p: q(glam::Vec3::new(10.0, 0.0, 0.0)),
             }),
             end_point_b: Some(MovePointRef::OnEdge {
-                body: 0,
+                body: bkey(0),
                 p: q(glam::Vec3::new(10.0, 10.0, 0.0)),
             }),
             start_point_c: None,
@@ -28372,16 +28376,15 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
-        let start = MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) };
-        let end = MovePointRef::Vertex { body: 0, p: q(corner) };
+        let start = MovePointRef::Vertex { body: bkey(0), p: q(glam::Vec3::ZERO) };
+        let end = MovePointRef::Vertex { body: bkey(0), p: q(corner) };
         let half = SnapPreviewPoints { start_a: Some(start), ..Default::default() };
         assert_eq!(half.connector(&doc), None, "one point isn't a vector");
 
@@ -28392,7 +28395,7 @@ mod tests {
 
         // A point that no longer resolves draws nothing rather than a wrong line.
         let gone = SnapPreviewPoints {
-            end_a: Some(MovePointRef::Vertex { body: 0, p: [9999; 3] }),
+            end_a: Some(MovePointRef::Vertex { body: bkey(0), p: [9999; 3] }),
             ..both
         };
         assert_eq!(gone.connector(&doc), None);
@@ -29186,11 +29189,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -29229,7 +29231,7 @@ mod tests {
         assert!(
             matches!(
                 hover,
-                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(b))) if b == bkey(0)
             ),
             "combine tool should hover-highlight the whole body, got {hover:?}"
         );
@@ -29273,11 +29275,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -29337,8 +29338,8 @@ mod tests {
             matches!(
                 picking_axis,
                 Some(gpu_viewport::ViewportHoverHighlight::Element(
-                    SceneElement::BodyEdge { body: 0, .. }
-                ))
+                    SceneElement::BodyEdge { body, .. }
+                )) if body == bkey(0)
             ),
             "the axis pick should hover the body edge, got {picking_axis:?}"
         );
@@ -29346,7 +29347,7 @@ mod tests {
         assert!(
             matches!(
                 picking_bodies,
-                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(b))) if b == bkey(0)
             ),
             "with the axis set, the whole body hovers again, got {picking_bodies:?}"
         );
@@ -29370,11 +29371,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -29409,8 +29409,8 @@ mod tests {
             matches!(
                 on_edge,
                 Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    crate::construction::PickTargetKind::BodyEdge { body: 0, .. }
-                ))
+                    crate::construction::PickTargetKind::BodyEdge { body, .. }
+                )) if body == bkey(0)
             ),
             "a body edge should hover under the Dimension tool, got {on_edge:?}"
         );
@@ -29421,8 +29421,8 @@ mod tests {
             matches!(
                 on_corner,
                 Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    crate::construction::PickTargetKind::BodyVertex { body: 0, .. }
-                ))
+                    crate::construction::PickTargetKind::BodyVertex { body, .. }
+                )) if body == bkey(0)
             ),
             "a body corner should outrank the edges meeting there, got {on_corner:?}"
         );
@@ -29438,7 +29438,7 @@ mod tests {
         use crate::context::{PickerTarget, ToolPickerView};
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
         let doc = model::Document::default();
-        let body_picker = |color: Option<egui::Color32>, bodies: &[usize]| {
+        let body_picker = |color: Option<egui::Color32>, bodies: &[crate::model::BodyKey]| {
             let mut p =
                 ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
             if let Some(c) = color {
@@ -29454,11 +29454,11 @@ mod tests {
                 render: context::PickerRender::Shared,
             }
         };
-        let kept = body_picker(None, &[1, 2]);
-        let consumed = body_picker(Some(crate::theme::CUT_ACCENT), &[3]);
+        let kept = body_picker(None, &[bkey(1), bkey(2)]);
+        let consumed = body_picker(Some(crate::theme::CUT_ACCENT), &[bkey(3)]);
         let (folded, cut, coloured) = picker_highlights(&[kept, consumed]);
-        assert_eq!(folded, vec![SceneElement::Body(1), SceneElement::Body(2)]);
-        assert_eq!(cut, vec![3], "a consumed body reads red, not blue");
+        assert_eq!(folded, vec![SceneElement::Body(bkey(1)), SceneElement::Body(bkey(2))]);
+        assert_eq!(cut, vec![bkey(3)], "a consumed body reads red, not blue");
 
         // No pickers at all — nothing to highlight, and nothing to special-case.
         assert!(
@@ -29592,13 +29592,13 @@ mod tests {
         };
         assert_eq!(focus(&cm), MoveFocus::Bodies, "no bodies picked yet");
 
-        cm.targets.push(0);
+        cm.targets.push(bkey(0));
         assert_eq!(focus(&cm), MoveFocus::StartPointA, "a body arms the source point");
 
-        cm.start_point_a = Some(point(0));
+        cm.start_point_a = Some(point(bkey(0)));
         assert_eq!(focus(&cm), MoveFocus::EndPointA);
 
-        cm.end_point_a = Some(point(1));
+        cm.end_point_a = Some(point(bkey(1)));
         assert_eq!(
             focus(&cm),
             MoveFocus::StartPointB,
@@ -29606,9 +29606,9 @@ mod tests {
         );
 
         // Picking start B opts into the rotation, and end B is then what's missing (#669).
-        cm.start_point_b = Some(point(0));
+        cm.start_point_b = Some(point(bkey(0)));
         assert_eq!(focus(&cm), MoveFocus::EndPointB);
-        cm.end_point_b = Some(point(1));
+        cm.end_point_b = Some(point(bkey(1)));
         assert_eq!(
             focus(&cm),
             MoveFocus::StartPointC,
@@ -29616,32 +29616,32 @@ mod tests {
         );
 
         // C pins the spin about `end A → end B` that B leaves free.
-        cm.start_point_c = Some(point(0));
+        cm.start_point_c = Some(point(bkey(0)));
         assert_eq!(focus(&cm), MoveFocus::EndPointC);
-        cm.end_point_c = Some(point(1));
+        cm.end_point_c = Some(point(bkey(1)));
         assert_eq!(focus(&cm), MoveFocus::Bodies, "everything picked");
 
         // Free translate has no target point to pick.
         let mut free = actions::CreatingMove {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Free,
             ..Default::default()
         };
         assert_eq!(focus(&free), MoveFocus::StartPointA);
-        free.start_point_a = Some(point(0));
+        free.start_point_a = Some(point(bkey(0)));
         assert_eq!(focus(&free), MoveFocus::Bodies);
 
         // A hand-picked focus wins until it's satisfied, then hands the chain back (#658).
         let held = Some(MoveFocus::EndPointA);
         let mut partial = actions::CreatingMove {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: MoveTranslateMode::Snap,
-            start_point_a: Some(point(0)),
+            start_point_a: Some(point(bkey(0))),
             ..Default::default()
         };
         assert_eq!(move_focus_for(Some(&partial), held), MoveFocus::EndPointA);
         assert!(!move_focus_satisfied(&partial, MoveFocus::EndPointA), "still unset");
-        partial.end_point_a = Some(point(1));
+        partial.end_point_a = Some(point(bkey(1)));
         assert!(move_focus_satisfied(&partial, MoveFocus::EndPointA));
         assert_eq!(
             move_focus_for(Some(&partial), None),
@@ -29672,16 +29672,15 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(model::Body {
+        doc.bodies.insert(model::Body {
             source: model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // Looking down -Z from high above, so the top cap is nearest the eye.
         let eye = Vec3::new(50.0, 50.0, 500.0);
-        let faces = body_loupe_faces(&doc, 0, eye).expect("the body meshes");
+        let faces = body_loupe_faces(&doc, bkey(0), eye).expect("the body meshes");
         assert!(faces.len() > 4, "a box has more than four triangles");
 
         // Painter's algorithm: every triangle is at least as far from the eye as the one
@@ -29733,14 +29732,13 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(model::Body {
+        doc.bodies.insert(model::Body {
             source: model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        let solid = extrude::body_solid_mesh(&doc, 0).expect("body mesh");
+        let solid = extrude::body_solid_mesh(&doc, bkey(0)).expect("body mesh");
         let tri = solid.triangles[0];
 
         for kind in [
@@ -29750,14 +29748,14 @@ mod tests {
                 line: lines[0],
                 end: model::LineEnd::Start,
             }),
-            PK::BodyEdge { body: 0, a: tri[0], b: tri[1] },
-            PK::BodyVertex { body: 0, position: tri[0] },
+            PK::BodyEdge { body: bkey(0), a: tri[0], b: tri[1] },
+            PK::BodyVertex { body: bkey(0), position: tri[0] },
             PK::BodyFace {
-                body: 0,
+                body: bkey(0),
                 triangles: vec![tri],
                 normal: (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero(),
             },
-            PK::Body(0),
+            PK::Body(bkey(0)),
             PK::GlobalAxis(construction::GlobalAxis::X),
             PK::ConstructionPlane(0),
             PK::SketchFace(model::FaceId::Polygon(lines.to_vec())),
@@ -29806,35 +29804,33 @@ mod tests {
         let pink = doc
             .materials
             .insert(model::Material { name: "Pink".to_string(), color: [230, 120, 170] });
-        doc.bodies.push(model::Body {
+        doc.bodies.insert(model::Body {
             source: model::BodySource::Extrusion(0),
             material: Some(pink),
             name: None,
-            deleted: false,
             shadow: false,
         });
         // Unshaded, the fill is the material itself.
-        let full = loupe_solid_fill(&doc, 0, 1.0, LoupeState::Idle);
+        let full = loupe_solid_fill(&doc, bkey(0), 1.0, LoupeState::Idle);
         assert_eq!((full.r(), full.g(), full.b()), (230, 120, 170));
         // Shading dims it without tinting it — the hue is still the body's.
-        let dim = loupe_solid_fill(&doc, 0, 0.5, LoupeState::Idle);
+        let dim = loupe_solid_fill(&doc, bkey(0), 0.5, LoupeState::Idle);
         assert!(dim.r() > dim.b() && dim.b() > dim.g(), "still pink: {dim:?}");
         assert!(dim.r() < full.r(), "and darker");
         // A body with no material of its own keeps the document's default look, not the accent.
-        doc.bodies.push(model::Body {
+        doc.bodies.insert(model::Body {
             source: model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
-        assert_ne!(loupe_solid_fill(&doc, 1, 1.0, LoupeState::Idle), full);
+        assert_ne!(loupe_solid_fill(&doc, bkey(1), 1.0, LoupeState::Idle), full);
 
         // #980: and it changes with the loupe's state, the way a body's fill does in the 3D
         // view — otherwise a hovered loupe looks exactly like a cold one, since the fill is
         // the whole visual for a body.
-        let hovered = loupe_solid_fill(&doc, 0, 1.0, LoupeState::Hovered);
-        let selected = loupe_solid_fill(&doc, 0, 1.0, LoupeState::Selected);
+        let hovered = loupe_solid_fill(&doc, bkey(0), 1.0, LoupeState::Hovered);
+        let selected = loupe_solid_fill(&doc, bkey(0), 1.0, LoupeState::Selected);
         assert_ne!(hovered, full, "a hovered loupe must read differently");
         assert_ne!(selected, full, "so must one holding something selected");
         assert_ne!(hovered, selected);
@@ -29859,11 +29855,10 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(model::Body {
+        doc.bodies.insert(model::Body {
             source: model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         // A flattening projection: world (x, y) straight to screen pixels.
@@ -29886,7 +29881,7 @@ mod tests {
 
         // The whole body: its edges are ~50 px from the cursor, which the 6× magnifier throws
         // 300 px clear of a 20 px disc — nothing to see, so the loupe frames the body.
-        let (pivot, z) = view(&[(PK::Body(0), Vec3::new(0.0, 0.0, 0.0))]);
+        let (pivot, z) = view(&[(PK::Body(bkey(0)), Vec3::new(0.0, 0.0, 0.0))]);
         assert!(z < zoom, "the body loupe must zoom out, got {z}");
         assert!(
             (pivot - egui::pos2(50.0, 50.0)).length() < 1.0,
@@ -29895,7 +29890,7 @@ mod tests {
 
         // A corner right under the cursor still lands in the disc, so the magnifier stands.
         assert_eq!(
-            view(&[(PK::BodyVertex { body: 0, position: Vec3::new(50.0, 50.0, 0.0) }, Vec3::ZERO)]),
+            view(&[(PK::BodyVertex { body: bkey(0), position: Vec3::new(50.0, 50.0, 0.0) }, Vec3::ZERO)]),
             (origin, zoom)
         );
     }
@@ -29922,17 +29917,17 @@ mod tests {
     fn end_b_hover_preview_keeps_the_c_pair() {
         let point = |body| model::MovePointRef::Vertex { body, p: [0; 3] };
         let cm = actions::CreatingMove {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             translate_mode: model::MoveTranslateMode::Snap,
-            start_point_a: Some(point(0)),
-            end_point_a: Some(point(1)),
-            start_point_b: Some(point(0)),
-            end_point_b: Some(point(1)),
-            start_point_c: Some(point(0)),
-            end_point_c: Some(point(1)),
+            start_point_a: Some(point(bkey(0))),
+            end_point_a: Some(point(bkey(1))),
+            start_point_b: Some(point(bkey(0))),
+            end_point_b: Some(point(bkey(1))),
+            start_point_c: Some(point(bkey(0))),
+            end_point_c: Some(point(bkey(1))),
             ..Default::default()
         };
-        let hovered = model::MovePointRef::OnEdge { body: 1, p: [1, 2, 3] };
+        let hovered = model::MovePointRef::OnEdge { body: bkey(1), p: [1, 2, 3] };
 
         let probe = move_hover_probe(&cm, MoveFocus::EndPointB, hovered);
         assert_eq!(probe.end_point_b, Some(hovered), "the hover fills end B");
@@ -29963,11 +29958,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -30011,8 +30005,8 @@ mod tests {
             matches!(
                 on_corner,
                 Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    crate::construction::PickTargetKind::BodyVertex { body: 0, .. }
-                ))
+                    crate::construction::PickTargetKind::BodyVertex { body, .. }
+                )) if body == bkey(0)
             ),
             "a corner hovers while picking a point, got {on_corner:?}"
         );
@@ -30022,8 +30016,8 @@ mod tests {
         // edge (#739).
         match on_edge {
             Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                crate::construction::PickTargetKind::BodyVertex { body: 0, position },
-            )) => {
+                crate::construction::PickTargetKind::BodyVertex { body, position },
+            )) if body == bkey(0) => {
                 assert!(
                     (position - glam::Vec3::new(0.0, -20.0, 0.0)).length() < 1e-3,
                     "the mark sits at the edge midpoint, got {position:?}"
@@ -30036,7 +30030,7 @@ mod tests {
         assert!(
             matches!(
                 on_body,
-                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(b))) if b == bkey(0)
             ),
             "the Bodies picker hovers whole bodies, got {on_body:?}"
         );
@@ -30421,14 +30415,14 @@ mod tests {
         // A sketch line and a shape edge are the same "edges" kind for the exploder, so they get the
         // same top-level rank and never split into two edge groups.
         let line_rank = crowd_type_rank(&K::Line(0));
-        let edge_rank = crowd_type_rank(&K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X });
+        let edge_rank = crowd_type_rank(&K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X });
         assert_eq!(line_rank, edge_rank, "lines and body edges group together");
         // ...and distinct from circles and faces.
         assert_ne!(line_rank, crowd_type_rank(&K::Circle(0)));
         assert_ne!(
             line_rank,
             crowd_type_rank(&K::BodyFace {
-                body: 0,
+                body: bkey(0),
                 triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]],
                 normal: Vec3::Z,
             })
@@ -30450,7 +30444,7 @@ mod tests {
             kinds.push(match i / per {
                 0 => K::Line(i),
                 1 => K::Circle(i),
-                _ => K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
+                _ => K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
             });
         }
         let idxs: Vec<usize> = (0..total).collect();
@@ -30501,7 +30495,7 @@ mod tests {
                 0 => K::Line(i),
                 1 => K::Circle(i),
                 _ => K::BodyFace {
-                    body: 0,
+                    body: bkey(0),
                     triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]],
                     normal: Vec3::Z,
                 },
@@ -30566,9 +30560,9 @@ mod tests {
     fn exploder_extrude_profile_picker_is_offered_only_faces() {
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
         use construction::PickTargetKind as K;
-        let face = K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z };
-        let edge = K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X };
-        let vertex = K::BodyVertex { body: 0, position: Vec3::ZERO };
+        let face = K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z };
+        let edge = K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X };
+        let vertex = K::BodyVertex { body: bkey(0), position: Vec3::ZERO };
         let sketch_face = K::SketchFace(FaceId::Polygon(vec![0, 1, 2, 3]));
         let plane_face = K::SketchFace(FaceId::ConstructionPlane(0));
         let all = [
@@ -30603,7 +30597,7 @@ mod tests {
         let plane = K::SketchFace(FaceId::ConstructionPlane(1));
         let cap = K::SketchFace(FaceId::Circle(0));
         let body_face = K::BodyFace {
-            body: 0,
+            body: bkey(0),
             triangles: Vec::new(),
             normal: Vec3::Z,
         };
@@ -30644,8 +30638,8 @@ mod tests {
             endpoint.clone(),
             K::ConstructionPlane(1),
             K::GlobalAxis(construction::GlobalAxis::X),
-            K::Body(0),
-            K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
+            K::Body(bkey(0)),
+            K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
         ];
 
         // The picker the context pane hands the Exploder for Select-in-a-sketch: the selection
@@ -30679,7 +30673,7 @@ mod tests {
         let projected_line = K::Line(1);
         let crossing_plane = K::ConstructionPlane(2);
         let host_plane = K::ConstructionPlane(0);
-        let body_edge = K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X };
+        let body_edge = K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X };
         let all = [
             own_line,
             projected_line.clone(),
@@ -30739,10 +30733,10 @@ mod tests {
         let kept = fanned(
             &bodies,
             &[
-                K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
-                K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X },
-                K::BodyVertex { body: 0, position: Vec3::ZERO },
-                K::BodyVertex { body: 1, position: Vec3::ZERO },
+                K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
+                K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X },
+                K::BodyVertex { body: bkey(0), position: Vec3::ZERO },
+                K::BodyVertex { body: bkey(1), position: Vec3::ZERO },
             ],
         );
         assert_eq!(kept.len(), 2, "one leaf each for body 0 and body 1, got {kept:?}");

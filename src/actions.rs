@@ -552,8 +552,8 @@ pub enum ExtrudeBodyMode {
     /// One new body holding **every** profile, touching or not (#837) — the "join" output when
     /// the sketch has no host body to merge into.
     JoinNew,
-    MergeInto(usize),
-    Cut(usize),
+    MergeInto(crate::model::BodyKey),
+    Cut(crate::model::BodyKey),
 }
 
 /// How a scripted / [`Action::CreateExtrusion`] extrude attaches to bodies, resolved against
@@ -592,7 +592,7 @@ pub struct CreatingExtrusion {
     pub body_mode: ExtrudeBodyMode,
     /// Body that `body_mode` can merge into / cut (the host body of the sketch face);
     /// `None` when there's no candidate — Add/Cut stay disabled.
-    pub merge_candidate: Option<usize>,
+    pub merge_candidate: Option<crate::model::BodyKey>,
     /// Extrude half the distance each way from the sketch plane (#504).
     pub symmetric: bool,
 }
@@ -687,8 +687,8 @@ pub enum RevolveBodyChoice {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingBoolean {
     pub kind: crate::model::BooleanOpKind,
-    pub a: Vec<usize>,
-    pub b: Vec<usize>,
+    pub a: Vec<crate::model::BodyKey>,
+    pub b: Vec<crate::model::BodyKey>,
     /// Which picker the next body click adds to (`Combine` only ever uses A).
     pub picking_b: bool,
     pub keep_b: bool,
@@ -700,8 +700,8 @@ pub struct CreatingBoolean {
 /// (#1031). The main loop polls [`BooleanJob::try_take`] and finishes the commit.
 pub struct BooleanJob {
     pub kind: crate::model::BooleanOpKind,
-    pub a: Vec<usize>,
-    pub b: Vec<usize>,
+    pub a: Vec<crate::model::BodyKey>,
+    pub b: Vec<crate::model::BodyKey>,
     pub keep_b: bool,
     /// Result: tessellated solids, or an error message.
     receiver: std::sync::mpsc::Receiver<Result<Vec<crate::extrude::SolidMesh>, String>>,
@@ -712,8 +712,8 @@ impl BooleanJob {
     pub fn start(
         doc: &Document,
         kind: crate::model::BooleanOpKind,
-        a: Vec<usize>,
-        b: Vec<usize>,
+        a: Vec<crate::model::BodyKey>,
+        b: Vec<crate::model::BodyKey>,
         keep_b: bool,
     ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -781,7 +781,7 @@ impl CreatingBoolean {
 /// the count/spacing/length expressions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingRepeat {
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     /// Picked source construction planes to repeat as offset copies (#221).
     pub plane_targets: Vec<usize>,
     /// Picked cut extrusions whose effect is replayed at each offset (#220).
@@ -1084,7 +1084,7 @@ impl CreatingSketchRepeat {
 /// (B), the extend-to-infinity toggle, and which picker the next click lands on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingSlice {
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     pub cutters: Vec<FaceId>,
     /// Which picker the next viewport click adds to: `false` = a target body, `true` = a
     /// cutter face/plane.
@@ -1150,7 +1150,7 @@ impl CreatingSketchSlice {
 /// expressions, optional rotation axis + angle expression, and the op being re-edited.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CreatingMove {
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     /// Snap (default) or free translation (#648).
     pub translate_mode: crate::model::MoveTranslateMode,
     /// The picked point on the moving bodies (#649/#668) and the point it snaps onto (#650).
@@ -1320,7 +1320,7 @@ impl CreatingSketchMirror {
 pub struct CreatingMirror {
     /// The mirror plane; `None` until one is picked.
     pub plane: Option<crate::model::FaceId>,
-    pub targets: Vec<usize>,
+    pub targets: Vec<crate::model::BodyKey>,
     /// How the reflections land (#639): a new body each, or joined to / cut from its source.
     pub mode: crate::model::MirrorMode,
     /// `Some(op)` while re-editing a committed operation.
@@ -1347,7 +1347,7 @@ pub struct CreatingRevolve {
     pub symmetric: bool,
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
-    pub cut_bodies: Vec<usize>,
+    pub cut_bodies: Vec<crate::model::BodyKey>,
     /// `Some(op)` while re-editing a committed revolution (#211), else a fresh revolve.
     pub editing: Option<crate::model::RevolutionKey>,
 }
@@ -1396,7 +1396,7 @@ pub struct CreatingSweep {
     pub path: Vec<usize>,
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
-    pub cut_bodies: Vec<usize>,
+    pub cut_bodies: Vec<crate::model::BodyKey>,
     /// `Some(op)` while re-editing a committed sweep, else a fresh sweep.
     pub editing: Option<crate::model::SweepKey>,
 }
@@ -1409,7 +1409,7 @@ pub struct CreatingLoft {
     /// Where the committed loft lands (#479): new body / fuse into touching / cut.
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
-    pub cut_bodies: Vec<usize>,
+    pub cut_bodies: Vec<crate::model::BodyKey>,
 }
 
 #[derive(Clone, Debug)]
@@ -1587,11 +1587,11 @@ pub enum Action {
     ExportDrawingPdf { drawing: usize, path: String },
     /// Export a single body (by index) to an STL file — used by the body row's context menu,
     /// which has the index in hand and works for unnamed bodies too.
-    ExportStlBody { path: String, body: usize },
+    ExportStlBody { path: String, body: crate::model::BodyKey },
     /// Export bodies to a STEP file. `body` names a single body; `None` exports all bodies.
     ExportStep { path: String, body: Option<String> },
     /// Export a single body (by index) to a STEP file — used by the body row's context menu.
-    ExportStepBody { path: String, body: usize },
+    ExportStepBody { path: String, body: crate::model::BodyKey },
     /// Export every body inside a component (and its nested components) to an STL/STEP file
     /// (#521) — used by the component row's context menu.
     ExportComponentStl { path: String, component: usize },
@@ -1724,11 +1724,11 @@ pub enum Action {
     AddMaterial {
         name: Option<String>,
         color: Option<[u8; 3]>,
-        bodies: Vec<usize>,
+        bodies: Vec<crate::model::BodyKey>,
     },
     /// Assign (or clear, with `None`) a body's material (#834).
     SetBodyMaterial {
-        body: usize,
+        body: crate::model::BodyKey,
         material: Option<crate::model::MaterialKey>,
     },
     SetMaterialName {
@@ -2067,7 +2067,7 @@ pub enum Action {
     /// Add a body view (in a given orientation) to a drawing.
     AddDrawingView {
         drawing: usize,
-        body: usize,
+        body: crate::model::BodyKey,
         orientation: crate::model::DrawingOrientation,
     },
     /// Add a sketch projection to a drawing (#278).
@@ -2205,7 +2205,7 @@ pub enum Action {
         angle_deg: f32,
         symmetric: bool,
         body: RevolveBodyChoice,
-        bodies: Vec<usize>,
+        bodies: Vec<crate::model::BodyKey>,
     },
     /// The Move tool's rotation-candidate spacing in degrees (#917), clamped to 0–90.
     SetMoveAngleSnap(f32),
@@ -2235,7 +2235,7 @@ pub enum Action {
         faces: Vec<ExtrudeFace>,
         path: Vec<usize>,
         body: RevolveBodyChoice,
-        bodies: Vec<usize>,
+        bodies: Vec<crate::model::BodyKey>,
     },
     /// Commit the in-progress Combine-tool boolean operation.
     CommitBoolean,
@@ -2243,8 +2243,8 @@ pub enum Action {
     /// `CommitBoolean` lowers to).
     CreateBooleanOperation {
         kind: crate::model::BooleanOpKind,
-        a: Vec<usize>,
-        b: Vec<usize>,
+        a: Vec<crate::model::BodyKey>,
+        b: Vec<crate::model::BodyKey>,
         keep_b: bool,
         /// When set, skip the kernel solid-count call — already precomputed off-thread
         /// so the UI stays live (#1031). Scripts leave this `None`.
@@ -2255,8 +2255,8 @@ pub enum Action {
     EditBooleanOperation {
         op: usize,
         kind: crate::model::BooleanOpKind,
-        a: Vec<usize>,
-        b: Vec<usize>,
+        a: Vec<crate::model::BodyKey>,
+        b: Vec<crate::model::BodyKey>,
         keep_b: bool,
     },
     /// Commit the in-progress Move-tool operation.
@@ -2274,7 +2274,7 @@ pub enum Action {
         /// The optional C pair, which pins the spin B leaves free.
         start_point_c: Option<crate::model::MovePointRef>,
         end_point_c: Option<crate::model::MovePointRef>,
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
         #[allow(dead_code)]
@@ -2297,7 +2297,7 @@ pub enum Action {
         /// The optional C pair, which pins the spin B leaves free.
         start_point_c: Option<crate::model::MovePointRef>,
         end_point_c: Option<crate::model::MovePointRef>,
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
         #[allow(dead_code)]
@@ -2344,7 +2344,7 @@ pub enum Action {
     /// Scripted/replayed mirror operation with an explicit payload.
     CreateMirrorOperation {
         plane: crate::model::FaceId,
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         /// How the reflections land (#639).
         mode: crate::model::MirrorMode,
     },
@@ -2352,7 +2352,7 @@ pub enum Action {
     EditMirrorOperation {
         op: usize,
         plane: crate::model::FaceId,
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         mode: crate::model::MirrorMode,
     },
     /// Commit the in-progress in-sketch mirror (#523/#528).
@@ -2375,7 +2375,7 @@ pub enum Action {
     CommitRepeat,
     /// Scripted/replayed linear repeat with an explicit payload.
     CreateRepeatOperation {
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<usize>,
         sketch_targets: Vec<usize>,
@@ -2396,7 +2396,7 @@ pub enum Action {
     /// Re-point an existing repeat operation.
     EditRepeatOperation {
         op: usize,
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<usize>,
         sketch_targets: Vec<usize>,
@@ -2524,7 +2524,7 @@ pub enum Action {
     CommitSlice,
     /// Scripted/replayed slice with an explicit payload (also what `CommitSlice` lowers to).
     CreateSliceOperation {
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         cutters: Vec<FaceId>,
         extend_infinite: bool,
     },
@@ -2532,7 +2532,7 @@ pub enum Action {
     /// bodies are resized to the new piece counts (grow pushes bodies, shrink tombstones).
     EditSliceOperation {
         op: usize,
-        targets: Vec<usize>,
+        targets: Vec<crate::model::BodyKey>,
         cutters: Vec<FaceId>,
         extend_infinite: bool,
     },
@@ -3583,13 +3583,13 @@ impl AppState {
         let current = crate::model::body_index_for_extrusion(&self.doc, ei);
         // The body is solely `ei`'s home (a lone added extrusion, no cuts) — removing `ei`
         // would leave it empty, so it should be tombstoned rather than emptied.
-        let solely_owns = |doc: &Document, bi: usize| {
+        let solely_owns = |doc: &Document, bi: crate::model::BodyKey| {
             doc.bodies.get(bi).is_some_and(|b| {
                 b.source.extrusion_indices() == [ei] && b.source.cut_extrusion_indices().is_empty()
             })
         };
         // Whether `ei` is currently a *cut* of body `bi` (vs an added extrusion).
-        let is_cut_in = |doc: &Document, bi: usize| {
+        let is_cut_in = |doc: &Document, bi: crate::model::BodyKey| {
             doc.bodies
                 .get(bi)
                 .is_some_and(|b| b.source.cut_extrusion_indices().contains(&ei))
@@ -3628,11 +3628,10 @@ impl AppState {
                 if matches!(mode, ExtrudeBodyMode::Cut(_)) {
                     self.cut_into_unit(instance, ei);
                 } else {
-                    self.doc.bodies.push(crate::model::Body {
+                    self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
                     });
                     self.doc.shape_order.push(ShapeKind::Body);
@@ -3646,38 +3645,35 @@ impl AppState {
         let inherited = self.extrusion_source_material(ei);
         match mode {
             ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {
-                self.doc.bodies.push(crate::model::Body {
+                self.doc.bodies.insert(crate::model::Body {
                     source: crate::model::BodySource::single(ei),
                     material: inherited,
                     name: None,
-                    deleted: false,
                     shadow: false,
                 });
                 self.doc.shape_order.push(ShapeKind::Body);
             }
             ExtrudeBodyMode::MergeInto(bi) => {
-                if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
+                if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_extrusion(ei);
                 } else {
-                    self.doc.bodies.push(crate::model::Body {
+                    self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
                     });
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
             }
             ExtrudeBodyMode::Cut(bi) => {
-                if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
+                if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_cut_extrusion(ei);
                 } else {
-                    self.doc.bodies.push(crate::model::Body {
+                    self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
                     });
                     self.doc.shape_order.push(ShapeKind::Body);
@@ -3699,7 +3695,7 @@ impl AppState {
     fn resolve_cut_direction(
         &self,
         ext: &mut Extrusion,
-        bi: usize,
+        bi: crate::model::BodyKey,
     ) -> Option<&'static str> {
         match crate::extrude::cut_tool_bites(&self.doc, bi, ext) {
             Some(false) => {
@@ -3835,11 +3831,11 @@ impl AppState {
 
     /// Register cut extrusion `ei` against unit `instance` (#726): appended to the
     /// existing live `UnitCut` output body, or a fresh one. Returns the output body.
-    fn cut_into_unit(&mut self, instance: usize, ei: usize) -> usize {
-        let existing = self.doc.bodies.iter().position(|b| {
-            !b.deleted
-                && matches!(b.source,
-                    crate::model::BodySource::UnitCut { instance: i, .. } if i == instance)
+    fn cut_into_unit(&mut self, instance: usize, ei: usize) -> crate::model::BodyKey {
+        let existing = self.doc.bodies.iter().find_map(|(k, b)| {
+            matches!(b.source,
+                crate::model::BodySource::UnitCut { instance: i, .. } if i == instance)
+            .then_some(k)
         });
         match existing {
             Some(ci) => {
@@ -3847,20 +3843,19 @@ impl AppState {
                 ci
             }
             None => {
-                self.doc.bodies.push(crate::model::Body {
+                let key = self.doc.bodies.insert(crate::model::Body {
                     source: crate::model::BodySource::UnitCut { instance, cut: vec![ei] },
                     material: None,
                     name: None,
-                    deleted: false,
                     shadow: false,
                 });
                 self.doc.shape_order.push(ShapeKind::Body);
-                self.doc.bodies.len() - 1
+                key
             }
         }
     }
 
-    fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> usize {
+    fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> crate::model::BodyKey {
         match mode {
             ExtrudeBodyMode::MergeInto(bi) => {
                 // Merging into a read-only unit is refused (#726): fall through to a new
@@ -3869,7 +3864,7 @@ impl AppState {
                     .doc
                     .bodies
                     .get_mut(bi)
-                    .filter(|b| !b.deleted && !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
+                    .filter(|b| !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
                 {
                     body.source.append_extrusion(ei);
                     return bi;
@@ -3884,23 +3879,22 @@ impl AppState {
                 {
                     return self.cut_into_unit(instance, ei);
                 }
-                if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
+                if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_cut_extrusion(ei);
                     return bi;
                 }
             }
             ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {}
         }
-        self.doc.bodies.push(crate::model::Body {
+        let key = self.doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::single(ei),
             // A body made off another body's face is made of the same stuff (#926).
             material: self.extrusion_source_material(ei),
             name: None,
-            deleted: false,
             shadow: false,
         });
         self.doc.shape_order.push(ShapeKind::Body);
-        self.doc.bodies.len() - 1
+        key
     }
 
     /// Add `triangles` from an imported file as a new body named after `path`'s file stem
@@ -3924,11 +3918,10 @@ impl AppState {
             source_name: source_name.clone(),
             step_bytes,
         });
-        self.doc.bodies.push(crate::model::Body {
+        self.doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: Some(source_name),
-            deleted: false,
             shadow: false,
         });
         self.doc.shape_order.push(ShapeKind::Body);
@@ -3962,7 +3955,7 @@ impl AppState {
     /// surfaces) straight to the file via `STEPControl_Writer`; otherwise (non-`occt`, an
     /// imported-mesh body, non-representable geometry, or a kernel write failure) fall back
     /// to the hand-rolled faceted-BREP mesh path.
-    fn write_step_body_file(&mut self, path: &str, name: &str, body: usize) -> ActionResult {
+    fn write_step_body_file(&mut self, path: &str, name: &str, body: crate::model::BodyKey) -> ActionResult {
         {
             // The posed shape (#893): a jointed part exports where the assembly holds it.
             if let Some(shape) = crate::extrude::posed_body_shape(&self.doc, body) {
@@ -4323,7 +4316,7 @@ impl AppState {
 
     /// ASCII STL of one body (or the whole document) as bytes.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn export_stl_bytes(&self, body: Option<usize>) -> Result<Vec<u8>, String> {
+    pub fn export_stl_bytes(&self, body: Option<crate::model::BodyKey>) -> Result<Vec<u8>, String> {
         let (name, mesh) = self.export_mesh_for(body)?;
         Ok(crate::stl::write_ascii_stl(&name, &mesh).into_bytes())
     }
@@ -4332,7 +4325,7 @@ impl AppState {
     /// BREP through the bridged writer when a single body is exportable (mirroring the
     /// native single-body path); everything else uses the faceted writer.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn export_step_bytes(&self, body: Option<usize>) -> Result<Vec<u8>, String> {
+    pub fn export_step_bytes(&self, body: Option<crate::model::BodyKey>) -> Result<Vec<u8>, String> {
         #[cfg(target_arch = "wasm32")]
         {
             let single = body.or_else(|| {
@@ -4340,8 +4333,7 @@ impl AppState {
                     .doc
                     .bodies
                     .iter()
-                    .enumerate()
-                    .filter(|(_, b)| !b.deleted && !b.shadow);
+                    .filter(|(_, b)| !b.shadow);
                 match (live.next(), live.next()) {
                     (Some((bi, _)), None) => Some(bi),
                     _ => None,
@@ -4403,7 +4395,7 @@ impl AppState {
             self.status = e.clone();
             return ActionResult::Err(e);
         }
-        let mut targets: Vec<usize> = Vec::new();
+        let mut targets: Vec<crate::model::BodyKey> = Vec::new();
         let mut treated: Vec<TreatedEdge> = Vec::new();
         // Per-extrusion treatment lists, accumulated so an intra-operation corner conflict is
         // caught (two treated edges meeting at one corner), mirroring the old in-place check.
@@ -4488,14 +4480,12 @@ impl AppState {
             trial.edge_treatment_ops.push(operation.clone());
             let mut trial_outputs = Vec::new();
             for target in 0..targets.len() {
-                trial_outputs.push(trial.bodies.len());
-                trial.bodies.push(Body {
+                trial_outputs.push(trial.bodies.insert(Body {
                     source: BodySource::EdgeTreated { op: op_index, target },
                     material: None,
                     name: None,
-                    deleted: false,
                     shadow: false,
-                });
+                }));
             }
             trial.edge_treatment_ops[op_index].outputs = trial_outputs.clone();
             for (t, &input) in targets.iter().enumerate() {
@@ -4520,14 +4510,12 @@ impl AppState {
         self.doc.shape_order.push(ShapeKind::EdgeTreatmentOperation);
         let mut outputs = Vec::new();
         for target in 0..targets.len() {
-            outputs.push(self.doc.bodies.len());
-            self.doc.bodies.push(Body {
+            outputs.push(self.doc.bodies.insert(Body {
                 source: BodySource::EdgeTreated { op: op_index, target },
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
-            });
+            }));
             self.doc.shape_order.push(ShapeKind::Body);
         }
         self.doc.edge_treatment_ops[op_index].outputs = outputs;
@@ -4556,7 +4544,7 @@ impl AppState {
         angle_deg: f32,
         symmetric: bool,
         choice: RevolveBodyChoice,
-        bodies: &[usize],
+        bodies: &[crate::model::BodyKey],
     ) -> Result<crate::model::RevolveMode, String> {
         Ok(match choice {
             RevolveBodyChoice::NewBody => crate::model::RevolveMode::NewBody,
@@ -4576,8 +4564,9 @@ impl AppState {
                 let touching = crate::extrude::revolve_mesh(&self.doc, &probe)
                     .and_then(|m| m.bounds())
                     .map(|rb| {
-                        (0..self.doc.bodies.len())
-                            .filter(|&bi| !self.doc.bodies[bi].deleted)
+                        self.doc
+                            .bodies
+                            .keys()
                             .filter(|&bi| {
                                 crate::extrude::body_solid_mesh(&self.doc, bi)
                                     .and_then(|m| m.bounds())
@@ -4611,7 +4600,7 @@ impl AppState {
         let extrusion = self.doc.extrusions.get(ei)?;
         let face = self.doc.sketch_face(extrusion.sketch)?;
         let bi = crate::model::body_index_for_face(&self.doc, &face)?;
-        self.doc.bodies.get(bi).filter(|b| !b.deleted)?.material
+        self.doc.bodies.get(bi)?.material
     }
 
     /// Create a primitive shape (#909): the shape, its body, and one
@@ -4626,11 +4615,10 @@ impl AppState {
         let label = crate::names::primitive_kind_label(shape.kind);
         self.creating_shape = None;
         let key = self.doc.primitives.insert(shape);
-        self.doc.bodies.push(crate::model::Body {
+        self.doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Primitive(key),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         self.doc.shape_order.push(crate::model::ShapeKind::Primitive);
@@ -4697,11 +4685,10 @@ impl AppState {
         }
         let key = self.doc.revolutions.insert(rev);
         if matches!(mode, crate::model::RevolveMode::NewBody) {
-            self.doc.bodies.push(crate::model::Body {
+            self.doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Revolve(key),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -4758,21 +4745,27 @@ impl AppState {
         let has_body = self
             .doc
             .bodies
-            .iter()
-            .any(|b| !b.deleted && b.source == crate::model::BodySource::Revolve(op));
+            .values()
+            .any(|b| b.source == crate::model::BodySource::Revolve(op));
         match (matches!(mode, crate::model::RevolveMode::NewBody), has_body) {
-            (true, false) => self.doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Revolve(op),
-                material: None,
-                name: None,
-                deleted: false,
-                shadow: false,
-            }),
+            (true, false) => {
+                self.doc.bodies.insert(crate::model::Body {
+                    source: crate::model::BodySource::Revolve(op),
+                    material: None,
+                    name: None,
+                    shadow: false,
+                });
+            }
             (false, true) => {
-                for body in self.doc.bodies.iter_mut() {
-                    if body.source == crate::model::BodySource::Revolve(op) {
-                        body.deleted = true;
-                    }
+                let produced: Vec<crate::model::BodyKey> = self
+                    .doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| b.source == crate::model::BodySource::Revolve(op))
+                    .map(|(k, _)| k)
+                    .collect();
+                for key in produced {
+                    self.doc.bodies.remove(key);
                 }
             }
             _ => {}
@@ -4790,7 +4783,7 @@ impl AppState {
         faces: &[ExtrudeFace],
         path: &[usize],
         choice: RevolveBodyChoice,
-        bodies: &[usize],
+        bodies: &[crate::model::BodyKey],
     ) -> Result<crate::model::SweepMode, String> {
         Ok(match choice {
             RevolveBodyChoice::NewBody => crate::model::SweepMode::NewBody,
@@ -4808,8 +4801,9 @@ impl AppState {
                 let touching = crate::extrude::sweep_mesh(&self.doc, &probe)
                     .and_then(|m| m.bounds())
                     .map(|rb| {
-                        (0..self.doc.bodies.len())
-                            .filter(|&bi| !self.doc.bodies[bi].deleted)
+                        self.doc
+                            .bodies
+                            .keys()
                             .filter(|&bi| {
                                 crate::extrude::body_solid_mesh(&self.doc, bi)
                                     .and_then(|m| m.bounds())
@@ -4861,11 +4855,10 @@ impl AppState {
         }
         let key = self.doc.sweeps.insert(fp);
         if matches!(mode, crate::model::SweepMode::NewBody) {
-            self.doc.bodies.push(crate::model::Body {
+            self.doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Sweep(key),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -4916,21 +4909,27 @@ impl AppState {
         let has_body = self
             .doc
             .bodies
-            .iter()
-            .any(|b| !b.deleted && b.source == crate::model::BodySource::Sweep(op));
+            .values()
+            .any(|b| b.source == crate::model::BodySource::Sweep(op));
         match (matches!(mode, crate::model::SweepMode::NewBody), has_body) {
-            (true, false) => self.doc.bodies.push(crate::model::Body {
-                source: crate::model::BodySource::Sweep(op),
-                material: None,
-                name: None,
-                deleted: false,
-                shadow: false,
-            }),
+            (true, false) => {
+                self.doc.bodies.insert(crate::model::Body {
+                    source: crate::model::BodySource::Sweep(op),
+                    material: None,
+                    name: None,
+                    shadow: false,
+                });
+            }
             (false, true) => {
-                for body in self.doc.bodies.iter_mut() {
-                    if body.source == crate::model::BodySource::Sweep(op) {
-                        body.deleted = true;
-                    }
+                let produced: Vec<crate::model::BodyKey> = self
+                    .doc
+                    .bodies
+                    .iter()
+                    .filter(|(_, b)| b.source == crate::model::BodySource::Sweep(op))
+                    .map(|(k, _)| k)
+                    .collect();
+                for key in produced {
+                    self.doc.bodies.remove(key);
                 }
             }
             _ => {}
@@ -4945,11 +4944,12 @@ impl AppState {
     /// Every live body that belongs to component `ci` or one of its nested components (#521),
     /// in body-index order. A body's component is resolved through its producing operation, so
     /// this covers bodies filed into the component directly and via their source.
-    pub fn component_body_indices(&self, ci: usize) -> Vec<usize> {
-        (0..self.doc.bodies.len())
+    pub fn component_body_indices(&self, ci: usize) -> Vec<crate::model::BodyKey> {
+        self.doc
+            .bodies
+            .keys()
             .filter(|&bi| {
-                self.doc.bodies.get(bi).is_some_and(|b| !b.deleted)
-                    && crate::hierarchy::owning_component(
+                crate::hierarchy::owning_component(
                         &self.doc,
                         &crate::hierarchy::SceneElement::Body(bi),
                     )
@@ -4971,7 +4971,7 @@ impl AppState {
 
     /// Concatenate the solid meshes of `bodies` into one mesh (#521). Like the non-kernel
     /// document-export fallback, disjoint bodies simply co-exist; no boolean union is attempted.
-    fn combined_body_mesh(&self, bodies: &[usize]) -> Option<crate::extrude::SolidMesh> {
+    fn combined_body_mesh(&self, bodies: &[crate::model::BodyKey]) -> Option<crate::extrude::SolidMesh> {
         let mut mesh = crate::extrude::SolidMesh::default();
         for &bi in bodies {
             if let Some(solid) = crate::extrude::body_solid_mesh(&self.doc, bi) {
@@ -4983,7 +4983,7 @@ impl AppState {
 
     fn export_mesh_for(
         &self,
-        body: Option<usize>,
+        body: Option<crate::model::BodyKey>,
     ) -> Result<(String, crate::extrude::SolidMesh), String> {
         let (name, mesh) = match body {
             Some(bi) => {
@@ -4991,9 +4991,11 @@ impl AppState {
                     .doc
                     .bodies
                     .get(bi)
-                    .filter(|b| !b.deleted)
-                    .ok_or_else(|| format!("no body {bi}"))?;
-                let name = b.name.clone().unwrap_or_else(|| format!("body-{bi}"));
+                    .ok_or_else(|| format!("no body {bi:?}"))?;
+                let name = b
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("body-{}", bi.index()));
                 (name, crate::extrude::body_solid_mesh(&self.doc, bi))
             }
             None => (
@@ -5331,7 +5333,7 @@ fn validate_extrude_target(
     }
 }
 
-fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<usize> {
+fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::model::BodyKey> {
     let face = doc.sketch_face(sketch)?;
     let extrusion = match face {
         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => extrusion,
@@ -5339,9 +5341,8 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<usize> {
         // extrusion drawn there can **cut** into the unit (merging stays refused — the
         // unit is read-only; see `apply_extrude_body_mode`).
         FaceId::UnitFace { instance, .. } => {
-            return doc.bodies.iter().position(|b| {
-                !b.deleted
-                    && matches!(b.source, crate::model::BodySource::UnitInstance(i) if i == instance)
+            return doc.bodies.iter().find_map(|(k, b)| {
+                matches!(b.source, crate::model::BodySource::UnitInstance(i) if i == instance).then_some(k)
             });
         }
         _ => return None,
@@ -5486,8 +5487,8 @@ fn dimension_target_status_label(target: DimensionTarget) -> String {
 fn validate_boolean_inputs(
     doc: &Document,
     kind: crate::model::BooleanOpKind,
-    a: &[usize],
-    b: &[usize],
+    a: &[crate::model::BodyKey],
+    b: &[crate::model::BodyKey],
     editing: Option<usize>,
 ) -> Result<(), String> {
     use crate::model::BooleanOpKind;
@@ -5509,19 +5510,19 @@ fn validate_boolean_inputs(
     }
     // While editing, the op's own current inputs are shadow bodies — re-picking them is
     // the normal case, not a conflict.
-    let editing_inputs: Vec<usize> = editing
+    let editing_inputs: Vec<crate::model::BodyKey> = editing
         .and_then(|e| doc.boolean_ops.get(e))
         .map(|o| o.a.iter().chain(o.b.iter()).copied().collect())
         .unwrap_or_default();
     for &bi in a.iter().chain(b.iter()) {
-        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
-            return Err(format!("Body {bi} not found"));
+        let Some(body) = doc.bodies.get(bi) else {
+            return Err(format!("Body {bi:?} not found"));
         };
         // A read-only unit's body may feed several operations (#726): consumption
         // shadows it for presentation but never uses it up.
         let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
         if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
-            return Err(format!("Body {bi} is already consumed by another operation"));
+            return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
         if let crate::model::BodySource::Boolean { op, .. } = body.source {
             // An op may consume outputs of *earlier* ops only, so the dependency graph
@@ -5534,7 +5535,7 @@ fn validate_boolean_inputs(
     let mut seen = std::collections::HashSet::new();
     for &bi in a.iter().chain(b.iter()) {
         if !seen.insert(bi) {
-            return Err(format!("Body {bi} is picked twice"));
+            return Err(format!("Body {bi:?} is picked twice"));
         }
     }
     Ok(())
@@ -5543,26 +5544,26 @@ fn validate_boolean_inputs(
 /// Shared validation for creating/editing a move operation.
 fn validate_move_inputs(
     doc: &Document,
-    targets: &[usize],
+    targets: &[crate::model::BodyKey],
     editing: Option<usize>,
 ) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Pick at least one body to move".to_string());
     }
-    let editing_inputs: Vec<usize> = editing
+    let editing_inputs: Vec<crate::model::BodyKey> = editing
         .and_then(|e| doc.move_ops.get(e))
         .map(|o| o.targets.clone())
         .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
     for &bi in targets {
-        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
-            return Err(format!("Body {bi} not found"));
+        let Some(body) = doc.bodies.get(bi) else {
+            return Err(format!("Body {bi:?} not found"));
         };
         // A read-only unit's body may feed several operations (#726): consumption
         // shadows it for presentation but never uses it up.
         let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
         if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
-            return Err(format!("Body {bi} is already consumed by another operation"));
+            return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
         if let crate::model::BodySource::Moved { op, .. } = body.source {
             if editing.is_some_and(|e| op >= e) {
@@ -5572,7 +5573,7 @@ fn validate_move_inputs(
             }
         }
         if !seen.insert(bi) {
-            return Err(format!("Body {bi} is picked twice"));
+            return Err(format!("Body {bi:?} is picked twice"));
         }
     }
     Ok(())
@@ -5598,12 +5599,12 @@ fn validate_joint_inputs(
     for member in members {
         match *member {
             crate::model::JointRef::Body(bi) => {
-                let Some(body) = doc.bodies.get(bi).filter(|b| !b.deleted) else {
-                    return Err(format!("Body {bi} not found"));
+                let Some(body) = doc.bodies.get(bi) else {
+                    return Err(format!("Body {bi:?} not found"));
                 };
                 let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
                 if body.shadow && !is_unit {
-                    return Err(format!("Body {bi} is already consumed by another operation"));
+                    return Err(format!("Body {bi:?} is already consumed by another operation"));
                 }
             }
             crate::model::JointRef::Component(ci) => {
@@ -5662,7 +5663,7 @@ fn joint_status(doc: &Document, ji: usize) -> String {
 /// Mark (or clear) a mirror operation's input bodies as consumed (#639). `Join`/`Cut` fold the
 /// source into the reflected output, so — like Move — the input becomes a shadow body; the
 /// default `NewBody` mode leaves the originals standing.
-fn set_mirror_input_shadows(doc: &mut Document, targets: &[usize], shadow: bool) {
+fn set_mirror_input_shadows(doc: &mut Document, targets: &[crate::model::BodyKey], shadow: bool) {
     for &input in targets {
         if let Some(body) = doc.bodies.get_mut(input) {
             body.shadow = shadow;
@@ -5672,29 +5673,29 @@ fn set_mirror_input_shadows(doc: &mut Document, targets: &[usize], shadow: bool)
 
 fn validate_mirror_inputs(
     doc: &Document,
-    targets: &[usize],
+    targets: &[crate::model::BodyKey],
     editing: Option<usize>,
 ) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Pick at least one body to mirror".to_string());
     }
-    let own_outputs: Vec<usize> = editing
+    let own_outputs: Vec<crate::model::BodyKey> = editing
         .and_then(|e| doc.mirror_ops.get(e))
         .map(|o| o.outputs.clone())
         .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
     for &bi in targets {
-        let Some(body) = doc.bodies.get(bi).filter(|b| !b.deleted) else {
-            return Err(format!("Body {bi} not found"));
+        let Some(body) = doc.bodies.get(bi) else {
+            return Err(format!("Body {bi:?} not found"));
         };
         if own_outputs.contains(&bi) {
             return Err("Cannot mirror this operation's own result".to_string());
         }
         if body.shadow {
-            return Err(format!("Body {bi} is already consumed by another operation"));
+            return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
         if !seen.insert(bi) {
-            return Err(format!("Body {bi} is picked twice"));
+            return Err(format!("Body {bi:?} is picked twice"));
         }
     }
     Ok(())
@@ -5814,7 +5815,7 @@ fn validate_sketch_slice_inputs(
 
 fn validate_repeat_inputs(
     doc: &Document,
-    targets: &[usize],
+    targets: &[crate::model::BodyKey],
     plane_targets: &[usize],
     extrusion_targets: &[usize],
     sketch_targets: &[usize],
@@ -5838,17 +5839,17 @@ fn validate_repeat_inputs(
     }
     let mut seen = std::collections::HashSet::new();
     for &bi in targets {
-        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
-            return Err(format!("Body {bi} not found"));
+        let Some(body) = doc.bodies.get(bi) else {
+            return Err(format!("Body {bi:?} not found"));
         };
         if body.shadow {
-            return Err(format!("Body {bi} is consumed by another operation"));
+            return Err(format!("Body {bi:?} is consumed by another operation"));
         }
         if matches!(body.source, crate::model::BodySource::Repeated { .. }) {
             return Err("Cannot repeat a repeat output; edit the repeat instead".to_string());
         }
         if !seen.insert(bi) {
-            return Err(format!("Body {bi} is picked twice"));
+            return Err(format!("Body {bi:?} is picked twice"));
         }
     }
     let mut seen_planes = std::collections::HashSet::new();
@@ -5887,7 +5888,7 @@ pub(crate) fn commit_inline_parameter_defs<'a>(
 /// edited (its own inputs are shadow bodies, so re-picking them is allowed).
 fn validate_slice_inputs(
     doc: &Document,
-    targets: &[usize],
+    targets: &[crate::model::BodyKey],
     cutters: &[FaceId],
     editing: Option<usize>,
 ) -> Result<(), String> {
@@ -5897,20 +5898,20 @@ fn validate_slice_inputs(
     if cutters.is_empty() {
         return Err("Pick at least one cutting plane or face".to_string());
     }
-    let editing_inputs: Vec<usize> = editing
+    let editing_inputs: Vec<crate::model::BodyKey> = editing
         .and_then(|e| doc.slice_ops.get(e))
         .map(|o| o.targets.clone())
         .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
     for &bi in targets {
-        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
-            return Err(format!("Body {bi} not found"));
+        let Some(body) = doc.bodies.get(bi) else {
+            return Err(format!("Body {bi:?} not found"));
         };
         // A read-only unit's body may feed several operations (#726): consumption
         // shadows it for presentation but never uses it up.
         let is_unit = matches!(body.source, crate::model::BodySource::UnitInstance(_));
         if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
-            return Err(format!("Body {bi} is already consumed by another operation"));
+            return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
         if let crate::model::BodySource::Sliced { op, .. } = body.source {
             if editing.is_some_and(|e| op >= e) {
@@ -5920,7 +5921,7 @@ fn validate_slice_inputs(
             }
         }
         if !seen.insert(bi) {
-            return Err(format!("Body {bi} is picked twice"));
+            return Err(format!("Body {bi:?} is picked twice"));
         }
     }
     // Cutters must be planar faces the kernel can build a plane from (construction planes
@@ -5947,13 +5948,13 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Constraint(i) => format!("Constraint {i}"),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),
-        SceneElement::Body(i) => format!("Body {i}"),
+        SceneElement::Body(i) => format!("Body {}", i.index()),
         SceneElement::FaceEdge(_) => "Face edge".to_string(),
         SceneElement::BodyEdge { .. } => "Body edge".to_string(),
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
-        SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
-        SceneElement::BodyCylinder { body, .. } => format!("Cylinder of Body {body}"),
-        SceneElement::BodyAxis { body, .. } => format!("Axis of Body {body}"),
+        SceneElement::BodyFace { body, .. } => format!("Face of Body {}", body.index()),
+        SceneElement::BodyCylinder { body, .. } => format!("Cylinder of Body {}", body.index()),
+        SceneElement::BodyAxis { body, .. } => format!("Axis of Body {}", body.index()),
         SceneElement::SketchFace(_) => "Face".to_string(),
         SceneElement::MovePoint(_) => "Point".to_string(),
         SceneElement::ExtrusionEdge { extrusion, .. } => format!("Edge of extrusion {extrusion}"),
@@ -6460,8 +6461,8 @@ impl AppState {
             Action::ExportStl { path, body } => {
                 let (name, mesh) = match &body {
                     Some(name) => {
-                        match self.doc.bodies.iter().position(|b| {
-                            !b.deleted && b.name.as_deref() == Some(name.as_str())
+                        match self.doc.bodies.iter().find_map(|(k, b)| {
+                            (b.name.as_deref() == Some(name.as_str())).then_some(k)
                         }) {
                             Some(bi) => {
                                 (name.clone(), crate::extrude::body_solid_mesh(&self.doc, bi))
@@ -6512,25 +6513,25 @@ impl AppState {
                 }
             }
             Action::ExportStlBody { path, body } => {
-                let Some(b) = self.doc.bodies.get(body).filter(|b| !b.deleted) else {
-                    self.status = format!("Export failed: no body {body}");
+                let Some(b) = self.doc.bodies.get(body) else {
+                    self.status = format!("Export failed: no body {body:?}");
                     return ActionResult::Err(self.status.clone());
                 };
                 let name = b
                     .name
                     .clone()
-                    .unwrap_or_else(|| format!("body-{body}"));
+                    .unwrap_or_else(|| format!("body-{}", body.index()));
                 let mesh = crate::extrude::body_solid_mesh(&self.doc, body);
                 self.write_stl_file(&path, &name, mesh)
             }
             Action::ExportStep { path, body } => match &body {
                 Some(name) => {
-                    match self
+                    let found = self
                         .doc
                         .bodies
                         .iter()
-                        .position(|b| !b.deleted && b.name.as_deref() == Some(name.as_str()))
-                    {
+                        .find_map(|(k, b)| (b.name.as_deref() == Some(name.as_str())).then_some(k));
+                    match found {
                         Some(bi) => {
                             let name = name.clone();
                             self.write_step_body_file(&path, &name, bi)
@@ -6550,18 +6551,20 @@ impl AppState {
                     // Shadow bodies are consumed operation inputs, not deliverables — skip
                     // them so a single real output (e.g. a beveled body, #531) still writes
                     // real BREP rather than the faceted multi-body fallback.
-                    let mut live = self
-                        .doc
-                        .bodies
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, b)| !b.deleted && !b.shadow);
-                    match (live.next(), live.next()) {
-                        (Some((bi, b)), None) => {
-                            let name = b
-                                .name
-                                .clone()
-                                .unwrap_or_else(|| format!("body-{bi}"));
+                    let only = {
+                        let mut live = self.doc.bodies.iter().filter(|(_, b)| !b.shadow);
+                        match (live.next(), live.next()) {
+                            (Some((bi, b)), None) => Some((
+                                bi,
+                                b.name
+                                    .clone()
+                                    .unwrap_or_else(|| format!("body-{}", bi.index())),
+                            )),
+                            _ => None,
+                        }
+                    };
+                    match only {
+                        Some((bi, name)) => {
                             self.write_step_body_file(&path, &name, bi)
                         }
                         _ => {
@@ -6572,14 +6575,14 @@ impl AppState {
                 }
             },
             Action::ExportStepBody { path, body } => {
-                let Some(b) = self.doc.bodies.get(body).filter(|b| !b.deleted) else {
-                    self.status = format!("Export failed: no body {body}");
+                let Some(b) = self.doc.bodies.get(body) else {
+                    self.status = format!("Export failed: no body {body:?}");
                     return ActionResult::Err(self.status.clone());
                 };
                 let name = b
                     .name
                     .clone()
-                    .unwrap_or_else(|| format!("body-{body}"));
+                    .unwrap_or_else(|| format!("body-{}", body.index()));
                 self.write_step_body_file(&path, &name, body)
             }
             Action::ExportComponentStl { path, component } => {
@@ -6951,7 +6954,7 @@ impl AppState {
                                 .doc
                                 .bodies
                                 .get(bi)
-                                .is_some_and(|b| !b.deleted && !b.shadow)
+                                .is_some_and(|b| !b.shadow)
                                 && !cb.a.contains(&bi)
                             {
                                 cb.a.push(bi);
@@ -7049,7 +7052,7 @@ impl AppState {
                     let mut cm = CreatingMirror::default();
                     for element in handoff.iter().cloned() {
                         if let crate::hierarchy::SceneElement::Body(bi) = element {
-                            if self.doc.bodies.get(bi).is_some_and(|b| !b.deleted && !b.shadow)
+                            if self.doc.bodies.get(bi).is_some_and(|b| !b.shadow)
                                 && !cm.targets.contains(&bi)
                             {
                                 cm.targets.push(bi);
@@ -7106,7 +7109,7 @@ impl AppState {
                     for element in handoff.iter().cloned() {
                         match element {
                             crate::hierarchy::SceneElement::Body(bi)
-                                if self.doc.bodies.get(bi).is_some_and(|b| !b.deleted && !b.shadow) =>
+                                if self.doc.bodies.get(bi).is_some_and(|b| !b.shadow) =>
                             {
                                 cr.targets.push(bi);
                             }
@@ -9917,8 +9920,9 @@ impl AppState {
                         let touching = crate::extrude::loft_mesh(&self.doc, &loft)
                             .and_then(|m| m.bounds())
                             .map(|rb| {
-                                (0..self.doc.bodies.len())
-                                    .filter(|&bi| !self.doc.bodies[bi].deleted)
+                                self.doc
+                                    .bodies
+                                    .keys()
                                     .filter(|&bi| {
                                         crate::extrude::body_solid_mesh(&self.doc, bi)
                                             .and_then(|m| m.bounds())
@@ -9950,11 +9954,10 @@ impl AppState {
                 let mode = loft.mode.clone();
                 let loft_key = self.doc.lofts.insert(loft);
                 if matches!(mode, crate::model::LoftMode::NewBody) {
-                    self.doc.bodies.push(crate::model::Body {
+                    self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::Loft(loft_key),
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
                     });
                 }
@@ -10033,8 +10036,8 @@ impl AppState {
                 body,
                 orientation,
             } => {
-                if self.doc.bodies.get(body).is_none_or(|b| b.deleted) {
-                    return ActionResult::Err(format!("No body {body}"));
+                if !self.doc.bodies.contains(body) {
+                    return ActionResult::Err(format!("No body {body:?}"));
                 }
                 if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
                     return ActionResult::Err(format!("No drawing {drawing}"));
@@ -10068,7 +10071,8 @@ label_hidden: false,
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!(
-                    "Added {} view of body {body} to drawing {drawing}",
+                    "Added {} view of body {} to drawing {drawing}",
+                    body.index(),
                     orientation.label()
                 );
                 ActionResult::Ok
@@ -10083,7 +10087,8 @@ label_hidden: false,
                 let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 // Views start with no dimensions shown (#331).
                 let view = crate::model::DrawingView {
-                    body: 0,
+                    // A sketch view names no body; a vacant slot never resolves to one.
+                    body: crate::arena::Key::from_bits(u64::MAX),
                     sketch: Some(sketch),
                     orientation,
                     dimensioned_edges: Vec::new(),
@@ -10647,8 +10652,7 @@ label_hidden: false,
                 let mut outputs = Vec::new();
                 for instance in 1..=offsets.len() {
                     for (ti, _) in targets.iter().enumerate() {
-                        outputs.push(self.doc.bodies.len());
-                        self.doc.bodies.push(crate::model::Body {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Repeated {
                                 op: op_index,
                                 target: ti,
@@ -10656,9 +10660,8 @@ label_hidden: false,
                             },
                             material: None,
                             name: None,
-                            deleted: false,
                             shadow: false,
-                        });
+                        }));
                         self.doc.shape_order.push(ShapeKind::Body);
                     }
                 }
@@ -10737,8 +10740,7 @@ label_hidden: false,
                     for slot in have..want {
                         let instance = slot / targets.len() + 1;
                         let ti = slot % targets.len();
-                        outputs.push(self.doc.bodies.len());
-                        self.doc.bodies.push(crate::model::Body {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Repeated {
                                 op,
                                 target: ti,
@@ -10746,9 +10748,8 @@ label_hidden: false,
                             },
                             material: None,
                             name: None,
-                            deleted: false,
                             shadow: false,
-                        });
+                        }));
                         self.doc.shape_order.push(ShapeKind::Body);
                         self.doc.undo_groups.push(1);
                     }
@@ -10756,9 +10757,7 @@ label_hidden: false,
                 } else if want < have {
                     let extras = self.doc.repeat_ops[op].outputs.split_off(want);
                     for out in extras {
-                        if let Some(body) = self.doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        self.doc.bodies.remove(out);
                     }
                 }
                 // Re-point surviving outputs at the (possibly reordered) target list.
@@ -11525,17 +11524,15 @@ label_hidden: false,
                 self.doc.shape_order.push(ShapeKind::MoveOperation);
                 let mut outputs = Vec::with_capacity(targets.len());
                 for (ordinal, _) in targets.iter().enumerate() {
-                    outputs.push(self.doc.bodies.len());
-                    self.doc.bodies.push(crate::model::Body {
+                    outputs.push(self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::Moved {
                             op: op_index,
                             target: ordinal,
                         },
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
-                    });
+                    }));
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
                 self.doc.move_ops[op_index].outputs = outputs;
@@ -11618,14 +11615,12 @@ label_hidden: false,
                 if targets.len() > have {
                     let mut outputs = self.doc.move_ops[op].outputs.clone();
                     for ordinal in have..targets.len() {
-                        outputs.push(self.doc.bodies.len());
-                        self.doc.bodies.push(crate::model::Body {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Moved { op, target: ordinal },
                             material: None,
                             name: None,
-                            deleted: false,
                             shadow: false,
-                        });
+                        }));
                         self.doc.shape_order.push(ShapeKind::Body);
                         self.doc.undo_groups.push(1);
                     }
@@ -11633,9 +11628,7 @@ label_hidden: false,
                 } else if targets.len() < have {
                     let outputs = self.doc.move_ops[op].outputs.split_off(targets.len());
                     for out in outputs {
-                        if let Some(body) = self.doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        self.doc.bodies.remove(out);
                     }
                 }
                 recompute_moved_planes(&mut self.doc);
@@ -11858,14 +11851,12 @@ label_hidden: false,
                 self.doc.shape_order.push(ShapeKind::MirrorOperation);
                 let mut outputs = Vec::with_capacity(targets.len());
                 for (ordinal, _) in targets.iter().enumerate() {
-                    outputs.push(self.doc.bodies.len());
-                    self.doc.bodies.push(crate::model::Body {
+                    outputs.push(self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::Mirrored { op: op_index, target: ordinal },
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
-                    });
+                    }));
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
                 self.doc.mirror_ops[op_index].outputs = outputs;
@@ -11917,14 +11908,12 @@ label_hidden: false,
                 if targets.len() > have {
                     let mut outputs = self.doc.mirror_ops[op].outputs.clone();
                     for ordinal in have..targets.len() {
-                        outputs.push(self.doc.bodies.len());
-                        self.doc.bodies.push(crate::model::Body {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Mirrored { op, target: ordinal },
                             material: None,
                             name: None,
-                            deleted: false,
                             shadow: false,
-                        });
+                        }));
                         self.doc.shape_order.push(ShapeKind::Body);
                         self.doc.undo_groups.push(1);
                     }
@@ -11932,9 +11921,7 @@ label_hidden: false,
                 } else if targets.len() < have {
                     let outputs = self.doc.mirror_ops[op].outputs.split_off(targets.len());
                     for out in outputs {
-                        if let Some(body) = self.doc.bodies.get_mut(out) {
-                            body.deleted = true;
-                        }
+                        self.doc.bodies.remove(out);
                     }
                 }
                 self.refresh_document_health();
@@ -12017,17 +12004,15 @@ label_hidden: false,
                 self.doc.shape_order.push(ShapeKind::BooleanOperation);
                 let mut outputs = Vec::with_capacity(solids);
                 for ordinal in 0..solids {
-                    outputs.push(self.doc.bodies.len());
-                    self.doc.bodies.push(crate::model::Body {
+                    outputs.push(self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::Boolean {
                             op: op_index,
                             solid: ordinal,
                         },
                         material: None,
                         name: None,
-                        deleted: false,
                         shadow: false,
-                    });
+                    }));
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
                 self.doc.boolean_ops[op_index].outputs = outputs;
@@ -12158,14 +12143,12 @@ label_hidden: false,
                         .unwrap_or(1)
                         .max(1);
                     for piece in 0..pieces {
-                        outputs.push(self.doc.bodies.len());
-                        self.doc.bodies.push(crate::model::Body {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Sliced { op: op_index, target, piece },
                             material: None,
                             name: None,
-                            deleted: false,
                             shadow: false,
-                        });
+                        }));
                         self.doc.shape_order.push(ShapeKind::Body);
                     }
                 }
@@ -12238,26 +12221,21 @@ label_hidden: false,
                     if let Some(&bi) = existing.get(i) {
                         if let Some(body) = self.doc.bodies.get_mut(bi) {
                             body.source = source;
-                            body.deleted = false;
                         }
                         outputs.push(bi);
                     } else {
-                        outputs.push(self.doc.bodies.len());
-                        self.doc.bodies.push(crate::model::Body {
+                        outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source,
                             material: None,
                             name: None,
-                            deleted: false,
                             shadow: false,
-                        });
+                        }));
                         self.doc.shape_order.push(ShapeKind::Body);
                         self.doc.undo_groups.push(1);
                     }
                 }
                 for &bi in existing.iter().skip(desired.len()) {
-                    if let Some(body) = self.doc.bodies.get_mut(bi) {
-                        body.deleted = true;
-                    }
+                    self.doc.bodies.remove(bi);
                 }
                 self.doc.slice_ops[op].outputs = outputs;
                 self.refresh_document_health();
@@ -13048,7 +13026,7 @@ label_hidden: false,
                     .materials
                     .insert(crate::model::Material { name: name.clone(), color });
                 for bi in &bodies {
-                    if let Some(body) = self.doc.bodies.get_mut(*bi).filter(|b| !b.deleted) {
+                    if let Some(body) = self.doc.bodies.get_mut(*bi) {
                         body.material = Some(key);
                     }
                 }
@@ -13061,8 +13039,8 @@ label_hidden: false,
                         return ActionResult::Err(format!("Unknown material {mi:?}"));
                     }
                 }
-                let Some(b) = self.doc.bodies.get_mut(body).filter(|b| !b.deleted) else {
-                    return ActionResult::Err(format!("Unknown body {body}"));
+                let Some(b) = self.doc.bodies.get_mut(body) else {
+                    return ActionResult::Err(format!("Unknown body {body:?}"));
                 };
                 b.material = material;
                 let label = match material {
@@ -14584,7 +14562,6 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
             length_dim_offset: None,
             length_expr: None,
             name: None,
-            deleted: false,
             shadow: false,
             // #494: curved sources produce curved offsets (handles included).
             bezier: seg.bezier.map(|[c0, c1]| [(c0.x, c0.y), (c1.x, c1.y)]),
@@ -14624,7 +14601,6 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
             diameter_dim_offset: None,
             diameter_expr: None,
             name: None,
-            deleted: false,
             shadow: false,
             ..src
         };
@@ -14703,7 +14679,6 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
             length_dim_offset: None,
             length_expr: None,
             name: None,
-            deleted: false,
             shadow: false,
             bezier,
             chamfer_fillet_parent: None,
@@ -14741,7 +14716,6 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
             diameter_dim_offset: None,
             diameter_expr: None,
             name: None,
-            deleted: false,
             shadow: false,
             ..src
         };
@@ -15250,11 +15224,11 @@ fn move_status(bodies: usize, planes: usize, images: usize) -> String {
 fn handoff_bodies(
     doc: &crate::model::Document,
     handoff: &[crate::hierarchy::SceneElement],
-) -> Vec<usize> {
-    let mut out: Vec<usize> = Vec::new();
+) -> Vec<crate::model::BodyKey> {
+    let mut out: Vec<crate::model::BodyKey> = Vec::new();
     for element in handoff {
         if let crate::hierarchy::SceneElement::Body(bi) = element {
-            if doc.bodies.get(*bi).is_some_and(|b| !b.deleted && !b.shadow)
+            if doc.bodies.get(*bi).is_some_and(|b| !b.shadow)
                 && !out.contains(bi)
             {
                 out.push(*bi);
@@ -15552,7 +15526,7 @@ pub fn apply_pick(
             true
         }
         (P::MirrorTargets, SceneElement::Body(bi)) => {
-            if state.doc.bodies.get(*bi).is_none_or(|b| b.deleted || b.shadow) {
+            if state.doc.bodies.get(*bi).is_none_or(|b| b.shadow) {
                 return false;
             }
             let cm = state.creating_mirror.get_or_insert_with(CreatingMirror::default);
@@ -15563,7 +15537,7 @@ pub fn apply_pick(
         // takes it off the other (#970). This rule used to live only in the viewport handler,
         // so a pane click could put the same body on both sides at once.
         (P::CombineA | P::CombineB, SceneElement::Body(bi)) => {
-            if state.doc.bodies.get(*bi).is_none_or(|b| b.deleted || b.shadow) {
+            if state.doc.bodies.get(*bi).is_none_or(|b| b.shadow) {
                 return false;
             }
             let to_b = target == P::CombineB;
@@ -15670,8 +15644,8 @@ pub fn body_gathering_tool_active(state: &AppState) -> bool {
         })
 }
 
-pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
-    if state.doc.bodies.get(bi).is_none_or(|b| b.deleted || b.shadow) {
+pub fn toggle_body_in_active_tool(state: &mut AppState, bi: crate::model::BodyKey) -> bool {
+    if state.doc.bodies.get(bi).is_none_or(|b| b.shadow) {
         return false;
     }
     match state.tool {
@@ -16011,6 +15985,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
 
     /// #991: a two-sided joint's parts are picked as two named slots — the **mobile** part and
@@ -16020,7 +15995,7 @@ mod tests {
     #[test]
     fn a_joints_mobile_and_fixed_slots_fill_in_either_order() {
         use crate::model::JointRef;
-        let (a, b) = (JointRef::Body(0), JointRef::Body(1));
+        let (a, b) = (JointRef::Body(bkey(0)), JointRef::Body(bkey(1)));
 
         // Mobile first, then fixed.
         let mut cj = CreatingJoint::default();
@@ -16044,7 +16019,7 @@ mod tests {
         assert_eq!(cj.members[cj.base], b);
 
         // Replacing one side leaves the other alone.
-        let c = JointRef::Body(2);
+        let c = JointRef::Body(bkey(2));
         cj.set_mobile(Some(c));
         assert_eq!(cj.mobile_member(), Some(c));
         assert_eq!(cj.fixed_member(), Some(b));
@@ -16104,12 +16079,12 @@ mod tests {
 
         // Switching back to Combine folds side B into side A, as the pane's row does.
         let cb = state.creating_boolean.as_mut().unwrap();
-        cb.a = vec![0];
-        cb.b = vec![1];
+        cb.a = vec![bkey(0)];
+        cb.b = vec![bkey(1)];
         cb.picking_b = true;
         set_tool_mode(&mut state, "combine").unwrap();
         let cb = state.creating_boolean.as_ref().unwrap();
-        assert_eq!(cb.a, vec![0, 1]);
+        assert_eq!(cb.a, vec![bkey(0), bkey(1)]);
         assert!(cb.b.is_empty());
         assert!(!cb.picking_b);
 
@@ -16205,7 +16180,7 @@ mod tests {
             [Vec3::new(2.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 2.0, 1.0)],
         ];
         state.import_mesh_body("tetra.stl", tetra, None);
-        let body = state.doc.bodies.len() - 1;
+        let body = state.doc.bodies.keys().last().unwrap();
 
         let r = state.apply(Action::CreateMirrorOperation {
             plane: FaceId::ConstructionPlane(0),
@@ -16217,7 +16192,7 @@ mod tests {
         assert_eq!(state.doc.mirror_ops[0].outputs.len(), 1);
 
         // The original body is kept and NOT shadowed (a mirror adds, it doesn't relocate).
-        assert!(!state.doc.bodies[body].deleted && !state.doc.bodies[body].shadow);
+        assert!(state.doc.bodies.get(body).is_some_and(|b| !b.shadow));
 
         // The reflected body's geometry sits below the plane (z in [-2, -1]).
         let out = state.doc.mirror_ops[0].outputs[0];
@@ -16235,12 +16210,12 @@ mod tests {
             targets: vec![body],
             mode: crate::model::MirrorMode::NewBody,
         });
-        assert!(state.doc.bodies.get(out).is_some_and(|b| !b.deleted));
+        assert!(state.doc.bodies.contains(out));
 
         // Deleting the op removes the reflection but keeps the source.
         state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
-        assert!(state.doc.bodies[out].deleted, "reflection removed");
-        assert!(!state.doc.bodies[body].deleted, "source kept");
+        assert!(!state.doc.bodies.contains(out), "reflection removed");
+        assert!(!!state.doc.bodies.contains(body), "source kept");
     }
 
     /// #639: the Mirror tool's Output modes. `Join` fuses each reflection into its own source
@@ -16254,7 +16229,7 @@ mod tests {
         // z in [-5, 0], so a Join spans [-5, 5]. (Join/Cut are kernel booleans, so this
         // needs a real BREP body, not an imported mesh.)
         let mut state = box_extrusion_state();
-        let body = 0;
+        let body = bkey(0);
 
         let r = state.apply(Action::CreateMirrorOperation {
             plane: FaceId::ConstructionPlane(0),
@@ -16302,7 +16277,7 @@ mod tests {
 
         // Deleting the op still keeps the source.
         state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
-        assert!(!state.doc.bodies[body].deleted, "source kept");
+        assert!(!!state.doc.bodies.contains(body), "source kept");
     }
 
     /// #523/#528: an in-sketch mirror reflects the picked lines/circles across the mirror
@@ -16492,16 +16467,16 @@ mod tests {
             state.import_mesh_body(name, tetra.clone(), None);
         }
         // Body 0 → Frame (0), body 1 → nested (1), body 2 → the unrelated Other (2).
-        state.doc.set_component_member(CM::Body(0), Some(0));
-        state.doc.set_component_member(CM::Body(1), Some(1));
-        state.doc.set_component_member(CM::Body(2), Some(2));
+        state.doc.set_component_member(CM::Body(bkey(0)), Some(0));
+        state.doc.set_component_member(CM::Body(bkey(1)), Some(1));
+        state.doc.set_component_member(CM::Body(bkey(2)), Some(2));
 
         // Exporting Frame gathers its own body and the nested component's, not Other's.
         let mut frame = state.component_body_indices(0);
         frame.sort_unstable();
-        assert_eq!(frame, vec![0, 1], "Frame export = its body + the nested body");
-        assert_eq!(state.component_body_indices(1), vec![1], "the nested component alone");
-        assert_eq!(state.component_body_indices(2), vec![2], "Other is independent");
+        assert_eq!(frame, vec![bkey(0), bkey(1)], "Frame export = its body + the nested body");
+        assert_eq!(state.component_body_indices(1), vec![bkey(1)], "the nested component alone");
+        assert_eq!(state.component_body_indices(2), vec![bkey(2)], "Other is independent");
 
         // The export produces real geometry.
         let stl = state
@@ -16663,17 +16638,17 @@ mod tests {
 
         state.apply(Action::SetTool(Tool::Move));
         // A body click lands in the Move set, not the persistent selection.
-        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
-        assert_eq!(state.creating_move.as_ref().unwrap().targets, vec![0]);
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(0)), additive: false });
+        assert_eq!(state.creating_move.as_ref().unwrap().targets, vec![bkey(0)]);
         assert!(state.scene_selection.is_empty(), "tool click must not touch the selection");
         // Clicking again toggles it back out.
-        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(0)), additive: false });
         assert!(state.creating_move.as_ref().unwrap().targets.is_empty());
 
         // With the Select tool, a body click is an ordinary selection.
         state.apply(Action::SetTool(Tool::Select));
-        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
-        assert!(state.scene_selection.is_selected(SceneElement::Body(0)));
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(0)), additive: false });
+        assert!(state.scene_selection.is_selected(SceneElement::Body(bkey(0))));
     }
 
     /// #217: a Move op can target a construction plane, transforming its frame in place; the
@@ -17053,7 +17028,7 @@ mod tests {
         let meshes = crate::extrude::precompute_boolean(
             &state.doc,
             crate::model::BooleanOpKind::Combine,
-            &[0, 1],
+            &[bkey(0), bkey(1)],
             &[],
             false,
         )
@@ -17069,7 +17044,7 @@ mod tests {
         assert!(matches!(
             state.apply(Action::CreateBooleanOperation {
                 kind: crate::model::BooleanOpKind::Combine,
-                a: vec![0, 1],
+                a: vec![bkey(0), bkey(1)],
                 b: Vec::new(),
                 keep_b: false,
                 solid_count: Some(n),
@@ -17089,14 +17064,14 @@ mod tests {
 
         // A half-picked cut has no result to show yet.
         assert!(
-            crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0], &[]).is_none(),
+            crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[]).is_none(),
             "a cut with no B side previews nothing"
         );
 
-        let preview = crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0], &[1])
+        let preview = crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[bkey(1)])
             .expect("a fully picked cut previews");
         let committed =
-            crate::extrude::precompute_boolean(&state.doc, kind, &[0], &[1], false)
+            crate::extrude::precompute_boolean(&state.doc, kind, &[bkey(0)], &[bkey(1)], false)
                 .expect("the same cut commits");
         let tris = |ms: &[crate::extrude::SolidMesh]| -> usize {
             ms.iter().map(|m| m.triangles.len()).sum()
@@ -17121,8 +17096,8 @@ mod tests {
     fn a_half_picked_combine_previews_nothing() {
         let state = two_box_state(true);
         let kind = crate::model::BooleanOpKind::Combine;
-        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0], &[]).is_none());
-        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[0, 1], &[]).is_some());
+        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0)], &[]).is_none());
+        assert!(crate::extrude::preview_boolean_meshes(&state.doc, kind, &[bkey(0), bkey(1)], &[]).is_some());
     }
 
     /// #214: the revolve angle (rotate, radians) and construction-plane offset (mm) gizmos are
@@ -17334,13 +17309,13 @@ mod tests {
         let mesh = state.doc.imported_meshes.keys().next().expect("the imported mesh");
         assert_eq!(state.doc.imported_meshes[mesh].triangles.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
-        assert_eq!(state.doc.bodies[0].source, crate::model::BodySource::Imported(mesh));
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source, crate::model::BodySource::Imported(mesh));
         assert_eq!(
-            state.doc.bodies[0].name.as_deref(),
+            state.doc.bodies.values().nth(0).unwrap().name.as_deref(),
             path.file_stem().unwrap().to_str()
         );
 
-        let mesh = crate::extrude::body_solid_mesh(&state.doc, 0).expect("imported mesh");
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("imported mesh");
         assert_eq!(mesh.triangles.len(), 1);
 
         let _ = std::fs::remove_file(&path);
@@ -17568,11 +17543,10 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         let path = std::env::temp_dir().join(name);
@@ -17583,7 +17557,7 @@ mod tests {
 
     /// Import a solid unit into a fresh state anchored in the temp dir; returns the state
     /// and the materialized unit body's index (#724).
-    fn state_with_solid_unit(file: &str, anchor: &str) -> (AppState, usize) {
+    fn state_with_solid_unit(file: &str, anchor: &str) -> (AppState, crate::model::BodyKey) {
         let unit_path = write_solid_unit_file(file);
         let mut state = AppState::default();
         state.path = Some(std::env::temp_dir().join(anchor).to_string_lossy().to_string());
@@ -17598,7 +17572,7 @@ mod tests {
             .doc
             .bodies
             .iter()
-            .position(|b| matches!(b.source, crate::model::BodySource::UnitInstance(0)))
+            .find_map(|(k, b)| matches!(b.source, crate::model::BodySource::UnitInstance(0)).then_some(k))
             .expect("the instance materialized as a body");
         (state, body)
     }
@@ -17820,9 +17794,9 @@ mod tests {
             .doc
             .bodies
             .iter()
-            .position(|b| {
-                !b.deleted
-                    && matches!(b.source, crate::model::BodySource::UnitCut { instance: 0, .. })
+            .find_map(|(k, b)| {
+                matches!(b.source, crate::model::BodySource::UnitCut { instance: 0, .. })
+                    .then_some(k)
             })
             .expect("the cut lands on the document's own UnitCut body");
         assert!(
@@ -17870,7 +17844,7 @@ mod tests {
             .doc
             .bodies
             .iter()
-            .position(|b| !b.deleted && !b.shadow && matches!(b.source, crate::model::BodySource::Extrusion(_)))
+            .find_map(|(k, b)| (!b.shadow && matches!(b.source, crate::model::BodySource::Extrusion(_))).then_some(k))
             .expect("the plate body exists");
         let rb = state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
@@ -18471,7 +18445,7 @@ mod tests {
         );
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
-            state.doc.bodies[0].name.as_deref(),
+            state.doc.bodies.values().nth(0).unwrap().name.as_deref(),
             Some("Black-Oxide Steel U-Bolt (3201T26)"),
             "and reads as the part it is"
         );
@@ -18503,7 +18477,7 @@ mod tests {
         assert!(matches!(state.import_catalog_part(&caught), ActionResult::Ok));
         assert_eq!(state.doc.bodies.len(), before + 1, "the part became a body");
         assert_eq!(
-            state.doc.bodies.last().unwrap().name.as_deref(),
+            state.doc.bodies.values().last().unwrap().name.as_deref(),
             Some("91290A115"),
             "the body is named after the part number"
         );
@@ -18601,7 +18575,7 @@ mod tests {
             "a kernel STEP import must keep the BREP bytes"
         );
         assert!(
-            crate::extrude::occt_body_shape(&state.doc, 0).is_some(),
+            crate::extrude::occt_body_shape(&state.doc, bkey(0)).is_some(),
             "the import must re-read as a kernel solid"
         );
 
@@ -18630,7 +18604,7 @@ mod tests {
         assert!(matches!(
             state.apply(Action::CreateBooleanOperation {
                 kind: crate::model::BooleanOpKind::Combine,
-                a: vec![0, 1],
+                a: vec![bkey(0), bkey(1)],
                 b: Vec::new(),
                 keep_b: false,
                 solid_count: None,
@@ -18922,15 +18896,14 @@ mod tests {
     fn set_tool_combine_seeds_from_selection() {
         let mut state = AppState::default();
         for ei in 0..2 {
-            state.doc.bodies.push(crate::model::Body {
+            state.doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::single(ei),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
-        for bi in 0..2 {
+        for bi in state.doc.bodies.keys().collect::<Vec<_>>() {
             crate::selection::click_scene_selection(
                 &mut state.scene_selection,
                 crate::hierarchy::SceneElement::Body(bi),
@@ -18939,7 +18912,14 @@ mod tests {
         }
         state.apply(Action::SetTool(Tool::Combine));
         let cb = state.creating_boolean.as_ref().expect("the Combine draft");
-        assert_eq!(cb.a, vec![0, 1], "both selected bodies seed the picker");
+        assert_eq!(
+            cb.a,
+            vec![
+                bkey(0),
+                bkey(1)
+            ],
+            "both selected bodies seed the picker"
+        );
     }
 
     /// #941: Esc inside a sketch falls back to the Select tool, and that fallback must run
@@ -19012,12 +18992,12 @@ mod tests {
         let rev = state.doc.revolutions.keys().next().expect("the revolve");
         assert!((state.doc.revolutions[rev].angle_deg - 360.0).abs() < 1e-3);
         assert_eq!(
-            state.doc.bodies.last().map(|b| b.source.clone()),
+            state.doc.bodies.values().last().map(|b| b.source.clone()),
             Some(crate::model::BodySource::Revolve(rev))
         );
         assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Revolution));
         assert!(state.creating_revolve.is_none());
-        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.len() - 1).is_some());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.keys().last().unwrap()).is_some());
 
         state.apply(Action::UndoLast);
         assert!(state.doc.revolutions.is_empty());
@@ -19071,12 +19051,12 @@ mod tests {
         let sweep = state.doc.sweeps.keys().next().expect("the sweep");
         assert_eq!(state.doc.sweeps[sweep].path, vec![li]);
         assert_eq!(
-            state.doc.bodies.last().map(|b| b.source.clone()),
+            state.doc.bodies.values().last().map(|b| b.source.clone()),
             Some(crate::model::BodySource::Sweep(sweep))
         );
         assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Sweep));
         assert!(state.creating_sweep.is_none());
-        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.len() - 1).is_some());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.keys().last().unwrap()).is_some());
 
         state.apply(Action::UndoLast);
         assert!(state.doc.sweeps.is_empty());
@@ -19330,12 +19310,12 @@ mod tests {
         let loft_key = state.doc.lofts.keys().next().expect("one loft");
         assert_eq!(state.doc.lofts[loft_key].sections.len(), 2);
         assert_eq!(
-            state.doc.bodies.last().map(|b| b.source.clone()),
+            state.doc.bodies.values().last().map(|b| b.source.clone()),
             Some(crate::model::BodySource::Loft(loft_key))
         );
         assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Loft));
         assert!(state.creating_loft.is_none());
-        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.len() - 1).is_some());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.keys().last().unwrap()).is_some());
 
         state.apply(Action::UndoLast);
         assert!(state.doc.lofts.is_empty());
@@ -19474,33 +19454,33 @@ mod tests {
         assert_eq!(state.doc.materials[unobtainium].name, "Unobtainium");
         // A body carries no material of its own until one is picked; that reads as the
         // document's first material — Unobtainium (#924).
-        assert_eq!(state.doc.bodies[0].material, None);
+        assert_eq!(state.doc.bodies[bkey(0)].material, None);
 
         state.apply(Action::AddMaterial {
             name: Some("Brass".to_string()),
             color: Some([0x10, 0x20, 0x30]),
-            bodies: vec![0],
+            bodies: vec![bkey(0)],
         });
-        let brass = state.doc.bodies[0].material.expect("Brass was handed to it");
+        let brass = state.doc.bodies[bkey(0)].material.expect("Brass was handed to it");
         assert_eq!(state.doc.materials.len(), seeded + 1);
         assert_eq!(state.doc.materials[brass].name, "Brass");
-        assert_eq!(state.doc.bodies[1].material, None, "only the listed bodies get it");
+        assert_eq!(state.doc.bodies[bkey(1)].material, None, "only the listed bodies get it");
 
         // A second material gets the next palette colour and its own name by default.
-        state.apply(Action::AddMaterial { name: None, color: None, bodies: vec![1] });
-        let second = state.doc.bodies[1].material.expect("and this one to the other body");
+        state.apply(Action::AddMaterial { name: None, color: None, bodies: vec![bkey(1)] });
+        let second = state.doc.bodies[bkey(1)].material.expect("and this one to the other body");
         assert_ne!(state.doc.materials[second].color, state.doc.materials[brass].color);
 
-        state.apply(Action::SetBodyMaterial { body: 1, material: Some(brass) });
-        assert_eq!(state.doc.bodies[1].material, Some(brass));
-        state.apply(Action::SetBodyMaterial { body: 1, material: Some(unobtainium) });
+        state.apply(Action::SetBodyMaterial { body: bkey(1), material: Some(brass) });
+        assert_eq!(state.doc.bodies[bkey(1)].material, Some(brass));
+        state.apply(Action::SetBodyMaterial { body: bkey(1), material: Some(unobtainium) });
         assert_eq!(
-            state.doc.bodies[1].material,
+            state.doc.bodies[bkey(1)].material,
             Some(unobtainium),
             "back to Unobtainium"
         );
-        state.apply(Action::SetBodyMaterial { body: 1, material: None });
-        assert_eq!(state.doc.bodies[1].material, None, "and clearing it reads the same");
+        state.apply(Action::SetBodyMaterial { body: bkey(1), material: None });
+        assert_eq!(state.doc.bodies[bkey(1)].material, None, "and clearing it reads the same");
 
         state.apply(Action::SetMaterialName { material: brass, name: "  Bronze ".to_string() });
         assert_eq!(state.doc.materials[brass].name, "Bronze", "the name is trimmed");
@@ -19541,11 +19521,11 @@ mod tests {
             key
         };
         assert!(matches!(
-            state.apply(Action::SetBodyMaterial { body: 0, material: Some(unknown) }),
+            state.apply(Action::SetBodyMaterial { body: bkey(0), material: Some(unknown) }),
             ActionResult::Err(_)
         ));
         assert!(matches!(
-            state.apply(Action::SetBodyMaterial { body: 99, material: None }),
+            state.apply(Action::SetBodyMaterial { body: bkey(99), material: None }),
             ActionResult::Err(_)
         ));
         // Undo takes the added material back out, leaving the seeded palette.
@@ -20753,6 +20733,61 @@ mod tests {
         assert!(!state.doc.lines[0].shadow && !state.doc.lines[1].shadow);
     }
 
+    /// #1055/#1060: a key must mean the same thing across an undo. Undo restores a whole
+    /// `Document`, so the arena's free list comes back with it — but the argument is
+    /// reasoning, so this is the evidence: delete a body, make another (which reuses the
+    /// freed slot), then walk back and forward through history and check that every key
+    /// captured along the way resolves to its own body or to nothing, never to a different
+    /// one. With positional identity the recreated body would have answered to the deleted
+    /// one's index.
+    #[test]
+    fn a_body_key_never_resolves_to_a_different_body_across_undo_and_redo() {
+        let mut state = two_box_state(false);
+        let first = state.doc.body_at(0).expect("two bodies");
+        let second = state.doc.body_at(1).expect("two bodies");
+        let name_of = |s: &AppState, k: crate::model::BodyKey| {
+            s.doc.bodies.get(k).map(|b| format!("{:?}", b.source))
+        };
+        let first_source = name_of(&state, first).expect("body 0 is there");
+
+        state.apply(Action::DeleteElement {
+            element: crate::hierarchy::SceneElement::Body(first),
+        });
+        assert!(state.doc.bodies.get(first).is_none(), "deleting removes it");
+
+        // A fresh body reuses the freed slot, and must not answer to the old key.
+        let reused = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(99),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        assert_eq!(reused.index(), first.index(), "the slot was reused");
+        assert!(state.doc.bodies.get(first).is_none(), "the stale key stays dead");
+
+        // Back through history: the deleted body returns under its own key, and the
+        // scratch body's key stops resolving because that document never had it.
+        state.apply(Action::UndoLast);
+        assert_eq!(
+            name_of(&state, first).as_deref(),
+            Some(first_source.as_str()),
+            "undo brings the body back as itself"
+        );
+        assert!(name_of(&state, second).is_some(), "and its neighbour is untouched");
+        assert_ne!(
+            name_of(&state, reused),
+            Some(format!("{:?}", crate::model::BodySource::Extrusion(99))),
+            "the scratch body's key does not resolve to it in the restored document"
+        );
+
+        // Forward again: the deletion is back, and `first` is absent rather than aliased.
+        state.apply(Action::RedoLast);
+        assert!(
+            state.doc.bodies.get(first).is_none(),
+            "redo re-applies the deletion; the key reads as gone, not as someone else"
+        );
+    }
+
     fn box_extrusion_state() -> AppState {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
@@ -20829,7 +20864,7 @@ mod tests {
         let mut state = two_box_state(true);
         let result = state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Combine,
-            a: vec![0, 1],
+            a: vec![bkey(0), bkey(1)],
             b: Vec::new(),
             keep_b: false,
             solid_count: None,
@@ -20845,14 +20880,14 @@ mod tests {
             ));
             assert!(!state.doc.bodies[out].shadow);
         }
-        assert!(state.doc.bodies[0].shadow, "input A should be a shadow body");
-        assert!(state.doc.bodies[1].shadow, "input B should be a shadow body");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "input A should be a shadow body");
+        assert!(state.doc.bodies.values().nth(1).unwrap().shadow, "input B should be a shadow body");
 
         state.apply(Action::UndoLast);
         assert!(state.doc.boolean_ops.is_empty());
         assert_eq!(state.doc.bodies.len(), 2);
-        assert!(!state.doc.bodies[0].shadow);
-        assert!(!state.doc.bodies[1].shadow);
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow);
+        assert!(!state.doc.bodies.values().nth(1).unwrap().shadow);
     }
 
     /// Cut with keep-B leaves the B-side inputs as real bodies.
@@ -20861,14 +20896,14 @@ mod tests {
         let mut state = two_box_state(true);
         let result = state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: true,
             solid_count: None,
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert!(state.doc.bodies[0].shadow);
-        assert!(!state.doc.bodies[1].shadow, "keep_b must leave B real");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
+        assert!(!state.doc.bodies.values().nth(1).unwrap().shadow, "keep_b must leave B real");
     }
 
     /// Validation: combine needs two inputs; consumed (shadow) inputs are rejected; the
@@ -20879,7 +20914,7 @@ mod tests {
         assert!(matches!(
             state.apply(Action::CreateBooleanOperation {
                 kind: crate::model::BooleanOpKind::Combine,
-                a: vec![0],
+                a: vec![bkey(0)],
                 b: Vec::new(),
                 keep_b: false,
                 solid_count: None,
@@ -20889,7 +20924,7 @@ mod tests {
         assert!(matches!(
             state.apply(Action::CreateBooleanOperation {
                 kind: crate::model::BooleanOpKind::Cut,
-                a: vec![0],
+                a: vec![bkey(0)],
                 b: Vec::new(),
                 keep_b: false,
                 solid_count: None,
@@ -20899,7 +20934,7 @@ mod tests {
         // Consume both, then try to reuse a shadow input.
         state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Combine,
-            a: vec![0, 1],
+            a: vec![bkey(0), bkey(1)],
             b: Vec::new(),
             keep_b: false,
             solid_count: None,
@@ -20909,7 +20944,7 @@ mod tests {
             state.apply(Action::CreateBooleanOperation {
                 kind: crate::model::BooleanOpKind::Cut,
                 a: vec![out],
-                b: vec![0],
+                b: vec![bkey(0)],
                 keep_b: false,
                 solid_count: None,
             }),
@@ -20923,22 +20958,22 @@ mod tests {
         let mut state = two_box_state(true);
         state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: false,
             solid_count: None,
         });
-        assert!(state.doc.bodies[1].shadow);
+        assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
         let result = state.apply(Action::EditBooleanOperation {
             op: 0,
             kind: crate::model::BooleanOpKind::Cut,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: true,
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert!(state.doc.bodies[0].shadow);
-        assert!(!state.doc.bodies[1].shadow, "edit to keep_b must release B");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
+        assert!(!state.doc.bodies.values().nth(1).unwrap().shadow, "edit to keep_b must release B");
         assert_eq!(state.doc.boolean_ops[0].keep_b, true);
     }
 
@@ -20948,8 +20983,8 @@ mod tests {
         let mut state = two_box_state(true);
         state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Intersect,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: false,
             solid_count: None,
         });
@@ -20959,9 +20994,9 @@ mod tests {
             SceneElement::BooleanOp(0),
         ));
         assert!(state.doc.boolean_ops[0].deleted);
-        assert!(state.doc.bodies[out].deleted);
-        assert!(!state.doc.bodies[0].shadow);
-        assert!(!state.doc.bodies[1].shadow);
+        assert!(!state.doc.bodies.contains(out));
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow);
+        assert!(!state.doc.bodies.values().nth(1).unwrap().shadow);
     }
 
     /// Move tool: committing shadows the inputs, creates the operation + one moved output
@@ -20977,7 +21012,7 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            targets: vec![0, 1],
+            targets: vec![bkey(0), bkey(1)],
             plane_targets: vec![],
             image_targets: vec![],
             instance_targets: Vec::new(),
@@ -20989,10 +21024,10 @@ mod tests {
         assert_eq!(state.doc.move_ops.len(), 1);
         let op = state.doc.move_ops[0].clone();
         assert_eq!(op.outputs.len(), 2);
-        assert!(state.doc.bodies[0].shadow);
-        assert!(state.doc.bodies[1].shadow);
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
+        assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
         // The moved copy sits 25mm along +X of its source.
-        let src = crate::extrude::body_solid_mesh(&state.doc, 0).unwrap();
+        let src = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).unwrap();
         let out = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]).unwrap();
         let min_x = |m: &crate::extrude::SolidMesh| {
             m.triangles
@@ -21006,7 +21041,7 @@ mod tests {
         state.apply(Action::UndoLast);
         assert!(state.doc.move_ops.is_empty());
         assert_eq!(state.doc.bodies.len(), 2);
-        assert!(!state.doc.bodies[0].shadow);
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow);
     }
 
     /// Editing a move re-points targets and grows/shrinks outputs to match.
@@ -21021,7 +21056,7 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: vec![],
             image_targets: vec![],
             instance_targets: Vec::new(),
@@ -21039,7 +21074,7 @@ mod tests {
             start_point_c: None,
             end_point_c: None,
             op: 0,
-            targets: vec![0, 1],
+            targets: vec![bkey(0), bkey(1)],
             plane_targets: vec![],
             image_targets: vec![],
             instance_targets: Vec::new(),
@@ -21049,7 +21084,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops[0].outputs.len(), 2);
-        assert!(state.doc.bodies[1].shadow);
+        assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
     }
 
     /// A move driven by a parameter follows parameter edits at rebuild time.
@@ -21068,7 +21103,7 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: vec![],
             image_targets: vec![],
             instance_targets: Vec::new(),
@@ -21088,7 +21123,7 @@ mod tests {
     fn repeat_count_gap_creates_offset_instances() {
         let mut state = two_box_state(false);
         let result = state.apply(Action::CreateRepeatOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -21105,9 +21140,9 @@ mod tests {
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.repeat_ops[0].clone();
         assert_eq!(op.outputs.len(), 2, "3 instances = original + 2 outputs");
-        assert!(!state.doc.bodies[0].shadow, "repeat originals stay real");
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "repeat originals stay real");
         // Box extent along X is 10, so step = 15: instance offsets 15 and 30.
-        let min_x = |bi: usize| {
+        let min_x = |bi: crate::model::BodyKey| {
             crate::extrude::body_solid_mesh(&state.doc, bi)
                 .unwrap()
                 .triangles
@@ -21116,7 +21151,7 @@ mod tests {
                 .map(|p| p.x)
                 .fold(f32::INFINITY, f32::min)
         };
-        let base = min_x(0);
+        let base = min_x(bkey(0));
         assert!((min_x(op.outputs[0]) - base - 15.0).abs() < 1e-3);
         assert!((min_x(op.outputs[1]) - base - 30.0).abs() < 1e-3);
 
@@ -21132,7 +21167,7 @@ mod tests {
         // Box extent 10 along X; wall length 100 -> span 90; max pitch 40 -> 4 instances
         // at even pitch 30.
         let result = state.apply(Action::CreateRepeatOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -21160,7 +21195,7 @@ mod tests {
     fn repeat_edit_resizes_outputs() {
         let mut state = two_box_state(false);
         state.apply(Action::CreateRepeatOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -21177,7 +21212,7 @@ mod tests {
         assert_eq!(state.doc.repeat_ops[0].outputs.len(), 1);
         let result = state.apply(Action::EditRepeatOperation {
             op: 0,
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -21204,7 +21239,7 @@ mod tests {
             expression: "4".to_string(),
         });
         state.apply(Action::CreateRepeatOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
@@ -21581,7 +21616,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: 0,
-            body: 0,
+            body: bkey(0),
             orientation: DrawingOrientation::Front,
         });
 
@@ -21619,7 +21654,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: 0,
-            body: 0,
+            body: bkey(0),
             orientation: DrawingOrientation::Front,
         });
         let result = state.apply(Action::SetDrawingViewScale {
@@ -21657,7 +21692,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: 0,
-            body: 0,
+            body: bkey(0),
             orientation: DrawingOrientation::Isometric,
         });
 
@@ -21717,7 +21752,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: 0,
-            body: 0,
+            body: bkey(0),
             orientation: DrawingOrientation::Front,
         });
         state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.4, pos_y: 0.4 });
@@ -21753,7 +21788,7 @@ mod tests {
         state.apply(Action::SetTool(Tool::DrawingAdd));
 
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Body(0),
+            element: SceneElement::Body(bkey(0)),
             additive: false,
         });
         assert_eq!(state.doc.drawings[0].views.len(), 1, "body click placed a view");
@@ -21856,7 +21891,7 @@ mod tests {
         cr.remove_target(&SceneElement::Circle(1));
         assert!(cr.circle_targets.is_empty());
         // A kind this tool doesn't collect leaves the set alone.
-        cr.remove_target(&SceneElement::Body(0));
+        cr.remove_target(&SceneElement::Body(bkey(0)));
         assert_eq!(cr.line_targets, vec![5]);
         assert!(cr.has_targets());
 
@@ -21937,16 +21972,16 @@ mod tests {
     #[test]
     fn delete_element_tombstones_one_element() {
         let mut state = two_box_state(false);
-        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
-        state.apply(Action::ClickSceneElement { element: SceneElement::Body(1), additive: true });
-        assert!(!state.doc.bodies[0].deleted);
-        state.apply(Action::DeleteElement { element: SceneElement::Body(0) });
-        assert!(state.doc.bodies[0].deleted, "the targeted body is tombstoned");
-        assert!(!state.doc.bodies[1].deleted, "other bodies are untouched");
-        assert!(!state.scene_selection.is_selected(SceneElement::Body(0)), "deleted element leaves the selection");
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(0)), additive: false });
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(1)), additive: true });
+        assert!(state.doc.bodies.contains(bkey(0)));
+        state.apply(Action::DeleteElement { element: SceneElement::Body(bkey(0)) });
+        assert!(!state.doc.bodies.contains(bkey(0)), "the targeted body is tombstoned");
+        assert!(state.doc.bodies.contains(bkey(1)), "other bodies are untouched");
+        assert!(!state.scene_selection.is_selected(SceneElement::Body(bkey(0))), "deleted element leaves the selection");
         // Undoable.
         state.apply(Action::UndoLast);
-        assert!(!state.doc.bodies[0].deleted, "delete undoes");
+        assert!(state.doc.bodies.contains(bkey(0)), "delete undoes");
     }
 
     /// #241: an origin axis is a selectable element — clicking it lands in the scene selection,
@@ -22314,7 +22349,7 @@ mod tests {
         state.apply(Action::SetTool(Tool::Repeat));
         {
             let cr = state.creating_repeat.as_mut().unwrap();
-            cr.targets = vec![0];
+            cr.targets = vec![bkey(0)];
             cr.axis = Some(crate::model::RevolveAxis::X);
             cr.count = "n = 4".to_string();
             cr.spacing = "10".to_string();
@@ -22331,12 +22366,12 @@ mod tests {
     fn repeat_tool_seeds_selection_and_requires_axis() {
         let mut state = two_box_state(false);
         state.apply(Action::ClickSceneElement {
-            element: crate::hierarchy::SceneElement::Body(0),
+            element: crate::hierarchy::SceneElement::Body(bkey(0)),
             additive: false,
         });
         state.apply(Action::SetTool(Tool::Repeat));
         let cr = state.creating_repeat.as_ref().unwrap();
-        assert_eq!(cr.targets, vec![0], "selected body seeds the repeat targets");
+        assert_eq!(cr.targets, vec![bkey(0)], "selected body seeds the repeat targets");
         assert_eq!(cr.axis, None, "the axis starts unset");
         {
             let cr = state.creating_repeat.as_mut().unwrap();
@@ -22362,7 +22397,7 @@ mod tests {
         state.apply(Action::SetTool(Tool::Move));
         {
             let cm = state.creating_move.as_mut().unwrap();
-            cm.targets = vec![0];
+            cm.targets = vec![bkey(0)];
             cm.tx = "dx = 25mm".to_string();
         }
         assert!(matches!(state.apply(Action::CommitMove), ActionResult::Ok), "{}", state.status);
@@ -22397,7 +22432,7 @@ mod tests {
         let cutter = add_offset_xy_plane(&mut state, 2.5);
         let bodies_before = state.doc.bodies.len();
         let result = state.apply(Action::CreateSliceOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: vec![cutter],
             extend_infinite: true,
         });
@@ -22413,16 +22448,16 @@ mod tests {
             assert!(!state.doc.bodies[out].shadow);
             assert!(
                 crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
-                "fragment {out} should have a kernel mesh"
+                "fragment {out:?} should have a kernel mesh"
             );
         }
-        assert!(state.doc.bodies[0].shadow, "the sliced input becomes a shadow body");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "the sliced input becomes a shadow body");
         assert_eq!(state.doc.bodies.len(), bodies_before + 2);
 
         state.apply(Action::UndoLast);
         assert!(state.doc.slice_ops.is_empty());
         assert_eq!(state.doc.bodies.len(), bodies_before);
-        assert!(!state.doc.bodies[0].shadow, "undo restores the input body");
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "undo restores the input body");
     }
 
     /// A cutter that misses the body leaves it whole (one fragment).
@@ -22432,7 +22467,7 @@ mod tests {
         // Box 0 spans z 0..5; a plane at z=20 is entirely above it.
         let cutter = add_offset_xy_plane(&mut state, 20.0);
         state.apply(Action::CreateSliceOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: vec![cutter],
             extend_infinite: true,
         });
@@ -22446,14 +22481,14 @@ mod tests {
         let miss = add_offset_xy_plane(&mut state, 20.0);
         let hit = add_offset_xy_plane(&mut state, 2.5);
         state.apply(Action::CreateSliceOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: vec![miss],
             extend_infinite: true,
         });
         assert_eq!(state.doc.slice_ops[0].outputs.len(), 1);
         let result = state.apply(Action::EditSliceOperation {
             op: 0,
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: vec![hit],
             extend_infinite: true,
         });
@@ -22463,7 +22498,7 @@ mod tests {
             2,
             "the mid-plane cutter now yields two fragments"
         );
-        assert!(state.doc.bodies[0].shadow);
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
     }
 
     /// Slice rejects an empty cutter set and a shadow input.
@@ -22471,16 +22506,16 @@ mod tests {
     fn slice_validation_rejects_no_cutters_and_shadow_inputs() {
         let mut state = two_box_state(false);
         let no_cutters = state.apply(Action::CreateSliceOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: Vec::new(),
             extend_infinite: true,
         });
         assert!(matches!(no_cutters, ActionResult::Err(_)));
         // Shadow body 0 via a move op, then it can't be sliced.
-        state.doc.bodies[0].shadow = true;
+        state.doc.bodies.values_mut().nth(0).unwrap().shadow = true;
         let cutter = add_offset_xy_plane(&mut state, 2.5);
         let shadowed = state.apply(Action::CreateSliceOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: vec![cutter],
             extend_infinite: true,
         });
@@ -22494,7 +22529,7 @@ mod tests {
         let mut state = two_box_state(false);
         state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Combine,
-            a: vec![0, 1],
+            a: vec![bkey(0), bkey(1)],
             b: Vec::new(),
             keep_b: false,
             solid_count: None,
@@ -22504,7 +22539,7 @@ mod tests {
         for &out in &op.outputs {
             assert!(
                 crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
-                "output body {out} should have a mesh"
+                "output body {out:?} should have a mesh"
             );
         }
     }
@@ -22515,8 +22550,8 @@ mod tests {
         let mut state = two_box_state(true);
         state.apply(Action::CreateBooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
-            a: vec![0],
-            b: vec![1],
+            a: vec![bkey(0)],
+            b: vec![bkey(1)],
             keep_b: false,
             solid_count: None,
         });
@@ -22574,7 +22609,7 @@ mod tests {
         // Sketching on an existing body's face merges into that body by default (#32) — the
         // push extends the original box rather than creating a separate one, so the merged
         // mesh's bounds grow by the default 10mm along the outward normal of the wall.
-        let merged = crate::extrude::body_solid_mesh(&state.doc, 0).unwrap();
+        let merged = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).unwrap();
         let (min, max) = merged.bounds().unwrap();
         let extent = (max - min).max_element();
         assert!(
@@ -22647,7 +22682,7 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
             drawing: 0,
-            body: 0,
+            body: bkey(0),
             orientation: crate::model::DrawingOrientation::Top,
         });
         let center = [100, 200, 300];
@@ -22760,7 +22795,7 @@ mod tests {
         state.doc.circles.push(crate::model::Circle::from_local_center_radius(
             s2, 5.0, 2.5, 2.0, 0.0,
         ));
-        let before = crate::extrude::body_solid_mesh(&state.doc, 0)
+        let before = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
             .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
             .unwrap();
         // Positive distance = along the outward normal = away from the body.
@@ -22776,7 +22811,7 @@ mod tests {
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let cut = state.doc.extrusions.last().unwrap();
         assert!(cut.distance < 0.0, "outward cut flips inward, got {}", cut.distance);
-        let after = crate::extrude::body_solid_mesh(&state.doc, 0)
+        let after = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
             .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
             .unwrap();
         assert!(after < before - 1.0, "the flipped cut removes material: {before} -> {after}");
@@ -22868,7 +22903,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let mut state = box_extrusion_state();
         state.apply(Action::ExitSketch);
-        assert_eq!(state.doc.bodies.iter().filter(|b| !b.deleted).count(), 1);
+        assert_eq!(state.doc.bodies.values().count(), 1);
 
         // A second sketch on the ground plane; project the whole body with one click.
         state.apply(Action::BeginSketch {
@@ -22876,7 +22911,7 @@ mod tests {
             viewport: None,
         });
         let before = state.doc.lines.len();
-        let result = state.apply(Action::ProjectElement { element: SceneElement::Body(0) });
+        let result = state.apply(Action::ProjectElement { element: SceneElement::Body(bkey(0)) });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let projected = state.doc.lines[before..]
             .iter()
@@ -22944,7 +22979,7 @@ mod tests {
             .clone();
         state.apply(Action::ClickSceneElement {
             element: SceneElement::BodyEdge {
-                body: 0,
+                body: bkey(0),
                 a: quantize_body_point(a),
                 b: quantize_body_point(b),
             },
@@ -23282,7 +23317,7 @@ mod tests {
         state.apply(Action::ExitSketch);
         // Select the body (its box spans 0..10 in x/y, 0..5 in z → center (5, 5, 2.5)).
         state.apply(Action::ClickSceneElement {
-            element: crate::hierarchy::SceneElement::Body(0),
+            element: crate::hierarchy::SceneElement::Body(bkey(0)),
             additive: false,
         });
         let result = state.apply(Action::ZoomToFit);
@@ -23328,9 +23363,9 @@ mod tests {
         for (_, edge) in &edges {
             assert!(treated.contains(edge), "missing {edge:?} in {treated:?}");
         }
-        assert_eq!(op.targets, vec![0], "the one input body is the target");
+        assert_eq!(op.targets, vec![bkey(0)], "the one input body is the target");
         assert_eq!(op.outputs.len(), 1, "one beveled output body");
-        assert!(state.doc.bodies[0].shadow, "the input body becomes a shadow");
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "the input body becomes a shadow");
         assert!(!state.doc.bodies[op.outputs[0]].shadow, "the output is a real body");
 
         // #168: the plural commit is one undo group — a single Undo reverts the whole
@@ -23342,7 +23377,7 @@ mod tests {
             "one undo must remove the whole operation"
         );
         assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive the undo");
-        assert!(!state.doc.bodies[0].shadow, "the input body is no longer shadowed");
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "the input body is no longer shadowed");
     }
 
     /// #168/#531: undoing a committed chamfer removes its whole operation (releasing the
@@ -23357,7 +23392,7 @@ mod tests {
             amount: 2.0,
         });
         assert_eq!(state.doc.edge_treatment_ops.len(), 1);
-        assert!(state.doc.bodies[0].shadow);
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
 
         state.apply(Action::UndoLast);
         assert!(
@@ -23365,7 +23400,7 @@ mod tests {
                 || state.doc.edge_treatment_ops[0].deleted,
             "undo removes the operation"
         );
-        assert!(!state.doc.bodies[0].shadow, "the input body is released from shadow");
+        assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "the input body is released from shadow");
         assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive");
     }
 
@@ -23381,7 +23416,7 @@ mod tests {
         let (_, _, a, b) = treatable[0].clone();
         state.apply(Action::ClickSceneElement {
             element: SceneElement::BodyEdge {
-                body: 0,
+                body: bkey(0),
                 a: quantize_body_point(a),
                 b: quantize_body_point(b),
             },
@@ -23406,7 +23441,7 @@ mod tests {
     fn commit_edge_treatment_chamfers_a_vertical_edge() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
-        let untreated_tris = crate::extrude::body_solid_mesh(&state.doc, 0)
+        let untreated_tris = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
             .unwrap()
             .triangles
             .len();
@@ -23622,16 +23657,15 @@ mod tests {
             });
             state.doc.shape_order.push(ShapeKind::Extrusion);
         }
-        state.doc.bodies.push(crate::model::Body {
+        state.doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         state.doc.shape_order.push(ShapeKind::Body);
         assert!(
-            crate::extrude::occt_body_shape(&state.doc, 0).is_some(),
+            crate::extrude::occt_body_shape(&state.doc, bkey(0)).is_some(),
             "sanity: the untreated cut body builds in the kernel"
         );
         // Bypass commit validation: splice the impossible fillet straight into the document.
@@ -23641,7 +23675,7 @@ mod tests {
             amount: 500.0,
         });
         // The fallback still renders something (additive-only)...
-        assert!(crate::extrude::body_solid_mesh(&state.doc, 0).is_some());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, bkey(0)).is_some());
 
         // ...and reopening the document surfaces the warning in the status bar.
         let path = std::env::temp_dir().join("bearcad_103_cut_fallback_warning.bearcad");
@@ -23759,7 +23793,7 @@ mod tests {
 
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
-        let mesh = crate::extrude::body_solid_mesh(&state.doc, 0).expect("mesh");
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("mesh");
         assert!(!mesh.triangles.is_empty());
 
         let expected_area = std::f32::consts::PI * 25.0 / 2.0;
@@ -24537,9 +24571,9 @@ mod tests {
     fn escape_cancels_an_in_progress_move_then_leaves_the_tool() {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::Move));
-        state.creating_move.as_mut().unwrap().targets.push(0);
+        state.creating_move.as_mut().unwrap().targets.push(bkey(0));
         state.creating_move.as_mut().unwrap().start_point_a =
-            Some(crate::model::MovePointRef::Vertex { body: 0, p: [0; 3] });
+            Some(crate::model::MovePointRef::Vertex { body: bkey(0), p: [0; 3] });
 
         state.apply(Action::CancelOperation);
         assert_eq!(state.tool, Tool::Move, "first Esc only cancels the picks");

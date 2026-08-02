@@ -331,7 +331,7 @@ pub fn joint_resolution(doc: &Document) -> std::rc::Rc<JointResolution> {
 /// The joint pose a body carries, if any (#893): driven directly, as the body of a driven
 /// unit instance, or by living inside a driven component (nearest component wins).
 /// `None` means the body sits where its features put it.
-pub fn body_joint_pose(doc: &Document, body_index: usize) -> Option<Mat4> {
+pub fn body_joint_pose(doc: &Document, body_index: crate::model::BodyKey) -> Option<Mat4> {
     if doc.joints.iter().all(|j| j.deleted) {
         return None;
     }
@@ -364,21 +364,18 @@ pub fn body_joint_pose(doc: &Document, body_index: usize) -> Option<Mat4> {
 /// The live bodies a joint member stands for (#894): the body itself, a unit instance's
 /// materialized bodies, or every body living inside a component (nearest-chain match,
 /// like [`body_joint_pose`]).
-pub fn member_bodies(doc: &Document, member: JointRef) -> Vec<usize> {
+pub fn member_bodies(doc: &Document, member: JointRef) -> Vec<crate::model::BodyKey> {
     match member {
         JointRef::Body(bi) => doc
             .bodies
             .get(bi)
-            .filter(|b| !b.deleted)
             .map(|_| vec![bi])
             .unwrap_or_default(),
         JointRef::UnitInstance(ui) => doc
             .bodies
             .iter()
-            .enumerate()
             .filter(|(_, b)| {
-                !b.deleted
-                    && matches!(
+                matches!(
                         b.source,
                         crate::model::BodySource::UnitInstance(i)
                         | crate::model::BodySource::UnitCut { instance: i, .. }
@@ -390,14 +387,12 @@ pub fn member_bodies(doc: &Document, member: JointRef) -> Vec<usize> {
         JointRef::Component(ci) => doc
             .bodies
             .iter()
-            .enumerate()
-            .filter(|(bi, b)| {
-                !b.deleted
-                    && crate::hierarchy::owning_component(
-                        doc,
-                        &crate::hierarchy::SceneElement::Body(*bi),
-                    )
-                    .is_some_and(|owner| doc.component_chain(owner).contains(&ci))
+            .filter(|(bi, _)| {
+                crate::hierarchy::owning_component(
+                    doc,
+                    &crate::hierarchy::SceneElement::Body(*bi),
+                )
+                .is_some_and(|owner| doc.component_chain(owner).contains(&ci))
             })
             .map(|(i, _)| i)
             .collect(),
@@ -419,7 +414,7 @@ pub enum BodyDragTarget {
 /// driving the body (directly, as a unit instance's body, or through its component),
 /// walking up through rigid groups to the nearest freedom. A part that's jointed but has
 /// no freedom anywhere up its chain is grounded and refuses the drag.
-pub fn body_drag_joint(doc: &Document, body: usize) -> BodyDragTarget {
+pub fn body_drag_joint(doc: &Document, body: crate::model::BodyKey) -> BodyDragTarget {
     let mut refs = vec![JointRef::Body(body)];
     if let Some(b) = doc.bodies.get(body) {
         match b.source {
@@ -609,7 +604,7 @@ pub fn preview_pose(doc: &Document, joint: &Joint) -> Option<Mat4> {
 /// Apply a body's joint pose to its solid mesh, if it carries one.
 pub fn posed_mesh(
     doc: &Document,
-    body_index: usize,
+    body_index: crate::model::BodyKey,
     mesh: crate::extrude::SolidMesh,
 ) -> crate::extrude::SolidMesh {
     let Some(pose) = body_joint_pose(doc, body_index) else {
@@ -639,7 +634,7 @@ mod tests {
 
     /// The two cubes every test mates: a 10 mm block at the origin and a 4 mm block parked
     /// well away from it, so a placement that fires is unmistakable.
-    fn two_cubes(doc: &mut Document) -> (usize, usize) {
+    fn two_cubes(doc: &mut Document) -> (crate::model::BodyKey, crate::model::BodyKey) {
         let fixed = cube_body(doc, Vec3::ZERO, Vec3::splat(10.0));
         let moving = cube_body(doc, Vec3::new(40.0, 0.0, 0.0), Vec3::splat(4.0));
         (fixed, moving)
@@ -647,7 +642,7 @@ mod tests {
 
     /// The moving cube's underside onto the fixed cube's top: lands it at z = 10, keeping
     /// where it sits in the plane.
-    fn stack_mate(doc: &Document, fixed: usize, moving: usize) -> JointMate {
+    fn stack_mate(doc: &Document, fixed: crate::model::BodyKey, moving: crate::model::BodyKey) -> JointMate {
         JointMate {
             moving_face: Some(face_ref(doc, moving, Vec3::new(42.0, 2.0, 0.0))),
             fixed_face: Some(face_ref(doc, fixed, Vec3::new(5.0, 5.0, 10.0))),
@@ -657,7 +652,7 @@ mod tests {
 
     /// A line-up row aiming both parts' near edges along +X, which is what gives a slider a
     /// direction to travel in.
-    fn along_x_row(fixed: usize, moving: usize, moving_lo: Vec3, fixed_lo: Vec3) -> MateLineUp {
+    fn along_x_row(fixed: crate::model::BodyKey, moving: crate::model::BodyKey, moving_lo: Vec3, fixed_lo: Vec3) -> MateLineUp {
         let q = crate::hierarchy::quantize_body_point;
         MateLineUp {
             moving: Some(MateRef::Edge {

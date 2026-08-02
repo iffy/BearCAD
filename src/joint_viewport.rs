@@ -146,6 +146,7 @@ pub fn draw_joint_icons(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Body, BodySource, ImportedMesh, Joint, JointKind, JointRef};
 
@@ -163,16 +164,15 @@ mod tests {
                 source_name: format!("p{i}"),
                 step_bytes: None,
             });
-            doc.bodies.push(Body {
+            doc.bodies.insert(Body {
                 source: BodySource::Imported(mesh),
                 name: None,
                 material: None,
-                deleted: false,
                 shadow: false,
             });
         }
         doc.joints.push(Joint {
-            members: vec![JointRef::Body(0), JointRef::Body(1)],
+            members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind,
             mate: Default::default(),

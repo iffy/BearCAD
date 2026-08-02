@@ -1267,11 +1267,11 @@ pub fn pick_body_face(
     // every body is what made zooming over a large document lag. The bounds come batched
     // because the per-body cached accessors each re-hash the whole document.
     let bounds = crate::extrude::body_world_bounds_all(doc);
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
             continue;
         }
-        if !bounds.get(bi).copied().flatten().is_some_and(|b| {
+        if !bounds.get(&bi).copied().flatten().is_some_and(|b| {
             crate::construction::screen_bounds_hit(screen, project, b, 0.0)
         }) {
             continue;
@@ -1338,8 +1338,8 @@ pub fn body_faces_near(
     radius: f32,
 ) -> Vec<(crate::construction::PickTargetKind, Vec3, f32)> {
     let mut out: Vec<(crate::construction::PickTargetKind, Vec3, f32)> = Vec::new();
-    for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted || body.shadow {
+    for (bi, body) in doc.bodies.iter() {
+        if body.shadow {
             continue;
         }
         for triangles in crate::extrude::body_face_groups(doc, bi).iter().cloned() {
@@ -1740,11 +1740,10 @@ mod tests {
             source_name: "box".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc
@@ -1779,11 +1778,10 @@ mod tests {
                 source_name: format!("part{i}"),
                 step_bytes: None,
             });
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Imported(mesh),
                 name: None,
                 material: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -1793,11 +1791,10 @@ mod tests {
             source_name: "box".to_string(),
             step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(box_mesh),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
         });
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));

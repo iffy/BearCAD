@@ -392,15 +392,16 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
         ParameterSource::BodyEdgeLength { body, .. } => Some(format!(
-            "Driven by an edge of body {body}{}",
+            "Driven by an edge of body {}{}",
+            body.index(),
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
         ParameterSource::BodyVertexDistance { body_a, body_b, .. } => Some(format!(
             "Driven by the distance between two corners of {}{}",
             if body_a == body_b {
-                format!("body {body_a}")
+                format!("body {}", body_a.index())
             } else {
-                format!("bodies {body_a} and {body_b}")
+                format!("bodies {} and {}", body_a.index(), body_b.index())
             },
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
@@ -468,13 +469,13 @@ pub fn derived_source_value(doc: &Document, source: &ParameterSource) -> Option<
 /// edge chains (either endpoint order). `None` once the mesh no longer has that edge.
 pub fn body_edge_world_segment(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     a: [i32; 3],
     b: [i32; 3],
 ) -> Option<(glam::Vec3, glam::Vec3)> {
     // A shadow body still has real geometry — it's just consumed by an operation — and a Move
     // shadows its own inputs (#650), so shadows resolve here; only a deleted body doesn't.
-    doc.bodies.get(body).filter(|b| !b.deleted)?;
+    doc.bodies.get(body)?;
     // Reentrant un-posed access (#650/#897): the cached mesh when the cache is free, a
     // fresh build when resolving from inside the cache's own borrow. Un-posed on purpose —
     // Move snap points and joint frames are body-local references.
@@ -496,11 +497,11 @@ pub fn body_edge_world_segment(
 /// `None` once the mesh no longer has a corner there.
 pub fn body_vertex_world_position(
     doc: &Document,
-    body: usize,
+    body: crate::model::BodyKey,
     key: [i32; 3],
 ) -> Option<glam::Vec3> {
     // Shadow bodies resolve too, for the same reason as `body_edge_world_segment`.
-    doc.bodies.get(body).filter(|b| !b.deleted)?;
+    doc.bodies.get(body)?;
     // Reentrant un-posed access (#650/#897): the cached mesh when the cache is free, a
     // fresh build when resolving from inside the cache's own borrow. Un-posed on purpose —
     // Move snap points and joint frames are body-local references.
@@ -536,10 +537,10 @@ pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) 
             unique_parameter_name(doc, &format!("line{a}_line{b}_angle"))
         }
         ParameterSource::BodyEdgeLength { body, .. } => {
-            unique_parameter_name(doc, &format!("body{body}_edge_length"))
+            unique_parameter_name(doc, &format!("body{}_edge_length", body.index()))
         }
         ParameterSource::BodyVertexDistance { body_a, .. } => {
-            unique_parameter_name(doc, &format!("body{body_a}_corner_distance"))
+            unique_parameter_name(doc, &format!("body{}_corner_distance", body_a.index()))
         }
         ParameterSource::UnitEdgeLength { instance, .. } => {
             unique_parameter_name(doc, &format!("unit{instance}_edge_length"))
@@ -1821,6 +1822,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::AppState;
     use crate::constraints::add_distance_constraint;
@@ -1908,11 +1910,10 @@ mod tests {
             source_name: "tri".to_string(),
                     step_bytes: None,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(mesh),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc
@@ -1930,12 +1931,12 @@ mod tests {
 
         // One selected body edge → its length.
         let mut selection = crate::selection::SceneSelection::default();
-        selection.insert(SceneElement::BodyEdge { body: 0, a: q(o), b: q(x) });
+        selection.insert(SceneElement::BodyEdge { body: bkey(0), a: q(o), b: q(x) });
         let source = derived_source_from_selection(&doc, &selection)
             .expect("a body edge is measurable");
         assert_eq!(
             source,
-            ParameterSource::BodyEdgeLength { body: 0, a: q(o), b: q(x) }
+            ParameterSource::BodyEdgeLength { body: bkey(0), a: q(o), b: q(x) }
         );
         let (value, is_angle) = derived_source_value(&doc, &source).unwrap();
         assert!((value - 30.0).abs() < 1e-3, "edge length, got {value}");
@@ -1943,8 +1944,8 @@ mod tests {
 
         // Two selected corners → the distance between them (3-4-5 triangle).
         let mut selection = crate::selection::SceneSelection::default();
-        selection.insert(SceneElement::BodyVertex { body: 0, p: q(x) });
-        selection.insert(SceneElement::BodyVertex { body: 0, p: q(y) });
+        selection.insert(SceneElement::BodyVertex { body: bkey(0), p: q(x) });
+        selection.insert(SceneElement::BodyVertex { body: bkey(0), p: q(y) });
         let source = derived_source_from_selection(&doc, &selection)
             .expect("two body corners are measurable");
         let (value, _) = derived_source_value(&doc, &source).unwrap();
@@ -1952,20 +1953,20 @@ mod tests {
 
         // The same corner twice measures nothing.
         let mut selection = crate::selection::SceneSelection::default();
-        selection.insert(SceneElement::BodyVertex { body: 0, p: q(x) });
-        selection.insert(SceneElement::BodyVertex { body: 0, p: q(x) });
+        selection.insert(SceneElement::BodyVertex { body: bkey(0), p: q(x) });
+        selection.insert(SceneElement::BodyVertex { body: bkey(0), p: q(x) });
         assert!(derived_source_from_selection(&doc, &selection).is_none());
 
         // Geometry that no longer exists reads as unavailable, like a deleted line's.
-        doc.bodies[0].deleted = true;
+        doc.bodies.remove(bkey(0));
         assert!(derived_source_value(
             &doc,
-            &ParameterSource::BodyEdgeLength { body: 0, a: q(o), b: q(x) }
+            &ParameterSource::BodyEdgeLength { body: bkey(0), a: q(o), b: q(x) }
         )
         .is_none());
         assert!(derived_source_value(
             &doc,
-            &ParameterSource::BodyVertexDistance { body_a: 0, a: q(x), body_b: 0, b: q(y) }
+            &ParameterSource::BodyVertexDistance { body_a: bkey(0), a: q(x), body_b: bkey(0), b: q(y) }
         )
         .is_none());
     }

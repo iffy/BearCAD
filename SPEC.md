@@ -739,6 +739,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Revolve** — about an axis, full or partial angle.
 
 ### 3.3 Combining solids
+- **Body identity (#1055):** `Document::bodies` is an `arena::Arena`, and a body is named by a
+  `BodyKey` everywhere it is referred to — every operation's `targets`/`a`/`b`/`outputs`,
+  `SceneElement::Body` and the mesh-keyed sub-elements (`BodyEdge`, `BodyVertex`, `BodyFace`,
+  `BodyCylinder`, `BodyAxis`), `MovePointRef`, `MateRef`, `JointRef::Body`,
+  `DrawingView::body`, `ComponentMember::Body`, `ParameterSource::BodyEdgeLength`, and the
+  per-body mesh caches. Deleting a body **removes** it, so a reference to it reads as gone
+  rather than resolving to whichever body used to sit after it. `shape_order` and
+  `undo_groups` stay plain creation-order counts — a history tape, not an identity table.
+  A script still names a body by its **ordinal** among the live ones, resolved to a key at
+  the script boundary.
 - **Boolean**: union, cut (subtract), intersect.
 - **Extrude body modes (#32/#35)**: an extrusion commits into a body one of three ways — **New
   body** (its own body), **Add to body** (fused into an existing body's solid), or **Cut body**

@@ -145,7 +145,7 @@ pub fn revolve_axis_label(doc: &Document, axis: crate::model::RevolveAxis) -> St
             .unwrap_or_else(|| format!("line {li}")),
         RevolveAxis::BodyEdge { body, .. } => element_name(doc, SceneElement::Body(body))
             .map(|n| format!("an edge of {n}"))
-            .unwrap_or_else(|| format!("an edge of body {body}")),
+            .unwrap_or_else(|| format!("an edge of body {}", body.index())),
         RevolveAxis::X => "the X axis".to_string(),
         RevolveAxis::Y => "the Y axis".to_string(),
         RevolveAxis::Z => "the Z axis".to_string(),
@@ -268,7 +268,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let body = doc
                 .bodies
                 .get_mut(index)
-                .ok_or_else(|| format!("body {index} not found"))?;
+                .ok_or_else(|| format!("body {index:?} not found"))?;
             body.name = stored;
         }
         SceneElement::BooleanOp(index) => {
@@ -513,7 +513,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 .unwrap_or(doc.default_length_unit);
             format!("Extrusion {i} ({})", format_length_display_in(distance, unit))
         }
-        HierarchyNode::Body(i) => format!("Body {i}"),
+        HierarchyNode::Body(i) => format!("Body {}", i.index()),
         HierarchyNode::Image(i) => doc
             .tracing_images
             .get(i)
@@ -684,10 +684,10 @@ fn sketch_vertex_treatment_label(doc: &Document, index: usize) -> &'static str {
 
 /// A body's user-visible name, or `Body N` when it hasn't been renamed. Sub-element labels
 /// ("Corner of …", "Edge midpoint of …") read better against the name the user chose.
-fn body_label(doc: &Document, body: usize) -> String {
+fn body_label(doc: &Document, body: crate::model::BodyKey) -> String {
     element_name(doc, SceneElement::Body(body))
         .map(|n| n.to_string())
-        .unwrap_or_else(|| format!("Body {body}"))
+        .unwrap_or_else(|| format!("Body {}", body.index()))
 }
 
 pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
@@ -736,16 +736,16 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             )
         }
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),
-        SceneElement::Body(i) => format!("Body {i}"),
+        SceneElement::Body(i) => format!("Body {}", i.index()),
         SceneElement::FaceEdge(_) => "Edge".to_string(),
         SceneElement::BodyEdge { body, .. } => format!("Edge of {}", body_label(doc, *body)),
         SceneElement::BodyVertex { body, .. } => {
             format!("Corner of {}", body_label(doc, *body))
         }
-        SceneElement::BodyFace { body, .. } => format!("Face of Body {body}"),
+        SceneElement::BodyFace { body, .. } => format!("Face of {}", body_label(doc, *body)),
         // A hole, a boss, a shaft (#1013) — and its centre line.
-        SceneElement::BodyCylinder { body, .. } => format!("Cylinder of Body {body}"),
-        SceneElement::BodyAxis { body, .. } => format!("Axis of Body {body}"),
+        SceneElement::BodyCylinder { body, .. } => format!("Cylinder of {}", body_label(doc, *body)),
+        SceneElement::BodyAxis { body, .. } => format!("Axis of {}", body_label(doc, *body)),
         SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
         // An analytic edge reads as its owner plus where it sits in the profile (#955) — the
         // wording the Chamfer/Fillet picker's own row builder used before it became a picker.

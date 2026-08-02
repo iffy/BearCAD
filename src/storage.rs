@@ -240,7 +240,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
-    save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
+    save_arena_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
     save_arena_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_arena_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
@@ -578,7 +578,7 @@ pub fn open(path: &str) -> Result<Document> {
         load_construction_planes(&conn, construction_planes).map_err(|e| e.to_string())?;
     // Extrusions/bodies (empty for legacy files that predate them).
     let extrusions = load_indexed_entities(&conn, "extrusion")?;
-    let bodies = load_indexed_entities(&conn, "body")?;
+    let bodies = load_arena_entities(&conn, "body")?;
     // Materials (#834) — empty for files saved before they existed.
     let materials = load_arena_entities(&conn, "material")?;
     let imported_meshes = load_arena_entities(&conn, "imported_mesh")?;
@@ -659,6 +659,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Circle, FaceId};
 
@@ -868,6 +869,93 @@ mod tests {
         }
     }
 
+    /// #1055: bodies keep their keys across a save, and so does everything that names one —
+    /// an operation's inputs and outputs, a joint's members, a drawing view's source. This is
+    /// the collection with the widest blast radius, so the test carries one of each.
+    #[test]
+    fn body_keys_survive_a_save_and_reload() {
+        let body = |name: &str| crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: Some(name.to_string()),
+            material: None,
+            shadow: false,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.bodies.insert(body("doomed"));
+        let input = doc.bodies.insert(body("input"));
+        let output = doc.bodies.insert(body("output"));
+        assert!(doc.bodies.remove(doomed).is_some());
+        doc.move_ops.push(crate::model::MoveOperation {
+            targets: vec![input],
+            outputs: vec![output],
+            translate_mode: Default::default(),
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: "5mm".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            name: None,
+            deleted: false,
+        });
+        doc.joints.push(crate::model::Joint {
+            members: vec![
+                crate::model::JointRef::Body(input),
+                crate::model::JointRef::Body(output),
+            ],
+            base: 0,
+            kind: crate::model::JointKind::Rigid,
+            mate: crate::model::JointMate::default(),
+            position: String::new(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: crate::model::JointLimits::default(),
+            name: None,
+            deleted: false,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_body_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.bodies.len(), 2, "{suffix}");
+            assert_eq!(
+                loaded.bodies.get(input).and_then(|b| b.name.clone()),
+                Some("input".to_string()),
+                "{suffix}: the surviving bodies did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.bodies.get(output).and_then(|b| b.name.clone()),
+                Some("output".to_string()),
+                "{suffix}"
+            );
+            assert!(loaded.bodies.get(doomed).is_none(), "{suffix}: removed stays removed");
+            assert_eq!(loaded.move_ops[0].targets, vec![input], "{suffix}: op input");
+            assert_eq!(loaded.move_ops[0].outputs, vec![output], "{suffix}: op output");
+            assert_eq!(
+                loaded.joints[0].members,
+                vec![
+                    crate::model::JointRef::Body(input),
+                    crate::model::JointRef::Body(output),
+                ],
+                "{suffix}: joint members"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: a sweep keeps its key across a save, and the body it produced keeps pointing
     /// at it.
     #[test]
@@ -883,11 +971,10 @@ mod tests {
         let doomed = doc.sweeps.insert(sweep(vec![0]));
         let kept = doc.sweeps.insert(sweep(vec![1, 2]));
         assert!(doc.sweeps.remove(doomed).is_some());
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Sweep(kept),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -905,7 +992,7 @@ mod tests {
                 "{suffix}: the surviving sweep did not shift into the hole"
             );
             assert_eq!(
-                loaded.bodies[0].source,
+                loaded.bodies.values().nth(0).unwrap().source,
                 crate::model::BodySource::Sweep(kept),
                 "{suffix}: its body still points at it"
             );
@@ -931,11 +1018,10 @@ mod tests {
         let doomed = doc.revolutions.insert(revolution(90.0));
         let kept = doc.revolutions.insert(revolution(180.0));
         assert!(doc.revolutions.remove(doomed).is_some());
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Revolve(kept),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc.add_sketch(crate::model::FaceId::RevolveCap {
@@ -958,7 +1044,7 @@ mod tests {
                 "{suffix}: the surviving revolve did not shift into the hole"
             );
             assert_eq!(
-                loaded.bodies[0].source,
+                loaded.bodies.values().nth(0).unwrap().source,
                 crate::model::BodySource::Revolve(kept),
                 "{suffix}: its body still points at it"
             );
@@ -984,11 +1070,10 @@ mod tests {
         let doomed = doc.imported_meshes.insert(mesh("doomed"));
         let kept = doc.imported_meshes.insert(mesh("kept"));
         assert!(doc.imported_meshes.remove(doomed).is_some());
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(kept),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
@@ -1001,7 +1086,7 @@ mod tests {
 
             assert_eq!(loaded.imported_meshes.len(), 1, "{suffix}");
             assert_eq!(
-                loaded.bodies[0].source,
+                loaded.bodies.values().nth(0).unwrap().source,
                 crate::model::BodySource::Imported(kept),
                 "{suffix}: the body still names the mesh it was imported from"
             );
@@ -1088,30 +1173,28 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(1),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
         });
         doc.joints.push(crate::model::Joint {
             members: vec![
-                crate::model::JointRef::Body(0),
-                crate::model::JointRef::Body(1),
+                crate::model::JointRef::Body(bkey(0)),
+                crate::model::JointRef::Body(bkey(1)),
             ],
             base: 0,
             kind: crate::model::JointKind::Screw { lead: "2 * pitch".to_string() },
             mate: crate::model::JointMate {
                 moving_face: Some(crate::model::MateRef::Face {
-                    body: 1,
+                    body: bkey(1),
                     centroid: [500, 0, 0],
                     normal: [0, 0, 100],
                 }),
@@ -1120,7 +1203,7 @@ mod tests {
                 offset: "1.5".to_string(),
                 line_up: vec![crate::model::MateLineUp {
                     moving: Some(crate::model::MateRef::Edge {
-                        body: 1,
+                        body: bkey(1),
                         a: [0, 0, 0],
                         b: [1000, 0, 0],
                     }),
@@ -1181,11 +1264,10 @@ mod tests {
             .insert(crate::model::Primitive::new(crate::model::PrimitiveKind::Sphere));
         doc.primitives.remove(doomed);
         let key = doc.primitives.insert(shape);
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Primitive(key),
             name: None,
             material: None,
-            deleted: false,
             shadow: false,
         });
         doc.shape_order.push(crate::model::ShapeKind::Primitive);
@@ -1213,26 +1295,24 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
-            deleted: false,
             shadow: true,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Boolean { op: 0, solid: 0 },
             material: None,
             name: Some("Result".to_string()),
-            deleted: false,
             shadow: false,
         });
         doc.boolean_ops.push(crate::model::BooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
-            a: vec![0],
-            b: vec![3],
+            a: vec![bkey(0)],
+            b: vec![bkey(3)],
             keep_b: true,
-            outputs: vec![1],
+            outputs: vec![bkey(1)],
             name: Some("Slot".to_string()),
             deleted: false,
         });
@@ -1256,32 +1336,29 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
             material: None,
             name: None,
-            deleted: false,
             shadow: true,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 0 },
             material: None,
             name: Some("Top".to_string()),
-            deleted: false,
             shadow: false,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 1 },
             material: None,
             name: Some("Bottom".to_string()),
-            deleted: false,
             shadow: false,
         });
         doc.slice_ops.push(crate::model::SliceOperation {
-            targets: vec![0],
+            targets: vec![bkey(0)],
             cutters: vec![crate::model::FaceId::ConstructionPlane(3)],
             extend_infinite: true,
-            outputs: vec![1, 2],
+            outputs: vec![bkey(1), bkey(2)],
             name: Some("Halved".to_string()),
             deleted: false,
         });
@@ -1368,28 +1445,26 @@ mod tests {
             name: "Brass".to_string(),
             color: [0xc8, 0x8a, 0x4a],
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: Some(brass),
             name: None,
-            deleted: false,
             shadow: false,
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(1),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.materials, doc.materials);
-        assert_eq!(loaded.bodies[0].material, Some(brass));
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().material, Some(brass));
         assert_eq!(loaded.materials[brass].name, "Brass");
         assert_eq!(loaded.materials.get(doomed), None, "and it stays removed");
-        assert_eq!(loaded.bodies[1].material, None);
+        assert_eq!(loaded.bodies.values().nth(1).unwrap().material, None);
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -1532,11 +1607,10 @@ mod tests {
             edge_treatments: Vec::new(),
         });
         doc.shape_order.push(ShapeKind::Extrusion);
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
@@ -1551,7 +1625,7 @@ mod tests {
         assert_eq!(loaded.extrusions[0].distance, 12.0);
         assert_eq!(loaded.extrusions[0].name.as_deref(), Some("Boss"));
         assert_eq!(loaded.bodies.len(), 1);
-        assert_eq!(loaded.bodies[0].source, BodySource::Extrusion(0));
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().source, BodySource::Extrusion(0));
         assert!(loaded.shape_order.contains(&ShapeKind::Extrusion));
         assert!(loaded.shape_order.contains(&ShapeKind::Body));
 
@@ -1590,14 +1664,13 @@ mod tests {
             });
             doc.shape_order.push(ShapeKind::Extrusion);
         }
-        doc.bodies.push(Body {
+        doc.bodies.insert(Body {
             source: BodySource::Solid {
                 add: vec![0],
                 cut: vec![1],
             },
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
@@ -1605,14 +1678,14 @@ mod tests {
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(
-            loaded.bodies[0].source,
+            loaded.bodies.values().nth(0).unwrap().source,
             BodySource::Solid {
                 add: vec![0],
                 cut: vec![1],
             }
         );
-        assert_eq!(loaded.bodies[0].source.extrusion_indices(), [0]);
-        assert_eq!(loaded.bodies[0].source.cut_extrusion_indices(), [1]);
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0]);
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [1]);
 
         std::fs::remove_file(&path).unwrap();
     }

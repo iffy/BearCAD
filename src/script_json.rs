@@ -35,10 +35,23 @@ pub fn opens_sketch_when_none_active(name: &str) -> bool {
     matches!(name, "rect" | "line" | "circle" | "text")
 }
 
+/// The body a JSON ordinal names (#1055): a script counts live bodies, it cannot spell a key.
+fn body_key_from_ordinal(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Result<crate::model::BodyKey, String> {
+    doc.body_at(ordinal)
+        .ok_or_else(|| format!("no body {ordinal}"))
+}
+
 /// A whole scene element from a `(kind, index)` pair (mirrors `lua_script::
 /// scene_element_from_kind`). Used to resolve `select`/`set_name`/`set_visible`/
 /// `set_construction`/`find` element arguments in the stateful dispatch path.
-pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement> {
+pub fn scene_element_from_kind(
+    doc: &crate::model::Document,
+    kind: &str,
+    index: usize,
+) -> Option<SceneElement> {
     match kind.to_ascii_lowercase().as_str() {
         "plane" | "construction_plane" | "constructionplane" => {
             Some(SceneElement::ConstructionPlane(index))
@@ -48,7 +61,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(index)),
         "extrusion" => Some(SceneElement::Extrusion(index)),
-        "body" => Some(SceneElement::Body(index)),
+        "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "joint" => Some(SceneElement::Joint(index)),
         _ => None,
@@ -122,6 +135,7 @@ pub fn scene_element_selection_index(
         // An arena-backed element reports its **ordinal** among the live ones of its kind
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
+        SceneElement::Body(key) => doc.bodies.keys().position(|k| k == *key),
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
@@ -157,7 +171,6 @@ pub fn scene_element_selection_index(
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::Body(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
@@ -189,7 +202,7 @@ pub fn scene_element_kind_name(element: &SceneElement) -> Option<(&'static str, 
         SceneElement::Circle(i) => Some(("circle", *i)),
         SceneElement::Constraint(i) => Some(("constraint", *i)),
         SceneElement::Extrusion(i) => Some(("extrusion", *i)),
-        SceneElement::Body(i) => Some(("body", *i)),
+        SceneElement::Body(_) => None,
         SceneElement::Joint(i) => Some(("joint", *i)),
         _ => None,
     }
@@ -263,7 +276,11 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
 /// they can't be a pure `(name, args)` function — they belong to the stateful dispatch path
 /// alongside the query getters. Likewise the read-back getters (`get`/`count`/`selection`/
 /// `body_stats`/`sketch_dof`) return JSON data rather than an `Instruction`.
-pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, String> {
+pub fn instruction_from_json(
+    doc: &crate::model::Document,
+    name: &str,
+    args: &Value,
+) -> Result<Instruction, String> {
     let o = as_object(args)?;
     match name {
         "new" => Ok(Instruction::New),
@@ -399,7 +416,7 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
                 None | Some(Value::Null) => {
                     return Err("revolve requires `axis` (\"x\"|\"y\"|\"z\" or {line = i})".into())
                 }
-                Some(v) => revolve_axis_from_value(v)?,
+                Some(v) => revolve_axis_from_value(doc, v)?,
             };
             let angle_deg = opt_f32(o, "angle")?.unwrap_or(360.0);
             let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
@@ -436,17 +453,17 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         }
         "move_bodies" => {
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = move_op_args(o)?;
+                 start_point_c, end_point_c) = move_op_args(doc, o)?;
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
             let (members, base, kind, mate, position, position2, position3, limits) =
-                joint_op_args(o)?;
+                joint_op_args(doc, o)?;
             Ok(Instruction::CreateJointOp { members, base, kind, mate, position, position2, position3, limits })
         }
         "begin_joint" => {
             let (members, base, kind, mate, position, position2, position3, limits) =
-                joint_op_args(o)?;
+                joint_op_args(doc, o)?;
             Ok(Instruction::BeginJointOp { members, base, kind, mate, position, position2, position3, limits })
         }
         "set_joint_rest" => Ok(Instruction::SetJointRest {
@@ -459,18 +476,18 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         "edit_joint" => {
             let op = req_usize(o, "index", "edit_joint")?;
             let (members, base, kind, mate, position, position2, position3, limits) =
-                joint_op_args(o)?;
+                joint_op_args(doc, o)?;
             Ok(Instruction::EditJointOp { op, members, base, kind, mate, position, position2, position3, limits })
         }
         "begin_move" => {
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = move_op_args(o)?;
+                 start_point_c, end_point_c) = move_op_args(doc, o)?;
             Ok(Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = move_op_args(o)?;
+                 start_point_c, end_point_c) = move_op_args(doc, o)?;
             Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "mirror_bodies" => {
@@ -484,13 +501,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         }
         "repeat_bodies" => {
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
-                repeat_op_args(o)?;
+                repeat_op_args(doc, o)?;
             Ok(Instruction::CreateRepeatOp { targets, axis, around_axis, flip, mode, count, spacing, length, length_target })
         }
         "edit_repeat" => {
             let op = req_usize(o, "index", "edit_repeat")?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
-                repeat_op_args(o)?;
+                repeat_op_args(doc, o)?;
             Ok(Instruction::EditRepeatOp { op, targets, axis, around_axis, flip, mode, count, spacing, length, length_target })
         }
         "slice" => {
@@ -1176,6 +1193,7 @@ fn boolean_op_args(o: &Map<String, Value>) -> Result<(BooleanOpKind, Vec<usize>,
 #[allow(clippy::type_complexity)]
 #[allow(clippy::type_complexity)]
 fn move_op_args(
+    doc: &crate::model::Document,
     o: &Map<String, Value>,
 ) -> Result<
     (
@@ -1199,14 +1217,14 @@ fn move_op_args(
         expr_arg(o, "y")?,
         expr_arg(o, "z")?,
         // Naming both points makes the translation a snap (#648/#649/#650).
-        move_point_from_json(o.get("from"), "from")?,
-        move_point_from_json(o.get("to"), "to")?,
+        move_point_from_json(doc, o.get("from"), "from")?,
+        move_point_from_json(doc, o.get("to"), "to")?,
         // The optional B pair (#669) adds the rotation.
-        move_point_from_json(o.get("from_b"), "from_b")?,
-        move_point_from_json(o.get("to_b"), "to_b")?,
+        move_point_from_json(doc, o.get("from_b"), "from_b")?,
+        move_point_from_json(doc, o.get("to_b"), "to_b")?,
         // The optional C pair pins the spin B leaves free.
-        move_point_from_json(o.get("from_c"), "from_c")?,
-        move_point_from_json(o.get("to_c"), "to_c")?,
+        move_point_from_json(doc, o.get("from_c"), "from_c")?,
+        move_point_from_json(doc, o.get("to_c"), "to_c")?,
     ))
 }
 
@@ -1216,6 +1234,7 @@ fn move_op_args(
 /// `lua_script::parse_joint_op_args`.
 #[allow(clippy::type_complexity)]
 fn joint_op_args(
+    doc: &crate::model::Document,
     o: &Map<String, Value>,
 ) -> Result<
     (
@@ -1232,7 +1251,7 @@ fn joint_op_args(
 > {
     let member = |v: &Value, what: &str| -> Result<crate::model::JointRef, String> {
         if let Some(i) = v.as_u64() {
-            return Ok(crate::model::JointRef::Body(i as usize));
+            return Ok(crate::model::JointRef::Body(body_key_from_ordinal(doc, i as usize)?));
         }
         let t = v
             .as_object()
@@ -1243,7 +1262,7 @@ fn joint_op_args(
             .ok_or_else(|| format!("joint `{what}` needs a `kind`"))?;
         let index = req_usize(t, "index", what)?;
         match kind {
-            "body" => Ok(crate::model::JointRef::Body(index)),
+            "body" => Ok(crate::model::JointRef::Body(body_key_from_ordinal(doc, index)?)),
             "component" => Ok(crate::model::JointRef::Component(index)),
             "unit_instance" | "unit" => Ok(crate::model::JointRef::UnitInstance(index)),
             other => Err(format!(
@@ -1290,7 +1309,7 @@ fn joint_op_args(
         Some("b") => 1,
         Some(other) => return Err(format!("unknown base '{other}' (expected 'a' or 'b')")),
     };
-    let mate = mate_from_json(o)?;
+    let mate = mate_from_json(doc, o)?;
     // Travel limits (#896): expressions on either end, or a stop picked as geometry.
     let stop = |key: &str| -> Result<Option<ExtrudeTarget>, String> {
         match o.get(key) {
@@ -1320,11 +1339,14 @@ fn joint_op_args(
 
 /// The `face` pair and `line_up` rows of a joint call (#1020), the JSON twin of
 /// `lua_script::parse_mate`.
-fn mate_from_json(o: &Map<String, Value>) -> Result<crate::model::JointMate, String> {
+fn mate_from_json(
+    doc: &crate::model::Document,
+    o: &Map<String, Value>,
+) -> Result<crate::model::JointMate, String> {
     let mut mate = crate::model::JointMate::default();
     if let Some(face) = o.get("face").and_then(Value::as_object) {
-        mate.moving_face = mate_ref_from_json(face.get("moving"), "face.moving")?;
-        mate.fixed_face = mate_ref_from_json(face.get("fixed"), "face.fixed")?;
+        mate.moving_face = mate_ref_from_json(doc, face.get("moving"), "face.moving")?;
+        mate.fixed_face = mate_ref_from_json(doc, face.get("fixed"), "face.fixed")?;
         mate.flip = face.get("flip").and_then(Value::as_bool).unwrap_or(false);
         mate.offset = expr_arg(face, "offset")?;
     }
@@ -1334,8 +1356,8 @@ fn mate_from_json(o: &Map<String, Value>) -> Result<crate::model::JointMate, Str
                 .as_object()
                 .ok_or("joint `line_up` rows must be objects")?;
             mate.line_up.push(crate::model::MateLineUp {
-                moving: mate_ref_from_json(row.get("moving"), "line_up.moving")?,
-                fixed: mate_ref_from_json(row.get("fixed"), "line_up.fixed")?,
+                moving: mate_ref_from_json(doc, row.get("moving"), "line_up.moving")?,
+                fixed: mate_ref_from_json(doc, row.get("fixed"), "line_up.fixed")?,
             });
         }
     }
@@ -1346,6 +1368,7 @@ fn mate_from_json(o: &Map<String, Value>) -> Result<crate::model::JointMate, Str
 /// `edge`, a world `axis`, or a point — the point spellings are the Move tool's, except that
 /// an edge **midpoint** is `midpoint` here, since `edge` names the whole edge.
 fn mate_ref_from_json(
+    doc: &crate::model::Document,
     v: Option<&Value>,
     what: &str,
 ) -> Result<Option<crate::model::MateRef>, String> {
@@ -1380,7 +1403,7 @@ fn mate_ref_from_json(
             .filter(|v| !v.is_null())
             .ok_or_else(|| format!("`{what}.hole_axis` needs a `direction`"))?;
         return Ok(Some(crate::model::MateRef::HoleAxis {
-            body: req_usize(t, "body", what)?,
+            body: body_key_from_ordinal(doc, req_usize(t, "body", what)?)?,
             origin: point(v)?,
             dir: point(d)?,
         }));
@@ -1399,7 +1422,7 @@ fn mate_ref_from_json(
             .filter(|v| !v.is_null())
             .ok_or_else(|| format!("`{what}.face` needs a `normal`"))?;
         return Ok(Some(crate::model::MateRef::Face {
-            body: req_usize(t, "body", what)?,
+            body: body_key_from_ordinal(doc, req_usize(t, "body", what)?)?,
             centroid: point(v)?,
             normal: point(n)?,
         }));
@@ -1408,7 +1431,7 @@ fn mate_ref_from_json(
         let Some(ends) = t.get(key).and_then(Value::as_array).filter(|a| a.len() == 2) else {
             continue;
         };
-        let body = req_usize(t, "body", what)?;
+        let body = body_key_from_ordinal(doc, req_usize(t, "body", what)?)?;
         let (a, b) = (point(&ends[0])?, point(&ends[1])?);
         return Ok(Some(if whole {
             crate::model::MateRef::Edge { body, a, b }
@@ -1416,12 +1439,13 @@ fn mate_ref_from_json(
             crate::model::MateRef::Point(crate::model::MovePointRef::EdgeMidpoint { body, a, b })
         }));
     }
-    move_point_from_json(Some(v), what).map(|p| p.map(crate::model::MateRef::Point))
+    move_point_from_json(doc, Some(v), what).map(|p| p.map(crate::model::MateRef::Point))
 }
 
 /// A [`crate::model::MovePointRef`] from `{ "body": i, "vertex": [x,y,z] }` or
 /// `{ "body": i, "edge": [[x,y,z], [x,y,z]] }` — millimetres, re-quantized (#649/#650).
 fn move_point_from_json(
+    doc: &crate::model::Document,
     v: Option<&Value>,
     what: &str,
 ) -> Result<Option<crate::model::MovePointRef>, String> {
@@ -1431,7 +1455,7 @@ fn move_point_from_json(
     let t = v
         .as_object()
         .ok_or_else(|| format!("move `{what}` must be an object"))?;
-    let body = req_usize(t, "body", what)?;
+    let body = body_key_from_ordinal(doc, req_usize(t, "body", what)?)?;
     let point = |v: &Value| -> Result<[i32; 3], String> {
         let a = v
             .as_array()
@@ -1479,6 +1503,7 @@ fn move_point_from_json(
 /// (default "count_gap"), and count/spacing/length expression fields.
 #[allow(clippy::type_complexity)]
 fn repeat_op_args(
+    doc: &crate::model::Document,
     o: &Map<String, Value>,
 ) -> Result<
     (Vec<usize>, RevolveAxis, bool, bool, RepeatMode, String, String, String, Option<ExtrudeTarget>),
@@ -1487,7 +1512,7 @@ fn repeat_op_args(
     let targets = usize_list(o, "bodies")?;
     let axis = match o.get("axis") {
         None | Some(Value::Null) => RevolveAxis::X,
-        Some(v) => revolve_axis_from_value(v)?,
+        Some(v) => revolve_axis_from_value(doc, v)?,
     };
     let mode_name = opt_str(o, "mode")?.unwrap_or_else(|| "count_gap".to_string());
     let mode = RepeatMode::from_name(&mode_name).ok_or_else(|| {
@@ -1550,7 +1575,10 @@ fn mirror_op_args(
 }
 
 /// A rotation/revolve axis from `"x"`/`"y"`/`"z"` or an object `{ line = i }`.
-fn revolve_axis_from_value(v: &Value) -> Result<RevolveAxis, String> {
+fn revolve_axis_from_value(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<RevolveAxis, String> {
     match v {
         Value::String(s) => match s.to_ascii_lowercase().as_str() {
             "x" => Ok(RevolveAxis::X),
@@ -1563,7 +1591,7 @@ fn revolve_axis_from_value(v: &Value) -> Result<RevolveAxis, String> {
                 return Ok(RevolveAxis::Line(req_usize(t, "line", "axis")?));
             }
             // A body feature edge (#643), by the body plus the edge's world endpoints in mm.
-            let body = req_usize(t, "body", "axis")?;
+            let body = body_key_from_ordinal(doc, req_usize(t, "body", "axis")?)?;
             let point = |key: &str| -> Result<glam::Vec3, String> {
                 let v = t
                     .get(key)
@@ -1676,7 +1704,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
                 }
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
-                "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
+                "body" => doc.bodies.len(),
                 "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
@@ -1698,10 +1726,10 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
             Ok(get_element(doc, &kind, index)?)
         }
         "body_stats" => {
-            let index = req_usize(o, "index", "body_stats")?;
-            if !doc.bodies.get(index).is_some_and(|b| !b.deleted) {
+            let ordinal = req_usize(o, "index", "body_stats")?;
+            let Some(index) = doc.bodies.keys().nth(ordinal) else {
                 return Ok(Value::Null);
-            }
+            };
             let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
                 return Ok(Value::Null);
             };
@@ -1807,7 +1835,8 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             }
         }
         "body" => {
-            let Some(body) = doc.bodies.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the body's ordinal among the live ones (#1055).
+            let Some(body) = doc.bodies.keys().nth(index).map(|k| &doc.bodies[k]) else {
                 return Ok(Value::Null);
             };
             if let Some(name) = &body.name {
@@ -2124,54 +2153,55 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::Tool;
     use serde_json::json;
 
     #[test]
     fn document_and_tool_actions_map_to_instructions() {
-        assert_eq!(instruction_from_json("new", &json!({})), Ok(Instruction::New));
-        assert_eq!(instruction_from_json("clear", &json!({})), Ok(Instruction::Clear));
-        assert_eq!(instruction_from_json("undo", &json!({})), Ok(Instruction::Undo));
-        assert_eq!(instruction_from_json("quit", &json!({})), Ok(Instruction::Quit));
+        assert_eq!(instruction_from_json(&Document::default(), "new", &json!({})), Ok(Instruction::New));
+        assert_eq!(instruction_from_json(&Document::default(), "clear", &json!({})), Ok(Instruction::Clear));
+        assert_eq!(instruction_from_json(&Document::default(), "undo", &json!({})), Ok(Instruction::Undo));
+        assert_eq!(instruction_from_json(&Document::default(), "quit", &json!({})), Ok(Instruction::Quit));
         assert_eq!(
-            instruction_from_json("exit_sketch", &json!({})),
+            instruction_from_json(&Document::default(), "exit_sketch", &json!({})),
             Ok(Instruction::ExitSketch)
         );
         assert_eq!(
-            instruction_from_json("tool", &json!({ "name": "circle" })),
+            instruction_from_json(&Document::default(), "tool", &json!({ "name": "circle" })),
             Ok(Instruction::Tool(Tool::Circle))
         );
-        assert!(instruction_from_json("tool", &json!({ "name": "nope" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "tool", &json!({ "name": "nope" })).is_err());
     }
 
     #[test]
     fn rect_matches_the_native_defaults() {
         // Same as `bearcad.rect{ width = 40, height = 20 }`: x/y default to 0.
         assert_eq!(
-            instruction_from_json("rect", &json!({ "width": 40, "height": 20 })),
+            instruction_from_json(&Document::default(), "rect", &json!({ "width": 40, "height": 20 })),
             Ok(Instruction::CreateRect { x: 0.0, y: 0.0, width: 40.0, height: 20.0, width_expr: None, height_expr: None })
         );
         assert_eq!(
-            instruction_from_json("rect", &json!({ "x": 5, "y": -3, "width": 40, "height": 20 })),
+            instruction_from_json(&Document::default(), "rect", &json!({ "x": 5, "y": -3, "width": 40, "height": 20 })),
             Ok(Instruction::CreateRect { x: 5.0, y: -3.0, width: 40.0, height: 20.0, width_expr: None, height_expr: None })
         );
-        assert!(instruction_from_json("rect", &json!({ "width": 40 })).is_err());
+        assert!(instruction_from_json(&Document::default(), "rect", &json!({ "width": 40 })).is_err());
     }
 
     #[test]
     fn circle_accepts_r_radius_or_diameter() {
         let r = Instruction::CreateCircle { cx: 0.0, cy: 0.0, r: 5.0, diameter_expr: None };
-        assert_eq!(instruction_from_json("circle", &json!({ "r": 5 })), Ok(r.clone()));
-        assert_eq!(instruction_from_json("circle", &json!({ "radius": 5 })), Ok(r.clone()));
-        assert_eq!(instruction_from_json("circle", &json!({ "diameter": 10 })), Ok(r));
-        assert!(instruction_from_json("circle", &json!({ "x": 1 })).is_err());
+        assert_eq!(instruction_from_json(&Document::default(), "circle", &json!({ "r": 5 })), Ok(r.clone()));
+        assert_eq!(instruction_from_json(&Document::default(), "circle", &json!({ "radius": 5 })), Ok(r.clone()));
+        assert_eq!(instruction_from_json(&Document::default(), "circle", &json!({ "diameter": 10 })), Ok(r));
+        assert!(instruction_from_json(&Document::default(), "circle", &json!({ "x": 1 })).is_err());
     }
 
     #[test]
     fn line_supports_endpoints_and_length_angle() {
         assert_eq!(
-            instruction_from_json("line", &json!({ "x1": 30, "y1": 0 })),
+            instruction_from_json(&Document::default(), "line", &json!({ "x1": 30, "y1": 0 })),
             Ok(Instruction::CreateLine {
                 x0: 0.0,
                 y0: 0.0,
@@ -2183,7 +2213,7 @@ mod tests {
         );
         // length + default angle 0 lands at (length, 0).
         let Instruction::CreateLine { x1, y1, .. } =
-            instruction_from_json("line", &json!({ "length": 10 })).unwrap()
+            instruction_from_json(&Document::default(), "line", &json!({ "length": 10 })).unwrap()
         else {
             panic!("expected a line");
         };
@@ -2193,7 +2223,7 @@ mod tests {
     #[test]
     fn line_dimension_true_locks_the_as_drawn_length() {
         let instr =
-            instruction_from_json("line", &json!({ "x1": 3, "y1": 4, "dimension": true })).unwrap();
+            instruction_from_json(&Document::default(), "line", &json!({ "x1": 3, "y1": 4, "dimension": true })).unwrap();
         let Instruction::CreateLine { dimension, .. } = instr else {
             panic!("expected a line");
         };
@@ -2202,7 +2232,7 @@ mod tests {
 
     #[test]
     fn line_bezier_reads_both_handles() {
-        let instr = instruction_from_json(
+        let instr = instruction_from_json(&Document::default(), 
             "line",
             &json!({ "x1": 10, "y1": 0, "bezier": [[2, 3], [8, -1]] }),
         )
@@ -2216,19 +2246,19 @@ mod tests {
     #[test]
     fn plane_and_begin_sketch_and_open_sketch() {
         assert_eq!(
-            instruction_from_json("plane", &json!({ "offset": 12, "from": 1 })),
+            instruction_from_json(&Document::default(), "plane", &json!({ "offset": 12, "from": 1 })),
             Ok(Instruction::CreatePlane { offset: 12.0, from: 1 })
         );
         assert_eq!(
-            instruction_from_json("plane", &json!({})),
+            instruction_from_json(&Document::default(), "plane", &json!({})),
             Ok(Instruction::CreatePlane { offset: 0.0, from: 0 })
         );
         assert_eq!(
-            instruction_from_json("begin_sketch", &json!({ "kind": "plane", "index": 0 })),
+            instruction_from_json(&Document::default(), "begin_sketch", &json!({ "kind": "plane", "index": 0 })),
             Ok(Instruction::BeginSketch { face: FaceId::from_script("plane", 0).unwrap() })
         );
         assert_eq!(
-            instruction_from_json("open_sketch", &json!({ "sketch": 2 })),
+            instruction_from_json(&Document::default(), "open_sketch", &json!({ "sketch": 2 })),
             Ok(Instruction::OpenSketch { sketch: 2 })
         );
     }
@@ -2244,36 +2274,36 @@ mod tests {
 
     #[test]
     fn unknown_command_and_bad_args_report_errors() {
-        assert!(instruction_from_json("frobnicate", &json!({})).is_err());
-        assert!(instruction_from_json("rect", &json!("not an object")).is_err());
-        assert!(instruction_from_json("tool", &json!({})).is_err());
+        assert!(instruction_from_json(&Document::default(), "frobnicate", &json!({})).is_err());
+        assert!(instruction_from_json(&Document::default(), "rect", &json!("not an object")).is_err());
+        assert!(instruction_from_json(&Document::default(), "tool", &json!({})).is_err());
     }
 
     #[test]
     fn io_commands_map_to_instructions() {
         assert_eq!(
-            instruction_from_json("open", &json!({ "path": "part.bcad" })),
+            instruction_from_json(&Document::default(), "open", &json!({ "path": "part.bcad" })),
             Ok(Instruction::Open("part.bcad".into()))
         );
-        assert_eq!(instruction_from_json("save", &json!({})), Ok(Instruction::Save(None)));
+        assert_eq!(instruction_from_json(&Document::default(), "save", &json!({})), Ok(Instruction::Save(None)));
         assert_eq!(
-            instruction_from_json("save", &json!({ "path": "out.bcad" })),
+            instruction_from_json(&Document::default(), "save", &json!({ "path": "out.bcad" })),
             Ok(Instruction::Save(Some("out.bcad".into())))
         );
         assert_eq!(
-            instruction_from_json("export_stl", &json!({ "path": "a.stl", "body": "Plate" })),
+            instruction_from_json(&Document::default(), "export_stl", &json!({ "path": "a.stl", "body": "Plate" })),
             Ok(Instruction::ExportStl { path: "a.stl".into(), body: Some("Plate".into()) })
         );
         assert_eq!(
-            instruction_from_json("export_step", &json!({ "path": "a.step" })),
+            instruction_from_json(&Document::default(), "export_step", &json!({ "path": "a.step" })),
             Ok(Instruction::ExportStep { path: "a.step".into(), body: None })
         );
         assert_eq!(
-            instruction_from_json("import_image", &json!({ "path": "p.png", "plane": 2 })),
+            instruction_from_json(&Document::default(), "import_image", &json!({ "path": "p.png", "plane": 2 })),
             Ok(Instruction::ImportImage { path: "p.png".into(), plane: Some(2) })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "calibrate_image",
                 &json!({ "image": 0, "from": [0, 0], "to": [10, 0], "length": 25 })
             ),
@@ -2291,7 +2321,7 @@ mod tests {
         // Bare `bearcad.revolve{ polygon = {0,1,2,3}, axis = "y" }`: angle 360, not symmetric,
         // new body, no explicit body list.
         assert_eq!(
-            instruction_from_json("revolve", &json!({ "polygon": [0, 1, 2, 3], "axis": "y" })),
+            instruction_from_json(&Document::default(), "revolve", &json!({ "polygon": [0, 1, 2, 3], "axis": "y" })),
             Ok(Instruction::Revolve {
                 faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
                 axis: RevolveAxis::Y,
@@ -2302,7 +2332,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "revolve",
                 &json!({ "circle": 0, "axis": { "line": 3 }, "angle": 90, "symmetric": true,
                          "body": "cut", "bodies": [1, 2] })
@@ -2316,14 +2346,14 @@ mod tests {
                 bodies: vec![1, 2],
             })
         );
-        assert!(instruction_from_json("revolve", &json!({ "circle": 0 })).is_err());
-        assert!(instruction_from_json("revolve", &json!({ "axis": "x" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "revolve", &json!({ "circle": 0 })).is_err());
+        assert!(instruction_from_json(&Document::default(), "revolve", &json!({ "axis": "x" })).is_err());
     }
 
     #[test]
     fn loft_gathers_circles_and_polygons() {
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "loft",
                 &json!({ "circles": [0, 1], "polygons": [[2, 3, 4, 5]] })
             ),
@@ -2338,13 +2368,13 @@ mod tests {
             })
         );
         // Fewer than two sections is rejected, as in the closure.
-        assert!(instruction_from_json("loft", &json!({ "circle": 0 })).is_err());
+        assert!(instruction_from_json(&Document::default(), "loft", &json!({ "circle": 0 })).is_err());
     }
 
     #[test]
     fn combine_defaults_and_edit() {
         assert_eq!(
-            instruction_from_json("combine", &json!({ "a": [0], "b": [1] })),
+            instruction_from_json(&Document::default(), "combine", &json!({ "a": [0], "b": [1] })),
             Ok(Instruction::CreateBooleanOp {
                 kind: BooleanOpKind::Combine,
                 a: vec![0],
@@ -2353,7 +2383,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "edit_boolean",
                 &json!({ "index": 2, "op": "cut", "a": [0], "b": [1], "keep_b": true })
             ),
@@ -2365,13 +2395,13 @@ mod tests {
                 keep_b: true,
             })
         );
-        assert!(instruction_from_json("combine", &json!({ "op": "nope" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "combine", &json!({ "op": "nope" })).is_err());
     }
 
     #[test]
     fn mirror_bodies_parses_plane_and_bodies() {
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "mirror_bodies",
                 &json!({ "plane": { "kind": "construction_plane", "index": 0 }, "bodies": [0, 1] })
             ),
@@ -2382,7 +2412,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "edit_mirror",
                 &json!({ "index": 2, "plane": { "kind": "construction_plane", "index": 1 }, "bodies": [3] })
             ),
@@ -2394,15 +2424,25 @@ mod tests {
             })
         );
         // A missing plane is an error.
-        assert!(instruction_from_json("mirror_bodies", &json!({ "bodies": [0] })).is_err());
+        assert!(instruction_from_json(&Document::default(), "mirror_bodies", &json!({ "bodies": [0] })).is_err());
     }
 
     /// #894: the web `joint` command builds the same instruction the mlua closure does —
     /// members from `a`/`b`, `to` points on the base side's frame, positions stringified.
     #[test]
     fn joint_maps_pairs_onto_frames_like_the_lua_closure() {
+        // The members are bodies named by ordinal (#1055), so the document must hold them.
+        let mut doc = Document::default();
+        for _ in 0..2 {
+            doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Extrusion(0),
+                name: None,
+                material: None,
+                shadow: false,
+            });
+        }
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&doc,
                 "joint",
                 &json!({
                     "a": 0,
@@ -2425,19 +2465,19 @@ mod tests {
             ),
             Ok(Instruction::CreateJointOp {
                 members: vec![
-                    crate::model::JointRef::Body(0),
+                    crate::model::JointRef::Body(bkey(0)),
                     crate::model::JointRef::UnitInstance(2),
                 ],
                 base: 0,
                 kind: crate::model::JointKind::Revolute,
                 mate: crate::model::JointMate {
                     moving_face: Some(crate::model::MateRef::Face {
-                        body: 1,
+                        body: bkey(1),
                         centroid: [4000, 0, 0],
                         normal: [0, 0, 100],
                     }),
                     fixed_face: Some(crate::model::MateRef::Face {
-                        body: 0,
+                        body: bkey(0),
                         centroid: [0, 0, 0],
                         normal: [0, 0, 100],
                     }),
@@ -2445,7 +2485,7 @@ mod tests {
                     offset: "2".into(),
                     line_up: vec![crate::model::MateLineUp {
                         moving: Some(crate::model::MateRef::Edge {
-                            body: 1,
+                            body: bkey(1),
                             a: [4000, 0, 0],
                             b: [4400, 0, 0],
                         }),
@@ -2462,15 +2502,15 @@ mod tests {
         );
         // `base = "b"` names the second member as the held side.
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&doc,
                 "edit_joint",
                 &json!({ "index": 0, "a": 0, "b": 1, "kind": "screw", "lead": "2", "base": "b" })
             ),
             Ok(Instruction::EditJointOp {
                 op: 0,
                 members: vec![
-                    crate::model::JointRef::Body(0),
-                    crate::model::JointRef::Body(1),
+                    crate::model::JointRef::Body(bkey(0)),
+                    crate::model::JointRef::Body(bkey(1)),
                 ],
                 base: 1,
                 kind: crate::model::JointKind::Screw { lead: "2".into() },
@@ -2486,7 +2526,7 @@ mod tests {
     #[test]
     fn move_bodies_stringifies_expression_fields() {
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "move_bodies",
                 &json!({ "bodies": [0], "x": 10, "y": "w/2" })
             ),
@@ -2505,7 +2545,7 @@ mod tests {
         );
         // Omitted expression fields become empty strings.
         assert_eq!(
-            instruction_from_json("edit_move", &json!({ "index": 1, "bodies": [0], "z": 5 })),
+            instruction_from_json(&Document::default(), "edit_move", &json!({ "index": 1, "bodies": [0], "z": 5 })),
             Ok(Instruction::EditMoveOp {
                 start_point_a: None,
                 end_point_a: None,
@@ -2525,7 +2565,7 @@ mod tests {
     #[test]
     fn repeat_bodies_defaults_axis_and_mode() {
         assert_eq!(
-            instruction_from_json("repeat_bodies", &json!({ "bodies": [0], "count": 5, "spacing": 20 })),
+            instruction_from_json(&Document::default(), "repeat_bodies", &json!({ "bodies": [0], "count": 5, "spacing": 20 })),
             Ok(Instruction::CreateRepeatOp {
                 targets: vec![0],
                 axis: RevolveAxis::X,
@@ -2539,7 +2579,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "repeat_bodies",
                 &json!({ "bodies": [0], "axis": "y", "mode": "fill_pitch", "length": 100, "spacing": 12 })
             ),
@@ -2555,55 +2595,55 @@ mod tests {
                 length_target: None,
             })
         );
-        assert!(instruction_from_json("repeat_bodies", &json!({ "mode": "nope" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "repeat_bodies", &json!({ "mode": "nope" })).is_err());
     }
 
     #[test]
     fn dimension_verbs_route_by_axis() {
         assert_eq!(
-            instruction_from_json("set_dim", &json!({ "axis": "width", "value": "40" })),
+            instruction_from_json(&Document::default(), "set_dim", &json!({ "axis": "width", "value": "40" })),
             Ok(Instruction::SetDim { axis: RectAxis::Width, value: "40".into() })
         );
         // A bare number for the value is stringified.
         assert_eq!(
-            instruction_from_json("set_dim", &json!({ "axis": "length", "value": 25 })),
+            instruction_from_json(&Document::default(), "set_dim", &json!({ "axis": "length", "value": 25 })),
             Ok(Instruction::SetLineLength { value: "25".into() })
         );
         assert_eq!(
-            instruction_from_json("set_dim", &json!({ "axis": "diameter", "value": "d" })),
+            instruction_from_json(&Document::default(), "set_dim", &json!({ "axis": "diameter", "value": "d" })),
             Ok(Instruction::SetCircleDiameter { value: "d".into() })
         );
         assert_eq!(
-            instruction_from_json("set_dim", &json!({ "axis": "offset", "value": "5" })),
+            instruction_from_json(&Document::default(), "set_dim", &json!({ "axis": "offset", "value": "5" })),
             Ok(Instruction::SetPlaneOffset { value: "5".into() })
         );
         assert_eq!(
-            instruction_from_json("focus_dim", &json!({ "axis": "h" })),
+            instruction_from_json(&Document::default(), "focus_dim", &json!({ "axis": "h" })),
             Ok(Instruction::FocusDim(RectAxis::Height))
         );
         assert_eq!(
-            instruction_from_json("focus_dim", &json!({ "axis": "angle" })),
+            instruction_from_json(&Document::default(), "focus_dim", &json!({ "axis": "angle" })),
             Ok(Instruction::FocusPlaneDim(PlaneDim::Angle))
         );
         assert_eq!(
-            instruction_from_json("edit_dim", &json!({ "axis": "length" })),
+            instruction_from_json(&Document::default(), "edit_dim", &json!({ "axis": "length" })),
             Ok(Instruction::BeginEditCommittedDim { axis: DimLabelAxis::Length })
         );
         assert_eq!(
-            instruction_from_json("commit_dim", &json!({})),
+            instruction_from_json(&Document::default(), "commit_dim", &json!({})),
             Ok(Instruction::CommitCommittedDim)
         );
         assert_eq!(
-            instruction_from_json("set_dim_label_offset", &json!({ "axis": "w", "offset": 3 })),
+            instruction_from_json(&Document::default(), "set_dim_label_offset", &json!({ "axis": "w", "offset": 3 })),
             Ok(Instruction::SetDimLabelOffset { axis: DimLabelAxis::Width, offset: 3.0 })
         );
-        assert!(instruction_from_json("set_dim", &json!({ "axis": "nope", "value": "1" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "set_dim", &json!({ "axis": "nope", "value": "1" })).is_err());
     }
 
     #[test]
     fn constraint_verbs_map_to_instructions() {
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "add_constraint",
                 &json!({ "target": { "kind": "line", "index": 0 }, "expression": "40" })
             ),
@@ -2613,7 +2653,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "add_constraint",
                 &json!({ "target": { "kind": "circle", "index": 2 }, "expression": 12 })
             ),
@@ -2624,7 +2664,7 @@ mod tests {
         );
         // Angle: `value` string form, and `angle`-number form; default sign +1.
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "add_angle_constraint",
                 &json!({ "a": 0, "b": 5, "value": "120" })
             ),
@@ -2636,7 +2676,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "add_angle_constraint",
                 &json!({ "a": 0, "b": 5, "angle": 90, "sign": -1 })
             ),
@@ -2648,51 +2688,51 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json("add_geometric_constraint", &json!({ "name": "parallel" })),
+            instruction_from_json(&Document::default(), "add_geometric_constraint", &json!({ "name": "parallel" })),
             Ok(Instruction::AddGeometricConstraint(GeometricConstraintType::Parallel))
         );
         assert_eq!(
-            instruction_from_json("constraint_shortcut", &json!({ "key": "p" })),
+            instruction_from_json(&Document::default(), "constraint_shortcut", &json!({ "key": "p" })),
             Ok(Instruction::ApplyConstraintShortcut('p'))
         );
         assert!(
-            instruction_from_json("add_geometric_constraint", &json!({ "name": "nope" })).is_err()
+            instruction_from_json(&Document::default(), "add_geometric_constraint", &json!({ "name": "nope" })).is_err()
         );
-        assert!(instruction_from_json("add_angle_constraint", &json!({ "a": 0, "b": 5 })).is_err());
+        assert!(instruction_from_json(&Document::default(), "add_angle_constraint", &json!({ "a": 0, "b": 5 })).is_err());
     }
 
     #[test]
     fn plane_edit_naming_and_deletion_verbs() {
         assert_eq!(
-            instruction_from_json("edit_plane", &json!({ "index": 1 })),
+            instruction_from_json(&Document::default(), "edit_plane", &json!({ "index": 1 })),
             Ok(Instruction::BeginEditConstructionPlane { index: 1 })
         );
         assert_eq!(
-            instruction_from_json("commit_plane", &json!({})),
+            instruction_from_json(&Document::default(), "commit_plane", &json!({})),
             Ok(Instruction::CommitConstructionPlane)
         );
         assert_eq!(
-            instruction_from_json("focus_name", &json!({})),
+            instruction_from_json(&Document::default(), "focus_name", &json!({})),
             Ok(Instruction::FocusElementName)
         );
         assert_eq!(
-            instruction_from_json("apply_construction", &json!({ "construction": true })),
+            instruction_from_json(&Document::default(), "apply_construction", &json!({ "construction": true })),
             Ok(Instruction::ApplyConstruction { construction: true })
         );
         assert_eq!(
-            instruction_from_json("apply_construction", &json!({ "construction": "off" })),
+            instruction_from_json(&Document::default(), "apply_construction", &json!({ "construction": "off" })),
             Ok(Instruction::ApplyConstruction { construction: false })
         );
         assert_eq!(
-            instruction_from_json("toggle_construction", &json!({})),
+            instruction_from_json(&Document::default(), "toggle_construction", &json!({})),
             Ok(Instruction::ToggleConstruction)
         );
         assert_eq!(
-            instruction_from_json("clear_selection", &json!({})),
+            instruction_from_json(&Document::default(), "clear_selection", &json!({})),
             Ok(Instruction::ClearSceneSelection)
         );
         assert_eq!(
-            instruction_from_json("delete_selection", &json!({})),
+            instruction_from_json(&Document::default(), "delete_selection", &json!({})),
             Ok(Instruction::DeleteSelection)
         );
     }
@@ -2725,7 +2765,7 @@ mod tests {
         // The mapped object drives the same instruction as the table form.
         let mapped = positional_to_named("set_dim", &[json!("width"), json!("40")]).unwrap();
         assert_eq!(
-            instruction_from_json("set_dim", &mapped),
+            instruction_from_json(&Document::default(), "set_dim", &mapped),
             Ok(Instruction::SetDim { axis: RectAxis::Width, value: "40".into() })
         );
         // Element verbs carry the element object through positionally.
@@ -2739,16 +2779,31 @@ mod tests {
 
     #[test]
     fn scene_element_kind_round_trips() {
+        // A body is named by its ordinal among the live ones (#1055), so the document has to
+        // actually hold that many.
+        let mut doc = Document::default();
+        for _ in 0..5 {
+            doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Extrusion(0),
+                name: None,
+                material: None,
+                shadow: false,
+            });
+        }
         for (kind, idx) in [("plane", 2), ("sketch", 0), ("line", 5), ("circle", 1),
             ("constraint", 3), ("extrusion", 0), ("body", 4)]
         {
-            let el = scene_element_from_kind(kind, idx).unwrap();
-            assert_eq!(scene_element_kind_name(&el), Some((kind, idx)));
-            assert_eq!(scene_element_selection_index(&Document::default(), &el), Some(idx));
+            let el = scene_element_from_kind(&doc, kind, idx).unwrap();
+            // A body's kind/index pair is reported by `scene_element_selection_index`, which
+            // counts live bodies; `scene_element_kind_name` has no document.
+            if kind != "body" {
+                assert_eq!(scene_element_kind_name(&el), Some((kind, idx)));
+            }
+            assert_eq!(scene_element_selection_index(&doc, &el), Some(idx));
         }
         // Full kind name covers non-round-tripping variants too.
         assert_eq!(
-            scene_element_full_kind_name(&SceneElement::Body(0)),
+            scene_element_full_kind_name(&SceneElement::Body(bkey(0))),
             "body"
         );
         assert_eq!(scene_element_full_kind_name(&SceneElement::Origin), "origin");
@@ -2756,52 +2811,52 @@ mod tests {
             scene_element_selection_index(&Document::default(), &SceneElement::Origin),
             Some(0)
         );
-        assert!(scene_element_from_kind("nope", 0).is_none());
+        assert!(scene_element_from_kind(&Document::default(), "nope", 0).is_none());
         // The `construction_plane` alias resolves to the `plane` element.
         assert_eq!(
-            scene_element_from_kind("construction_plane", 1),
-            scene_element_from_kind("plane", 1)
+            scene_element_from_kind(&Document::default(), "construction_plane", 1),
+            scene_element_from_kind(&Document::default(), "plane", 1)
         );
     }
 
     #[test]
     fn navigation_and_view_verbs() {
         assert_eq!(
-            instruction_from_json("orbit", &json!({ "dx": 10, "dy": -5 })),
+            instruction_from_json(&Document::default(), "orbit", &json!({ "dx": 10, "dy": -5 })),
             Ok(Instruction::Orbit { dx: 10.0, dy: -5.0 })
         );
         assert_eq!(
-            instruction_from_json("wheel", &json!({ "scroll": 2 })),
+            instruction_from_json(&Document::default(), "wheel", &json!({ "scroll": 2 })),
             Ok(Instruction::Zoom { scroll: 2.0 })
         );
         assert_eq!(
-            instruction_from_json("view", &json!({ "view": "top" })),
+            instruction_from_json(&Document::default(), "view", &json!({ "view": "top" })),
             Ok(Instruction::View(StandardView::from_name("top").unwrap()))
         );
         assert_eq!(
-            instruction_from_json("view", &json!({ "view": "orthographic" })),
+            instruction_from_json(&Document::default(), "view", &json!({ "view": "orthographic" })),
             Ok(Instruction::ProjectionMode(ProjectionMode::from_name("orthographic").unwrap()))
         );
         assert_eq!(
-            instruction_from_json("view_home", &json!({})),
+            instruction_from_json(&Document::default(), "view_home", &json!({})),
             Ok(Instruction::ViewHome)
         );
         assert_eq!(
-            instruction_from_json("toggle_projection", &json!({})),
+            instruction_from_json(&Document::default(), "toggle_projection", &json!({})),
             Ok(Instruction::ToggleProjectionMode)
         );
         assert_eq!(
-            instruction_from_json("shading", &json!({ "mode": "wireframe" })),
+            instruction_from_json(&Document::default(), "shading", &json!({ "mode": "wireframe" })),
             Ok(Instruction::ShadingMode(ShadingMode::from_name("wireframe").unwrap()))
         );
-        assert!(instruction_from_json("view", &json!({ "view": "nope" })).is_err());
-        assert!(instruction_from_json("shading", &json!({ "mode": "nope" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "view", &json!({ "view": "nope" })).is_err());
+        assert!(instruction_from_json(&Document::default(), "shading", &json!({ "mode": "nope" })).is_err());
     }
 
     #[test]
     fn camera_pane_palette_and_fps() {
         assert_eq!(
-            instruction_from_json("camera", &json!({ "yaw": 30, "target": [0, 0, 5] })),
+            instruction_from_json(&Document::default(), "camera", &json!({ "yaw": 30, "target": [0, 0, 5] })),
             Ok(Instruction::SetCamera {
                 yaw: Some(30.0),
                 pitch: None,
@@ -2810,13 +2865,13 @@ mod tests {
             })
         );
         // No pose keys is a read, not an action.
-        assert!(instruction_from_json("camera", &json!({})).is_err());
+        assert!(instruction_from_json(&Document::default(), "camera", &json!({})).is_err());
         assert_eq!(
-            instruction_from_json("zoom_fit", &json!({})),
+            instruction_from_json(&Document::default(), "zoom_fit", &json!({})),
             Ok(Instruction::ZoomFit)
         );
         assert_eq!(
-            instruction_from_json("pane", &json!({ "pane": "elements", "visible": "hide" })),
+            instruction_from_json(&Document::default(), "pane", &json!({ "pane": "elements", "visible": "hide" })),
             Ok(Instruction::SetPane {
                 pane: Pane::from_name("elements").unwrap(),
                 visible: Some(false),
@@ -2824,39 +2879,39 @@ mod tests {
         );
         // Absent `visible` means toggle.
         assert_eq!(
-            instruction_from_json("pane", &json!({ "pane": "elements" })),
+            instruction_from_json(&Document::default(), "pane", &json!({ "pane": "elements" })),
             Ok(Instruction::SetPane {
                 pane: Pane::from_name("elements").unwrap(),
                 visible: None,
             })
         );
         assert_eq!(
-            instruction_from_json("palette", &json!({})),
+            instruction_from_json(&Document::default(), "palette", &json!({})),
             Ok(Instruction::SetCommandPalette { open: None })
         );
         assert_eq!(
-            instruction_from_json("palette", &json!({ "action": "run", "query": "extrude" })),
+            instruction_from_json(&Document::default(), "palette", &json!({ "action": "run", "query": "extrude" })),
             Ok(Instruction::RunPaletteCommand { query: "extrude".into(), argument: None })
         );
         assert_eq!(
-            instruction_from_json("palette", &json!({ "action": "show" })),
+            instruction_from_json(&Document::default(), "palette", &json!({ "action": "show" })),
             Ok(Instruction::SetCommandPalette { open: Some(true) })
         );
         // fps family.
         assert_eq!(
-            instruction_from_json("fps", &json!({ "on": true })),
+            instruction_from_json(&Document::default(), "fps", &json!({ "on": true })),
             Ok(Instruction::FpsMode { on: Some(true) })
         );
         assert_eq!(
-            instruction_from_json("fps", &json!({})),
+            instruction_from_json(&Document::default(), "fps", &json!({})),
             Ok(Instruction::FpsMode { on: None })
         );
         assert_eq!(
-            instruction_from_json("fps_move", &json!({ "forward": 100 })),
+            instruction_from_json(&Document::default(), "fps_move", &json!({ "forward": 100 })),
             Ok(Instruction::FpsMove { forward: 100.0, strafe: 0.0 })
         );
         assert_eq!(
-            instruction_from_json("fps_advance", &json!({ "seconds": 0.5 })),
+            instruction_from_json(&Document::default(), "fps_advance", &json!({ "seconds": 0.5 })),
             Ok(Instruction::FpsAdvance { seconds: 0.5 })
         );
     }
@@ -2864,7 +2919,7 @@ mod tests {
     #[test]
     fn chamfer_and_fillet_verbs() {
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "chamfer_vertex",
                 &json!({ "point": { "kind": "line", "index": 0, "end": "start" }, "distance": 2 })
             ),
@@ -2875,7 +2930,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "fillet_vertex",
                 &json!({ "point": { "kind": "circle", "index": 1 }, "radius": 3 })
             ),
@@ -2886,7 +2941,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "fillet_edge",
                 &json!({ "extrusion": 0, "edge": { "kind": "vertical", "face": 0, "edge": 2 }, "radius": 1.5 })
             ),
@@ -2897,7 +2952,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "chamfer_edge",
                 &json!({ "extrusion": 1, "edge": { "kind": "cap", "face": 0, "edge": 3, "top": true }, "distance": 2 })
             ),
@@ -2909,7 +2964,7 @@ mod tests {
         );
         // The plural form (#672): one call, one operation over the whole set.
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "fillet_edge",
                 &json!({ "extrusion": 0, "edges": [
                     { "kind": "vertical", "face": 0, "edge": 0 },
@@ -2925,23 +2980,23 @@ mod tests {
                 amount: 8.0,
             })
         );
-        assert!(instruction_from_json("fillet_edge", &json!({ "edges": [], "radius": 1 })).is_err());
-        assert!(instruction_from_json("chamfer_vertex", &json!({ "distance": 2 })).is_err());
+        assert!(instruction_from_json(&Document::default(), "fillet_edge", &json!({ "edges": [], "radius": 1 })).is_err());
+        assert!(instruction_from_json(&Document::default(), "chamfer_vertex", &json!({ "distance": 2 })).is_err());
     }
 
     #[test]
     fn drawing_verbs_map_to_instructions() {
         assert_eq!(
-            instruction_from_json("drawing", &json!({ "name": "Plate" })),
+            instruction_from_json(&Document::default(), "drawing", &json!({ "name": "Plate" })),
             Ok(Instruction::CreateDrawing { name: Some("Plate".into()) })
         );
         assert_eq!(
-            instruction_from_json("drawing", &json!({})),
+            instruction_from_json(&Document::default(), "drawing", &json!({})),
             Ok(Instruction::CreateDrawing { name: None })
         );
         // orientation defaults to Front; "iso" is accepted.
         assert_eq!(
-            instruction_from_json("drawing_view", &json!({ "drawing": 0, "body": 1 })),
+            instruction_from_json(&Document::default(), "drawing_view", &json!({ "drawing": 0, "body": 1 })),
             Ok(Instruction::AddDrawingView {
                 drawing: 0,
                 body: 1,
@@ -2949,7 +3004,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "drawing_view",
                 &json!({ "drawing": 0, "body": 0, "orientation": "iso" })
             ),
@@ -2960,21 +3015,21 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "export_drawing_svg",
                 &json!({ "drawing": 2, "path": "plate.svg" })
             ),
             Ok(Instruction::ExportDrawingSvg { drawing: 2, path: "plate.svg".into() })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "export_drawing_pdf",
                 &json!({ "drawing": 2, "path": "plate.pdf" })
             ),
             Ok(Instruction::ExportDrawingPdf { drawing: 2, path: "plate.pdf".into() })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "drawing_dimension",
                 &json!({ "drawing": 0, "view": 1, "a": [0, 0, 0], "b": [40, 0, 0] })
             ),
@@ -2986,7 +3041,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "drawing_angle",
                 &json!({ "drawing": 0, "view": 0,
                          "edge1": { "a": [0, 0, 0], "b": [40, 0, 0] },
@@ -3000,11 +3055,11 @@ mod tests {
             })
         );
         assert!(
-            instruction_from_json("drawing_view", &json!({ "drawing": 0, "body": 0, "orientation": "nope" }))
+            instruction_from_json(&Document::default(), "drawing_view", &json!({ "drawing": 0, "body": 0, "orientation": "nope" }))
                 .is_err()
         );
         assert!(
-            instruction_from_json("drawing_dimension", &json!({ "drawing": 0, "view": 0, "a": [0, 0], "b": [1, 1, 1] }))
+            instruction_from_json(&Document::default(), "drawing_dimension", &json!({ "drawing": 0, "view": 0, "a": [0, 0], "b": [1, 1, 1] }))
                 .is_err()
         );
     }
@@ -3112,7 +3167,7 @@ mod tests {
     #[test]
     fn slice_reads_plane_and_body_cutters() {
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "slice",
                 &json!({ "bodies": [0], "cutters": [{ "kind": "plane", "index": 1 }] })
             ),
@@ -3124,7 +3179,7 @@ mod tests {
         );
         // A body cap cutter, and the extend flag turned off.
         assert_eq!(
-            instruction_from_json(
+            instruction_from_json(&Document::default(), 
                 "edit_slice",
                 &json!({ "index": 0, "bodies": [1], "extend": false,
                          "cutters": [{ "kind": "extrude_cap", "extrusion": 0, "profile": "polygon",

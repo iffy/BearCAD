@@ -1717,6 +1717,7 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Drawing, DrawingView};
 
@@ -1751,7 +1752,7 @@ mod tests {
 
         // The rendered bases come from resolved_view_axes unfolding the Top parent (X, -Y).
         let parent = DrawingView {
-            body: 0, sketch: None, orientation: O::Top,
+            body: bkey(0), sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
 circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
@@ -1814,7 +1815,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     fn aligned_child_ring_roll_renders_the_chosen_orientation() {
         use crate::model::{AlignDir, DrawingOrientation as O};
         let parent = DrawingView {
-            body: 0, sketch: None, orientation: O::Front,
+            body: bkey(0), sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(),
 circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
@@ -2029,7 +2030,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         doc.drawings.push(Drawing {
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
-                body: 0,
+                body: bkey(0),
                 sketch: None,
                 orientation: DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),

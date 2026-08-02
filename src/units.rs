@@ -121,8 +121,9 @@ fn evaluate_uncached(unit: &ImportedUnit, overrides: &[(String, String)]) -> Uni
         // Uncached meshing on purpose: the shared body-mesh memo is keyed by the *live*
         // document's fingerprint, and meshing a scratch document through it would evict
         // the importing document's own meshes every frame.
-        let meshes = (0..scratch.bodies.len())
-            .filter(|&bi| !scratch.bodies[bi].deleted)
+        let meshes = scratch
+            .bodies
+            .keys()
             .filter_map(|bi| crate::extrude::body_solid_mesh_uncached_pub(&scratch, bi))
             .filter(|mesh| !mesh.is_empty())
             .collect();
@@ -211,20 +212,23 @@ thread_local! {
 pub fn sync_unit_bodies(doc: &mut Document) {
     use crate::model::BodySource;
     let body_for = |doc: &Document, instance: usize| {
-        doc.bodies
-            .iter()
-            .position(|b| matches!(b.source, BodySource::UnitInstance(i) if i == instance))
+        doc.bodies.iter().find_map(|(k, b)| {
+            matches!(b.source, BodySource::UnitInstance(i) if i == instance).then_some(k)
+        })
     };
     for instance in 0..doc.unit_instances.len() {
         let alive = !doc.unit_instances[instance].deleted;
         match body_for(doc, instance) {
-            Some(bi) => doc.bodies[bi].deleted = !alive,
+            // A dead instance's materialized body goes away outright (#1055).
+            Some(bi) if !alive => {
+                doc.bodies.remove(bi);
+            }
+            Some(_) => {}
             None if alive => {
-                doc.bodies.push(crate::model::Body {
+                doc.bodies.insert(crate::model::Body {
                     source: BodySource::UnitInstance(instance),
                     material: None,
                     name: None,
-                    deleted: false,
                     shadow: false,
                 });
                 doc.shape_order.push(crate::model::ShapeKind::Body);
@@ -236,9 +240,8 @@ pub fn sync_unit_bodies(doc: &mut Document) {
         // every pass, so deleting the consuming op un-shadows it again. The unit itself
         // is never mutated; shadowing is importing-document presentation state.
         if let Some(bi) = body_for(doc, instance) {
-            let consumed_by_cut = doc.bodies.iter().any(|b| {
-                !b.deleted
-                    && matches!(b.source,
+            let consumed_by_cut = doc.bodies.values().any(|b| {
+                matches!(b.source,
                         BodySource::UnitCut { instance: i, ref cut } if i == instance && !cut.is_empty())
             });
             doc.bodies[bi].shadow = consumed_by_cut
@@ -525,11 +528,10 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         });
-        doc.bodies.push(crate::model::Body {
+        doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Extrusion(0),
             material: None,
             name: None,
-            deleted: false,
             shadow: false,
         });
         doc

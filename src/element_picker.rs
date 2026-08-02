@@ -322,11 +322,11 @@ pub enum PickRule {
     LiveBody,
     /// Only geometry sitting on one of these bodies — the Move tool's start points, which must
     /// land on a **moving** body (#649).
-    OnBodies(Vec<usize>),
+    OnBodies(Vec<crate::model::BodyKey>),
     /// Only geometry **not** sitting on one of these bodies — the Move tool's end points, which
     /// land on stationary geometry (#650). Geometry belonging to no body at all (the origin, a
     /// world axis) counts as stationary.
-    OffBodies(Vec<usize>),
+    OffBodies(Vec<crate::model::BodyKey>),
     /// Only straight references: a sketch line with no bezier, a body edge, or a world axis.
     /// The Revolve axis and Repeat path pickers.
     Straight,
@@ -360,7 +360,7 @@ impl PickRule {
             },
             PickRule::LiveBody => match element {
                 SceneElement::Body(index) => {
-                    doc.bodies.get(*index).is_some_and(|b| !b.deleted && !b.shadow)
+                    doc.bodies.get(*index).is_some_and(|b| !b.shadow)
                 }
                 _ => true,
             },
@@ -394,7 +394,7 @@ impl PickRule {
 
 /// The body an element sits on, for [`PickRule::OnBodies`]/[`OffBodies`](PickRule::OffBodies).
 /// `None` for anything that belongs to no body — the origin, a world axis, sketch geometry.
-fn element_body(doc: &Document, element: &SceneElement) -> Option<usize> {
+fn element_body(doc: &Document, element: &SceneElement) -> Option<crate::model::BodyKey> {
     match element {
         SceneElement::Body(index) => Some(*index),
         SceneElement::BodyEdge { body, .. }
@@ -1235,10 +1235,11 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::body_key_for_slot as bkey;
     use super::*;
 
     fn body(i: usize) -> SceneElement {
-        SceneElement::Body(i)
+        SceneElement::Body(bkey(i))
     }
     fn line(i: usize) -> SceneElement {
         SceneElement::Line(i)
@@ -1246,7 +1247,7 @@ mod tests {
 
     #[test]
     fn kind_of_covers_operations_and_geometry() {
-        assert_eq!(ElementKind::of(&SceneElement::Body(0)), ElementKind::Body);
+        assert_eq!(ElementKind::of(&SceneElement::Body(bkey(0))), ElementKind::Body);
         assert_eq!(ElementKind::of(&SceneElement::Line(0)), ElementKind::Line);
         assert_eq!(ElementKind::of(&SceneElement::Origin), ElementKind::Vertex);
         assert_eq!(
@@ -1261,7 +1262,7 @@ mod tests {
 
     fn body_face(body: usize) -> SceneElement {
         SceneElement::BodyFace {
-            body,
+            body: bkey(body),
             centroid: [0, 0, 0],
             normal: [0, 0, 1],
         }
@@ -1272,7 +1273,7 @@ mod tests {
         // #566: a flat body face is `Face`, not `Body`, so a planes-or-faces picker can take it
         // without also swallowing whole bodies.
         assert_eq!(ElementKind::of(&body_face(3)), ElementKind::Face);
-        assert_eq!(ElementKind::of(&SceneElement::Body(3)), ElementKind::Body);
+        assert_eq!(ElementKind::of(&SceneElement::Body(bkey(3))), ElementKind::Body);
     }
 
     #[test]
@@ -1282,7 +1283,7 @@ mod tests {
         let f = ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]);
         assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
         assert!(f.accepts(&Document::default(), &body_face(0)));
-        assert!(!f.accepts(&Document::default(), &SceneElement::Body(0)));
+        assert!(!f.accepts(&Document::default(), &SceneElement::Body(bkey(0))));
     }
 
     #[test]
@@ -1381,7 +1382,7 @@ mod tests {
         assert!(profiles.accepts(&Document::default(), &profile));
         assert!(!profiles.accepts(&Document::default(), &body(0)));
         let mesh = SceneElement::BodyFace {
-            body: 0,
+            body: bkey(0),
             centroid: [0, 0, 0],
             normal: [0, 0, 1],
         };
@@ -1411,7 +1412,7 @@ mod tests {
         // `MovePointRef` — an edge midpoint, a face middle — had no scene element.
         use crate::model::MovePointRef;
         let midpoint = SceneElement::from_move_point(MovePointRef::EdgeMidpoint {
-            body: 1,
+            body: bkey(1),
             a: [0; 3],
             b: [100, 0, 0],
         });
@@ -1426,8 +1427,8 @@ mod tests {
         // and the origin move point is the origin.
         use crate::model::MovePointRef;
         assert_eq!(
-            SceneElement::from_move_point(MovePointRef::Vertex { body: 2, p: [1, 2, 3] }),
-            SceneElement::BodyVertex { body: 2, p: [1, 2, 3] }
+            SceneElement::from_move_point(MovePointRef::Vertex { body: bkey(2), p: [1, 2, 3] }),
+            SceneElement::BodyVertex { body: bkey(2), p: [1, 2, 3] }
         );
         assert_eq!(
             SceneElement::from_move_point(MovePointRef::Origin),
@@ -1435,11 +1436,11 @@ mod tests {
         );
         // Round-trips: what a picker holds converts back to what the geometry code wants.
         for point in [
-            MovePointRef::Vertex { body: 2, p: [1, 2, 3] },
+            MovePointRef::Vertex { body: bkey(2), p: [1, 2, 3] },
             MovePointRef::Origin,
-            MovePointRef::EdgeMidpoint { body: 0, a: [0; 3], b: [5; 3] },
-            MovePointRef::OnEdge { body: 0, p: [7; 3] },
-            MovePointRef::FaceCenter { body: 4, centroid: [1; 3], normal: [0, 0, 100] },
+            MovePointRef::EdgeMidpoint { body: bkey(0), a: [0; 3], b: [5; 3] },
+            MovePointRef::OnEdge { body: bkey(0), p: [7; 3] },
+            MovePointRef::FaceCenter { body: bkey(4), centroid: [1; 3], normal: [0, 0, 100] },
         ] {
             assert_eq!(
                 SceneElement::from_move_point(point).as_move_point(),
@@ -1490,11 +1491,10 @@ mod tests {
         });
         assert!(doc.lines[curved].bezier.is_some());
         for _ in 0..2 {
-            doc.bodies.push(crate::model::Body {
+            doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
                 material: None,
                 name: None,
-                deleted: false,
                 shadow: false,
             });
         }
@@ -1506,7 +1506,7 @@ mod tests {
         // The `!deleted && !shadow` gate that `toggle_body_in_active_tool` and every `SetTool`
         // seeding block re-checks by hand.
         let mut doc = doc_with_two_bodies();
-        doc.bodies[1].shadow = true;
+        doc.bodies.values_mut().nth(1).unwrap().shadow = true;
         let f = ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody);
         assert!(f.accepts(&doc, &body(0)));
         assert!(!f.accepts(&doc, &body(1)), "a consumed body is not pickable");
@@ -1518,13 +1518,13 @@ mod tests {
         // The Move tool's rule: start points land on a *moving* body, end points on a
         // stationary one (#649/#650).
         let doc = doc_with_two_bodies();
-        let moving = vec![0usize];
+        let moving = vec![bkey(0)];
         let on_moving = ElementFilter::kind(ElementKind::Vertex)
             .rule(PickRule::OnBodies(moving.clone()));
         let off_moving =
             ElementFilter::kind(ElementKind::Vertex).rule(PickRule::OffBodies(moving));
-        let corner_of_0 = SceneElement::BodyVertex { body: 0, p: [0; 3] };
-        let corner_of_1 = SceneElement::BodyVertex { body: 1, p: [0; 3] };
+        let corner_of_0 = SceneElement::BodyVertex { body: bkey(0), p: [0; 3] };
+        let corner_of_1 = SceneElement::BodyVertex { body: bkey(1), p: [0; 3] };
         assert!(on_moving.accepts(&doc, &corner_of_0));
         assert!(!on_moving.accepts(&doc, &corner_of_1));
         assert!(!off_moving.accepts(&doc, &corner_of_0));
@@ -1549,7 +1549,7 @@ mod tests {
         ));
         assert!(f.accepts(
             &doc,
-            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+            &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
     }
 
@@ -1572,7 +1572,7 @@ mod tests {
         assert!(rule.allows(&doc, &body(0)));
         assert!(rule.allows(
             &doc,
-            &SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] }
+            &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
         assert!(
             rule.allows(&doc, &SceneElement::ConstructionPlane(2)),
@@ -1597,7 +1597,7 @@ mod tests {
     #[test]
     fn rules_all_have_to_pass() {
         let mut doc = doc_with_two_bodies();
-        doc.bodies[1].shadow = true;
+        doc.bodies.values_mut().nth(1).unwrap().shadow = true;
         let f = ElementFilter::kind(ElementKind::Body)
             .rule(PickRule::LiveBody)
             .rule(PickRule::NotIn(vec![body(0)]));
@@ -1611,7 +1611,7 @@ mod tests {
         // The point of the rules: `pick` and `set_picked` honour them, so every path — viewport
         // click, pane click, tool handoff — gets the same answer.
         let mut doc = doc_with_two_bodies();
-        doc.bodies[1].shadow = true;
+        doc.bodies.values_mut().nth(1).unwrap().shadow = true;
         let mut p = ElementPicker::new(
             ElementFilter::kind(ElementKind::Body).rule(PickRule::LiveBody),
             PickLimit::Infinite,
@@ -1844,10 +1844,10 @@ mod tests {
             SceneElement::Line(0),
             SceneElement::Circle(0),
             SceneElement::Origin,
-            SceneElement::BodyEdge { body: 0, a: [0; 3], b: [1; 3] },
+            SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] },
             body_face(0),
             SceneElement::Constraint(0),
-            SceneElement::Body(0),
+            SceneElement::Body(bkey(0)),
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
             SceneElement::Joint(0),
             SceneElement::Component(0),
@@ -1915,7 +1915,7 @@ mod tests {
         let p = ElementPicker::select_everything();
         assert!(p.is_focused());
         assert!(p.accepts(&Document::default(), &SceneElement::Sketch(0)));
-        assert!(p.accepts(&Document::default(), &SceneElement::Body(0)));
+        assert!(p.accepts(&Document::default(), &SceneElement::Body(bkey(0))));
     }
 
     #[test]
