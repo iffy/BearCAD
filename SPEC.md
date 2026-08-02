@@ -1860,7 +1860,8 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   same cyan ring and dot — so it reads before the click (#931).
 - **Shapes** *(model, #909)* — cuboids, cylinders and spheres placed straight into 3D, with
   no sketch behind them. A `Primitive { kind, origin, normal, u_axis, width, depth, height,
-  radius, name }` in `Document::primitives` stores the anchor frame — the point placed on,
+  radius, name }` in `Document::primitives` — an `arena::Arena` keyed by `PrimitiveKey`
+  (#1055) — stores the anchor frame: the point placed on,
   the plane normal it grows along, and that plane's first in-plane direction — plus its
   dimensions as **expressions**, so a shape follows parameters like any other feature. Each
   shape owns one body via `BodySource::Primitive`, and one `ShapeKind::Primitive` undo marker

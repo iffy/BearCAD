@@ -1244,8 +1244,8 @@ pub enum BodySource {
     Loft(LoftKey),
     /// A revolved solid (#revolve); keys `Document::revolutions`.
     Revolve(RevolutionKey),
-    /// A primitive solid (#909); indexes `Document::primitives`.
-    Primitive(usize),
+    /// A primitive solid (#909); keys `Document::primitives`.
+    Primitive(PrimitiveKey),
     /// A swept solid (the Sweep tool, #sweep); keys `Document::sweeps`.
     Sweep(SweepKey),
     /// One repeated instance of one input of a linear repeat (Repeat tool): `op` indexes
@@ -1865,9 +1865,10 @@ pub struct Primitive {
     pub radius: String,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a primitive shape (#1055), like [`RevolutionKey`].
+pub type PrimitiveKey = crate::arena::Key<Primitive>;
 
 impl Primitive {
     /// A shape of `kind` on the ground at the world origin, with no dimensions yet.
@@ -1882,7 +1883,6 @@ impl Primitive {
             height: String::new(),
             radius: String::new(),
             name: None,
-            deleted: false,
         }
     }
 }
@@ -3941,7 +3941,7 @@ pub struct Document {
     pub revolutions: crate::arena::Arena<Revolution>,
     /// Primitive solids placed straight into 3D (#909): cuboids, cylinders, spheres.
     #[serde(default)]
-    pub primitives: Vec<Primitive>,
+    pub primitives: crate::arena::Arena<Primitive>,
     /// Swept solids (the Sweep tool, #sweep).
     #[serde(default)]
     pub sweeps: crate::arena::Arena<Sweep>,
@@ -4194,7 +4194,7 @@ impl Default for Document {
             tracing_images: crate::arena::Arena::new(),
             lofts: crate::arena::Arena::new(),
             revolutions: crate::arena::Arena::new(),
-            primitives: Vec::new(),
+            primitives: crate::arena::Arena::new(),
             sweeps: crate::arena::Arena::new(),
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),

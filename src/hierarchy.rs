@@ -68,7 +68,7 @@ pub enum HierarchyNode {
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
     Revolution(crate::model::RevolutionKey),
     /// A primitive shape (Create Shape tool, #909); its body nests under it.
-    Shape(usize),
+    Shape(crate::model::PrimitiveKey),
     /// A sweep (Sweep tool); its output body nests under it.
     SweepOp(crate::model::SweepKey),
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
@@ -207,7 +207,7 @@ pub enum SceneElement {
     /// A revolved solid (Revolve tool, #211).
     Revolution(crate::model::RevolutionKey),
     /// A primitive shape placed straight into 3D (Create Shape tool, #909).
-    Shape(usize),
+    Shape(crate::model::PrimitiveKey),
     /// A sweep (Sweep tool).
     SweepOp(crate::model::SweepKey),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
@@ -2132,10 +2132,7 @@ pub fn build_hierarchy(
     }
     // Primitive shapes (#909): the shape is its own top-level element — there's no sketch
     // to nest under — with its body beneath it.
-    for (oi, shape) in doc.primitives.iter().enumerate() {
-        if shape.deleted {
-            continue;
-        }
+    for (oi, _shape) in doc.primitives.iter() {
         let children = doc
             .bodies
             .iter()
@@ -7519,9 +7516,9 @@ label_hidden: false,
         let mut doc = Document::default();
         let mut shape = Primitive::new(PrimitiveKind::Sphere);
         shape.radius = "6".to_string();
-        doc.primitives.push(shape);
+        let key = doc.primitives.insert(shape);
         doc.bodies.push(Body {
-            source: BodySource::Primitive(0),
+            source: BodySource::Primitive(key),
             material: None,
             name: None,
             deleted: false,
@@ -7533,7 +7530,7 @@ label_hidden: false,
         let entry = root
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Shape(0))
+            .find(|e| e.node == HierarchyNode::Shape(key))
             .expect("the shape is a top-level element");
         assert!(
             entry.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
@@ -7544,11 +7541,11 @@ label_hidden: false,
             "and isn't also a Document-level orphan",
         );
         assert_eq!(
-            scene_element_for_node(HierarchyNode::Shape(0)),
-            Some(SceneElement::Shape(0))
+            scene_element_for_node(HierarchyNode::Shape(key)),
+            Some(SceneElement::Shape(key))
         );
         assert_eq!(
-            crate::names::default_node_label(&doc, HierarchyNode::Shape(0)),
+            crate::names::default_node_label(&doc, HierarchyNode::Shape(key)),
             "Sphere 0"
         );
     }

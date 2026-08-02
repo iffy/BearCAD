@@ -246,7 +246,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_arena_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_arena_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
-    save_indexed_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
+    save_arena_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
     save_arena_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
@@ -585,7 +585,7 @@ pub fn open(path: &str) -> Result<Document> {
     let tracing_images = load_arena_entities(&conn, "tracing_image")?;
     let lofts = load_arena_entities(&conn, "loft")?;
     let revolutions = load_arena_entities(&conn, "revolution")?;
-    let primitives = load_indexed_entities(&conn, "primitive")?;
+    let primitives = load_arena_entities(&conn, "primitive")?;
     let sweeps = load_arena_entities(&conn, "sweep")?;
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
     let move_ops = load_indexed_entities(&conn, "move_op")?;
@@ -1175,9 +1175,14 @@ mod tests {
         shape.radius = "bore / 2".to_string();
         shape.height = "18".to_string();
         shape.name = Some("Boss".to_string());
-        doc.primitives.push(shape);
+        // A shape removed before the save: the survivor must not slide into its slot.
+        let doomed = doc
+            .primitives
+            .insert(crate::model::Primitive::new(crate::model::PrimitiveKind::Sphere));
+        doc.primitives.remove(doomed);
+        let key = doc.primitives.insert(shape);
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Primitive(0),
+            source: crate::model::BodySource::Primitive(key),
             name: None,
             material: None,
             deleted: false,
@@ -1190,6 +1195,12 @@ mod tests {
         assert_eq!(loaded.primitives, doc.primitives);
         assert_eq!(loaded.bodies, doc.bodies);
         assert_eq!(loaded.shape_order, doc.shape_order);
+        assert_eq!(
+            loaded.primitives.get(key).and_then(|s| s.name.clone()),
+            Some("Boss".to_string()),
+            "the shape's key still resolves to it (#1055)"
+        );
+        assert!(loaded.primitives.get(doomed).is_none(), "and the removed one stays gone");
 
         std::fs::remove_file(&path).unwrap();
     }

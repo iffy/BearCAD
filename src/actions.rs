@@ -278,7 +278,7 @@ pub enum ShapePhase {
 pub struct CreatingShape {
     pub shape: crate::model::Primitive,
     /// `Some(index)` while editing a committed shape rather than placing a new one.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::PrimitiveKey>,
     pub phase: ShapePhase,
     /// A cuboid's first clicked corner, in world mm: the base centre and the width/depth
     /// follow from it and the opposite corner (#912).
@@ -2222,7 +2222,7 @@ pub enum Action {
     CreateShape { shape: crate::model::Primitive },
     /// Re-point an existing shape (#909): its frame and dimensions, keeping its name.
     EditShape {
-        index: usize,
+        index: crate::model::PrimitiveKey,
         shape: crate::model::Primitive,
     },
     /// Finalize the in-progress sweep (reads `creating_sweep`).
@@ -4625,9 +4625,9 @@ impl AppState {
         }
         let label = crate::names::primitive_kind_label(shape.kind);
         self.creating_shape = None;
-        self.doc.primitives.push(shape);
+        let key = self.doc.primitives.insert(shape);
         self.doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Primitive(self.doc.primitives.len() - 1),
+            source: crate::model::BodySource::Primitive(key),
             material: None,
             name: None,
             deleted: false,
@@ -4642,9 +4642,13 @@ impl AppState {
 
     /// Re-point an existing shape (#909): replace its frame and dimensions in place,
     /// keeping its name and its body.
-    fn edit_shape(&mut self, index: usize, shape: crate::model::Primitive) -> ActionResult {
-        if self.doc.primitives.get(index).is_none_or(|s| s.deleted) {
-            let e = format!("No shape {index}");
+    fn edit_shape(
+        &mut self,
+        index: crate::model::PrimitiveKey,
+        shape: crate::model::Primitive,
+    ) -> ActionResult {
+        if !self.doc.primitives.contains(index) {
+            let e = format!("No shape {index:?}");
             self.status = e.clone();
             return ActionResult::Err(e);
         }
@@ -5969,7 +5973,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
-        SceneElement::Shape(i) => format!("Shape {i}"),
+        SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep operation {}", i.index()),
         SceneElement::Joint(i) => format!("Joint {i}"),
         SceneElement::Origin => "Origin".to_string(),

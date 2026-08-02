@@ -167,6 +167,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
             doc.revolutions.keys().position(|k| k == key).unwrap_or(0)
         }
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
@@ -186,7 +187,6 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
         | SceneElement::EdgeTreatmentOp(i)
-        | SceneElement::Shape(i)
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
         | SceneElement::Joint(i) => i,
@@ -254,7 +254,7 @@ pub fn scene_element_from_kind(
         }
         "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
         "joint" => Some(SceneElement::Joint(index)),
-        "shape" | "primitive" => Some(SceneElement::Shape(index)),
+        "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
         // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.
         "axis" | "global_axis" => Some(SceneElement::GlobalAxis(match index {
             0 => crate::construction::GlobalAxis::X,
@@ -4856,9 +4856,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 let shape = parse_shape_args(lua, &opts, kind, call)?;
                 let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
                 unsafe { tick.exec(Instruction::Shape { shape })? };
-                let element = SceneElement::Shape(unsafe {
-                    tick.state().doc.primitives.len().saturating_sub(1)
-                });
+                let key = unsafe { tick.state().doc.primitives.keys().last() };
+                let element = SceneElement::Shape(
+                    key.ok_or_else(|| mlua::Error::external("shape was not created"))?,
+                );
                 drop(tick);
                 apply_optional_name(lua, element, Some(opts))
             })?,
@@ -4869,8 +4870,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_shape",
         lua.create_function(|lua, opts: Table| {
             check_shape_keys(&opts, "edit_shape")?;
-            let index: usize = opts.get("index")?;
+            // The script's `index` is the shape's ordinal among the live ones (#1055).
+            let ordinal: usize = opts.get("index")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let index = unsafe { tick.state().doc.primitives.keys().nth(ordinal) }
+                .ok_or_else(|| mlua::Error::external(format!("no shape {ordinal}")))?;
             let existing = unsafe { tick.state().doc.primitives.get(index).cloned() };
             drop(tick);
             let kind = match opts.get::<Option<String>>("shape")? {
@@ -4882,7 +4886,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 None => existing
                     .as_ref()
                     .map(|s| s.kind)
-                    .ok_or_else(|| mlua::Error::external(format!("no shape {index}")))?,
+                    .ok_or_else(|| mlua::Error::external(format!("no shape {ordinal}")))?,
             };
             let mut shape = parse_shape_args(lua, &opts, kind, "edit_shape")?;
             // Unmentioned dimensions keep what the shape already had.
@@ -4896,7 +4900,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 if !opts.contains_key("u_axis")? { shape.u_axis = old.u_axis; }
             }
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::EditShape { index, shape })? };
+            unsafe { tick.exec(Instruction::EditShape { index: ordinal, shape })? };
             drop(tick);
             apply_optional_name(lua, SceneElement::Shape(index), Some(opts))
         })?,
@@ -8212,7 +8216,8 @@ mod tests {
         );
         assert_eq!(state.doc.primitives.len(), 3, "three shapes");
         assert_eq!(state.doc.bodies.len(), 3, "each shape owns a body");
-        assert_eq!(state.doc.primitives[0].name.as_deref(), Some("Block"));
+        let first = state.doc.primitives.keys().next().expect("the first shape");
+        assert_eq!(state.doc.primitives[first].name.as_deref(), Some("Block"));
         let volume = |i: usize| {
             crate::extrude::body_solid_mesh(&state.doc, i)
                 .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
@@ -8236,9 +8241,14 @@ mod tests {
             bearcad.edit_shape{ index = 0, height = "side * 3" }
             "#,
         );
-        assert_eq!(state.doc.primitives[0].width, "side");
-        assert_eq!(state.doc.primitives[0].height, "side * 3");
-        assert_eq!(state.doc.primitives[0].name.as_deref(), Some("Cube"), "the name survives");
+        let cube = state.doc.primitives.keys().next().expect("the cube");
+        assert_eq!(state.doc.primitives[cube].width, "side");
+        assert_eq!(state.doc.primitives[cube].height, "side * 3");
+        assert_eq!(
+            state.doc.primitives[cube].name.as_deref(),
+            Some("Cube"),
+            "the name survives"
+        );
         assert_eq!(state.doc.bodies.len(), 1, "editing reuses the body");
         let stats = crate::extrude::body_solid_mesh(&state.doc, 0)
             .and_then(|m| m.bounds())
@@ -8257,7 +8267,7 @@ mod tests {
             bearcad.delete_selection()
             "#,
         );
-        assert!(state.doc.primitives[0].deleted, "the shape is gone");
+        assert!(state.doc.primitives.is_empty(), "the shape is gone for real (#1055)");
         assert!(state.doc.bodies[0].deleted, "and so is its body");
         let mut runner =
             ScriptRunner::from_lua_source("bearcad.cylinder{ radius = 5 }").unwrap();

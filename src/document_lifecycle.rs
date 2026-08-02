@@ -135,10 +135,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .get(index)
             .is_some_and(|op| !op.deleted),
         SceneElement::Revolution(index) => doc.revolutions.contains(index),
-        SceneElement::Shape(index) => doc
-            .primitives
-            .get(index)
-            .is_some_and(|shape| !shape.deleted),
+        SceneElement::Shape(index) => doc.primitives.contains(index),
         SceneElement::SweepOp(index) => doc.sweeps.contains(index),
         SceneElement::Image(index) => doc.tracing_images.contains(index),
         SceneElement::SketchText(index) => doc
@@ -585,16 +582,13 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         }
         SceneElement::Shape(index) => {
             // Deleting a shape (#909) takes its body with it.
-            if let Some(shape) = doc.primitives.get_mut(index) {
-                if !shape.deleted {
-                    shape.deleted = true;
-                    for body in doc.bodies.iter_mut() {
-                        if body.source == crate::model::BodySource::Primitive(index) {
-                            body.deleted = true;
-                        }
+            if doc.primitives.remove(index).is_some() {
+                for body in doc.bodies.iter_mut() {
+                    if body.source == crate::model::BodySource::Primitive(index) {
+                        body.deleted = true;
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         SceneElement::SweepOp(index) => {

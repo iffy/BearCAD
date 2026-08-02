@@ -2029,9 +2029,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The shape's arena slot, not its ordinal (#1070).
         SceneElement::Shape(i) => ElementScriptTokens {
             kind: "shape",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The sweep's arena slot, not its ordinal (#1070).
@@ -5010,7 +5011,12 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EditShape { index, shape } => {
-                let result = state.apply(Action::EditShape { index, shape });
+                // The instruction's `index` is a script ordinal (#1055).
+                let Some(key) = state.doc.primitives.keys().nth(index) else {
+                    self.last_action_error = Some(format!("No shape {index}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::EditShape { index: key, shape });
                 self.record_action_error(result);
                 StepResult::Continue
             }

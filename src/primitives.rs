@@ -42,12 +42,9 @@ fn length(doc: &Document, expression: &str) -> f32 {
     crate::value::eval_length_mm_in_doc(expression, doc).unwrap_or(0.0)
 }
 
-/// A shape's frame and numbers, or `None` when it is deleted, degenerate, or a dimension
-/// it needs is missing/zero.
+/// A shape's frame and numbers, or `None` when it is degenerate or a dimension it needs is
+/// missing/zero.
 pub fn resolve(doc: &Document, shape: &Primitive) -> Option<Resolved> {
-    if shape.deleted {
-        return None;
-    }
     let normal = Vec3::from_array(shape.normal).normalize_or_zero();
     if normal.length_squared() < 0.5 {
         return None;
@@ -317,7 +314,7 @@ mod tests {
 
     fn doc_with(shape: Primitive) -> Document {
         let mut doc = Document::default();
-        doc.primitives.push(shape);
+        doc.primitives.insert(shape);
         doc
     }
 
@@ -590,7 +587,7 @@ mod tests {
             source: None,
         });
         let shape = sized(K::Cuboid, "side", "side", "side * 2", "");
-        doc.primitives.push(shape.clone());
+        doc.primitives.insert(shape.clone());
         let r = resolve(&doc, &shape).expect("the expressions resolve");
         assert_eq!((r.width, r.depth, r.height), (12.0, 12.0, 24.0));
     }
