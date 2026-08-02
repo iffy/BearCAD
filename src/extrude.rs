@@ -1725,7 +1725,7 @@ pub fn descendant_bodies(doc: &Document, seeds: &[crate::model::BodyKey]) -> std
     let mut visited: HashSet<crate::model::BodyKey> = seeds.iter().copied().collect();
     while let Some(bi) = queue.pop_front() {
         let mut outs: Vec<crate::model::BodyKey> = Vec::new();
-        for op in doc.boolean_ops.iter().filter(|o| !o.deleted) {
+        for op in doc.boolean_ops.values() {
             if op.a.contains(&bi) || op.b.contains(&bi) {
                 outs.extend(op.outputs.iter().copied());
             }
@@ -2187,10 +2187,10 @@ pub fn slice_piece_count(doc: &Document, op_index: usize, target: usize) -> Opti
 /// (symmetric) is (A∪B) − (A∩B). `None` when any input body isn't kernel-representable.
 fn occt_boolean_result_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::BooleanOpKey,
 ) -> Option<crate::kernel::Shape> {
     use crate::kernel::BoolOp;
-    let op = doc.boolean_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.boolean_ops.get(op_index)?;
     let fuse_all = |list: &[crate::model::BodyKey]| -> Option<crate::kernel::Shape> {
         let mut acc: Option<crate::kernel::Shape> = None;
         for &bi in list {
@@ -2232,11 +2232,11 @@ fn occt_boolean_result_shape(
 /// one shape), so the body list stays stable while geometry changes underneath.
 fn occt_boolean_output_shape(
     doc: &Document,
-    op_index: usize,
+    op_index: crate::model::BooleanOpKey,
     ordinal: usize,
 ) -> Option<crate::kernel::Shape> {
     use crate::kernel::BoolOp;
-    let op = doc.boolean_ops.get(op_index).filter(|o| !o.deleted)?;
+    let op = doc.boolean_ops.get(op_index)?;
     let result = occt_boolean_result_shape(doc, op_index)?;
     let mut solids = result.solids();
     if solids.is_empty() {
@@ -2262,14 +2262,20 @@ fn occt_boolean_output_shape(
 }
 
 /// Number of solids a boolean operation currently produces (commit-time output sizing).
-pub fn boolean_result_solid_count(doc: &Document, op_index: usize) -> Option<usize> {
+pub fn boolean_result_solid_count(
+    doc: &Document,
+    op_index: crate::model::BooleanOpKey,
+) -> Option<usize> {
     Some(occt_boolean_result_shape(doc, op_index)?.solids().len())
 }
 
 /// Kernel solids of a boolean, tessellated — for off-thread precompute so the UI does not
 /// freeze while a heavy cut/fuse runs (#1031). `op` must already be in `doc.boolean_ops`.
 /// Returns one mesh per solid (at least one empty mesh if the kernel produced nothing).
-pub fn boolean_result_meshes(doc: &Document, op_index: usize) -> Option<Vec<SolidMesh>> {
+pub fn boolean_result_meshes(
+    doc: &Document,
+    op_index: crate::model::BooleanOpKey,
+) -> Option<Vec<SolidMesh>> {
     let result = occt_boolean_result_shape(doc, op_index)?;
     let solids = result.solids();
     if solids.is_empty() {
@@ -2295,15 +2301,13 @@ pub fn precompute_boolean(
     keep_b: bool,
 ) -> Result<Vec<SolidMesh>, String> {
     let mut probe = doc.clone();
-    let op_index = probe.boolean_ops.len();
-    probe.boolean_ops.push(crate::model::BooleanOperation {
+    let op_index = probe.boolean_ops.insert(crate::model::BooleanOperation {
         kind,
         a: a.to_vec(),
         b: b.to_vec(),
         keep_b,
         outputs: Vec::new(),
         name: None,
-        deleted: false,
     });
     boolean_result_meshes(&probe, op_index)
         .ok_or_else(|| "Boolean failed — one of the bodies may not be kernel-representable".into())
@@ -7341,14 +7345,13 @@ mod tests {
             });
         }
         // body0 + body1 -> boolean -> body2; body2 -> move -> body3. body4 is unrelated.
-        doc.boolean_ops.push(crate::model::BooleanOperation {
+        doc.boolean_ops.insert(crate::model::BooleanOperation {
             kind: crate::model::BooleanOpKind::Combine,
             a: vec![bkey(0)],
             b: vec![bkey(1)],
             keep_b: false,
             outputs: vec![bkey(2)],
             name: None,
-            deleted: false,
         });
         doc.move_ops.push(crate::model::MoveOperation {
             translate_mode: Default::default(),

@@ -1284,7 +1284,7 @@ pub enum BodySource {
     /// output body absorbs any extra solids a parametric rebuild produces, so the pane's
     /// element list stays stable while geometry changes.
     Boolean {
-        op: usize,
+        op: BooleanOpKey,
         #[serde(default)]
         solid: usize,
     },
@@ -1523,15 +1523,13 @@ impl BodySource {
 pub fn body_shadowed_by_other_ops(
     doc: &Document,
     body: BodyKey,
-    skip_boolean: Option<usize>,
+    skip_boolean: Option<crate::model::BooleanOpKey>,
     skip_move: Option<usize>,
     skip_slice: Option<usize>,
     skip_edge_treatment: Option<usize>,
 ) -> bool {
-    doc.boolean_ops.iter().enumerate().any(|(oi, o)| {
-        skip_boolean != Some(oi)
-            && !o.deleted
-            && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
+    doc.boolean_ops.iter().any(|(oi, o)| {
+        skip_boolean != Some(oi) && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
     }) || doc.move_ops.iter().enumerate().any(|(oi, o)| {
         skip_move != Some(oi) && !o.deleted && o.targets.contains(&body)
     }) || doc.slice_ops.iter().enumerate().any(|(oi, o)| {
@@ -1662,6 +1660,12 @@ impl Material {
 /// is reused at a higher generation and this stops matching, which is the point of the type.
 #[cfg(test)]
 pub fn body_key_for_slot(n: usize) -> BodyKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a boolean operation (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn boolean_op_key_for_slot(n: usize) -> BooleanOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2016,9 +2020,10 @@ pub struct BooleanOperation {
     pub outputs: Vec<BodyKey>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a boolean operation (#1055).
+pub type BooleanOpKey = crate::arena::Key<BooleanOperation>;
 
 /// How a [`MoveOperation`]'s translation is specified (#648), the Move pane's Translate
 /// dropdown.
@@ -3738,11 +3743,11 @@ impl Default for Drawing {
         Self {
             name: None,
             views: Vec::new(),
-            deleted: false,
             page_width_mm: default_page_width_mm(),
             page_height_mm: default_page_height_mm(),
             margin_mm: default_page_margin_mm(),
             annotations: Vec::new(),
+            deleted: false,
         }
     }
 }
@@ -3966,7 +3971,7 @@ pub struct Document {
     pub sweeps: crate::arena::Arena<Sweep>,
     /// Boolean operations between bodies (the Combine tool).
     #[serde(default)]
-    pub boolean_ops: Vec<BooleanOperation>,
+    pub boolean_ops: crate::arena::Arena<BooleanOperation>,
     /// Move operations on bodies (the Move tool, #176/#183).
     #[serde(default)]
     pub move_ops: Vec<MoveOperation>,
@@ -4101,7 +4106,7 @@ pub enum ComponentMember {
     Extrusion(usize),
     Body(BodyKey),
     Loft(LoftKey),
-    BooleanOp(usize),
+    BooleanOp(BooleanOpKey),
     MoveOp(usize),
     MirrorOp(usize),
     RepeatOp(usize),
@@ -4215,7 +4220,7 @@ impl Default for Document {
             revolutions: crate::arena::Arena::new(),
             primitives: crate::arena::Arena::new(),
             sweeps: crate::arena::Arena::new(),
-            boolean_ops: Vec::new(),
+            boolean_ops: crate::arena::Arena::new(),
             move_ops: Vec::new(),
             mirror_ops: Vec::new(),
             repeat_ops: Vec::new(),

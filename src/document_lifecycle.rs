@@ -85,10 +85,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .components
             .get(index)
             .is_some_and(|c| !c.deleted),
-        SceneElement::BooleanOp(index) => doc
-            .boolean_ops
-            .get(index)
-            .is_some_and(|op| !op.deleted),
+        SceneElement::BooleanOp(index) => doc.boolean_ops.contains(index),
         SceneElement::MoveOp(index) => doc
             .move_ops
             .get(index)
@@ -603,23 +600,19 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::BooleanOp(index) => {
             // Deleting the operation removes its outputs and releases its inputs from
             // shadow (unless another live operation still consumes them).
-            if let Some(op) = doc.boolean_ops.get_mut(index) {
-                if !op.deleted {
-                    op.deleted = true;
-                    let op = doc.boolean_ops[index].clone();
-                    for &out in &op.outputs {
-                        doc.bodies.remove(out);
-                    }
-                    for &input in op.a.iter().chain(op.b.iter()) {
-                        if !crate::model::body_shadowed_by_other_ops(doc, input, Some(index), None, None, None)
-                        {
-                            if let Some(body) = doc.bodies.get_mut(input) {
-                                body.shadow = false;
-                            }
+            if let Some(op) = doc.boolean_ops.remove(index) {
+                for &out in &op.outputs {
+                    doc.bodies.remove(out);
+                }
+                for &input in op.a.iter().chain(op.b.iter()) {
+                    if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, None, None)
+                    {
+                        if let Some(body) = doc.bodies.get_mut(input) {
+                            body.shadow = false;
                         }
                     }
-                    changed = true;
                 }
+                changed = true;
             }
         }
         // A tracing image is removed outright (#1055): its key stops resolving, so the

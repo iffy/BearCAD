@@ -248,7 +248,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
     save_arena_nodes(&tx, &mut row_id, "primitive", &doc.primitives)?;
     save_arena_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
-    save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
+    save_arena_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
@@ -587,7 +587,7 @@ pub fn open(path: &str) -> Result<Document> {
     let revolutions = load_arena_entities(&conn, "revolution")?;
     let primitives = load_arena_entities(&conn, "primitive")?;
     let sweeps = load_arena_entities(&conn, "sweep")?;
-    let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
+    let boolean_ops = load_arena_entities(&conn, "boolean_op")?;
     let move_ops = load_indexed_entities(&conn, "move_op")?;
     let mirror_ops = load_indexed_entities(&conn, "mirror_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
@@ -660,6 +660,7 @@ pub fn open(path: &str) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
     use crate::model::{Circle, FaceId};
 
@@ -864,6 +865,52 @@ mod tests {
             assert!(
                 loaded.lofts.get(doomed).is_none(),
                 "{suffix}: a key to a removed loft does not come back to life"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: a boolean operation keeps its key across a save, and so do the output bodies
+    /// that name it through `BodySource::Boolean`.
+    #[test]
+    fn boolean_op_keys_survive_a_save_and_reload() {
+        let op = |kind| crate::model::BooleanOperation {
+            kind,
+            a: Vec::new(),
+            b: Vec::new(),
+            keep_b: false,
+            outputs: Vec::new(),
+            name: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.boolean_ops.insert(op(crate::model::BooleanOpKind::Combine));
+        let kept = doc.boolean_ops.insert(op(crate::model::BooleanOpKind::Cut));
+        assert!(doc.boolean_ops.remove(doomed).is_some());
+        let out = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Boolean { op: kept, solid: 0 },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.boolean_ops[kept].outputs = vec![out];
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_boolean_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.boolean_ops.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.boolean_ops.get(kept).map(|o| o.kind),
+                Some(crate::model::BooleanOpKind::Cut),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.bodies[out].source,
+                crate::model::BodySource::Boolean { op: kept, solid: 0 },
+                "{suffix}: its output body still names it"
             );
             let _ = std::fs::remove_file(&path);
         }
@@ -1302,19 +1349,18 @@ mod tests {
             shadow: true,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Boolean { op: 0, solid: 0 },
+            source: crate::model::BodySource::Boolean { op: bopkey(0), solid: 0 },
             material: None,
             name: Some("Result".to_string()),
             shadow: false,
         });
-        doc.boolean_ops.push(crate::model::BooleanOperation {
+        doc.boolean_ops.insert(crate::model::BooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
             a: vec![bkey(0)],
             b: vec![bkey(3)],
             keep_b: true,
             outputs: vec![bkey(1)],
             name: Some("Slot".to_string()),
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::BooleanOperation);
         doc.shape_order.push(ShapeKind::Body);

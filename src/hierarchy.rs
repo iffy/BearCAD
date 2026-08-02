@@ -42,7 +42,7 @@ pub enum HierarchyNode {
     /// A tracing image (#163/#169).
     Image(crate::model::TracingImageKey),
     /// A boolean operation between bodies (Combine tool); its output bodies nest under it.
-    BooleanOp(usize),
+    BooleanOp(crate::model::BooleanOpKey),
     /// A move operation on bodies (Move tool); its output bodies nest under it.
     MoveOp(usize),
     /// A mirror operation on bodies (Mirror tool, #523); its reflected bodies nest under it.
@@ -182,7 +182,7 @@ pub enum SceneElement {
     /// A tracing image (#163/#169).
     Image(crate::model::TracingImageKey),
     /// A boolean operation between bodies (Combine tool).
-    BooleanOp(usize),
+    BooleanOp(crate::model::BooleanOpKey),
     /// A move operation on bodies (Move tool).
     MoveOp(usize),
     /// A mirror operation on bodies (Mirror tool, #523).
@@ -952,10 +952,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
     let mut edges = Vec::new();
 
     // Boolean operations consume their side-A/side-B input bodies (now shadows) (#266).
-    for (oi, op) in doc.boolean_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.boolean_ops.iter() {
         for &bi in op.a.iter().chain(op.b.iter()) {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::BooleanOp(oi)));
         }
@@ -1889,10 +1886,7 @@ pub fn build_hierarchy(
     // Boolean operations (Combine tool): the operation is an element of its own, with its
     // output bodies nested beneath it — outputs depend on the operation, the operation on
     // its (shadow) inputs.
-    for (oi, op) in doc.boolean_ops.iter().enumerate() {
-        if op.deleted {
-            continue;
-        }
+    for (oi, op) in doc.boolean_ops.iter() {
         let children = op
             .outputs
             .iter()
@@ -5540,6 +5534,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
     use crate::model::ShapeKind;
 
@@ -5553,7 +5548,7 @@ mod tests {
             CM::ConstructionPlane(1),
             CM::Extrusion(1),
             CM::Body(bkey(1)),
-            CM::BooleanOp(1),
+            CM::BooleanOp(bopkey(1)),
             CM::MoveOp(1),
             CM::MirrorOp(1),
             CM::RepeatOp(1),
@@ -6076,20 +6071,19 @@ mod tests {
                 shadow: false,
             });
         }
-        doc.boolean_ops.push(crate::model::BooleanOperation {
+        doc.boolean_ops.insert(crate::model::BooleanOperation {
             kind: crate::model::BooleanOpKind::Cut,
             a: vec![bkey(0)],
             b: vec![bkey(1)],
             keep_b: false,
             outputs: vec![bkey(2)],
             name: None,
-            deleted: false,
         });
         let edges = graph_dependency_edges(&doc);
-        assert!(edges.contains(&(HierarchyNode::Body(bkey(0)), HierarchyNode::BooleanOp(0))));
-        assert!(edges.contains(&(HierarchyNode::Body(bkey(1)), HierarchyNode::BooleanOp(0))));
+        assert!(edges.contains(&(HierarchyNode::Body(bkey(0)), HierarchyNode::BooleanOp(bopkey(0)))));
+        assert!(edges.contains(&(HierarchyNode::Body(bkey(1)), HierarchyNode::BooleanOp(bopkey(0)))));
         // The output body is a tree child, not a dependency input.
-        assert!(!edges.contains(&(HierarchyNode::Body(bkey(2)), HierarchyNode::BooleanOp(0))));
+        assert!(!edges.contains(&(HierarchyNode::Body(bkey(2)), HierarchyNode::BooleanOp(bopkey(0)))));
     }
 
     /// #281: each placed drawing view is a "projection" child of its drawing node, labelled by
@@ -6233,7 +6227,7 @@ label_hidden: false,
         let tree = vec![HierarchyEntry {
             node: HierarchyNode::Document,
             children: vec![HierarchyEntry {
-                node: HierarchyNode::BooleanOp(0),
+                node: HierarchyNode::BooleanOp(bopkey(0)),
                 children: vec![HierarchyEntry {
                     node: HierarchyNode::Body(bkey(3)),
                     children: Vec::new(),
@@ -6435,7 +6429,7 @@ label_hidden: false,
     #[test]
     fn flat_sort_orders_by_inputs_then_kind_index() {
         let nodes = vec![
-            HierarchyNode::BooleanOp(0),
+            HierarchyNode::BooleanOp(bopkey(0)),
             HierarchyNode::Body(bkey(5)),
             HierarchyNode::Body(bkey(2)),
         ];
@@ -6444,7 +6438,7 @@ label_hidden: false,
         // The boolean consumes both bodies, so it must come after them regardless of the
         // enum order (a Body sorts before a BooleanOp only because inputs come first here).
         input_sources.insert(
-            HierarchyNode::BooleanOp(0),
+            HierarchyNode::BooleanOp(bopkey(0)),
             vec![HierarchyNode::Body(bkey(5)), HierarchyNode::Body(bkey(2))],
         );
         let out = topological_flat_sort(nodes, parent_of, input_sources);
@@ -6453,7 +6447,7 @@ label_hidden: false,
             vec![
                 HierarchyNode::Body(bkey(2)), // input, lower index first
                 HierarchyNode::Body(bkey(5)), // input
-                HierarchyNode::BooleanOp(0), // consumer, after its inputs
+                HierarchyNode::BooleanOp(bopkey(0)), // consumer, after its inputs
             ]
         );
     }

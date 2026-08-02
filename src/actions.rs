@@ -693,7 +693,7 @@ pub struct CreatingBoolean {
     pub picking_b: bool,
     pub keep_b: bool,
     /// `Some(op)` while re-editing a committed operation (commit then updates in place).
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::BooleanOpKey>,
 }
 
 /// A boolean commit running off the UI thread so a heavy cut does not freeze the window
@@ -2253,7 +2253,7 @@ pub enum Action {
     /// Re-point an existing boolean operation at new inputs / kind / keep-B. Outputs are
     /// preserved (their meshes recompute; the last output absorbs extra result solids).
     EditBooleanOperation {
-        op: usize,
+        op: crate::model::BooleanOpKey,
         kind: crate::model::BooleanOpKind,
         a: Vec<crate::model::BodyKey>,
         b: Vec<crate::model::BodyKey>,
@@ -5489,7 +5489,7 @@ fn validate_boolean_inputs(
     kind: crate::model::BooleanOpKind,
     a: &[crate::model::BodyKey],
     b: &[crate::model::BodyKey],
-    editing: Option<usize>,
+    editing: Option<crate::model::BooleanOpKey>,
 ) -> Result<(), String> {
     use crate::model::BooleanOpKind;
     if a.is_empty() {
@@ -5524,11 +5524,21 @@ fn validate_boolean_inputs(
         if body.shadow && !is_unit && !editing_inputs.contains(&bi) {
             return Err(format!("Body {bi:?} is already consumed by another operation"));
         }
-        if let crate::model::BodySource::Boolean { op, .. } = body.source {
-            // An op may consume outputs of *earlier* ops only, so the dependency graph
-            // stays acyclic (edit included).
-            if editing.is_some_and(|e| op >= e) {
-                return Err("Cannot use this operation's own (or a later) result as an input".to_string());
+    }
+    // An op may not consume its own result, nor anything built from it — that is what would
+    // make the dependency graph cyclic. Position used to stand in for this ("a later op"),
+    // which only worked while an index was creation order (#1055); the descendant walk is
+    // what the rule actually meant.
+    if let Some(e) = editing {
+        let own = doc.boolean_ops.get(e).map(|o| o.outputs.clone()).unwrap_or_default();
+        let downstream = crate::extrude::descendant_bodies(doc, &own);
+        for &bi in a.iter().chain(b.iter()) {
+            if own.contains(&bi) || downstream.contains(&bi) {
+                return Err(
+                    "Cannot use this operation's own result (or anything built from it) as an \
+                     input"
+                        .to_string(),
+                );
             }
         }
     }
@@ -5961,7 +5971,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::RepeatedFace { instance, .. } => format!("Repeated face (copy {instance})"),
         // The slot number, which is what the ordinal was before anything was removed (#1055).
         SceneElement::Image(i) => format!("Image {}", i.index()),
-        SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
+        SceneElement::BooleanOp(i) => format!("Boolean operation {}", i.index()),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
         SceneElement::MirrorOp(i) => format!("Mirror operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
@@ -6325,7 +6335,7 @@ impl AppState {
                 });
                 if matches!(applied, ActionResult::Ok) {
                     // Warm the mesh cache so the first paint does not re-run the kernel.
-                    if let Some(op) = self.doc.boolean_ops.last() {
+                    if let Some(op) = self.doc.boolean_ops.values().last() {
                         for (mesh, &bi) in meshes.into_iter().zip(op.outputs.iter()) {
                             crate::extrude::warm_body_mesh_cache(&self.doc, bi, mesh);
                         }
@@ -11983,15 +11993,13 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let op_index = self.doc.boolean_ops.len();
-                self.doc.boolean_ops.push(crate::model::BooleanOperation {
+                let op_index = self.doc.boolean_ops.insert(crate::model::BooleanOperation {
                     kind,
                     a: a.clone(),
                     b: b.clone(),
                     keep_b,
                     outputs: Vec::new(),
                     name: None,
-                    deleted: false,
                 });
                 // Output body count = solids the kernel finds in the result right now
                 // (at least one). A later rebuild that produces more solids folds the
@@ -12038,14 +12046,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::EditBooleanOperation { op, kind, a, b, keep_b } => {
-                if self
-                    .doc
-                    .boolean_ops
-                    .get(op)
-                    .filter(|o| !o.deleted)
-                    .is_none()
-                {
-                    let e = format!("Boolean operation {op} not found");
+                if !self.doc.boolean_ops.contains(op) {
+                    let e = format!("Boolean operation {op:?} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -12082,8 +12084,8 @@ label_hidden: false,
                 // Inputs shadowed by *other* live ops must stay shadows even if this op
                 // just dropped them.
                 let ops = self.doc.boolean_ops.clone();
-                for (oi, o) in ops.iter().enumerate() {
-                    if o.deleted || oi == op {
+                for (oi, o) in ops.iter() {
+                    if oi == op {
                         continue;
                     }
                     for &input in o.a.iter().chain((!o.keep_b).then_some(&o.b).into_iter().flatten()) {
@@ -15774,7 +15776,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend((0..doc.construction_planes.len()).map(CM::ConstructionPlane));
     members.extend((0..doc.extrusions.len()).map(CM::Extrusion));
     members.extend(doc.lofts.keys().map(CM::Loft));
-    members.extend((0..doc.boolean_ops.len()).map(CM::BooleanOp));
+    members.extend(doc.boolean_ops.keys().map(CM::BooleanOp));
     members.extend((0..doc.move_ops.len()).map(CM::MoveOp));
     members.extend((0..doc.mirror_ops.len()).map(CM::MirrorOp));
     members.extend((0..doc.repeat_ops.len()).map(CM::RepeatOp));
@@ -15986,6 +15988,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
 
     /// #991: a two-sided joint's parts are picked as two named slots — the **mobile** part and
@@ -17051,7 +17054,7 @@ mod tests {
             }),
             ActionResult::Ok
         ));
-        assert_eq!(state.doc.boolean_ops[0].outputs.len(), n.max(1));
+        assert_eq!(state.doc.boolean_ops.values().nth(0).unwrap().outputs.len(), n.max(1));
     }
 
     /// #1033: the Combine tool previews its result — once the sides the operation needs
@@ -17855,7 +17858,7 @@ mod tests {
         });
         assert_eq!(rb, ActionResult::Ok, "status: {}", state.status);
         assert!(
-            !state.doc.boolean_ops.is_empty() && !state.doc.boolean_ops[0].deleted,
+            !state.doc.boolean_ops.is_empty(),
             "the boolean took the unit as an input"
         );
 
@@ -18611,7 +18614,7 @@ mod tests {
             }),
             ActionResult::Ok
         ));
-        let outputs = &state.doc.boolean_ops[0].outputs;
+        let outputs = &state.doc.boolean_ops.values().nth(0).unwrap().outputs;
         assert!(!outputs.is_empty(), "combine should produce at least one body");
         let mut any_vol: f64 = 0.0;
         for &out in outputs {
@@ -20871,12 +20874,12 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.boolean_ops.len(), 1);
-        let op = &state.doc.boolean_ops[0];
+        let op = &state.doc.boolean_ops.values().nth(0).unwrap();
         assert!(!op.outputs.is_empty());
         for &out in &op.outputs {
             assert!(matches!(
                 state.doc.bodies[out].source,
-                crate::model::BodySource::Boolean { op: 0, .. }
+                crate::model::BodySource::Boolean { op, .. } if op == bopkey(0)
             ));
             assert!(!state.doc.bodies[out].shadow);
         }
@@ -20939,7 +20942,7 @@ mod tests {
             keep_b: false,
             solid_count: None,
         });
-        let out = state.doc.boolean_ops[0].outputs[0];
+        let out = state.doc.boolean_ops.values().nth(0).unwrap().outputs[0];
         assert!(matches!(
             state.apply(Action::CreateBooleanOperation {
                 kind: crate::model::BooleanOpKind::Cut,
@@ -20965,7 +20968,7 @@ mod tests {
         });
         assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
         let result = state.apply(Action::EditBooleanOperation {
-            op: 0,
+            op: bopkey(0),
             kind: crate::model::BooleanOpKind::Cut,
             a: vec![bkey(0)],
             b: vec![bkey(1)],
@@ -20974,7 +20977,7 @@ mod tests {
         assert!(matches!(result, ActionResult::Ok));
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
         assert!(!state.doc.bodies.values().nth(1).unwrap().shadow, "edit to keep_b must release B");
-        assert_eq!(state.doc.boolean_ops[0].keep_b, true);
+        assert_eq!(state.doc.boolean_ops.values().nth(0).unwrap().keep_b, true);
     }
 
     /// Deleting the operation element tombstones its outputs and releases its inputs.
@@ -20988,12 +20991,12 @@ mod tests {
             keep_b: false,
             solid_count: None,
         });
-        let out = state.doc.boolean_ops[0].outputs[0];
+        let out = state.doc.boolean_ops.values().nth(0).unwrap().outputs[0];
         assert!(crate::document_lifecycle::tombstone_element(
             &mut state.doc,
-            SceneElement::BooleanOp(0),
+            SceneElement::BooleanOp(bopkey(0)),
         ));
-        assert!(state.doc.boolean_ops[0].deleted);
+        assert!(state.doc.boolean_ops.is_empty(), "the operation is removed, not tombstoned");
         assert!(!state.doc.bodies.contains(out));
         assert!(!state.doc.bodies.values().nth(0).unwrap().shadow);
         assert!(!state.doc.bodies.values().nth(1).unwrap().shadow);
@@ -22534,7 +22537,7 @@ mod tests {
             keep_b: false,
             solid_count: None,
         });
-        let op = &state.doc.boolean_ops[0];
+        let op = &state.doc.boolean_ops.values().nth(0).unwrap();
         assert_eq!(op.outputs.len(), 2, "disjoint union should split into two bodies");
         for &out in &op.outputs {
             assert!(
@@ -22555,7 +22558,7 @@ mod tests {
             keep_b: false,
             solid_count: None,
         });
-        let op = &state.doc.boolean_ops[0];
+        let op = &state.doc.boolean_ops.values().nth(0).unwrap();
         assert_eq!(op.outputs.len(), 1);
         let mesh = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]);
         assert!(mesh.is_some_and(|m| !m.triangles.is_empty()));

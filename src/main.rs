@@ -13047,7 +13047,7 @@ impl eframe::App for App {
             let mut loft_body_choice: Option<actions::RevolveBodyChoice> = None;
             let mut loft_commit = false;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
-            let mut boolean_edit_begin: Option<usize> = None;
+            let mut boolean_edit_begin: Option<crate::model::BooleanOpKey> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
             let mut move_edit_begin: Option<usize> = None;
             let mut joint_edit: Option<context::JointEdit> = None;

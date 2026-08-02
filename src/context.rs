@@ -88,7 +88,7 @@ pub struct ContextInput<'a> {
     pub boolean_op: Option<BooleanControl>,
     /// "Edit operation" entry point: `Some(op)` when exactly one boolean operation is
     /// selected and the Combine tool isn't already active.
-    pub boolean_edit_start: Option<usize>,
+    pub boolean_edit_start: Option<crate::model::BooleanOpKey>,
     /// Move tool state: `Some` while the Move tool is active.
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
@@ -991,7 +991,7 @@ pub struct ContextPaneContent {
     /// Combine tool controls.
     pub boolean_op: Option<BooleanControl>,
     /// "Edit operation" button target.
-    pub boolean_edit_start: Option<usize>,
+    pub boolean_edit_start: Option<crate::model::BooleanOpKey>,
     /// Move tool state: `Some` while the Move tool is active.
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
@@ -4234,7 +4234,7 @@ pub fn show_pane(
     on_loft_body_choice: &mut impl FnMut(crate::actions::RevolveBodyChoice),
     on_loft_commit: &mut impl FnMut(),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
-    on_boolean_edit_start: &mut impl FnMut(usize),
+    on_boolean_edit_start: &mut impl FnMut(crate::model::BooleanOpKey),
     on_move_edit: &mut impl FnMut(MoveEdit),
     on_move_edit_start: &mut impl FnMut(usize),
     on_shape_edit: &mut impl FnMut(ShapeEdit),

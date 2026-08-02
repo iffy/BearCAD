@@ -136,6 +136,7 @@ pub fn scene_element_selection_index(
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == *key),
+        SceneElement::BooleanOp(key) => doc.boolean_ops.keys().position(|k| k == *key),
         SceneElement::Revolution(key) => doc.revolutions.keys().position(|k| k == *key),
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == *key),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == *key),
@@ -171,7 +172,6 @@ pub fn scene_element_selection_index(
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
         | SceneElement::RepeatOp(i)

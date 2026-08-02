@@ -1236,6 +1236,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
 
     fn body(i: usize) -> SceneElement {
@@ -1251,7 +1252,7 @@ mod tests {
         assert_eq!(ElementKind::of(&SceneElement::Line(0)), ElementKind::Line);
         assert_eq!(ElementKind::of(&SceneElement::Origin), ElementKind::Vertex);
         assert_eq!(
-            ElementKind::of(&SceneElement::BooleanOp(0)),
+            ElementKind::of(&SceneElement::BooleanOp(bopkey(0))),
             ElementKind::Operation
         );
         assert_eq!(
@@ -1359,7 +1360,7 @@ mod tests {
             ElementKind::Component
         );
         let ops = ElementFilter::kind(ElementKind::Operation);
-        assert!(ops.accepts(&Document::default(), &SceneElement::BooleanOp(0)));
+        assert!(ops.accepts(&Document::default(), &SceneElement::BooleanOp(bopkey(0))));
         assert!(!ops.accepts(&Document::default(), &SceneElement::Joint(0)));
         assert!(!ops.accepts(&Document::default(), &SceneElement::Component(0)));
     }
@@ -1851,7 +1852,7 @@ mod tests {
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
             SceneElement::Joint(0),
             SceneElement::Component(0),
-            SceneElement::BooleanOp(0),
+            SceneElement::BooleanOp(bopkey(0)),
         ] {
             let kind = ElementKind::of(&element);
             assert!(
@@ -1869,7 +1870,7 @@ mod tests {
     fn operation_restriction_filters_by_sub_kind() {
         let f = ElementFilter::kinds(&[ElementKind::Body])
             .operations(&[OperationKind::Boolean, OperationKind::Slice]);
-        assert!(f.accepts(&Document::default(), &SceneElement::BooleanOp(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::BooleanOp(bopkey(0))));
         assert!(f.accepts(&Document::default(), &SceneElement::SliceOp(0)));
         assert!(!f.accepts(&Document::default(), &SceneElement::MoveOp(0)));
         // Body still accepted alongside the operations.

@@ -170,13 +170,15 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::SweepOp(key) => doc.sweeps.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Shape(key) => doc.primitives.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Body(key) => doc.bodies.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::BooleanOp(key) => {
+            doc.boolean_ops.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::MirrorOp(i)
         | SceneElement::RepeatOp(i)
@@ -238,6 +240,9 @@ pub fn scene_element_from_kind(
         "constraint" => Some(SceneElement::Constraint(index)),
         "extrusion" => Some(SceneElement::Extrusion(index)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
+        "boolean_op" | "boolean" => {
+            Some(SceneElement::BooleanOp(doc.boolean_ops.keys().nth(index)?))
+        }
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
         "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
@@ -4763,7 +4768,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.exec(Instruction::CreateBooleanOp { kind, a, b, keep_b })?;
             }
             let element = SceneElement::BooleanOp(unsafe {
-                tick.state().doc.boolean_ops.len().saturating_sub(1)
+                tick.state().doc.boolean_ops.keys().last().unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
@@ -9103,7 +9108,7 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.boolean_ops.len(), 1);
-        let op = &state.doc.boolean_ops[0];
+        let op = &state.doc.boolean_ops.values().nth(0).unwrap();
         assert_eq!(op.kind, crate::model::BooleanOpKind::Cut);
         assert_eq!(op.name.as_deref(), Some("Slot"));
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);

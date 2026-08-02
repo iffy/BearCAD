@@ -275,7 +275,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let op = doc
                 .boolean_ops
                 .get_mut(index)
-                .ok_or_else(|| format!("boolean operation {index} not found"))?;
+                .ok_or_else(|| format!("boolean operation {index:?} not found"))?;
             op.name = stored;
         }
         SceneElement::MoveOp(index) => {
@@ -525,7 +525,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 .get(i)
                 .map(|op| op.kind.label())
                 .unwrap_or("Boolean");
-            format!("{kind} {i}")
+            format!("{kind} {}", i.index())
         }
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
         HierarchyNode::MirrorOp(i) => format!("Mirror {i}"),
@@ -791,7 +791,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             None => "Origin".to_string(),
         },
         SceneElement::Image(i) => format!("Image {}", i.index()),
-        SceneElement::BooleanOp(i) => format!("Boolean {i}"),
+        SceneElement::BooleanOp(i) => format!("Boolean {}", i.index()),
         SceneElement::MoveOp(i) => format!("Move {i}"),
         SceneElement::MirrorOp(i) => format!("Mirror {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),

@@ -1967,9 +1967,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The op's arena slot, not its ordinal (#1070).
         SceneElement::BooleanOp(i) => ElementScriptTokens {
             kind: "boolean_op",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::MoveOp(i) => ElementScriptTokens {
@@ -2094,6 +2095,22 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A boolean operation's ordinal among the live ones — what a script writes (#1055).
+fn boolean_op_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::BooleanOpKey,
+) -> Option<usize> {
+    doc.boolean_ops.keys().position(|k| k == key)
+}
+
+/// The boolean operation an ordinal names — the inverse of [`boolean_op_ordinal`].
+fn boolean_op_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::BooleanOpKey> {
+    doc.boolean_ops.keys().nth(ordinal)
+}
+
 /// A body's ordinal among the live ones — what a script writes (#1055).
 fn body_ordinal(doc: &crate::model::Document, key: crate::model::BodyKey) -> Option<usize> {
     doc.bodies.keys().position(|k| k == key)
@@ -2162,7 +2179,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::EditBooleanOperation { op, kind, a, b, keep_b } => {
             Some(Instruction::EditBooleanOp {
-                op: *op,
+                op: boolean_op_ordinal(doc, *op)?,
                 kind: *kind,
                 a: body_ordinals(doc, a)?,
                 b: body_ordinals(doc, b)?,
@@ -5168,6 +5185,10 @@ impl ScriptRunner {
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 let (a, b) = (body_keys(&state.doc, &a), body_keys(&state.doc, &b));
+                let Some(op) = boolean_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Boolean operation {op} not found"));
+                    return StepResult::Continue;
+                };
                 let result =
                     state.apply(Action::EditBooleanOperation { op, kind, a, b, keep_b });
                 self.record_action_error(result);
