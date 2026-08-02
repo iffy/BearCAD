@@ -2061,9 +2061,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The joint's arena slot, not its ordinal (#1070).
         SceneElement::Joint(i) => ElementScriptTokens {
             kind: "joint",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::UnitInstance(i) => ElementScriptTokens {
@@ -2105,6 +2106,16 @@ fn geometric_constraint_script_name(
 }
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
+/// A joint's ordinal among the live ones — what a script writes (#1055).
+fn joint_ordinal(doc: &crate::model::Document, key: crate::model::JointKey) -> Option<usize> {
+    doc.joints.keys().position(|k| k == key)
+}
+
+/// The joint an ordinal names — the inverse of [`joint_ordinal`].
+fn joint_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::JointKey> {
+    doc.joints.keys().nth(ordinal)
+}
+
 /// A slice operation's ordinal among the live ones — what a script writes (#1055).
 fn slice_op_ordinal(doc: &crate::model::Document, key: crate::model::SliceOpKey) -> Option<usize> {
     doc.slice_ops.keys().position(|k| k == key)
@@ -2331,7 +2342,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::EditJointOperation { op, members, base, kind, mate, position, position2, position3, limits } => {
             Some(Instruction::EditJointOp {
-                op: *op,
+                op: joint_ordinal(doc, *op)?,
                 members: members.clone(),
                 base: *base,
                 kind: kind.clone(),
@@ -2342,8 +2353,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 limits: limits.clone(),
             })
         }
-        Action::SetJointRest { joint } => Some(Instruction::SetJointRest { op: *joint }),
-        Action::RevertJoint { joint } => Some(Instruction::RevertJoint { op: *joint }),
+        Action::SetJointRest { joint } => Some(Instruction::SetJointRest {
+            op: joint_ordinal(doc, *joint)?,
+        }),
+        Action::RevertJoint { joint } => Some(Instruction::RevertJoint {
+            op: joint_ordinal(doc, *joint)?,
+        }),
         Action::RevertAllJoints => Some(Instruction::RevertAllJoints),
         Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
             Some(Instruction::CreateSliceOp {
@@ -5342,6 +5357,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EditJointOp { op, members, base, kind, mate, position, position2, position3, limits } => {
+                let Some(op) = joint_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Joint {op} not found"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::EditJointOperation {
                     op,
                     members,
@@ -5371,20 +5390,31 @@ impl ScriptRunner {
                     rest3: String::new(),
                     limits,
                     name: None,
-                    deleted: false,
                 };
-                let mut cj = crate::actions::CreatingJoint::from_joint(&probe, 0);
+                // A begin-joint probe is not editing anything yet; the key never resolves.
+                let mut cj = crate::actions::CreatingJoint::from_joint(
+                    &probe,
+                    crate::arena::Key::from_bits(u64::MAX),
+                );
                 cj.editing = None;
                 state.creating_joint = Some(cj);
                 StepResult::Continue
             }
             Instruction::SetJointRest { op } => {
-                let result = state.apply(Action::SetJointRest { joint: op });
+                let Some(joint) = joint_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Joint {op} not found"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetJointRest { joint });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::RevertJoint { op } => {
-                let result = state.apply(Action::RevertJoint { joint: op });
+                let Some(joint) = joint_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("Joint {op} not found"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::RevertJoint { joint });
                 self.record_action_error(result);
                 StepResult::Continue
             }

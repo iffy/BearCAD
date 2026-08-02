@@ -1236,6 +1236,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::joint_key_for_slot as jkey;
     use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::move_op_key_for_slot as mopkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
@@ -1356,14 +1357,14 @@ mod tests {
     fn joints_and_components_are_not_lumped_in_with_operations() {
         // The design lists joints and components as target types of their own; both used to
         // report as `Operation`, so an operations picker swallowed them.
-        assert_eq!(ElementKind::of(&SceneElement::Joint(0)), ElementKind::Joint);
+        assert_eq!(ElementKind::of(&SceneElement::Joint(jkey(0))), ElementKind::Joint);
         assert_eq!(
             ElementKind::of(&SceneElement::Component(0)),
             ElementKind::Component
         );
         let ops = ElementFilter::kind(ElementKind::Operation);
         assert!(ops.accepts(&Document::default(), &SceneElement::BooleanOp(bopkey(0))));
-        assert!(!ops.accepts(&Document::default(), &SceneElement::Joint(0)));
+        assert!(!ops.accepts(&Document::default(), &SceneElement::Joint(jkey(0))));
         assert!(!ops.accepts(&Document::default(), &SceneElement::Component(0)));
     }
 
@@ -1852,7 +1853,7 @@ mod tests {
             SceneElement::Constraint(0),
             SceneElement::Body(bkey(0)),
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
-            SceneElement::Joint(0),
+            SceneElement::Joint(jkey(0)),
             SceneElement::Component(0),
             SceneElement::BooleanOp(bopkey(0)),
         ] {

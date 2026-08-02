@@ -718,7 +718,7 @@ pub enum JointFocus {
 /// the grab-time values, and the posed frame the cursor motion projects onto.
 #[derive(Clone, Debug, PartialEq)]
 struct JointSelectDrag {
-    joint: usize,
+    joint: model::JointKey,
     start_screen: egui::Pos2,
     /// The three position slots' numeric values at grab time (mm / degrees, per kind).
     start: (f32, f32, f32),
@@ -13050,7 +13050,7 @@ impl eframe::App for App {
             let mut move_edit: Option<context::MoveEdit> = None;
             let mut move_edit_begin: Option<crate::model::MoveOpKey> = None;
             let mut joint_edit: Option<context::JointEdit> = None;
-            let mut joint_edit_begin: Option<usize> = None;
+            let mut joint_edit_begin: Option<model::JointKey> = None;
             let mut mirror_edit: Option<context::MirrorEdit> = None;
             let mut mirror_edit_begin: Option<crate::model::MirrorOpKey> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
@@ -16742,7 +16742,6 @@ fn build_viewport_scene_input<'a>(
             rest3: String::new(),
             limits: Default::default(),
             name: None,
-            deleted: false,
         };
         if let Some(m) = joints::preview_pose(doc, &probe) {
             let base = if cj.base < cj.members.len() { cj.base } else { 0 };
@@ -24981,7 +24980,6 @@ impl App {
                 rest3: String::new(),
                 limits: cj.limits.clone(),
                 name: None,
-                deleted: false,
             };
             let time = ui.input(|i| i.time);
             let (p1, p2, p3) = joints::sweep_positions(&self.state.doc, &probe, time)?;
@@ -28331,7 +28329,6 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: None,
-            deleted: false,
         };
         // Half a face pair previews nothing: there is no placement yet.
         cj.mate = JointMate {

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 pub struct JointResolution {
     poses: HashMap<JointRef, Mat4>,
     /// Joint index → the reason it couldn't apply.
-    pub errors: Vec<(usize, String)>,
+    pub errors: Vec<(crate::model::JointKey, String)>,
 }
 
 impl JointResolution {
@@ -229,15 +229,14 @@ fn joint_transform(doc: &Document, joint: &Joint, base_pose: Mat4) -> Mat4 {
 /// loop and is reported instead of applied.
 pub fn resolve_joint_poses(doc: &Document) -> JointResolution {
     let mut out = JointResolution::default();
-    let live: Vec<(usize, &Joint)> = doc
+    let live: Vec<(crate::model::JointKey, &Joint)> = doc
         .joints
         .iter()
-        .enumerate()
-        .filter(|(_, j)| !j.deleted && j.members.len() >= 2)
+        .filter(|(_, j)| j.members.len() >= 2)
         .collect();
     // Who drives each member: a part can only be driven by one joint — a tree, not a web.
-    let mut driver_of: HashMap<JointRef, usize> = HashMap::new();
-    let mut skipped: Vec<usize> = Vec::new();
+    let mut driver_of: HashMap<JointRef, crate::model::JointKey> = HashMap::new();
+    let mut skipped: Vec<crate::model::JointKey> = Vec::new();
     for &(ji, joint) in &live {
         let mut clash = None;
         for m in joint.driven_members() {
@@ -262,7 +261,7 @@ pub fn resolve_joint_poses(doc: &Document) -> JointResolution {
         }
     }
     // Kahn-style: a joint resolves once its base's driver (if any) has.
-    let mut done: HashMap<usize, bool> = HashMap::new();
+    let mut done: HashMap<crate::model::JointKey, bool> = HashMap::new();
     let mut progressed = true;
     while progressed {
         progressed = false;
@@ -311,7 +310,7 @@ thread_local! {
 
 /// The document's resolved joint poses, memoized per document state.
 pub fn joint_resolution(doc: &Document) -> std::rc::Rc<JointResolution> {
-    if doc.joints.iter().all(|j| j.deleted) {
+    if doc.joints.is_empty() {
         return std::rc::Rc::new(JointResolution::default());
     }
     let fingerprint = crate::extrude::document_pose_fingerprint(doc);
@@ -332,7 +331,7 @@ pub fn joint_resolution(doc: &Document) -> std::rc::Rc<JointResolution> {
 /// unit instance, or by living inside a driven component (nearest component wins).
 /// `None` means the body sits where its features put it.
 pub fn body_joint_pose(doc: &Document, body_index: crate::model::BodyKey) -> Option<Mat4> {
-    if doc.joints.iter().all(|j| j.deleted) {
+    if doc.joints.is_empty() {
         return None;
     }
     let res = joint_resolution(doc);
@@ -407,7 +406,7 @@ pub enum BodyDragTarget {
     /// The body is jointed but held: nothing up its chain has freedom to move.
     Grounded,
     /// The nearest joint up the chain with freedom — a hinge swings, a slider slides.
-    Joint(usize),
+    Joint(crate::model::JointKey),
 }
 
 /// Resolve a Select-tool drag on `body` to the joint it should move (#897): the joint
@@ -433,19 +432,16 @@ pub fn body_drag_joint(doc: &Document, body: crate::model::BodyKey) -> BodyDragT
             refs.push(JointRef::Component(c));
         }
     }
-    let live = |j: &Joint| !j.deleted && j.members.len() >= 2;
-    let driver_of = |member: JointRef| -> Option<usize> {
+    let live = |j: &Joint| j.members.len() >= 2;
+    let driver_of = |member: JointRef| -> Option<crate::model::JointKey> {
         doc.joints
             .iter()
-            .enumerate()
             .find(|(_, j)| live(j) && j.driven_members().any(|m| m == member))
             .map(|(i, _)| i)
     };
-    let participates = refs.iter().any(|r| {
-        doc.joints
-            .iter()
-            .any(|j| live(j) && j.members.contains(r))
-    });
+    let participates = refs
+        .iter()
+        .any(|r| doc.joints.values().any(|j| live(j) && j.members.contains(r)));
     let Some(mut ji) = refs.iter().find_map(|r| driver_of(*r)) else {
         return if participates {
             BodyDragTarget::Grounded
@@ -455,7 +451,9 @@ pub fn body_drag_joint(doc: &Document, body: crate::model::BodyKey) -> BodyDragT
     };
     // Walk up through rigid ties to the nearest joint that actually moves.
     for _ in 0..doc.joints.len() + 1 {
-        let joint = &doc.joints[ji];
+        let Some(joint) = doc.joints.get(ji) else {
+            return BodyDragTarget::Grounded;
+        };
         if !matches!(joint.kind, JointKind::Rigid) {
             return BodyDragTarget::Joint(ji);
         }
@@ -473,8 +471,11 @@ pub fn body_drag_joint(doc: &Document, body: crate::model::BodyKey) -> BodyDragT
 /// The joint's mating frame in world space with the base side's pose applied (#897):
 /// origin plus the x/y/z axes the drag projects onto. `None` when the frame is unset —
 /// a frameless joint has no axis to drag along.
-pub fn posed_joint_frame(doc: &Document, ji: usize) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
-    let joint = doc.joints.get(ji).filter(|j| !j.deleted)?;
+pub fn posed_joint_frame(
+    doc: &Document,
+    ji: crate::model::JointKey,
+) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
+    let joint = doc.joints.get(ji)?;
     let base_pose = base_pose_of(doc, joint);
     let frame = mate_frame(&joint.kind, &solve_mate(doc, joint, base_pose)?);
     Some((frame.origin, frame.x, frame.y, frame.z))
@@ -628,6 +629,7 @@ pub fn posed_mesh(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::joint_key_for_slot as jkey;
     use super::*;
     use crate::mate::tests::{cube_body, face_ref, joint};
     use crate::model::{JointLimits, JointMate, MateLineUp, MateRef};
@@ -674,7 +676,7 @@ mod tests {
     fn mateless_joint_is_a_no_op() {
         let mut doc = Document::default();
         let (a, b) = two_cubes(&mut doc);
-        doc.joints.push(joint(
+        doc.joints.insert(joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
         ));
@@ -694,7 +696,7 @@ mod tests {
         j.mate = stack_mate(&doc, a, b);
         j.mate.line_up.push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
         j.position = "7".to_string();
-        doc.joints.push(j);
+        doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).expect("the driven body carries a pose");
         let landed = pose.transform_point3(Vec3::new(40.0, 0.0, 0.0));
         assert!(
@@ -716,7 +718,7 @@ mod tests {
         );
         j.mate = stack_mate(&doc, a, b);
         j.position = "90".to_string();
-        doc.joints.push(j);
+        doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).unwrap();
         // The face's middle lands at (42, 2, 10) and is the turn's centre; a point 2 mm
         // along +X of it swings to 2 mm along +Y.
@@ -739,7 +741,7 @@ mod tests {
         );
         j.mate = stack_mate(&doc, a, b);
         j.position = "360".to_string();
-        doc.joints.push(j);
+        doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).unwrap();
         let moved = pose.transform_point3(Vec3::new(42.0, 2.0, 0.0));
         assert!(
@@ -759,7 +761,7 @@ mod tests {
         j.position = "7".to_string();
         j.limits.slide_max = "4".to_string();
         j.limits.slide_min = "-1".to_string();
-        doc.joints.push(j);
+        doc.joints.insert(j);
         let x = |doc: &Document| {
             resolve_joint_poses(doc)
                 .member_pose(JointRef::Body(b))
@@ -768,7 +770,7 @@ mod tests {
                 .x
         };
         assert!((x(&doc) - 44.0).abs() < 1e-3, "clamped to the max");
-        doc.joints[0].position = "-9".to_string();
+        doc.joints.values_mut().next().unwrap().position = "-9".to_string();
         assert!((x(&doc) - 39.0).abs() < 1e-3, "clamped to the min");
     }
 
@@ -785,7 +787,7 @@ mod tests {
         j.position = "90".to_string();
         j.limits.turn_min = "0".to_string();
         j.limits.turn_max = "45".to_string();
-        doc.joints.push(j);
+        doc.joints.insert(j);
         let arm = |doc: &Document| {
             resolve_joint_poses(doc)
                 .member_pose(JointRef::Body(b))
@@ -796,7 +798,7 @@ mod tests {
         let a45 = 45f32.to_radians();
         let expected = Vec3::new(2.0 * a45.cos(), 2.0 * a45.sin(), 0.0);
         assert!((arm(&doc) - expected).length() < 1e-3, "clamped to 45°");
-        doc.joints[0].position = "-30".to_string();
+        doc.joints.values_mut().next().unwrap().position = "-30".to_string();
         assert!(
             (arm(&doc) - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-3,
             "no travel the other way"
@@ -820,8 +822,8 @@ mod tests {
         j.mate = stack_mate(&doc, a, b);
         j.position = "20".to_string();
         j.limits.slide_max_target = Some(crate::model::ExtrudeTarget::Plane(0));
-        doc.joints.push(j);
-        let limits = resolve_limits(&doc, &doc.joints[0]);
+        doc.joints.insert(j);
+        let limits = resolve_limits(&doc, &doc.joints.values().nth(0).unwrap());
         assert!(
             limits.slide_max.is_some_and(|m| (m - 8.0).abs() < 1e-3),
             "stop resolves to 8 mm, got {limits:?}"
@@ -844,7 +846,7 @@ mod tests {
         j.mate = stack_mate(&doc, a, b);
         j.position = "720".to_string();
         j.limits.slide_max = "1".to_string();
-        doc.joints.push(j);
+        doc.joints.insert(j);
         let moved = body_joint_pose(&doc, b)
             .unwrap()
             .transform_point3(Vec3::new(42.0, 2.0, 0.0));
@@ -867,15 +869,15 @@ mod tests {
             JointKind::Revolute,
         );
         hinge.mate = stack_mate(&doc, ground, b);
-        doc.joints.push(hinge);
-        doc.joints.push(joint(
+        doc.joints.insert(hinge);
+        doc.joints.insert(joint(
             vec![JointRef::Body(b), JointRef::Body(c)],
             JointKind::Rigid,
         ));
-        assert_eq!(body_drag_joint(&doc, b), BodyDragTarget::Joint(0), "driven directly");
+        assert_eq!(body_drag_joint(&doc, b), BodyDragTarget::Joint(jkey(0)), "driven directly");
         assert_eq!(
             body_drag_joint(&doc, c),
-            BodyDragTarget::Joint(0),
+            BodyDragTarget::Joint(jkey(0)),
             "a rigid tie walks up to the hinge"
         );
         assert_eq!(
@@ -885,7 +887,7 @@ mod tests {
         );
         assert_eq!(body_drag_joint(&doc, free), BodyDragTarget::Free, "unjointed is free");
         // The posed drag frame sits at the mate's landing point, aimed along its normal.
-        let (origin, axis, _, _) = posed_joint_frame(&doc, 0).expect("a frame to drag on");
+        let (origin, axis, _, _) = posed_joint_frame(&doc, jkey(0)).expect("a frame to drag on");
         assert!((origin - Vec3::new(42.0, 2.0, 10.0)).length() < 1e-3, "origin {origin}");
         assert!((axis - Vec3::Z).length() < 1e-3, "axis {axis}");
     }
@@ -962,8 +964,8 @@ mod tests {
         };
         bc.position = "3".to_string();
         // Deliberately out of dependency order: the B→C joint is authored first.
-        doc.joints.push(bc);
-        doc.joints.push(ab);
+        doc.joints.insert(bc);
+        doc.joints.insert(ab);
         let res = resolve_joint_poses(&doc);
         assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
         // B lands on A's top and slides 2 along +X.
@@ -981,11 +983,11 @@ mod tests {
     fn joint_cycle_is_reported_not_resolved() {
         let mut doc = Document::default();
         let (a, b) = two_cubes(&mut doc);
-        doc.joints.push(joint(
+        doc.joints.insert(joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Rigid,
         ));
-        doc.joints.push(joint(
+        doc.joints.insert(joint(
             vec![JointRef::Body(b), JointRef::Body(a)],
             JointKind::Rigid,
         ));
@@ -994,10 +996,10 @@ mod tests {
         let health = crate::document_health::recompute_document_health(&doc);
         assert!(health
             .element_reasons
-            .get(&crate::hierarchy::SceneElement::Joint(0))
+            .get(&crate::hierarchy::SceneElement::Joint(jkey(0)))
             .or_else(|| health
                 .element_reasons
-                .get(&crate::hierarchy::SceneElement::Joint(1)))
+                .get(&crate::hierarchy::SceneElement::Joint(jkey(1))))
             .is_some());
     }
 
@@ -1007,17 +1009,17 @@ mod tests {
         let mut doc = Document::default();
         let (a, b) = two_cubes(&mut doc);
         let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
-        doc.joints.push(joint(
+        doc.joints.insert(joint(
             vec![JointRef::Body(a), JointRef::Body(c)],
             JointKind::Rigid,
         ));
-        doc.joints.push(joint(
+        let second = doc.joints.insert(joint(
             vec![JointRef::Body(b), JointRef::Body(c)],
             JointKind::Rigid,
         ));
         let res = resolve_joint_poses(&doc);
         assert_eq!(res.errors.len(), 1);
-        assert_eq!(res.errors[0].0, 1, "the later joint is the one refused");
+        assert_eq!(res.errors[0].0, second, "the later joint is the one refused");
     }
 
     /// #893: a rigid group's driven members ride the base's pose — the whole group swings
@@ -1027,7 +1029,7 @@ mod tests {
         let mut doc = Document::default();
         let (ground, b) = two_cubes(&mut doc);
         let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
-        doc.joints.push(joint(
+        doc.joints.insert(joint(
             vec![JointRef::Body(b), JointRef::Body(c)],
             JointKind::Rigid,
         ));
@@ -1037,7 +1039,7 @@ mod tests {
         );
         hinge.mate = stack_mate(&doc, ground, b);
         hinge.position = "90".to_string();
-        doc.joints.push(hinge);
+        doc.joints.insert(hinge);
         let res = resolve_joint_poses(&doc);
         assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
         let pb = res.member_pose(JointRef::Body(b)).unwrap();

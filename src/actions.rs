@@ -1192,7 +1192,7 @@ pub struct CreatingJoint {
     /// Travel limits (#896), carried whole — expressions and stop targets.
     pub limits: crate::model::JointLimits,
     /// `Some(joint)` while re-editing a committed joint.
-    pub editing: Option<usize>,
+    pub editing: Option<crate::model::JointKey>,
 }
 
 impl CreatingJoint {
@@ -1266,7 +1266,7 @@ impl CreatingJoint {
     }
 
     /// Load a committed joint back into the tool (#894).
-    pub fn from_joint(joint: &crate::model::Joint, editing: usize) -> Self {
+    pub fn from_joint(joint: &crate::model::Joint, editing: crate::model::JointKey) -> Self {
         Self {
             members: joint.members.clone(),
             base: joint.base,
@@ -2323,7 +2323,7 @@ pub enum Action {
     },
     /// Re-point an existing joint (#894).
     EditJointOperation {
-        op: usize,
+        op: crate::model::JointKey,
         members: Vec<crate::model::JointRef>,
         base: usize,
         kind: crate::model::JointKind,
@@ -2334,9 +2334,9 @@ pub enum Action {
         limits: crate::model::JointLimits,
     },
     /// Capture a joint's current position as its rest pose (#898).
-    SetJointRest { joint: usize },
+    SetJointRest { joint: crate::model::JointKey },
     /// Put a joint back to its rest pose (#898).
-    RevertJoint { joint: usize },
+    RevertJoint { joint: crate::model::JointKey },
     /// Put every joint back to its rest pose in one go (#898).
     RevertAllJoints,
     /// Commit the in-progress Mirror-tool operation (#523).
@@ -5603,7 +5603,7 @@ fn validate_joint_inputs(
     doc: &Document,
     members: &[crate::model::JointRef],
     kind: &crate::model::JointKind,
-    _editing: Option<usize>,
+    _editing: Option<crate::model::JointKey>,
 ) -> Result<(), String> {
     if members.len() < 2 {
         return Err("Pick two parts to join".to_string());
@@ -5642,7 +5642,7 @@ fn validate_joint_inputs(
 }
 
 /// The status line a fresh joint reports: its kind label plus the parts it joins.
-fn joint_status(doc: &Document, ji: usize) -> String {
+fn joint_status(doc: &Document, ji: crate::model::JointKey) -> String {
     let label = crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Joint(ji));
     let members = doc
         .joints
@@ -5986,7 +5986,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep operation {}", i.index()),
-        SceneElement::Joint(i) => format!("Joint {i}"),
+        SceneElement::Joint(i) => format!("Joint {}", i.index()),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
     }
@@ -11638,7 +11638,7 @@ label_hidden: false,
                 let Some(cj) = self.creating_joint.take() else {
                     return ActionResult::Err("No joint in progress".to_string());
                 };
-                let payload = |op: Option<usize>| match op {
+                let payload = |op: Option<crate::model::JointKey>| match op {
                     Some(op) => Action::EditJointOperation {
                         op,
                         members: cj.members.clone(),
@@ -11698,16 +11698,14 @@ label_hidden: false,
                     rest3: position3,
                     limits,
                     name: None,
-                    deleted: false,
                 };
                 // A joint that can't resolve — closing a loop, or claiming a part another
                 // joint drives — is refused with the reason, not committed broken (#893).
-                self.doc.joints.push(joint);
-                let ji = self.doc.joints.len() - 1;
+                let ji = self.doc.joints.insert(joint);
                 let errors = crate::joints::resolve_joint_poses(&self.doc).errors;
                 if let Some((_, reason)) = errors.iter().find(|(i, _)| *i == ji) {
                     let reason = reason.clone();
-                    self.doc.joints.pop();
+                    self.doc.joints.remove(ji);
                     self.status = reason.clone();
                     return ActionResult::Err(reason);
                 }
@@ -11727,8 +11725,8 @@ label_hidden: false,
                 position3,
                 limits,
             } => {
-                if self.doc.joints.get(op).filter(|j| !j.deleted).is_none() {
-                    return ActionResult::Err(format!("Joint {op} not found"));
+                if self.doc.joints.get(op).is_none() {
+                    return ActionResult::Err(format!("Joint {op:?} not found"));
                 }
                 if let Err(e) = validate_joint_inputs(&self.doc, &members, &kind, Some(op)) {
                     self.status = e.clone();
@@ -11757,8 +11755,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::SetJointRest { joint } => {
-                let Some(j) = self.doc.joints.get_mut(joint).filter(|j| !j.deleted) else {
-                    return ActionResult::Err(format!("Joint {joint} not found"));
+                let Some(j) = self.doc.joints.get_mut(joint) else {
+                    return ActionResult::Err(format!("Joint {joint:?} not found"));
                 };
                 j.rest = j.position.clone();
                 j.rest2 = j.position2.clone();
@@ -11767,8 +11765,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::RevertJoint { joint } => {
-                let Some(j) = self.doc.joints.get_mut(joint).filter(|j| !j.deleted) else {
-                    return ActionResult::Err(format!("Joint {joint} not found"));
+                let Some(j) = self.doc.joints.get_mut(joint) else {
+                    return ActionResult::Err(format!("Joint {joint:?} not found"));
                 };
                 j.position = j.rest.clone();
                 j.position2 = j.rest2.clone();
@@ -11779,7 +11777,7 @@ label_hidden: false,
             }
             Action::RevertAllJoints => {
                 let mut count = 0usize;
-                for j in self.doc.joints.iter_mut().filter(|j| !j.deleted) {
+                for j in self.doc.joints.values_mut() {
                     if j.position != j.rest || j.position2 != j.rest2 || j.position3 != j.rest3
                     {
                         j.position = j.rest.clone();

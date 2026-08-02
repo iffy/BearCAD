@@ -602,7 +602,6 @@ pub mod tests {
             rest3: String::new(),
             limits: JointLimits::default(),
             name: None,
-            deleted: false,
         }
     }
 

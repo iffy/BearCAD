@@ -109,7 +109,7 @@ pub enum HierarchyNode {
     DrawingDimension { drawing: usize, view: usize, a: [i32; 3], b: [i32; 3] },
     /// A joint between parts (#891): a childless top-level row whose members feed it as
     /// graph inputs — a relationship, not a feature, so nothing nests under it.
-    Joint(usize),
+    Joint(crate::model::JointKey),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -263,7 +263,7 @@ pub enum SceneElement {
     UnitInstance(usize),
     /// A joint between parts (#891): a kinematic relationship, selectable and deletable
     /// like any operation.
-    Joint(usize),
+    Joint(crate::model::JointKey),
 }
 
 impl SceneElement {
@@ -548,9 +548,9 @@ pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JointRestCommand {
     /// Capture the joint's current position as its rest pose.
-    SetRest(usize),
+    SetRest(crate::model::JointKey),
     /// Put the joint back to its rest pose.
-    Revert(usize),
+    Revert(crate::model::JointKey),
     /// Put every joint back to its rest pose.
     RevertAll,
 }
@@ -1019,10 +1019,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A joint's members feed it (#891): two (or more) inputs, no outputs.
-    for (ji, joint) in doc.joints.iter().enumerate() {
-        if joint.deleted {
-            continue;
-        }
+    for (ji, joint) in doc.joints.iter() {
         for member in &joint.members {
             let input = match *member {
                 crate::model::JointRef::Body(bi) => HierarchyNode::Body(bi),
@@ -2155,8 +2152,8 @@ pub fn build_hierarchy(
     }
     // Joints (#891): childless top-level rows — their members feed them as graph inputs,
     // nothing nests beneath them.
-    for (ji, joint) in doc.joints.iter().enumerate() {
-        if !joint.deleted {
+    for (ji, _joint) in doc.joints.iter() {
+        {
             roots.push(HierarchyEntry {
                 node: HierarchyNode::Joint(ji),
                 children: Vec::new(),
@@ -3102,7 +3099,7 @@ pub fn produced_bodies(doc: &Document, element: &SceneElement) -> Vec<crate::mod
     // A joint has no descendants — what it "produces" is the parts it holds together (#891),
     // the same set hovering its badge in the viewport already glows (#899).
     if let SceneElement::Joint(index) = element {
-        if let Some(joint) = doc.joints.get(*index).filter(|j| !j.deleted) {
+        if let Some(joint) = doc.joints.get(*index) {
             for member in &joint.members {
                 bodies.extend(crate::joints::member_bodies(doc, *member));
             }
@@ -5471,6 +5468,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::joint_key_for_slot as jkey;
     use crate::model::sketch_op_key_for_slot as skop;
     use crate::model::slice_op_key_for_slot as slckey;
     use crate::model::edge_treatment_op_key_for_slot as etkey;
@@ -5560,7 +5558,7 @@ mod tests {
         assert_eq!(produced_bodies(&doc, &SceneElement::Component(0)), vec![bkey(1)]);
 
         // A joint has no descendants at all — what it holds together is the answer.
-        doc.joints.push(crate::model::Joint {
+        doc.joints.insert(crate::model::Joint {
             members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind: JointKind::Rigid,
@@ -5573,9 +5571,8 @@ mod tests {
             rest3: String::new(),
             limits: crate::model::JointLimits::default(),
             name: None,
-            deleted: false,
         });
-        assert_eq!(produced_bodies(&doc, &SceneElement::Joint(0)), vec![bkey(0), bkey(1)]);
+        assert_eq!(produced_bodies(&doc, &SceneElement::Joint(jkey(0))), vec![bkey(0), bkey(1)]);
 
         // A body isn't an operation; it has nothing downstream to stand in for it.
         assert!(produced_bodies(&doc, &SceneElement::Body(bkey(0))).is_empty());

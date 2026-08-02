@@ -14,7 +14,7 @@ pub const JOINT_ICON_HIT_PADDING: f32 = 4.0;
 /// One joint's badge: where it sits in the world and which icon it shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointIconPlacement {
-    pub joint: usize,
+    pub joint: crate::model::JointKey,
     pub world: Vec3,
     pub icon: IconId,
 }
@@ -22,7 +22,7 @@ pub struct JointIconPlacement {
 /// A badge's clickable screen rect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JointIconHit {
-    pub joint: usize,
+    pub joint: crate::model::JointKey,
     pub rect: Rect,
 }
 
@@ -30,8 +30,8 @@ pub struct JointIconHit {
 /// frameless joint, at the centre of the first driven part.
 pub fn build_joint_icon_placements(doc: &Document) -> Vec<JointIconPlacement> {
     let mut out = Vec::new();
-    for (ji, joint) in doc.joints.iter().enumerate() {
-        if joint.deleted || joint.members.len() < 2 {
+    for (ji, joint) in doc.joints.iter() {
+        if joint.members.len() < 2 {
             continue;
         }
         let world = crate::joints::posed_joint_frame(doc, ji)
@@ -82,7 +82,10 @@ pub fn build_joint_icon_hits(
 }
 
 /// The badge under the pointer, nearest centre first so overlapping badges don't flicker.
-pub fn pointer_over_joint_icon(hits: &[JointIconHit], pointer: Pos2) -> Option<usize> {
+pub fn pointer_over_joint_icon(
+    hits: &[JointIconHit],
+    pointer: Pos2,
+) -> Option<crate::model::JointKey> {
     hits.iter()
         .filter(|h| h.rect.contains(pointer))
         .min_by(|a, b| {
@@ -103,7 +106,7 @@ pub fn draw_joint_icons(
     health: &crate::document_health::DocumentHealth,
     selection: &crate::selection::SceneSelection,
     placements: &[JointIconPlacement],
-    hovered: Option<usize>,
+    hovered: Option<crate::model::JointKey>,
     base_color: Color32,
     selected_color: Color32,
 ) {
@@ -147,6 +150,7 @@ pub fn draw_joint_icons(
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::joint_key_for_slot as jkey;
     use super::*;
     use crate::model::{Body, BodySource, ImportedMesh, Joint, JointKind, JointRef};
 
@@ -171,7 +175,7 @@ mod tests {
                 shadow: false,
             });
         }
-        doc.joints.push(Joint {
+        doc.joints.insert(Joint {
             members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind,
@@ -184,7 +188,6 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: None,
-            deleted: false,
         });
         doc
     }
@@ -203,7 +206,7 @@ mod tests {
         let hits = build_joint_icon_hits(&project, &placements);
         assert_eq!(hits.len(), 1);
         let centre = hits[0].rect.center();
-        assert_eq!(pointer_over_joint_icon(&hits, centre), Some(0));
+        assert_eq!(pointer_over_joint_icon(&hits, centre), Some(jkey(0)));
         assert_eq!(
             pointer_over_joint_icon(&hits, centre + egui::vec2(100.0, 0.0)),
             None

@@ -4984,6 +4984,7 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::joint_key_for_slot as jkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::AppState;
@@ -5890,7 +5891,7 @@ mod tests {
             crate::model::ComponentMember::Body(bkey(0)),
             state.doc.components.len() - 1,
         ));
-        state.doc.joints.push(crate::model::Joint {
+        state.doc.joints.insert(crate::model::Joint {
             members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind: JointKind::Rigid,
@@ -5903,7 +5904,6 @@ mod tests {
             rest3: String::new(),
             limits: crate::model::JointLimits::default(),
             name: None,
-            deleted: false,
         });
 
         // A tracing image on the XY plane — its quad's outline is what its row lights.
@@ -5926,7 +5926,7 @@ mod tests {
             SceneElement::Extrusion(0),
             SceneElement::Body(bkey(0)),
             SceneElement::Component(state.doc.components.len() - 1),
-            SceneElement::Joint(0),
+            SceneElement::Joint(jkey(0)),
             SceneElement::Image(image),
             SceneElement::Line(0),
             SceneElement::Sketch(sketch),

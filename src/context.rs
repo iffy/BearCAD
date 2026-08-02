@@ -98,7 +98,7 @@ pub struct ContextInput<'a> {
     /// Joint tool state (#894): `Some` while the Joint tool is active.
     pub joint: Option<JointControl>,
     /// "Edit joint" entry point: `Some(op)` when exactly one joint is selected (#894).
-    pub joint_edit_start: Option<usize>,
+    pub joint_edit_start: Option<crate::model::JointKey>,
     /// Mirror tool state (#523): `Some` while the Mirror tool is active.
     pub mirror_op: Option<MirrorControl>,
     /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
@@ -1001,7 +1001,7 @@ pub struct ContextPaneContent {
     /// Joint tool state (#894): `Some` while the Joint tool is active.
     pub joint: Option<JointControl>,
     /// "Edit joint" entry point: `Some(op)` when exactly one joint is selected (#894).
-    pub joint_edit_start: Option<usize>,
+    pub joint_edit_start: Option<crate::model::JointKey>,
     /// Mirror tool state (#523): `Some` while the Mirror tool is active.
     pub mirror_op: Option<MirrorControl>,
     /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
@@ -4239,7 +4239,7 @@ pub fn show_pane(
     on_move_edit_start: &mut impl FnMut(crate::model::MoveOpKey),
     on_shape_edit: &mut impl FnMut(ShapeEdit),
     on_joint_edit: &mut impl FnMut(JointEdit),
-    on_joint_edit_start: &mut impl FnMut(usize),
+    on_joint_edit_start: &mut impl FnMut(crate::model::JointKey),
     on_mirror_edit: &mut impl FnMut(MirrorEdit),
     on_mirror_edit_start: &mut impl FnMut(crate::model::MirrorOpKey),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),

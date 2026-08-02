@@ -305,16 +305,13 @@ pub fn recompute_document_health(doc: &Document) -> DocumentHealth {
 /// or a part two joints both claim. The joint is reported and skipped rather than taking
 /// the assembly down — the same containment broken units get.
 fn mark_broken_joints(doc: &Document, health: &mut DocumentHealth) {
-    let mut invalid = |ji: usize, reason: String| {
+    let mut invalid = |ji: crate::model::JointKey, reason: String| {
         let element = SceneElement::Joint(ji);
         health.elements.insert(element.clone(), HealthStatus::Invalid);
         health.element_reasons.insert(element, reason);
     };
     let mut any_live = false;
-    for (ji, joint) in doc.joints.iter().enumerate() {
-        if joint.deleted {
-            continue;
-        }
+    for (ji, joint) in doc.joints.iter() {
         any_live = true;
         if joint.members.len() < 2 {
             invalid(ji, "A joint needs two parts".to_string());

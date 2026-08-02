@@ -208,7 +208,7 @@ fn run_command(
             .and_then(Value::as_str)
             .ok_or("find requires a `name`")?;
         return Ok(match find_element_by_name(&state.doc, query) {
-            Some(el) => match script_json::scene_element_kind_name(&el) {
+            Some(el) => match script_json::scene_element_kind_name(&state.doc, &el) {
                 Some((kind, index)) => json!({ "kind": kind, "index": index }),
                 None => Value::Null,
             },

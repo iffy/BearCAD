@@ -3609,7 +3609,7 @@ pub fn selection_world_bounds(
             }
             // A joint frames the parts it joins (#891).
             SceneElement::Joint(ji) => {
-                if let Some(joint) = doc.joints.get(ji).filter(|j| !j.deleted) {
+                if let Some(joint) = doc.joints.get(ji) {
                     for member in &joint.members {
                         match *member {
                             crate::model::JointRef::Body(bi) => {
@@ -3745,8 +3745,7 @@ pub(crate) fn document_pose_fingerprint(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     document_mesh_fingerprint(doc).hash(&mut h);
-    for j in &doc.joints {
-        j.deleted.hash(&mut h);
+    for j in doc.joints.values() {
         j.base.hash(&mut h);
         j.position.hash(&mut h);
         j.position2.hash(&mut h);
@@ -3859,7 +3858,7 @@ thread_local! {
 /// operation.
 pub fn body_solid_mesh(doc: &Document, body_index: crate::model::BodyKey) -> Option<SolidMesh> {
     let unposed = body_solid_mesh_unposed(doc, body_index);
-    if doc.joints.iter().all(|j| j.deleted) {
+    if doc.joints.is_empty() {
         return unposed;
     }
     let fingerprint = document_pose_fingerprint(doc);

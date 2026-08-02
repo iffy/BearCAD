@@ -266,7 +266,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
-    save_indexed_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
+    save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
     save_indexed_nodes(&tx, &mut row_id, "unit", &doc.units)?;
     save_indexed_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
     if doc.construction_planes.len() > 1 {
@@ -601,7 +601,7 @@ pub fn open(path: &str) -> Result<Document> {
     let sketch_slice_ops = load_arena_entities(&conn, "sketch_slice_op")?;
     let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
     let drawings = load_indexed_entities(&conn, "drawing")?;
-    let joints = load_indexed_entities(&conn, "joint")?;
+    let joints = load_arena_entities(&conn, "joint")?;
     let units = load_indexed_entities(&conn, "unit")?;
     let unit_instances = load_indexed_entities(&conn, "unit_instance")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
@@ -917,6 +917,47 @@ mod tests {
         }
     }
 
+    /// #1055: joints keep their keys across a save, so a deleted joint leaves a hole rather
+    /// than shifting the survivor down into its place.
+    #[test]
+    fn joint_keys_survive_a_save_and_reload() {
+        let mut doc = Document::default();
+        let joint = |name: &str| crate::model::Joint {
+            members: Vec::new(),
+            base: 0,
+            kind: crate::model::JointKind::Revolute,
+            mate: Default::default(),
+            position: String::new(),
+            position2: String::new(),
+            position3: String::new(),
+            rest: String::new(),
+            rest2: String::new(),
+            rest3: String::new(),
+            limits: Default::default(),
+            name: Some(name.to_string()),
+        };
+        let doomed = doc.joints.insert(joint("doomed"));
+        let kept = doc.joints.insert(joint("kept"));
+        assert!(doc.joints.remove(doomed).is_some());
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_joint_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.joints.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.joints.get(kept).and_then(|j| j.name.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert!(loaded.joints.get(doomed).is_none(), "{suffix}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: bodies keep their keys across a save, and so does everything that names one —
     /// an operation's inputs and outputs, a joint's members, a drawing view's source. This is
     /// the collection with the widest blast radius, so the test carries one of each.
@@ -951,7 +992,7 @@ mod tests {
             tz: String::new(),
             name: None,
         });
-        doc.joints.push(crate::model::Joint {
+        doc.joints.insert(crate::model::Joint {
             members: vec![
                 crate::model::JointRef::Body(input),
                 crate::model::JointRef::Body(output),
@@ -967,7 +1008,6 @@ mod tests {
             rest3: String::new(),
             limits: crate::model::JointLimits::default(),
             name: None,
-            deleted: false,
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -992,7 +1032,7 @@ mod tests {
             assert_eq!(loaded.move_ops.values().nth(0).unwrap().targets, vec![input], "{suffix}: op input");
             assert_eq!(loaded.move_ops.values().nth(0).unwrap().outputs, vec![output], "{suffix}: op output");
             assert_eq!(
-                loaded.joints[0].members,
+                loaded.joints.values().nth(0).unwrap().members,
                 vec![
                     crate::model::JointRef::Body(input),
                     crate::model::JointRef::Body(output),
@@ -1232,7 +1272,7 @@ mod tests {
             material: None,
             shadow: false,
         });
-        doc.joints.push(crate::model::Joint {
+        doc.joints.insert(crate::model::Joint {
             members: vec![
                 crate::model::JointRef::Body(bkey(0)),
                 crate::model::JointRef::Body(bkey(1)),
@@ -1274,7 +1314,6 @@ mod tests {
                 turn_max: "110".to_string(),
             },
             name: Some("Lead screw".to_string()),
-            deleted: false,
         });
         doc.shape_order.push(crate::model::ShapeKind::Body);
         doc.shape_order.push(crate::model::ShapeKind::Body);

@@ -104,10 +104,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sketch_texts
             .get(index)
             .is_some_and(|t| !t.deleted),
-        SceneElement::Joint(index) => doc
-            .joints
-            .get(index)
-            .is_some_and(|j| !j.deleted),
+        SceneElement::Joint(index) => doc.joints.contains(index),
     }
 }
 
@@ -274,9 +271,12 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         | SceneElement::ExtrusionEdge { .. }
         | SceneElement::RepeatedFace { .. } => {}
         SceneElement::Joint(index) => {
-            if doc.joints.get(index).is_some_and(|j| !j.deleted) {
-                doc.joints[index].deleted = true;
-                remove_shape_order_entry(doc, ShapeKind::Joint, index);
+            // The history-tape marker is this joint's place among the live ones (#1055).
+            let ordinal = doc.joints.keys().position(|k| k == index);
+            if doc.joints.remove(index).is_some() {
+                if let Some(ordinal) = ordinal {
+                    remove_shape_order_entry(doc, ShapeKind::Joint, ordinal);
+                }
                 changed = true;
             }
         }
@@ -619,12 +619,18 @@ fn tombstone_body(doc: &mut Document, index: crate::model::BodyKey) -> bool {
 /// holds `member`.
 fn tombstone_joints_referencing(doc: &mut Document, member: crate::model::JointRef) -> bool {
     let mut changed = false;
-    for ji in 0..doc.joints.len() {
-        if doc.joints[ji].deleted || !doc.joints[ji].members.contains(&member) {
-            continue;
+    let doomed: Vec<crate::model::JointKey> = doc
+        .joints
+        .iter()
+        .filter(|(_, j)| j.members.contains(&member))
+        .map(|(k, _)| k)
+        .collect();
+    for ji in doomed {
+        let ordinal = doc.joints.keys().position(|k| k == ji);
+        doc.joints.remove(ji);
+        if let Some(ordinal) = ordinal {
+            remove_shape_order_entry(doc, ShapeKind::Joint, ordinal);
         }
-        doc.joints[ji].deleted = true;
-        remove_shape_order_entry(doc, ShapeKind::Joint, ji);
         changed = true;
     }
     changed
@@ -970,8 +976,11 @@ mod tests {
         key
     }
 
-    fn push_test_joint(doc: &mut Document, members: Vec<crate::model::JointRef>) -> usize {
-        doc.joints.push(crate::model::Joint {
+    fn push_test_joint(
+        doc: &mut Document,
+        members: Vec<crate::model::JointRef>,
+    ) -> crate::model::JointKey {
+        let key = doc.joints.insert(crate::model::Joint {
             members,
             base: 0,
             kind: crate::model::JointKind::Revolute,
@@ -984,10 +993,9 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Joint);
-        doc.joints.len() - 1
+        key
     }
 
     /// #891: deleting a joint tombstones it and removes its shape-order entry; nothing it
@@ -1003,7 +1011,7 @@ mod tests {
         );
         let order_len = doc.shape_order.len();
         assert!(tombstone_element(&mut doc, SceneElement::Joint(ji)));
-        assert!(doc.joints[ji].deleted);
+        assert!(!doc.joints.contains(ji));
         assert!(!element_alive(&doc, SceneElement::Joint(ji)));
         assert!(body_alive(&doc, a));
         assert!(body_alive(&doc, b));
@@ -1023,7 +1031,7 @@ mod tests {
             vec![crate::model::JointRef::Body(a), crate::model::JointRef::Body(b)],
         );
         assert!(tombstone_element(&mut doc, SceneElement::Body(a)));
-        assert!(doc.joints[ji].deleted, "joint must die with its member body");
+        assert!(!doc.joints.contains(ji), "joint must die with its member body");
         assert!(body_alive(&doc, b));
     }
 
@@ -1054,7 +1062,7 @@ mod tests {
             ],
         );
         assert!(tombstone_element(&mut doc, SceneElement::UnitInstance(0)));
-        assert!(doc.joints[ji].deleted, "joint must die with its unit instance");
+        assert!(!doc.joints.contains(ji), "joint must die with its unit instance");
     }
 
     fn sketch_with_two_lines() -> (Document, SketchId, usize, usize) {

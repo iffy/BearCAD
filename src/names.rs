@@ -124,10 +124,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
         }
     }
     // Joints (#891): findable/selectable by name like any operation.
-    for (index, joint) in doc.joints.iter().enumerate() {
-        if joint.deleted {
-            continue;
-        }
+    for (index, joint) in doc.joints.iter() {
         if name_matches(joint.name.as_deref(), query) {
             return Some(SceneElement::Joint(index));
         }
@@ -420,7 +417,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let joint = doc
                 .joints
                 .get_mut(index)
-                .ok_or_else(|| format!("joint {index} not found"))?;
+                .ok_or_else(|| format!("joint {index:?} not found"))?;
             joint.name = stored;
         }
         SceneElement::Point(_) => {
@@ -570,10 +567,10 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         // joint ties more than two things (#900).
         HierarchyNode::Joint(i) => match doc.joints.get(i) {
             Some(j) if matches!(j.kind, crate::model::JointKind::Rigid) && j.members.len() > 2 => {
-                format!("Rigid group {i}")
+                format!("Rigid group {}", i.index())
             }
-            Some(j) => format!("{} {i}", joint_kind_label(&j.kind)),
-            None => format!("Joint {i}"),
+            Some(j) => format!("{} {}", joint_kind_label(&j.kind), i.index()),
+            None => format!("Joint {}", i.index()),
         },
         HierarchyNode::Drawing(i) => doc
             .drawings
@@ -814,7 +811,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Revolution(i) => format!("Revolve {}", i.index()),
         SceneElement::Shape(i) => format!("Shape {}", i.index()),
         SceneElement::SweepOp(i) => format!("Sweep {}", i.index()),
-        SceneElement::Joint(i) => format!("Joint {i}"),
+        SceneElement::Joint(i) => format!("Joint {}", i.index()),
     }
 }
 

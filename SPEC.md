@@ -1375,7 +1375,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 - **Joint tool (#891/#894):** joins two parts — bodies, components, or unit instances
   (`model::JointRef`) — with a kinematic relationship (`model::Joint`,
-  `Document::joints`, `ShapeKind::Joint`). A joint changes where things *are*, never
+  `Document::joints`, `ShapeKind::Joint`).
+  **Joint identity (#1055):** `Document::joints` is an `arena::Arena`, and a joint is named
+  by a `JointKey` — `SceneElement::Joint`, `HierarchyNode::Joint`, the joint icon badges,
+  `JointRestCommand`, and the pose resolver's error list. Deleting a joint removes it, so a
+  reference to it reads as gone rather than resolving to whichever joint used to sit after
+  it; a script still names one by its **ordinal** among the live joints.
+  A joint changes where things *are*, never
   their shape: at recompute the **driven** side is posed **in place** (`joints::
   resolve_joint_poses`), the way a Move's plane/image/instance targets are — in the node
   graph the joint has **two input edges and no output edge**, reading as a relationship,

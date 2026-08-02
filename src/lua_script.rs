@@ -198,6 +198,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::SketchSliceOp(key) => {
             doc.sketch_slice_ops.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::Joint(key) => doc.joints.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::EdgeTreatmentOp(key) => {
             doc.edge_treatment_ops.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -211,7 +212,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
 
         | SceneElement::Component(i)
         | SceneElement::UnitInstance(i)
-        | SceneElement::Joint(i) => i,
+        => i,
         // X/Y/Z index as 0/1/2 so a script can name one (#952).
         SceneElement::GlobalAxis(axis) => match axis {
             crate::construction::GlobalAxis::X => 0,
@@ -283,7 +284,7 @@ pub fn scene_element_from_kind(
             Some(SceneElement::Revolution(doc.revolutions.keys().nth(index)?))
         }
         "sweep" | "sweep_op" => Some(SceneElement::SweepOp(doc.sweeps.keys().nth(index)?)),
-        "joint" => Some(SceneElement::Joint(index)),
+        "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         "shape" | "primitive" => Some(SceneElement::Shape(doc.primitives.keys().nth(index)?)),
         // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.
         "axis" | "global_axis" => Some(SceneElement::GlobalAxis(match index {
@@ -2472,7 +2473,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 "component" => doc.components.iter().filter(|e| !e.deleted).count(),
                 "image" => doc.tracing_images.len(),
-                "joint" => doc.joints.iter().filter(|e| !e.deleted).count(),
+                "joint" => doc.joints.len(),
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
@@ -4735,7 +4736,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 })?;
             }
             let element = SceneElement::Joint(unsafe {
-                tick.state().doc.joints.len().saturating_sub(1)
+                tick.state()
+                    .doc
+                    .joints
+                    .keys()
+                    .last()
+                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
             });
             drop(tick);
             apply_optional_name(lua, element, Some(opts))
@@ -5611,6 +5617,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 #[cfg(test)]
 mod tests {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::joint_key_for_slot as jkey;
     use crate::model::sketch_op_key_for_slot as skop;
     use crate::model::edge_treatment_op_key_for_slot as etkey;
     use super::*;
@@ -8105,7 +8112,7 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints.len(), 1);
-        let joint = &state.doc.joints[0];
+        let joint = &state.doc.joints.values().nth(0).unwrap();
         assert_eq!(joint.members.len(), 2);
         assert_eq!(joint.name.as_deref(), Some("Hinge"));
         assert_eq!(joint.rest, "90", "rest pose captured from creation (#898)");
@@ -8217,8 +8224,8 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.joints.len(), 1);
-        assert!(matches!(state.doc.joints[0].kind, crate::model::JointKind::Slider));
-        assert_eq!(state.doc.joints[0].position, "3");
+        assert!(matches!(state.doc.joints.values().nth(0).unwrap().kind, crate::model::JointKind::Slider));
+        assert_eq!(state.doc.joints.values().nth(0).unwrap().position, "3");
     }
 
     /// #898: a joint's rest pose — captured at creation, recapturable, and reverted to,
@@ -8237,7 +8244,7 @@ mod tests {
             bearcad.revert_joint(0)
             "#,
         );
-        assert_eq!(state.doc.joints[0].position, "5", "reverted to the creation pose");
+        assert_eq!(state.doc.joints.values().nth(0).unwrap().position, "5", "reverted to the creation pose");
         let state = run_lua(
             r#"
             bearcad.rect{ width = 10, height = 10 }
@@ -8252,7 +8259,7 @@ mod tests {
             bearcad.revert_joints()
             "#,
         );
-        assert_eq!(state.doc.joints[0].position, "12", "revert-all returns to the recaptured rest");
+        assert_eq!(state.doc.joints.values().nth(0).unwrap().position, "12", "revert-all returns to the recaptured rest");
     }
 
     /// #936: shapes cut each other properly — the sphere's kernel solid is a real BREP
@@ -8447,9 +8454,9 @@ mod tests {
             assert(not ok and tostring(err):find("rigid"), tostring(err))
             "#,
         );
-        assert_eq!(state.doc.joints[0].members.len(), 3);
+        assert_eq!(state.doc.joints.values().nth(0).unwrap().members.len(), 3);
         assert_eq!(
-            crate::names::node_label(&state.doc, crate::hierarchy::HierarchyNode::Joint(0)),
+            crate::names::node_label(&state.doc, crate::hierarchy::HierarchyNode::Joint(jkey(0))),
             "Rigid group 0"
         );
         // Tying in place moves nothing: every driven pose is identity.

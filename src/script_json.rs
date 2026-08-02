@@ -63,7 +63,7 @@ pub fn scene_element_from_kind(
         "extrusion" => Some(SceneElement::Extrusion(index)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
-        "joint" => Some(SceneElement::Joint(index)),
+        "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         _ => None,
     }
 }
@@ -197,8 +197,8 @@ pub fn scene_element_selection_index(
         | SceneElement::SketchText(i)
 
         | SceneElement::Component(i)
-        | SceneElement::UnitInstance(i)
-        | SceneElement::Joint(i) => Some(*i),
+        | SceneElement::UnitInstance(i) => Some(*i),
+        SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
         SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => Some(0),
@@ -206,19 +206,24 @@ pub fn scene_element_selection_index(
 }
 
 /// The script name for a whole scene element's kind, for `find`'s return value. `None` for
-/// element variants that `scene_element_from_kind` can't round-trip.
-pub fn scene_element_kind_name(element: &SceneElement) -> Option<(&'static str, usize)> {
-    match element {
-        SceneElement::ConstructionPlane(i) => Some(("plane", *i)),
-        SceneElement::Sketch(i) => Some(("sketch", *i)),
-        SceneElement::Line(i) => Some(("line", *i)),
-        SceneElement::Circle(i) => Some(("circle", *i)),
-        SceneElement::Constraint(i) => Some(("constraint", *i)),
-        SceneElement::Extrusion(i) => Some(("extrusion", *i)),
-        SceneElement::Body(_) => None,
-        SceneElement::Joint(i) => Some(("joint", *i)),
-        _ => None,
-    }
+/// element variants that `scene_element_from_kind` can't round-trip. Arena-backed kinds
+/// report their ordinal among the live ones (#1055), so this needs the document.
+pub fn scene_element_kind_name(
+    doc: &Document,
+    element: &SceneElement,
+) -> Option<(&'static str, usize)> {
+    let kind = match element {
+        SceneElement::ConstructionPlane(_) => "plane",
+        SceneElement::Sketch(_) => "sketch",
+        SceneElement::Line(_) => "line",
+        SceneElement::Circle(_) => "circle",
+        SceneElement::Constraint(_) => "constraint",
+        SceneElement::Extrusion(_) => "extrusion",
+        SceneElement::Body(_) => "body",
+        SceneElement::Joint(_) => "joint",
+        _ => return None,
+    };
+    Some((kind, scene_element_selection_index(doc, element)?))
 }
 
 /// Map a positional argument list to the named-argument object the dispatcher expects.
@@ -2807,11 +2812,7 @@ mod tests {
             ("constraint", 3), ("extrusion", 0), ("body", 4)]
         {
             let el = scene_element_from_kind(&doc, kind, idx).unwrap();
-            // A body's kind/index pair is reported by `scene_element_selection_index`, which
-            // counts live bodies; `scene_element_kind_name` has no document.
-            if kind != "body" {
-                assert_eq!(scene_element_kind_name(&el), Some((kind, idx)));
-            }
+            assert_eq!(scene_element_kind_name(&doc, &el), Some((kind, idx)));
             assert_eq!(scene_element_selection_index(&doc, &el), Some(idx));
         }
         // Full kind name covers non-round-tripping variants too.

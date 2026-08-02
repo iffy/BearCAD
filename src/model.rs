@@ -1699,6 +1699,12 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for a joint (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn joint_key_for_slot(n: usize) -> JointKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for any in-sketch operation (#1055) — tests only, same caveat. Generic because
 /// the five sketch ops all take the same shape.
 #[cfg(test)]
@@ -2438,9 +2444,10 @@ pub struct Joint {
     pub limits: JointLimits,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// How anything names a joint (#1055).
+pub type JointKey = crate::arena::Key<Joint>;
 
 impl JointKind {
     #[allow(dead_code)] // consumed by the Joint tool + scripting (#894/#901)
@@ -4060,7 +4067,7 @@ pub struct Document {
     /// Joints between parts (#891): kinematic relationships resolved in place at
     /// recompute — no output bodies.
     #[serde(default)]
-    pub joints: Vec<Joint>,
+    pub joints: crate::arena::Arena<Joint>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -4280,7 +4287,7 @@ impl Default for Document {
             sketch_slice_ops: crate::arena::Arena::new(),
             sketch_texts: Vec::new(),
             drawings: Vec::new(),
-            joints: Vec::new(),
+            joints: crate::arena::Arena::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),
