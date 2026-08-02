@@ -98,11 +98,11 @@ pub enum HierarchyNode {
     /// An imported unit instance (#723): a selectable top-level row (its
     /// [`SceneElement::UnitInstance`] renames, hides, and deletes the instance). Its
     /// children ([`HierarchyNode::UnitChild`]) expand beneath it in the List view.
-    UnitInstance(usize),
+    UnitInstance(crate::model::UnitInstanceKey),
     /// One element inside an imported unit (#723): a **display-only, read-only** leaf (no
     /// [`SceneElement`]) shown when the instance row is expanded, so a user can look
     /// inside without being able to edit. `ordinal` indexes [`unit_child_rows`]'s output.
-    UnitChild { instance: usize, ordinal: usize },
+    UnitChild { instance: crate::model::UnitInstanceKey, ordinal: usize },
     /// A length dimension shown on a projection (#341), nested under its
     /// [`HierarchyNode::DrawingProjection`]. `a`/`b` are the dimensioned edge's quantized world
     /// endpoints. A display-only leaf; clicking it opens the drawing and selects the dimension.
@@ -260,7 +260,7 @@ pub enum SceneElement {
     /// An imported unit instance (#723): one row per placement of an imported document.
     /// Selecting, renaming, hiding, and deleting act on the instance; its contents are
     /// read-only from the importing document.
-    UnitInstance(usize),
+    UnitInstance(crate::model::UnitInstanceKey),
     /// A joint between parts (#891): a kinematic relationship, selectable and deletable
     /// like any operation.
     Joint(crate::model::JointKey),
@@ -2135,10 +2135,7 @@ pub fn build_hierarchy(
     }
     // Imported unit instances (#723): one top-level row each; the contents expand as
     // read-only leaves beneath it.
-    for index in 0..doc.unit_instances.len() {
-        if doc.unit_instances[index].deleted {
-            continue;
-        }
+    for index in doc.unit_instances.keys().collect::<Vec<_>>() {
         let children = (0..unit_child_rows(doc, index).len())
             .map(|ordinal| HierarchyEntry {
                 node: HierarchyNode::UnitChild { instance: index, ordinal },
@@ -3371,7 +3368,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
 /// (past the default ground plane), sketches, and bodies as `(icon, label)` pairs —
 /// enough to look inside a part without exposing its full history. Read-only: these back
 /// [`HierarchyNode::UnitChild`] display leaves with no [`SceneElement`].
-pub fn unit_child_rows(doc: &Document, instance: usize) -> Vec<(IconId, String)> {
+pub fn unit_child_rows(doc: &Document, instance: crate::model::UnitInstanceKey) -> Vec<(IconId, String)> {
     let Some(inst) = doc.unit_instances.get(instance) else {
         return Vec::new();
     };
@@ -3401,10 +3398,8 @@ pub fn unit_child_rows(doc: &Document, instance: usize) -> Vec<(IconId, String)>
     // Nested units (#735): a unit the unit itself imported reads as one opaque row —
     // its instance name — however deep the nesting goes (the cap is MAX_UNIT_DEPTH,
     // enforced at load/import, #719).
-    for (i, nested) in inner.unit_instances.iter().enumerate() {
-        if !nested.deleted {
-            rows.push((IconId::Import, node_label(inner, HierarchyNode::UnitInstance(i))));
-        }
+    for (i, _nested) in inner.unit_instances.iter() {
+        rows.push((IconId::Import, node_label(inner, HierarchyNode::UnitInstance(i))));
     }
     rows
 }
@@ -3798,7 +3793,7 @@ pub fn show_pane(
     collapsed_components: &mut HashSet<usize>,
     // Unit instances whose read-only contents are expanded in the List (#723); default
     // collapsed, so an instance reads as one row.
-    expanded_units: &mut HashSet<usize>,
+    expanded_units: &mut HashSet<crate::model::UnitInstanceKey>,
     on_add_component: &mut impl FnMut(Option<usize>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
     active_component: Option<usize>,
@@ -4832,7 +4827,7 @@ fn show_row(
     doc: &Document,
     node: HierarchyNode,
     depth: usize,
-    expanded_units: &mut HashSet<usize>,
+    expanded_units: &mut HashSet<crate::model::UnitInstanceKey>,
     visibility: &mut ElementVisibility,
     selection: &SceneSelection,
     health: &DocumentHealth,
@@ -5467,6 +5462,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::sketch_op_key_for_slot as skop;
@@ -5627,12 +5623,11 @@ mod tests {
             source_mtime: None,
             source_hash: None,
         });
-        doc.unit_instances.push(crate::model::UnitInstance {
+        doc.unit_instances.insert(crate::model::UnitInstance {
             unit: 0,
             name: Some("bracket".to_string()),
             parameter_overrides: Vec::new(),
             placement: crate::model::UnitPlacement::default(),
-            deleted: false,
         });
         doc
     }
@@ -5647,7 +5642,7 @@ mod tests {
         let instance_entry = tree[0]
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::UnitInstance(0))
+            .find(|e| e.node == HierarchyNode::UnitInstance(uikey(0)))
             .expect("the instance is a top-level row");
         assert!(!instance_entry.children.is_empty(), "the contents expand beneath it");
         for child in &instance_entry.children {
@@ -5664,11 +5659,11 @@ mod tests {
         }
         // The row itself is a real element: selectable, nameable, hideable.
         assert_eq!(
-            scene_element_for_node(HierarchyNode::UnitInstance(0)),
-            Some(SceneElement::UnitInstance(0))
+            scene_element_for_node(HierarchyNode::UnitInstance(uikey(0))),
+            Some(SceneElement::UnitInstance(uikey(0)))
         );
         // The child labels come from the unit's own document.
-        let labels: Vec<String> = unit_child_rows(&doc, 0).into_iter().map(|(_, l)| l).collect();
+        let labels: Vec<String> = unit_child_rows(&doc, uikey(0)).into_iter().map(|(_, l)| l).collect();
         assert!(labels.iter().any(|l| l == "Inner body"), "{labels:?}");
     }
 
@@ -5691,7 +5686,7 @@ mod tests {
         assert!(tree[0]
             .children
             .iter()
-            .any(|e| e.node == HierarchyNode::UnitInstance(0)));
+            .any(|e| e.node == HierarchyNode::UnitInstance(uikey(0))));
     }
 
     /// #622: layering enforcement — inputs always end up above consumers; a dragged

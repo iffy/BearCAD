@@ -211,8 +211,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::SketchText(i)
 
         | SceneElement::Component(i)
-        | SceneElement::UnitInstance(i)
         => i,
+        SceneElement::UnitInstance(key) => {
+            doc.unit_instances.keys().position(|k| k == key).unwrap_or(0)
+        }
         // X/Y/Z index as 0/1/2 so a script can name one (#952).
         SceneElement::GlobalAxis(axis) => match axis {
             crate::construction::GlobalAxis::X => 0,
@@ -276,7 +278,9 @@ pub fn scene_element_from_kind(
             SceneElement::SketchVertexTreatmentOp(doc.sketch_vertex_treatment_ops.keys().nth(index)?),
         ),
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(doc.mirror_ops.keys().nth(index)?)),
-        "unit_instance" | "unit" => Some(SceneElement::UnitInstance(index)),
+        "unit_instance" | "unit" => {
+            Some(SceneElement::UnitInstance(doc.unit_instances.keys().nth(index)?))
+        }
         "image" | "tracing_image" => {
             Some(SceneElement::Image(doc.tracing_images.keys().nth(index)?))
         }
@@ -348,6 +352,18 @@ fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.body_at(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
+}
+
+/// The unit instance a script ordinal names (#1055) — instances are keyed, scripts count.
+fn unit_instance_key_from_ordinal(
+    lua: &Lua,
+    ordinal: usize,
+) -> mlua::Result<crate::model::UnitInstanceKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.unit_instances.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no unit instance {ordinal}")))
 }
 
 /// A `#rrggbb` (or bare `rrggbb`) colour string (#834).
@@ -2209,7 +2225,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         mlua::Error::external(format!("bad unit edge face: {e}"))
                     })?;
                     PS::UnitEdgeLength {
-                        instance: opts.get("instance")?,
+                        instance: unit_instance_key_from_ordinal(lua, opts.get("instance")?)?,
                         face,
                         edge: opts.get("edge")?,
                     }

@@ -3161,6 +3161,15 @@ transform. Ten instances of one part cost one embedded copy plus ten override li
 the importing file opens and rebuilds with the source file absent. Load refuses import
 cycles (matched on resolved source path) and nesting deeper than `MAX_UNIT_DEPTH`.
 
+**Instance identity (#1055):** `Document.unit_instances` is an `arena::Arena`, and a
+placement is named by a `UnitInstanceKey` — `SceneElement::UnitInstance`,
+`HierarchyNode::UnitInstance`/`UnitChild`, `JointRef::UnitInstance`,
+`BodySource::UnitInstance`/`UnitCut`, `FaceId::UnitFace`, `ParameterSource::UnitEdgeLength`,
+`ProjectionSource::UnitEdge`, and a move op's `instance_targets`. Deleting a placement
+removes it, and the derived body goes with it on the next `sync_unit_bodies` pass. The
+embedded copies in `Document.units` stay index-addressed. A script names an instance by its
+**ordinal** among the live ones, resolved to a key at the script boundary.
+
 **Evaluation (#722, `src/units.rs`):** an instance evaluates by rebuilding the embedded
 document with its overrides applied and meshing its live bodies, memoized by **(unit,
 override set)** under a fingerprint of `Document.units` alone — identical instances share

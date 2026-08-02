@@ -268,7 +268,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
     save_indexed_nodes(&tx, &mut row_id, "unit", &doc.units)?;
-    save_indexed_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
+    save_arena_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -603,7 +603,7 @@ pub fn open(path: &str) -> Result<Document> {
     let drawings = load_indexed_entities(&conn, "drawing")?;
     let joints = load_arena_entities(&conn, "joint")?;
     let units = load_indexed_entities(&conn, "unit")?;
-    let unit_instances = load_indexed_entities(&conn, "unit_instance")?;
+    let unit_instances = load_arena_entities(&conn, "unit_instance")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
@@ -912,6 +912,56 @@ mod tests {
                 loaded.bodies[out].source,
                 crate::model::BodySource::Boolean { op: kept, solid: 0 },
                 "{suffix}: its output body still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: unit instances keep their keys across a save, and so does everything that
+    /// names one — the materialized body's source and a move op's instance targets.
+    #[test]
+    fn unit_instance_keys_survive_a_save_and_reload() {
+        let instance = |name: &str| crate::model::UnitInstance {
+            unit: 0,
+            name: Some(name.to_string()),
+            parameter_overrides: Vec::new(),
+            placement: Default::default(),
+        };
+        let mut doc = Document::default();
+        doc.units.push(crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath("bracket.bearcad".to_string()),
+            link: crate::model::LinkMode::Dynamic,
+            document: Document::default(),
+            source_mtime: None,
+            source_hash: None,
+        });
+        let doomed = doc.unit_instances.insert(instance("doomed"));
+        let kept = doc.unit_instances.insert(instance("kept"));
+        assert!(doc.unit_instances.remove(doomed).is_some());
+        let body = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::UnitInstance(kept),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_instance_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.unit_instances.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.unit_instances.get(kept).and_then(|i| i.name.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.bodies[body].source,
+                crate::model::BodySource::UnitInstance(kept),
+                "{suffix}: its materialized body still names it"
             );
             let _ = std::fs::remove_file(&path);
         }
@@ -2091,7 +2141,7 @@ mod tests {
             source_mtime: None,
             source_hash: None,
         });
-        doc.unit_instances.push(UnitInstance {
+        doc.unit_instances.insert(UnitInstance {
             unit: 0,
             name: Some("bracket1".to_string()),
             parameter_overrides: vec![("width".to_string(), "20".to_string())],
@@ -2102,21 +2152,12 @@ mod tests {
                 axis: [0.0, 0.0, 1.0],
                 angle: "90".to_string(),
             },
-            deleted: false,
         });
-        doc.unit_instances.push(UnitInstance {
-            unit: 0,
-            name: None,
-            parameter_overrides: Vec::new(),
-            placement: UnitPlacement::default(),
-            deleted: true,
-        });
-        doc.unit_instances.push(UnitInstance {
+        doc.unit_instances.insert(UnitInstance {
             unit: 1,
             name: Some("bolt_a".to_string()),
             parameter_overrides: Vec::new(),
             placement: UnitPlacement::default(),
-            deleted: false,
         });
 
         save(&path, &doc).unwrap();

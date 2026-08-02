@@ -668,7 +668,7 @@ fn occt_subtract_cut_extrusions(
 /// `None` when any inner body isn't kernel-representable — callers fall back to the
 /// mesh path (where a cut then can't apply and the fallback warning surfaces, like any
 /// non-kernel body).
-pub fn occt_unit_instance_shape(doc: &Document, instance: usize) -> Option<crate::kernel::Shape> {
+pub fn occt_unit_instance_shape(doc: &Document, instance: crate::model::UnitInstanceKey) -> Option<crate::kernel::Shape> {
     let eval = crate::units::evaluate_instance(doc, instance)?;
     let inner = &eval.document;
     let mut solid: Option<crate::kernel::Shape> = None;

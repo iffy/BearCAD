@@ -44,6 +44,17 @@ fn body_key_from_ordinal(
         .ok_or_else(|| format!("no body {ordinal}"))
 }
 
+/// The unit instance at `ordinal` among the live ones (#1055).
+fn unit_instance_key_from_ordinal(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Result<crate::model::UnitInstanceKey, String> {
+    doc.unit_instances
+        .keys()
+        .nth(ordinal)
+        .ok_or_else(|| format!("no unit instance {ordinal}"))
+}
+
 /// A whole scene element from a `(kind, index)` pair (mirrors `lua_script::
 /// scene_element_from_kind`). Used to resolve `select`/`set_name`/`set_visible`/
 /// `set_construction`/`find` element arguments in the stateful dispatch path.
@@ -197,7 +208,8 @@ pub fn scene_element_selection_index(
         | SceneElement::SketchText(i)
 
         | SceneElement::Component(i)
-        | SceneElement::UnitInstance(i) => Some(*i),
+        => Some(*i),
+        SceneElement::UnitInstance(key) => doc.unit_instances.keys().position(|k| k == *key),
         SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
         SceneElement::Origin
         | SceneElement::BodyEdge { .. }
@@ -1282,7 +1294,9 @@ fn joint_op_args(
         match kind {
             "body" => Ok(crate::model::JointRef::Body(body_key_from_ordinal(doc, index)?)),
             "component" => Ok(crate::model::JointRef::Component(index)),
-            "unit_instance" | "unit" => Ok(crate::model::JointRef::UnitInstance(index)),
+            "unit_instance" | "unit" => Ok(crate::model::JointRef::UnitInstance(
+                unit_instance_key_from_ordinal(doc, index)?,
+            )),
             other => Err(format!(
                 "joint `{what}` kind '{other}' (body|component|unit_instance)"
             )),
@@ -2171,6 +2185,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::Tool;
@@ -2449,7 +2464,7 @@ mod tests {
     /// members from `a`/`b`, `to` points on the base side's frame, positions stringified.
     #[test]
     fn joint_maps_pairs_onto_frames_like_the_lua_closure() {
-        // The members are bodies named by ordinal (#1055), so the document must hold them.
+        // The members are named by ordinal (#1055), so the document must hold them.
         let mut doc = Document::default();
         for _ in 0..2 {
             doc.bodies.insert(crate::model::Body {
@@ -2457,6 +2472,14 @@ mod tests {
                 name: None,
                 material: None,
                 shadow: false,
+            });
+        }
+        for _ in 0..3 {
+            doc.unit_instances.insert(crate::model::UnitInstance {
+                unit: 0,
+                name: None,
+                parameter_overrides: Vec::new(),
+                placement: Default::default(),
             });
         }
         assert_eq!(
@@ -2484,7 +2507,7 @@ mod tests {
             Ok(Instruction::CreateJointOp {
                 members: vec![
                     crate::model::JointRef::Body(bkey(0)),
-                    crate::model::JointRef::UnitInstance(2),
+                    crate::model::JointRef::UnitInstance(uikey(2)),
                 ],
                 base: 0,
                 kind: crate::model::JointKind::Revolute,

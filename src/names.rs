@@ -115,10 +115,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
         }
     }
     // Imported unit instances (#728): findable/selectable by their instance name.
-    for (index, instance) in doc.unit_instances.iter().enumerate() {
-        if instance.deleted {
-            continue;
-        }
+    for (index, instance) in doc.unit_instances.iter() {
         if name_matches(instance.name.as_deref(), query) {
             return Some(SceneElement::UnitInstance(index));
         }
@@ -391,14 +388,14 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let old = doc
                 .unit_instances
                 .get(index)
-                .ok_or_else(|| format!("unit instance {index} not found"))?
+                .ok_or_else(|| format!("unit instance {} not found", index.index()))?
                 .name
                 .clone();
             // Another instance already answering to this name would make `name.param`
             // ambiguous (#731): refuse rather than silently shadow.
             if let Some(new_name) = stored.as_deref() {
-                let taken = doc.unit_instances.iter().enumerate().any(|(i, inst)| {
-                    i != index && !inst.deleted && inst.name.as_deref() == Some(new_name)
+                let taken = doc.unit_instances.iter().any(|(i, inst)| {
+                    i != index && inst.name.as_deref() == Some(new_name)
                 });
                 if taken {
                     return Err(format!("Another instance is already named '{new_name}'"));
@@ -465,7 +462,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::Component(i) => format!("Component {i}"),
         // The instance's own name (set at import from the file stem) lives in
         // `element_name`; this is only the fallback for an unnamed instance (#723).
-        HierarchyNode::UnitInstance(i) => format!("Unit {i}"),
+        HierarchyNode::UnitInstance(i) => format!("Unit {}", i.index()),
         HierarchyNode::UnitChild { instance, ordinal } => {
             crate::hierarchy::unit_child_rows(doc, instance)
                 .get(ordinal)
@@ -703,7 +700,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             }
         }
         SceneElement::Component(i) => format!("Component {i}"),
-        SceneElement::UnitInstance(i) => format!("Unit {i}"),
+        SceneElement::UnitInstance(i) => format!("Unit {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),

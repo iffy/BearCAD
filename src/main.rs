@@ -3099,7 +3099,7 @@ struct App {
     collapsed_components: std::collections::HashSet<usize>,
     /// Unit instances whose read-only contents are expanded in the Elements list (#723);
     /// UI-only state, default collapsed.
-    expanded_units: std::collections::HashSet<usize>,
+    expanded_units: std::collections::HashSet<model::UnitInstanceKey>,
     /// Timeline rollback marker (#524): when set, everything created after this element is
     /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
     /// just after that element. UI-only session state (not persisted).

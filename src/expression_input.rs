@@ -338,8 +338,7 @@ pub fn parameter_autocomplete_candidates(
     if let Some((instance_name, partial)) = split_qualified_query(query) {
         let Some(inst) = doc
             .unit_instances
-            .iter()
-            .filter(|i| !i.deleted)
+            .values()
             .find(|i| i.name.as_deref() == Some(instance_name.as_str()))
         else {
             return Vec::new();
@@ -398,7 +397,7 @@ pub fn parameter_autocomplete_candidates(
     // name with spaces offers its backticked spelling (the query's stray opening
     // backtick, if any, is ignored for matching).
     let name_query = query.trim_start_matches('`');
-    for inst in doc.unit_instances.iter().filter(|i| !i.deleted) {
+    for inst in doc.unit_instances.values() {
         let Some(name) = inst.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
             continue;
         };
@@ -1113,12 +1112,11 @@ mod tests {
             source_hash: None,
         });
         for name in ["foo", "my bracket"] {
-            doc.unit_instances.push(crate::model::UnitInstance {
+            doc.unit_instances.insert(crate::model::UnitInstance {
                 unit: 0,
                 name: Some(name.to_string()),
                 parameter_overrides: Vec::new(),
                 placement: crate::model::UnitPlacement::default(),
-                deleted: false,
             });
         }
         doc

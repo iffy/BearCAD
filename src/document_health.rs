@@ -93,7 +93,7 @@ pub struct DocumentHealth {
     pub parameter_reasons: HashMap<crate::model::ParameterKey, String>,
     /// Unit instances whose evaluation failed (#722): instance index → reason. The rest
     /// of the document stays healthy and usable around them.
-    pub unit_instances: HashMap<usize, String>,
+    pub unit_instances: HashMap<crate::model::UnitInstanceKey, String>,
     /// Units whose embedded copy is behind their source file (#732). Populated by
     /// `AppState::refresh_document_health` (staleness needs the document's own path and
     /// the library directory, which the pure health pass doesn't have).
@@ -328,9 +328,7 @@ fn mark_broken_joints(doc: &Document, health: &mut DocumentHealth) {
             crate::model::JointRef::Component(ci) => {
                 !doc.components.get(ci).is_some_and(|c| !c.deleted)
             }
-            crate::model::JointRef::UnitInstance(ui) => {
-                !doc.unit_instances.get(ui).is_some_and(|i| !i.deleted)
-            }
+            crate::model::JointRef::UnitInstance(ui) => !doc.unit_instances.contains(ui),
         });
         if member_dead {
             invalid(ji, "A part this joint joins was deleted".to_string());
@@ -370,10 +368,7 @@ fn mark_orphaned_unit_face_sketches(doc: &Document, health: &mut DocumentHealth)
 /// down (#722): its instances get a reason here and everything else stays usable. Cheap
 /// on the every-action path — evaluation is memoized per (unit, override set).
 fn mark_broken_unit_instances(doc: &Document, health: &mut DocumentHealth) {
-    for index in 0..doc.unit_instances.len() {
-        if doc.unit_instances[index].deleted {
-            continue;
-        }
+    for index in doc.unit_instances.keys().collect::<Vec<_>>() {
         if let Some(eval) = crate::units::evaluate_instance(doc, index) {
             if let Some(reason) = &eval.error {
                 health.unit_instances.insert(index, reason.clone());

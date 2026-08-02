@@ -68,13 +68,10 @@ fn units_fingerprint(doc: &Document) -> u64 {
     writer.0.finish()
 }
 
-/// Evaluate the unit behind `instance`, memoized. `None` for a missing/deleted instance
-/// or a dangling unit index.
-pub fn evaluate_instance(doc: &Document, instance: usize) -> Option<Rc<UnitEvaluation>> {
+/// Evaluate the unit behind `instance`, memoized. `None` for a deleted instance or a
+/// dangling unit index.
+pub fn evaluate_instance(doc: &Document, instance: crate::model::UnitInstanceKey) -> Option<Rc<UnitEvaluation>> {
     let inst = doc.unit_instances.get(instance)?;
-    if inst.deleted {
-        return None;
-    }
     let unit = doc.units.get(inst.unit)?;
     let mut overrides = inst.parameter_overrides.clone();
     overrides.sort();
@@ -139,7 +136,7 @@ fn evaluate_uncached(unit: &ImportedUnit, overrides: &[(String, String)]) -> Uni
 /// An instance's placement as a world transform (#722): rotation about its axis through
 /// the unit origin, then translation. Placement expressions evaluate in the **importing**
 /// document, so `height / 2` follows the importing document's parameters.
-pub fn instance_transform(doc: &Document, instance: usize) -> glam::Mat4 {
+pub fn instance_transform(doc: &Document, instance: crate::model::UnitInstanceKey) -> glam::Mat4 {
     let Some(inst) = doc.unit_instances.get(instance) else {
         return glam::Mat4::IDENTITY;
     };
@@ -200,7 +197,8 @@ pub fn instance_transform(doc: &Document, instance: usize) -> glam::Mat4 {
 thread_local! {
     /// Instances whose transform is being computed right now (#735) — breaks the
     /// snap-point → mesh → transform cycle; see [`instance_transform`].
-    static INSTANCE_TRANSFORM_GUARD: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static INSTANCE_TRANSFORM_GUARD: RefCell<Vec<crate::model::UnitInstanceKey>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Keep one live derived body per live unit instance (#724): a
@@ -211,29 +209,32 @@ thread_local! {
 /// its body here on the next pass.
 pub fn sync_unit_bodies(doc: &mut Document) {
     use crate::model::BodySource;
-    let body_for = |doc: &Document, instance: usize| {
+    let body_for = |doc: &Document, instance: crate::model::UnitInstanceKey| {
         doc.bodies.iter().find_map(|(k, b)| {
             matches!(b.source, BodySource::UnitInstance(i) if i == instance).then_some(k)
         })
     };
-    for instance in 0..doc.unit_instances.len() {
-        let alive = !doc.unit_instances[instance].deleted;
-        match body_for(doc, instance) {
-            // A dead instance's materialized body goes away outright (#1055).
-            Some(bi) if !alive => {
-                doc.bodies.remove(bi);
-            }
-            Some(_) => {}
-            None if alive => {
-                doc.bodies.insert(crate::model::Body {
-                    source: BodySource::UnitInstance(instance),
-                    material: None,
-                    name: None,
-                    shadow: false,
-                });
-                doc.shape_order.push(crate::model::ShapeKind::Body);
-            }
-            None => {}
+    // A materialized body whose instance is gone goes away with it (#1055).
+    let orphans: Vec<_> = doc
+        .bodies
+        .iter()
+        .filter_map(|(k, b)| match b.source {
+            BodySource::UnitInstance(i) if !doc.unit_instances.contains(i) => Some(k),
+            _ => None,
+        })
+        .collect();
+    for bi in orphans {
+        doc.bodies.remove(bi);
+    }
+    for instance in doc.unit_instances.keys().collect::<Vec<_>>() {
+        if body_for(doc, instance).is_none() {
+            doc.bodies.insert(crate::model::Body {
+                source: BodySource::UnitInstance(instance),
+                material: None,
+                name: None,
+                shadow: false,
+            });
+            doc.shape_order.push(crate::model::ShapeKind::Body);
         }
         // Consumed units shadow (#726): a live cut result or a boolean/move/slice input
         // ghosts the intact unit body exactly like any consumed input — recomputed here
@@ -252,7 +253,7 @@ pub fn sync_unit_bodies(doc: &mut Document) {
 
 /// `instance`'s evaluated meshes placed by its transform, ready for the scene (#722).
 /// Empty when the instance is deleted, dangling, or its unit failed to build.
-pub fn placed_instance_meshes(doc: &Document, instance: usize) -> Vec<SolidMesh> {
+pub fn placed_instance_meshes(doc: &Document, instance: crate::model::UnitInstanceKey) -> Vec<SolidMesh> {
     let Some(eval) = evaluate_instance(doc, instance) else {
         return Vec::new();
     };
@@ -304,7 +305,7 @@ pub fn inner_face_ids(inner: &Document) -> Vec<crate::model::FaceId> {
 /// inside the unit) — callers fall back to the quantized identity.
 pub fn analytic_unit_edge(
     doc: &Document,
-    instance: usize,
+    instance: crate::model::UnitInstanceKey,
     a: glam::Vec3,
     b: glam::Vec3,
 ) -> Option<(crate::model::FaceId, usize)> {
@@ -335,7 +336,7 @@ pub fn analytic_unit_edge(
 /// its transform. `None` once the face or edge no longer exists.
 pub fn unit_edge_world_segment(
     doc: &Document,
-    instance: usize,
+    instance: crate::model::UnitInstanceKey,
     face: &crate::model::FaceId,
     edge: usize,
 ) -> Option<(glam::Vec3, glam::Vec3)> {
@@ -357,7 +358,7 @@ pub fn unit_edge_world_segment(
 /// rebuild, or the face is gone.
 pub fn unit_face_world_polygon(
     doc: &Document,
-    instance: usize,
+    instance: crate::model::UnitInstanceKey,
     face: &crate::model::FaceId,
 ) -> Option<Vec<glam::Vec3>> {
     let eval = evaluate_instance(doc, instance)?;
@@ -502,6 +503,7 @@ pub fn save_ping_stamp() -> Option<u128> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
     use crate::model::{ImportedUnit, LinkMode, UnitInstance, UnitPlacement, UnitSource};
 
@@ -547,12 +549,11 @@ mod tests {
             source_hash: None,
         });
         for parameter_overrides in overrides {
-            doc.unit_instances.push(UnitInstance {
+            doc.unit_instances.insert(UnitInstance {
                 unit: 0,
                 name: None,
                 parameter_overrides,
                 placement: UnitPlacement::default(),
-                deleted: false,
             });
         }
         doc
@@ -571,8 +572,8 @@ mod tests {
             vec![("width".to_string(), "20".to_string())],
         ]);
         let start = eval_count();
-        let a = evaluate_instance(&doc, 0).expect("instance 0 evaluates");
-        let b = evaluate_instance(&doc, 1).expect("instance 1 evaluates");
+        let a = evaluate_instance(&doc, uikey(0)).expect("instance 0 evaluates");
+        let b = evaluate_instance(&doc, uikey(1)).expect("instance 1 evaluates");
         assert_eq!(eval_count(), start + 1, "one uncached evaluation for both");
         assert!(Rc::ptr_eq(&a, &b), "both instances share the memoized result");
         assert!(a.error.is_none(), "error: {:?}", a.error);
@@ -584,7 +585,7 @@ mod tests {
             primary: false,
             source: None,
         });
-        let _ = evaluate_instance(&doc, 0).unwrap();
+        let _ = evaluate_instance(&doc, uikey(0)).unwrap();
         assert_eq!(eval_count(), start + 1, "B's unrelated edit re-evaluates nothing");
     }
 
@@ -595,14 +596,14 @@ mod tests {
             vec![("width".to_string(), "20".to_string())],
             vec![("width".to_string(), "30".to_string())],
         ]);
-        let a = evaluate_instance(&doc, 0).unwrap();
-        let b = evaluate_instance(&doc, 1).unwrap();
+        let a = evaluate_instance(&doc, uikey(0)).unwrap();
+        let b = evaluate_instance(&doc, uikey(1)).unwrap();
         assert!(!Rc::ptr_eq(&a, &b), "different overrides evaluate separately");
 
-        doc.unit_instances[1].parameter_overrides[0].1 = "40".to_string();
+        doc.unit_instances[uikey(1)].parameter_overrides[0].1 = "40".to_string();
         let start = eval_count();
-        let a_again = evaluate_instance(&doc, 0).unwrap();
-        let _b_again = evaluate_instance(&doc, 1).unwrap();
+        let a_again = evaluate_instance(&doc, uikey(0)).unwrap();
+        let _b_again = evaluate_instance(&doc, uikey(1)).unwrap();
         assert!(Rc::ptr_eq(&a, &a_again), "the untouched instance stays cached");
         assert_eq!(eval_count(), start + 1, "only the edited instance re-evaluates");
     }
@@ -614,8 +615,8 @@ mod tests {
             Vec::new(),
             vec![("width".to_string(), "20".to_string())],
         ]);
-        let base = evaluate_instance(&doc, 0).unwrap();
-        let wide = evaluate_instance(&doc, 1).unwrap();
+        let base = evaluate_instance(&doc, uikey(0)).unwrap();
+        let wide = evaluate_instance(&doc, uikey(1)).unwrap();
         let height = |eval: &UnitEvaluation| {
             let (min, max) = eval.meshes[0].bounds().unwrap();
             max.z - min.z
@@ -633,25 +634,24 @@ mod tests {
             "nope".to_string(),
             "5".to_string(),
         )]]);
-        let eval = evaluate_instance(&doc, 0).expect("still evaluates");
+        let eval = evaluate_instance(&doc, uikey(0)).expect("still evaluates");
         assert!(eval.error.is_some(), "the bad override is reported");
 
         // Document health carries the reason for the instance (#722).
         let health = crate::document_health::recompute_document_health(&doc);
         assert!(
-            health.unit_instances.get(&0).is_some(),
+            health.unit_instances.get(&uikey(0)).is_some(),
             "instance 0 reports unhealthy"
         );
 
         // A healthy instance beside it still evaluates cleanly.
-        doc.unit_instances.push(crate::model::UnitInstance {
+        doc.unit_instances.insert(crate::model::UnitInstance {
             unit: 0,
             name: None,
             parameter_overrides: Vec::new(),
             placement: UnitPlacement::default(),
-            deleted: false,
         });
-        let ok = evaluate_instance(&doc, 1).unwrap();
+        let ok = evaluate_instance(&doc, uikey(1)).unwrap();
         assert!(ok.error.is_none() && !ok.meshes.is_empty());
     }
 
@@ -665,14 +665,14 @@ mod tests {
             primary: false,
             source: None,
         });
-        doc.unit_instances[0].placement = crate::model::UnitPlacement {
+        doc.unit_instances[uikey(0)].placement = crate::model::UnitPlacement {
             tx: "gap * 2".to_string(),
             ty: String::new(),
             tz: String::new(),
             axis: [0.0, 0.0, 1.0],
             angle: "90".to_string(),
         };
-        let transform = instance_transform(&doc, 0);
+        let transform = instance_transform(&doc, uikey(0));
         let moved = transform.transform_point3(glam::vec3(1.0, 0.0, 0.0));
         assert!((moved - glam::vec3(14.0, 1.0, 0.0)).length() < 1e-4, "{moved:?}");
     }

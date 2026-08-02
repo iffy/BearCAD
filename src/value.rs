@@ -210,7 +210,7 @@ pub fn document_parameter_bindings(doc: &Document) -> Vec<(String, String)> {
         .values()
         .map(|p| (p.name.clone(), p.expression.clone()))
         .collect();
-    for inst in doc.unit_instances.iter().filter(|i| !i.deleted) {
+    for inst in doc.unit_instances.values() {
         let Some(name) = inst.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
             continue;
         };
@@ -1320,6 +1320,7 @@ impl<'a> AngleParser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
 
     /// A document with one embedded unit (params `width = 10`, `internal = width * 2`)
@@ -1343,12 +1344,11 @@ mod tests {
             source_hash: None,
         });
         for name in ["foo", "my bracket"] {
-            doc.unit_instances.push(crate::model::UnitInstance {
+            doc.unit_instances.insert(crate::model::UnitInstance {
                 unit: 0,
                 name: Some(name.to_string()),
                 parameter_overrides: Vec::new(),
                 placement: crate::model::UnitPlacement::default(),
-                deleted: false,
             });
         }
         doc
@@ -1368,7 +1368,7 @@ mod tests {
             "the unit's own expression resolves against the unit's parameters"
         );
 
-        doc.unit_instances[0].parameter_overrides =
+        doc.unit_instances[uikey(0)].parameter_overrides =
             vec![("width".to_string(), "25".to_string())];
         assert_eq!(eval_length_mm_in_doc("foo.width", &doc), Some(25.0));
         assert_eq!(
@@ -1401,7 +1401,7 @@ mod tests {
             primary: false,
             source: None,
         });
-        doc.unit_instances[0].parameter_overrides =
+        doc.unit_instances[uikey(0)].parameter_overrides =
             vec![("width".to_string(), "x".to_string())];
         assert_eq!(eval_length_mm_in_doc("x", &doc), None, "cycle refused");
     }

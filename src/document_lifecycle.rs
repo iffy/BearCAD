@@ -77,10 +77,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             | crate::model::MovePointRef::OnEdge { body, .. }
             | crate::model::MovePointRef::FaceCenter { body, .. } => body_alive(doc, body),
         },
-        SceneElement::UnitInstance(index) => doc
-            .unit_instances
-            .get(index)
-            .is_some_and(|i| !i.deleted),
+        SceneElement::UnitInstance(index) => doc.unit_instances.contains(index),
         SceneElement::Component(index) => doc
             .components
             .get(index)
@@ -211,8 +208,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         // stays in `Document.units` even when the last instance goes: unit indices stay
         // stable and re-importing the same source stays cheap (it reuses the copy).
         SceneElement::UnitInstance(index) => {
-            if doc.unit_instances.get(index).is_some_and(|i| !i.deleted) {
-                doc.unit_instances[index].deleted = true;
+            if doc.unit_instances.remove(index).is_some() {
                 tombstone_joints_referencing(doc, crate::model::JointRef::UnitInstance(index));
                 changed = true;
             }
@@ -929,6 +925,7 @@ pub fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: us
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line};
 
@@ -1047,21 +1044,20 @@ mod tests {
             source_mtime: None,
             source_hash: None,
         });
-        doc.unit_instances.push(crate::model::UnitInstance {
+        doc.unit_instances.insert(crate::model::UnitInstance {
             unit: 0,
             name: None,
             parameter_overrides: Vec::new(),
             placement: Default::default(),
-            deleted: false,
         });
         let ji = push_test_joint(
             &mut doc,
             vec![
                 crate::model::JointRef::Body(a),
-                crate::model::JointRef::UnitInstance(0),
+                crate::model::JointRef::UnitInstance(uikey(0)),
             ],
         );
-        assert!(tombstone_element(&mut doc, SceneElement::UnitInstance(0)));
+        assert!(tombstone_element(&mut doc, SceneElement::UnitInstance(uikey(0))));
         assert!(!doc.joints.contains(ji), "joint must die with its unit instance");
     }
 

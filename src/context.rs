@@ -1174,7 +1174,7 @@ pub struct NameControl {
 /// where it sits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitInstanceControl {
-    pub instance: usize,
+    pub instance: crate::model::UnitInstanceKey,
     pub unit: usize,
     pub link: crate::model::LinkMode,
     /// The source file's name plus how it's referenced ("library" / "relative").
@@ -1684,14 +1684,14 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
 #[cfg(test)]
 pub fn unit_instance_control_for_tests(
     doc: &Document,
-    instance: usize,
+    instance: crate::model::UnitInstanceKey,
 ) -> Option<UnitInstanceControl> {
     unit_instance_control(doc, instance)
 }
 
 /// Build the selected unit instance's section (#734) from the document.
-fn unit_instance_control(doc: &Document, instance: usize) -> Option<UnitInstanceControl> {
-    let inst = doc.unit_instances.get(instance).filter(|i| !i.deleted)?;
+fn unit_instance_control(doc: &Document, instance: crate::model::UnitInstanceKey) -> Option<UnitInstanceControl> {
+    let inst = doc.unit_instances.get(instance)?;
     let unit = doc.units.get(inst.unit)?;
     let (path, kind) = match &unit.source {
         crate::model::UnitSource::RelativePath(p) => (p, "relative"),

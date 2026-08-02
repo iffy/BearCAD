@@ -104,7 +104,7 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
         // document, placed by its transform — `None` (→ unhealthy sketch) once the
         // instance is deleted or a re-sync removed the face.
         FaceId::UnitFace { instance, face } => {
-            if doc.unit_instances.get(instance).is_none_or(|i| i.deleted) {
+            if doc.unit_instances.get(instance).is_none() {
                 return None;
             }
             let eval = crate::units::evaluate_instance(doc, instance)?;
@@ -765,7 +765,9 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         FaceId::RevolveSide {
             revolution, edge, ..
         } => format!("Revolution {} side face {edge}", revolution.index()),
-        FaceId::UnitFace { instance, .. } => format!("Unit instance {instance} face"),
+        FaceId::UnitFace { instance, .. } => {
+            format!("Unit instance {} face", instance.index())
+        }
     }
 }
 
@@ -1078,10 +1080,7 @@ pub fn pick_sketch_face(
 
     // Flat faces of imported units are sketchable (#725): each live instance's analytic
     // inner faces, placed by its transform.
-    for instance in 0..doc.unit_instances.len() {
-        if doc.unit_instances[instance].deleted {
-            continue;
-        }
+    for instance in doc.unit_instances.keys().collect::<Vec<_>>() {
         let Some(eval) = crate::units::evaluate_instance(doc, instance) else {
             continue;
         };

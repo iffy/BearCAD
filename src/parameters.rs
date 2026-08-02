@@ -406,7 +406,8 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
         ParameterSource::UnitEdgeLength { instance, .. } => Some(format!(
-            "Driven by an edge of unit instance {instance}{}",
+            "Driven by an edge of unit instance {}{}",
+            instance.index(),
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
     }
@@ -543,7 +544,7 @@ pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) 
             unique_parameter_name(doc, &format!("body{}_corner_distance", body_a.index()))
         }
         ParameterSource::UnitEdgeLength { instance, .. } => {
-            unique_parameter_name(doc, &format!("unit{instance}_edge_length"))
+            unique_parameter_name(doc, &format!("unit{}_edge_length", instance.index()))
         }
     }
 }
@@ -837,7 +838,7 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
     for text in &mut doc.sketch_texts {
         text.size_expr = substitute_parameter_name(&text.size_expr, old, new);
     }
-    for instance in &mut doc.unit_instances {
+    for instance in doc.unit_instances.values_mut() {
         let p = &mut instance.placement;
         for expr in [&mut p.tx, &mut p.ty, &mut p.tz, &mut p.angle] {
             *expr = substitute_parameter_name(expr, old, new);
@@ -1305,10 +1306,10 @@ pub struct UnitParamRow {
 /// first; its secondary ones only when `show_secondary`.
 pub fn unit_parameter_rows(
     doc: &Document,
-    instance: usize,
+    instance: crate::model::UnitInstanceKey,
     show_secondary: bool,
 ) -> Vec<UnitParamRow> {
-    let Some(inst) = doc.unit_instances.get(instance).filter(|i| !i.deleted) else {
+    let Some(inst) = doc.unit_instances.get(instance) else {
         return Vec::new();
     };
     let Some(unit) = doc.units.get(inst.unit) else {
@@ -1344,7 +1345,7 @@ fn show_unit_parameters_section(ui: &mut egui::Ui, app: &mut AppState) {
     else {
         return;
     };
-    if app.doc.unit_instances.get(instance).is_none_or(|i| i.deleted) {
+    if app.doc.unit_instances.get(instance).is_none() {
         return;
     }
     let heading = crate::names::scene_element_label(

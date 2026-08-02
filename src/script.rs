@@ -1626,7 +1626,8 @@ impl Instruction {
                     // Analytic unit edge (#724): the face has no flat Lua spelling, so it
                     // rides as its JSON encoding; the parser feeds it back through serde.
                     PS::UnitEdgeLength { instance, face, edge } => format!(
-                        "kind = \"unit_edge_length\", instance = {instance}, face = {:?}, edge = {edge}",
+                        "kind = \"unit_edge_length\", instance = {}, face = {:?}, edge = {edge}",
+                        instance.index(),
                         serde_json::to_string(face).unwrap_or_default()
                     ),
                 };
@@ -2067,9 +2068,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The instance's arena slot, not its ordinal (#1070).
         SceneElement::UnitInstance(i) => ElementScriptTokens {
             kind: "unit_instance",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::Origin => ElementScriptTokens {
@@ -2114,6 +2116,22 @@ fn joint_ordinal(doc: &crate::model::Document, key: crate::model::JointKey) -> O
 /// The joint an ordinal names — the inverse of [`joint_ordinal`].
 fn joint_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::JointKey> {
     doc.joints.keys().nth(ordinal)
+}
+
+/// A unit instance's ordinal among the live ones — what a script writes (#1055).
+fn unit_instance_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::UnitInstanceKey,
+) -> Option<usize> {
+    doc.unit_instances.keys().position(|k| k == key)
+}
+
+/// The unit instance an ordinal names — the inverse of [`unit_instance_ordinal`].
+fn unit_instance_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::UnitInstanceKey> {
+    doc.unit_instances.keys().nth(ordinal)
 }
 
 /// A slice operation's ordinal among the live ones — what a script writes (#1055).
@@ -2593,7 +2611,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::SetUnitParameterOverride { instance, name, expression } => {
             Some(Instruction::SetUnitParameterOverride {
-                instance: *instance,
+                instance: unit_instance_ordinal(doc, *instance)?,
                 name: name.clone(),
                 expression: expression.clone(),
             })
@@ -3009,8 +3027,9 @@ fn joint_member_lua(member: &crate::model::JointRef) -> String {
         crate::model::JointRef::Component(i) => {
             format!("{{ kind = \"component\", index = {i} }}")
         }
+        // The instance's arena slot, not its ordinal — this form has no document (#1070).
         crate::model::JointRef::UnitInstance(i) => {
-            format!("{{ kind = \"unit_instance\", index = {i} }}")
+            format!("{{ kind = \"unit_instance\", index = {} }}", i.index())
         }
     }
 }
@@ -3501,7 +3520,7 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", *extrusion),
         // A unit face isn't fully addressable from the two-argument form either (#725):
         // the inner face rides only in session recordings via its instance.
-        FaceId::UnitFace { instance, .. } => ("unit_face", *instance),
+        FaceId::UnitFace { instance, .. } => ("unit_face", instance.index() as usize),
         // A polygon's full line list isn't expressible as a single index; same limitation
         // as cap/side faces above (#66).
         FaceId::Polygon(lines) => ("polygon", *lines.first().unwrap_or(&0)),
@@ -3720,7 +3739,8 @@ fn face_id_lua_ref(face: &FaceId) -> String {
         ),
         // The inner face rides as its JSON encoding (#725), like unit_edge_length's face.
         FaceId::UnitFace { instance, face } => format!(
-            "{{ kind = \"unit_face\", instance = {instance}, face = {:?} }}",
+            "{{ kind = \"unit_face\", instance = {}, face = {:?} }}",
+            instance.index(),
             serde_json::to_string(face.as_ref()).unwrap_or_default()
         ),
     }
@@ -6059,6 +6079,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetUnitParameterOverride { instance, name, expression } => {
+                let Some(instance) = unit_instance_key(&state.doc, instance) else {
+                    self.last_action_error = Some(format!("Unit instance {instance} not found"));
+                    return StepResult::Continue;
+                };
                 let r = state.apply(Action::SetUnitParameterOverride { instance, name, expression });
                 self.record_action_error(r);
                 StepResult::Continue

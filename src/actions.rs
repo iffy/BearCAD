@@ -1167,7 +1167,7 @@ pub struct CreatingMove {
     /// Tracing images being moved (#217).
     pub image_targets: Vec<crate::model::TracingImageKey>,
     /// Unit instances being moved (#735): the placement itself moves.
-    pub instance_targets: Vec<usize>,
+    pub instance_targets: Vec<crate::model::UnitInstanceKey>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -1785,7 +1785,7 @@ pub enum Action {
     /// Override (or with `None`, clear back to the unit's own value) one parameter of one
     /// unit **instance** (#728). Never touches the source file or other instances.
     SetUnitParameterOverride {
-        instance: usize,
+        instance: crate::model::UnitInstanceKey,
         name: String,
         expression: Option<String>,
     },
@@ -2280,7 +2280,7 @@ pub enum Action {
         #[allow(dead_code)]
         image_targets: Vec<crate::model::TracingImageKey>,
         /// Unit instances whose placement this op moves (#735).
-        instance_targets: Vec<usize>,
+        instance_targets: Vec<crate::model::UnitInstanceKey>,
         tx: String,
         ty: String,
         tz: String,
@@ -2303,7 +2303,7 @@ pub enum Action {
         #[allow(dead_code)]
         image_targets: Vec<crate::model::TracingImageKey>,
         /// Unit instances whose placement this op moves (#735).
-        instance_targets: Vec<usize>,
+        instance_targets: Vec<crate::model::UnitInstanceKey>,
         tx: String,
         ty: String,
         tz: String,
@@ -3050,8 +3050,8 @@ fn identifier_name(base: &str) -> String {
 fn unique_instance_name(doc: &Document, base: &str) -> String {
     let taken = |name: &str| {
         doc.unit_instances
-            .iter()
-            .any(|i| !i.deleted && i.name.as_deref() == Some(name))
+            .values()
+            .any(|i| i.name.as_deref() == Some(name))
     };
     if !taken(base) {
         return base.to_string();
@@ -3796,8 +3796,8 @@ impl AppState {
         let instances = self
             .doc
             .unit_instances
-            .iter()
-            .filter(|i| !i.deleted && i.unit == unit)
+            .values()
+            .filter(|i| i.unit == unit)
             .count();
         Ok(format!(
             "Updated {} for {instances} instance(s)",
@@ -3831,7 +3831,7 @@ impl AppState {
 
     /// Register cut extrusion `ei` against unit `instance` (#726): appended to the
     /// existing live `UnitCut` output body, or a fresh one. Returns the output body.
-    fn cut_into_unit(&mut self, instance: usize, ei: usize) -> crate::model::BodyKey {
+    fn cut_into_unit(&mut self, instance: crate::model::UnitInstanceKey, ei: usize) -> crate::model::BodyKey {
         let existing = self.doc.bodies.iter().find_map(|(k, b)| {
             matches!(b.source,
                 crate::model::BodySource::UnitCut { instance: i, .. } if i == instance)
@@ -4058,12 +4058,11 @@ impl AppState {
             .unwrap_or_else(|| "unit".to_string());
         let instance_name =
             unique_instance_name(&self.doc, &identifier_name(&name.unwrap_or(stem)));
-        self.doc.unit_instances.push(UnitInstance {
+        let placed = self.doc.unit_instances.insert(UnitInstance {
             unit,
             name: Some(instance_name.clone()),
             parameter_overrides: Vec::new(),
             placement: UnitPlacement::default(),
-            deleted: false,
         });
         // Cycle/depth refusal (#719) against this document's own path; roll the trial
         // insertion back so a refused import leaves nothing behind.
@@ -4071,7 +4070,7 @@ impl AppState {
             &self.doc,
             self.path.as_deref().map(std::path::Path::new),
         ) {
-            self.doc.unit_instances.pop();
+            self.doc.unit_instances.remove(placed);
             if existing.is_none() {
                 self.doc.units.pop();
             }
@@ -5629,8 +5628,8 @@ fn validate_joint_inputs(
                 }
             }
             crate::model::JointRef::UnitInstance(ui) => {
-                if doc.unit_instances.get(ui).filter(|i| !i.deleted).is_none() {
-                    return Err(format!("Unit instance {ui} not found"));
+                if doc.unit_instances.get(ui).is_none() {
+                    return Err(format!("Unit instance {} not found", ui.index()));
                 }
             }
         }
@@ -5950,7 +5949,7 @@ fn element_label(element: SceneElement) -> String {
             format!("{element:?} on drawing {drawing}")
         }
         SceneElement::Component(i) => format!("Component {i}"),
-        SceneElement::UnitInstance(i) => format!("Unit instance {i}"),
+        SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
@@ -8574,12 +8573,11 @@ impl AppState {
                 };
                 let instance_name =
                     unique_instance_name(&self.doc, &identifier_name(&name.unwrap_or(stem)));
-                self.doc.unit_instances.push(crate::model::UnitInstance {
+                self.doc.unit_instances.insert(crate::model::UnitInstance {
                     unit,
                     name: Some(instance_name.clone()),
                     parameter_overrides: Vec::new(),
                     placement: crate::model::UnitPlacement::default(),
-                    deleted: false,
                 });
                 self.refresh_document_health();
                 self.status = format!("Added instance {instance_name}");
@@ -8600,9 +8598,8 @@ impl AppState {
                     .doc
                     .unit_instances
                     .get(instance)
-                    .filter(|i| !i.deleted)
                 else {
-                    self.status = format!("Unit instance {instance} not found");
+                    self.status = format!("Unit instance {} not found", instance.index());
                     return ActionResult::Err(self.status.clone());
                 };
                 let unit_param_exists = self
@@ -15963,6 +15960,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::sketch_op_key_for_slot as skop;
     use crate::model::edge_treatment_op_key_for_slot as etkey;
@@ -17373,7 +17371,7 @@ mod tests {
         assert!(state.doc.units[0].source_hash.is_some());
         assert_eq!(state.doc.units[0].document.parameters.values().next().unwrap().name, "width");
         assert_eq!(
-            state.doc.unit_instances[0].name.as_deref(),
+            state.doc.unit_instances[uikey(0)].name.as_deref(),
             Some("bearcad_unit_import_a")
         );
 
@@ -17386,7 +17384,7 @@ mod tests {
         assert_eq!(state.doc.units.len(), 1, "same file re-imported shares the embedded copy");
         assert_eq!(state.doc.unit_instances.len(), 2);
         assert_eq!(
-            state.doc.unit_instances[1].name.as_deref(),
+            state.doc.unit_instances[uikey(1)].name.as_deref(),
             Some("bearcad_unit_import_a2"),
             "second instance name is uniquified"
         );
@@ -17415,7 +17413,7 @@ mod tests {
             crate::model::UnitSource::Library("hardware/bolt.bearcad".to_string())
         );
         assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Static);
-        assert_eq!(state.doc.unit_instances[0].name.as_deref(), Some("bolt"));
+        assert_eq!(state.doc.unit_instances[uikey(0)].name.as_deref(), Some("bolt"));
 
         let _ = std::fs::remove_dir_all(&lib_dir);
     }
@@ -17557,7 +17555,10 @@ mod tests {
             .doc
             .bodies
             .iter()
-            .find_map(|(k, b)| matches!(b.source, crate::model::BodySource::UnitInstance(0)).then_some(k))
+            .find_map(|(k, b)| {
+                matches!(b.source, crate::model::BodySource::UnitInstance(i) if i == uikey(0))
+                    .then_some(k)
+            })
             .expect("the instance materialized as a body");
         (state, body)
     }
@@ -17610,7 +17611,7 @@ mod tests {
         assert!((value(&state.doc, pi) - 10.0).abs() < 1e-2);
 
         // Overriding the unit's width re-resolves the same analytic edge at its new length.
-        state.doc.unit_instances[0].parameter_overrides =
+        state.doc.unit_instances[uikey(0)].parameter_overrides =
             vec![("width".to_string(), "25".to_string())];
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         assert!(
@@ -17655,12 +17656,12 @@ mod tests {
     /// The top cap of the solid unit's box as a sketchable unit face (#725).
     fn unit_top_face(state: &AppState) -> crate::model::FaceId {
         let inner_face = crate::units::inner_face_ids(
-            &crate::units::evaluate_instance(&state.doc, 0).unwrap().document,
+            &crate::units::evaluate_instance(&state.doc, uikey(0)).unwrap().document,
         )
         .into_iter()
         .find(|f| matches!(f, crate::model::FaceId::ExtrudeCap { top: true, .. }))
         .expect("the unit box has a top cap");
-        crate::model::FaceId::UnitFace { instance: 0, face: Box::new(inner_face) }
+        crate::model::FaceId::UnitFace { instance: uikey(0), face: Box::new(inner_face) }
     }
 
     /// #725: sketching on a unit's face projects its outline in as associative
@@ -17701,7 +17702,7 @@ mod tests {
         // The cap sits at the parametric height; overriding `width` moves it and the
         // sketch's frame + projections follow. The cap outline stays 10x10 (only the
         // height changes), so verify by the sketch frame's origin height instead.
-        state.doc.unit_instances[0].parameter_overrides =
+        state.doc.unit_instances[uikey(0)].parameter_overrides =
             vec![("width".to_string(), "25".to_string())];
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         let frame = crate::face::sketch_frame(&state.doc, face).expect("frame still resolves");
@@ -17728,7 +17729,7 @@ mod tests {
         state.apply(Action::ExitSketch);
 
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::UnitInstance(0),
+            element: SceneElement::UnitInstance(uikey(0)),
             additive: false,
         });
         state.apply(Action::DeleteSelection);
@@ -17780,7 +17781,7 @@ mod tests {
             .bodies
             .iter()
             .find_map(|(k, b)| {
-                matches!(b.source, crate::model::BodySource::UnitCut { instance: 0, .. })
+                matches!(b.source, crate::model::BodySource::UnitCut { instance, .. } if instance == uikey(0))
                     .then_some(k)
             })
             .expect("the cut lands on the document's own UnitCut body");
@@ -17886,37 +17887,37 @@ mod tests {
         });
 
         let r = state.apply(Action::SetUnitParameterOverride {
-            instance: 0,
+            instance: uikey(0),
             name: "width".to_string(),
             expression: Some("25".to_string()),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
-        let height = |doc: &crate::model::Document, instance: usize| {
+        let height = |doc: &crate::model::Document, instance: crate::model::UnitInstanceKey| {
             let eval = crate::units::evaluate_instance(doc, instance).unwrap();
             let (min, max) = eval.meshes[0].bounds().unwrap();
             max.z - min.z
         };
-        assert!((height(&state.doc, 0) - 25.0).abs() < 1e-2, "instance 0 follows its override");
-        assert!((height(&state.doc, 1) - 10.0).abs() < 1e-2, "instance 1 is untouched");
+        assert!((height(&state.doc, uikey(0)) - 25.0).abs() < 1e-2, "instance 0 follows its override");
+        assert!((height(&state.doc, uikey(1)) - 10.0).abs() < 1e-2, "instance 1 is untouched");
 
         // The pane's rows: overridden value shows, secondary hidden until asked.
-        let rows = crate::parameters::unit_parameter_rows(&state.doc, 0, false);
+        let rows = crate::parameters::unit_parameter_rows(&state.doc, uikey(0), false);
         assert_eq!(rows.len(), 1, "only the primary knob shows by default");
         assert_eq!(rows[0].name, "width");
         assert!(rows[0].overridden);
         assert_eq!(rows[0].expression, "25");
-        let all_rows = crate::parameters::unit_parameter_rows(&state.doc, 0, true);
+        let all_rows = crate::parameters::unit_parameter_rows(&state.doc, uikey(0), true);
         assert_eq!(all_rows.len(), 2, "internals appear when asked");
         assert!(all_rows.iter().any(|r| r.name == "internal" && !r.primary));
 
         // Clearing the override restores the unit's own value.
         state.apply(Action::SetUnitParameterOverride {
-            instance: 0,
+            instance: uikey(0),
             name: "width".to_string(),
             expression: None,
         });
-        assert!((height(&state.doc, 0) - 10.0).abs() < 1e-2, "back to the unit's own value");
-        assert!(state.doc.unit_instances[0].parameter_overrides.is_empty());
+        assert!((height(&state.doc, uikey(0)) - 10.0).abs() < 1e-2, "back to the unit's own value");
+        assert!(state.doc.unit_instances[uikey(0)].parameter_overrides.is_empty());
     }
 
     /// #731: renaming an instance rewrites every reference to it — parameter
@@ -17937,7 +17938,7 @@ mod tests {
             });
         }
         let _ = std::fs::remove_file(&unit_path);
-        let first = state.doc.unit_instances[0].name.clone().unwrap();
+        let first = state.doc.unit_instances[uikey(0)].name.clone().unwrap();
         assert_eq!(first, "bearcad_unit_rename_a");
 
         // References of several kinds.
@@ -17956,12 +17957,12 @@ mod tests {
             deleted: true,
             edge_treatments: Vec::new(),
         });
-        state.doc.unit_instances[1].parameter_overrides =
+        state.doc.unit_instances[uikey(1)].parameter_overrides =
             vec![("width".to_string(), format!("{first}.width / 2"))];
-        state.doc.unit_instances[1].placement.tx = format!("{first}.width");
+        state.doc.unit_instances[uikey(1)].placement.tx = format!("{first}.width");
 
         let r = state.apply(Action::CommitElementName {
-            element: SceneElement::UnitInstance(0),
+            element: SceneElement::UnitInstance(uikey(0)),
             name: "left bracket".to_string(),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
@@ -17976,10 +17977,10 @@ mod tests {
             "tool fields rewrite too"
         );
         assert_eq!(
-            state.doc.unit_instances[1].parameter_overrides[0].1,
+            state.doc.unit_instances[uikey(1)].parameter_overrides[0].1,
             "`left bracket`.width / 2"
         );
-        assert_eq!(state.doc.unit_instances[1].placement.tx, "`left bracket`.width");
+        assert_eq!(state.doc.unit_instances[uikey(1)].placement.tx, "`left bracket`.width");
         assert_eq!(
             crate::value::eval_length_mm_in_doc("`left bracket`.width", &state.doc),
             Some(10.0),
@@ -17988,7 +17989,7 @@ mod tests {
 
         // A collision is refused.
         let r = state.apply(Action::CommitElementName {
-            element: SceneElement::UnitInstance(1),
+            element: SceneElement::UnitInstance(uikey(1)),
             name: "left bracket".to_string(),
         });
         assert!(matches!(r, ActionResult::Err(_)), "colliding rename refused");
@@ -17997,7 +17998,7 @@ mod tests {
         // One undo restores both the name and the references.
         state.apply(Action::UndoLast);
         assert_eq!(
-            state.doc.unit_instances[0].name.as_deref(),
+            state.doc.unit_instances[uikey(0)].name.as_deref(),
             Some(first.as_str()),
             "undo restores the name"
         );
@@ -18088,16 +18089,16 @@ mod tests {
             });
         }
         assert_eq!(state.doc.units.len(), 1);
-        let height = |doc: &crate::model::Document, instance: usize| {
+        let height = |doc: &crate::model::Document, instance: crate::model::UnitInstanceKey| {
             let eval = crate::units::evaluate_instance(doc, instance).unwrap();
             let (min, max) = eval.meshes[0].bounds().unwrap();
             max.z - min.z
         };
-        assert!((height(&state.doc, 0) - 10.0).abs() < 1e-2);
+        assert!((height(&state.doc, uikey(0)) - 10.0).abs() < 1e-2);
 
         // B references the unit's parameter; the source then changes on disk (taller box,
         // `width` renamed to `w` — the rename can't be followed, it just goes missing).
-        let first = state.doc.unit_instances[0].name.clone().unwrap();
+        let first = state.doc.unit_instances[uikey(0)].name.clone().unwrap();
         state.apply(Action::AddParameter {
             name: "x".to_string(),
             expression: format!("{first}.width"),
@@ -18114,8 +18115,8 @@ mod tests {
         );
         // The dynamic auto-sync path (open / poll) picks it up without being told.
         assert_eq!(state.sync_stale_dynamic_units(), 1);
-        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "instance 0 updated");
-        assert!((height(&state.doc, 1) - 20.0).abs() < 1e-2, "…and instance 1, at once");
+        assert!((height(&state.doc, uikey(0)) - 20.0).abs() < 1e-2, "instance 0 updated");
+        assert!((height(&state.doc, uikey(1)) - 20.0).abs() < 1e-2, "…and instance 1, at once");
 
         // The orphaned reference reports through health rather than blocking the sync.
         state.refresh_document_health();
@@ -18138,20 +18139,20 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1100));
         crate::storage::save(&unit_path.to_string_lossy(), &v3).unwrap();
         assert_eq!(state.sync_stale_dynamic_units(), 0, "static units never auto-sync");
-        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "unchanged until told");
+        assert!((height(&state.doc, uikey(0)) - 20.0).abs() < 1e-2, "unchanged until told");
         let r = state.apply(Action::SyncUnit { unit: 0 });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
-        assert!((height(&state.doc, 0) - 30.0).abs() < 1e-2, "explicit update applies");
+        assert!((height(&state.doc, uikey(0)) - 30.0).abs() < 1e-2, "explicit update applies");
 
         // Undo puts the previous embedded copy back.
         state.apply(Action::UndoLast);
-        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "undo restores the copy");
+        assert!((height(&state.doc, uikey(0)) - 20.0).abs() < 1e-2, "undo restores the copy");
 
         // A missing source refuses the sync and leaves everything usable.
         std::fs::remove_file(&unit_path).unwrap();
         let r = state.apply(Action::SyncUnit { unit: 0 });
         assert!(matches!(r, ActionResult::Err(_)));
-        assert!((height(&state.doc, 0) - 20.0).abs() < 1e-2, "the embedded copy still builds");
+        assert!((height(&state.doc, uikey(0)) - 20.0).abs() < 1e-2, "the embedded copy still builds");
         assert!(
             !crate::units::unit_is_stale(&state.doc.units[0], state.path.as_deref(), None),
             "a missing source is not 'stale' — the embedded copy is the truth"
@@ -18239,10 +18240,10 @@ mod tests {
         assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Static);
 
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::UnitInstance(0),
+            element: SceneElement::UnitInstance(uikey(0)),
             additive: false,
         });
-        let control = crate::context::unit_instance_control_for_tests(&state.doc, 0)
+        let control = crate::context::unit_instance_control_for_tests(&state.doc, uikey(0))
             .expect("the section builds for a live instance");
         assert_eq!(control.link, crate::model::LinkMode::Static);
         assert!(control.source.contains("bearcad_unit_pane_a.bearcad"));
@@ -18273,7 +18274,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
-            instance_targets: vec![0],
+            instance_targets: vec![uikey(0)],
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -18327,14 +18328,14 @@ mod tests {
             name: Some("a".to_string()),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", b.status);
-        let eval = crate::units::evaluate_instance(&b.doc, 0).expect("nested unit evaluates");
+        let eval = crate::units::evaluate_instance(&b.doc, uikey(0)).expect("nested unit evaluates");
         assert!(
             eval.meshes.iter().any(|m| !m.is_empty()),
             "C's geometry builds through A: {:?}",
             eval.error
         );
         // A's contents show the nested unit as one opaque row.
-        let rows = crate::hierarchy::unit_child_rows(&b.doc, 0);
+        let rows = crate::hierarchy::unit_child_rows(&b.doc, uikey(0));
         assert!(
             rows.iter().any(|(_, label)| label == "c"),
             "the nested unit reads as one row: {rows:?}"
@@ -18360,17 +18361,17 @@ mod tests {
             name: None,
         });
 
-        let element = crate::hierarchy::SceneElement::UnitInstance(0);
+        let element = crate::hierarchy::SceneElement::UnitInstance(uikey(0));
         let r = state.apply(Action::CommitElementName {
             element: element.clone(),
             name: "left_bracket".to_string(),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
-        assert_eq!(state.doc.unit_instances[0].name.as_deref(), Some("left_bracket"));
+        assert_eq!(state.doc.unit_instances[uikey(0)].name.as_deref(), Some("left_bracket"));
 
         state.apply(Action::ClickSceneElement { element, additive: false });
         state.apply(Action::DeleteSelection);
-        assert!(state.doc.unit_instances[0].deleted, "the instance tombstones");
+        assert!(state.doc.unit_instances.is_empty(), "the instance goes away");
         assert_eq!(state.doc.units.len(), 1, "the embedded copy stays");
 
         let _ = std::fs::remove_file(&unit_path);

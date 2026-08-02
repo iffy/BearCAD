@@ -50,7 +50,7 @@ pub enum FaceId {
     /// embedded document and placed by its transform, so a sketch hosted here follows the
     /// unit through override and placement changes.
     UnitFace {
-        instance: usize,
+        instance: UnitInstanceKey,
         face: Box<FaceId>,
     },
 }
@@ -147,7 +147,7 @@ pub enum ParameterSource {
     /// parameter overrides change — the boundary loop is recomputed from the rebuilt
     /// embedded document, so the dimension follows the unit.
     UnitEdgeLength {
-        instance: usize,
+        instance: UnitInstanceKey,
         face: FaceId,
         edge: usize,
     },
@@ -254,7 +254,7 @@ pub enum ProjectionSource {
     /// [`Self::BodyEdge`] key, this re-resolves against the instance's rebuilt embedded
     /// document, so the projection follows the unit's parameter overrides.
     UnitEdge {
-        instance: usize,
+        instance: UnitInstanceKey,
         face: FaceId,
         edge: usize,
     },
@@ -1327,12 +1327,12 @@ pub enum BodySource {
     /// referenceable exactly like the document's own geometry — Move's point pickers,
     /// body-edge dimensions (#647), face pickers, and export all just see a body. It has
     /// no Elements-pane row of its own: the instance row (#723) stands for it.
-    UnitInstance(usize),
+    UnitInstance(UnitInstanceKey),
     /// A unit instance's geometry with extrusions **cut** out of it in the importing
     /// document (#726): the read-only unit is the input; this body is the importing
     /// document's own result. The unit's materialized body shadows while consumed, the
     /// way a boolean input does — but is never mutated.
-    UnitCut { instance: usize, cut: Vec<usize> },
+    UnitCut { instance: UnitInstanceKey, cut: Vec<usize> },
 }
 
 impl BodySource {
@@ -1702,6 +1702,12 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
 /// The same for a joint (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn joint_key_for_slot(n: usize) -> JointKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a unit instance (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn unit_instance_key_for_slot(n: usize) -> UnitInstanceKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2218,7 +2224,7 @@ pub struct MoveOperation {
     /// Unit instances moved by this op (#735): like a plane, the instance itself moves —
     /// its placement transform composes with this op at evaluation, no output bodies.
     #[serde(default)]
-    pub instance_targets: Vec<usize>,
+    pub instance_targets: Vec<UnitInstanceKey>,
     /// Translation components (mm expressions; empty = 0).
     #[serde(default)]
     pub tx: String,
@@ -2243,7 +2249,7 @@ pub type MoveOpKey = crate::arena::Key<MoveOperation>;
 pub enum JointRef {
     Body(BodyKey),
     Component(usize),
-    UnitInstance(usize),
+    UnitInstance(UnitInstanceKey),
 }
 
 /// How a joint lets its driven side move relative to its base (#891).
@@ -3865,9 +3871,10 @@ pub struct UnitInstance {
     /// Where the instance sits in this document's world space.
     #[serde(default)]
     pub placement: UnitPlacement,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// A unit instance's identity (#1055): stable across deletions of other instances.
+pub type UnitInstanceKey = crate::arena::Key<UnitInstance>;
 
 /// A [`UnitInstance`]'s placement (#719): a rotation about an axis through the unit's
 /// origin, then a translation. Identity by default. Every field is `#[serde(default)]`,
@@ -4105,7 +4112,7 @@ pub struct Document {
     /// Placements of imported units (#719), each with its own name, parameter overrides,
     /// and placement transform.
     #[serde(default)]
-    pub unit_instances: Vec<UnitInstance>,
+    pub unit_instances: crate::arena::Arena<UnitInstance>,
     /// Geometry generation for mesh caches (#1027). Bumped when geometry-affecting state
     /// changes. Not serialized — loads start at 0, first mutation bumps to 1. An integer
     /// compare is the cache key instead of serializing the whole document to JSON.
@@ -4295,7 +4302,7 @@ impl Default for Document {
             components: Vec::new(),
             component_members: Vec::new(),
             units: Vec::new(),
-            unit_instances: Vec::new(),
+            unit_instances: crate::arena::Arena::new(),
             mesh_rev: 0,
         }
     }
