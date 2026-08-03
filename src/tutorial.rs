@@ -963,8 +963,8 @@ fn hole_circles(app: &AppState) -> Vec<&crate::model::Circle> {
     };
     app.doc
         .circles
-        .iter()
-        .filter(|c| !c.deleted && !c.construction && c.sketch != profile)
+        .values()
+        .filter(|c| !c.construction && c.sketch != profile)
         .collect()
 }
 
@@ -1198,11 +1198,11 @@ fn bend_thick_value_hint(app: &AppState) -> Option<String> {
 }
 
 fn hole_circles_drawn(app: &AppState) -> bool {
-    app.doc.circles.iter().filter(|c| !c.deleted && !c.construction).count() >= 2
+    app.doc.circles.values().filter(|c| !c.construction).count() >= 2
 }
 
 fn first_hole_drawn(app: &AppState) -> bool {
-    app.doc.circles.iter().filter(|c| !c.deleted && !c.construction).count() >= 1
+    app.doc.circles.values().filter(|c| !c.construction).count() >= 1
 }
 
 // --- The screw-hole stage (#795/#796/#798/#799): sketch on the flange's inside face, two
@@ -1446,8 +1446,7 @@ fn hole_dimension_marks(app: &AppState) -> Vec<GuideMark> {
         .doc
         .circles
         .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .filter(|(_, c)| !c.construction && c.sketch == session.sketch)
         .nth(nth)
     else {
         return marks;
@@ -1489,8 +1488,8 @@ fn hole_dimension_orb(app: &AppState) -> Option<StepTarget> {
     let circle = app
         .doc
         .circles
-        .iter()
-        .filter(|c| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .values()
+        .filter(|c| !c.construction && c.sketch == session.sketch)
         .nth(placed.min(1))?;
     Some(StepTarget::World(crate::face::local_to_world(
         &frame, circle.cx, circle.cy,
@@ -1743,12 +1742,11 @@ fn assist_cut_holes(app: &mut AppState) {
     // The holes' own sketch — not whichever sketch happens to be open, which may be an empty
     // one the user opened on the same face (#823).
     let Some(profile) = profile_sketch(app) else { return };
-    let circles: Vec<usize> = app
+    let circles: Vec<crate::model::CircleKey> = app
         .doc
         .circles
         .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch != profile)
+        .filter(|(_, c)| !c.construction && c.sketch != profile)
         .map(|(i, _)| i)
         .collect();
     if circles.is_empty() {
@@ -1810,12 +1808,11 @@ fn assist_position_holes(app: &mut AppState) {
     };
     let Some(session) = app.sketch_session else { return };
     let Some(face) = app.doc.sketch_face(session.sketch) else { return };
-    let circles: Vec<usize> = app
+    let circles: Vec<crate::model::CircleKey> = app
         .doc
         .circles
         .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.deleted && !c.construction && c.sketch == session.sketch)
+        .filter(|(_, c)| !c.construction && c.sketch == session.sketch)
         .map(|(i, _)| i)
         .collect();
     // The sketched-on face's own boundary edges: give hole 0 its distance from edge 0 and

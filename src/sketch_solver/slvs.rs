@@ -260,7 +260,7 @@ pub struct SlvsOutcome {
     /// New `(point, (u, v))` positions for every free sketch point.
     moved_points: Vec<(ConstraintPoint, (f32, f32))>,
     /// New radii per circle index.
-    circle_radii: Vec<(usize, f32)>,
+    circle_radii: Vec<(crate::model::CircleKey, f32)>,
 }
 
 impl SlvsOutcome {
@@ -295,7 +295,7 @@ struct Builder<'a> {
     fixed_points: HashMap<ConstraintPoint, u32>,
     origin_point: Option<u32>,
     lines: HashMap<ConstraintLine, u32>,
-    circles: HashMap<usize, (u32, u32)>, // index -> (entity, radius param)
+    circles: HashMap<crate::model::CircleKey, (u32, u32)>, // key -> (entity, radius param)
 }
 
 impl<'a> Builder<'a> {
@@ -470,7 +470,7 @@ impl<'a> Builder<'a> {
         Ok(e)
     }
 
-    fn ensure_circle(&mut self, index: usize) -> Result<u32, String> {
+    fn ensure_circle(&mut self, index: crate::model::CircleKey) -> Result<u32, String> {
         if let Some((e, _)) = self.circles.get(&index) {
             return Ok(*e);
         }
@@ -478,8 +478,7 @@ impl<'a> Builder<'a> {
             .doc
             .circles
             .get(index)
-            .filter(|c| !c.deleted)
-            .ok_or_else(|| format!("Circle {index} not found"))?;
+            .ok_or_else(|| format!("Circle {} not found", index.index()))?;
         let center = self.ensure_point(&ConstraintPoint::CircleCenter(index))?;
         // The radius is only a solver unknown when a diameter dimension drives it;
         // otherwise it is whatever the user set, and constraints like point-on-circle
@@ -944,8 +943,8 @@ pub fn solve_sketch(
             b.ensure_point(&ConstraintPoint::LineEndpoint { line: index, end })?;
         }
     }
-    for (index, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted || circle.sketch != sketch {
+    for (index, circle) in doc.circles.iter() {
+        if circle.sketch != sketch {
             continue;
         }
         b.ensure_circle(index)?;
@@ -1020,7 +1019,8 @@ pub fn solve_sketch(
             hold_point(b, &p, dragged);
         }
     };
-    let mut held_centers: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut held_centers: std::collections::HashSet<crate::model::CircleKey> =
+        std::collections::HashSet::new();
     for constraint in doc.constraints.values() {
         if constraint.sketch != sketch {
             continue;
@@ -1115,7 +1115,7 @@ pub fn solve_sketch(
             continue;
         }
         if let Some((e, _, _)) = b.points.get(&center).copied() {
-            let h = SECONDARY_HANDLE_BASE * 2 + c as u32 + 1;
+            let h = SECONDARY_HANDLE_BASE * 2 + c.index() + 1;
             b.constraints.push(SlvsConstraint {
                 h,
                 group: GROUP_SOLVE,

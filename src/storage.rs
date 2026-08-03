@@ -232,7 +232,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     let mut row_id = 0i64;
     save_arena_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;
     save_indexed_nodes(&tx, &mut row_id, "line", &doc.lines)?;
-    save_indexed_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
+    save_arena_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
     save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
     save_arena_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_arena_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
@@ -456,7 +456,7 @@ fn load_legacy_document_nodes(
     crate::arena::Arena<Parameter>,
     crate::arena::Arena<Sketch>,
     Vec<Line>,
-    Vec<Circle>,
+    crate::arena::Arena<Circle>,
     crate::arena::Arena<Constraint>,
     Vec<ConstructionPlane>,
     Vec<ShapeKind>,
@@ -476,7 +476,7 @@ fn load_legacy_document_nodes(
     let mut parameters = crate::arena::Arena::new();
     let mut sketches = crate::arena::Arena::new();
     let mut lines = Vec::new();
-    let mut circles = Vec::new();
+    let mut circles = crate::arena::Arena::new();
     let mut constraints = crate::arena::Arena::new();
     let mut construction_planes = Vec::new();
     let mut shape_order = Vec::new();
@@ -495,7 +495,7 @@ fn load_legacy_document_nodes(
             }
             "circle" => {
                 let circle: Circle = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                circles.push(circle);
+                circles.insert(circle);
                 shape_order.push(ShapeKind::Circle);
             }
             "parameter" => {
@@ -554,7 +554,7 @@ pub fn open(path: &str) -> Result<Document> {
         let parameters = load_arena_entities(&conn, "parameter")?;
         let sketches = load_arena_entities(&conn, "sketch")?;
         let lines = load_indexed_entities(&conn, "line")?;
-        let circles = load_indexed_entities(&conn, "circle")?;
+        let circles = load_arena_entities(&conn, "circle")?;
         let constraints = load_arena_entities(&conn, "constraint")?;
         let dag_planes = load_indexed_entities(&conn, "construction_plane")?;
         (
@@ -655,6 +655,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -749,7 +750,7 @@ mod tests {
         for plane in &doc.construction_planes {
             anchors.push(plane.origin);
         }
-        for circle in &doc.circles {
+        for circle in doc.circles.values() {
             anchors.push(crate::face::circle_world_center(doc, circle).unwrap());
         }
         for line in &doc.lines {
@@ -915,13 +916,74 @@ mod tests {
         }
     }
 
+    /// #1055: circles keep their keys across a save, and so does everything that names one
+    /// — a diameter constraint, an extruded profile face, a sketch hosted on the circle.
+    #[test]
+    fn circle_keys_survive_a_save_and_reload() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let circle = |r: f32| crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, r, 0.0);
+        let doomed = doc.circles.insert(circle(1.0));
+        let kept = doc.circles.insert(circle(7.0));
+        assert!(doc.circles.remove(doomed).is_some());
+        doc.constraints.insert(crate::model::Constraint {
+            sketch,
+            kind: crate::model::ConstraintKind::Distance {
+                target: crate::model::DistanceTarget::CircleDiameter(kept),
+            },
+            expression: "14".to_string(),
+            dim_offset: None,
+            name: None,
+        });
+        let extrusion = doc.extrusions.insert(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Circle(kept)],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            edge_treatments: Vec::new(),
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_circle_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.circles.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.circles.get(kept).map(|c| c.r),
+                Some(7.0),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert!(
+                loaded.constraints.values().any(|c| matches!(
+                    &c.kind,
+                    crate::model::ConstraintKind::Distance {
+                        target: crate::model::DistanceTarget::CircleDiameter(i)
+                    } if *i == kept
+                )),
+                "{suffix}: the diameter dimension still names it"
+            );
+            assert_eq!(
+                loaded.extrusions.get(extrusion).map(|e| e.faces.clone()),
+                Some(vec![crate::model::ExtrudeFace::Circle(kept)]),
+                "{suffix}: the extruded profile still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: sketches keep their keys across a save, and so does everything that names one
     /// — a line, a circle, a constraint, an extrusion.
     #[test]
     fn sketch_keys_survive_a_save_and_reload() {
         let mut doc = Document::default();
         let doomed = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
-        let kept = doc.add_sketch(crate::model::FaceId::Circle(3));
+        let kept = doc.add_sketch(crate::model::FaceId::Circle(rkey(3)));
         assert!(doc.sketches.remove(doomed).is_some());
         doc.lines
             .push(crate::model::Line::from_local_endpoints(kept, 0.0, 0.0, 10.0, 0.0));
@@ -946,7 +1008,7 @@ mod tests {
             assert_eq!(loaded.sketches.len(), 1, "{suffix}");
             assert_eq!(
                 loaded.sketches.get(kept).map(|s| s.face.clone()),
-                Some(crate::model::FaceId::Circle(3)),
+                Some(crate::model::FaceId::Circle(rkey(3))),
                 "{suffix}: the survivor did not shift into the hole"
             );
             assert_eq!(loaded.lines[0].sketch, kept, "{suffix}: its line still names it");
@@ -1048,7 +1110,7 @@ mod tests {
                     },
                 ),
                 b: crate::model::ConstraintEntity::Point(
-                    crate::model::ConstraintPoint::CircleCenter(0),
+                    crate::model::ConstraintPoint::CircleCenter(rkey(0)),
                 ),
             },
             expression: String::new(),
@@ -1091,7 +1153,7 @@ mod tests {
     fn extrusion_keys_survive_a_save_and_reload() {
         let extrusion = |name: &str| crate::model::Extrusion {
             sketch: skey(0),
-            faces: vec![crate::model::ExtrudeFace::Circle(0)],
+            faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
             distance: 5.0,
             target: None,
             expression: String::new(),
@@ -1113,7 +1175,7 @@ mod tests {
         doc.sketches.insert(crate::model::Sketch {
             face: crate::model::FaceId::ExtrudeCap {
                 extrusion: kept,
-                profile: crate::model::ExtrudeFace::Circle(0),
+                profile: crate::model::ExtrudeFace::Circle(rkey(0)),
                 top: true,
             },
             name: None,
@@ -1143,7 +1205,7 @@ mod tests {
                 loaded.sketches[skey(0)].face,
                 crate::model::FaceId::ExtrudeCap {
                     extrusion: kept,
-                    profile: crate::model::ExtrudeFace::Circle(0),
+                    profile: crate::model::ExtrudeFace::Circle(rkey(0)),
                     top: true,
                 },
                 "{suffix}: the sketch still sits on its host cap"
@@ -1532,7 +1594,7 @@ mod tests {
         });
         doc.add_sketch(crate::model::FaceId::RevolveCap {
             revolution: kept,
-            profile: crate::model::ExtrudeFace::Circle(0),
+            profile: crate::model::ExtrudeFace::Circle(rkey(0)),
             end: true,
         });
 
@@ -1903,7 +1965,7 @@ mod tests {
 
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(Circle::from_local_center_radius(s0, 12.0, -8.0, 15.0, 0.4));
+            .insert(Circle::from_local_center_radius(s0, 12.0, -8.0, 15.0, 0.4));
         doc.shape_order.push(ShapeKind::Circle);
 
         let s1 = doc.add_sketch(FaceId::ConstructionPlane(1));
@@ -2204,7 +2266,7 @@ mod tests {
         circle.diameter_dim_offset = Some(18.0);
         circle.diameter_dim_angle = 1.2;
         circle.construction = true;
-        doc.circles.push(circle);
+        doc.circles.insert(circle);
         doc.shape_order.push(ShapeKind::Circle);
 
         save(&path, &doc).unwrap();

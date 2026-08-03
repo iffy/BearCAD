@@ -241,10 +241,7 @@ pub fn all_sketch_vertices(doc: &Document) -> Vec<ConstraintPoint> {
             end: LineEnd::End,
         });
     }
-    for (index, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted {
-            continue;
-        }
+    for (index, _circle) in doc.circles.iter() {
         points.push(ConstraintPoint::CircleCenter(index));
     }
     for (index, _text) in doc.sketch_texts.iter() {
@@ -271,8 +268,8 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
             end: LineEnd::End,
         });
     }
-    for (index, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted || circle.sketch != sketch {
+    for (index, circle) in doc.circles.iter() {
+        if circle.sketch != sketch {
             continue;
         }
         points.push(ConstraintPoint::CircleCenter(index));
@@ -482,6 +479,7 @@ pub fn find_normal_at_midpoint_snap(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::{Document, FaceId, Line};
@@ -645,7 +643,7 @@ mod tests {
         // Snapped onto the line (v=0) at the queried u.
         assert!((snap.uv.0 - 15.0).abs() < EPS && snap.uv.1.abs() < EPS);
         // Leaving the point there pins it on the (infinite) line.
-        let point = ConstraintPoint::CircleCenter(0);
+        let point = ConstraintPoint::CircleCenter(rkey(0));
         assert!(matches!(
             snap_constraint_kind(point, snap.target),
             ConstraintKind::Coincident {

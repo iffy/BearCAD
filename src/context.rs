@@ -3189,7 +3189,7 @@ pub fn construction_targets_from_selection(selection: &SceneSelection) -> Vec<Sc
 fn scene_element_sort_key(element: SceneElement) -> (u8, usize, u8) {
     match element {
         SceneElement::Line(i) => (0, i, 0),
-        SceneElement::Circle(i) => (1, i, 0),
+        SceneElement::Circle(i) => (1, i.index() as usize, 0),
         _ => (2, 0, 0),
     }
 }
@@ -3258,7 +3258,7 @@ pub fn set_edge_construction(
             let circle = doc
                 .circles
                 .get_mut(index)
-                .ok_or_else(|| format!("Circle {index} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", index.index()))?;
             circle.construction = construction;
             Ok(())
         }
@@ -7387,6 +7387,7 @@ fn orientation_pick_to_drawing(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
@@ -7761,7 +7762,7 @@ mod tests {
             in_drawing_workbench: false,
             open_drawing: None,
             extrude_faces: Some(vec![
-                crate::model::ExtrudeFace::Circle(0),
+                crate::model::ExtrudeFace::Circle(rkey(0)),
                 crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
             ]),
             ..input(&doc, &selection)
@@ -7774,7 +7775,7 @@ mod tests {
         assert_eq!(
             picker.picker.picked(),
             &[
-                SceneElement::SketchFace(crate::model::FaceId::Circle(0)),
+                SceneElement::SketchFace(crate::model::FaceId::Circle(rkey(0))),
                 SceneElement::SketchFace(crate::model::FaceId::Polygon(vec![0, 1, 2, 3])),
             ],
             "profiles keep their analytic-face identity (#955)"
@@ -7891,7 +7892,7 @@ mod tests {
         let doc = Document::default();
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
-        crate::selection::click_scene_selection(&mut selection, SceneElement::Circle(1), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Circle(rkey(1)), true);
         let input = ContextInput {
             doc: &doc,
             selection: &selection,
@@ -7964,7 +7965,7 @@ mod tests {
         // what the ✕ needed and what the debug-string sort used to fake.
         assert_eq!(
             picker.picked(),
-            &[SceneElement::Line(0), SceneElement::Circle(1)]
+            &[SceneElement::Line(0), SceneElement::Circle(rkey(1))]
         );
         assert!(picker.is_focused(), "the selection picker is the Select tool's only one");
         assert!(picker.accepts(&doc, &SceneElement::Body(bkey(0))), "Select accepts everything");
@@ -8013,7 +8014,7 @@ mod tests {
             in_drawing_workbench: false,
             open_drawing: None,
             revolve: Some(RevolveControl {
-                faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                 axis: Some(crate::model::RevolveAxis::Y),
                 axis_focused: false,
                 symmetric: false,
@@ -8050,7 +8051,7 @@ mod tests {
             open_drawing: None,
             revolve: Some(RevolveControl {
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
-                faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                 axis: None,
                 axis_focused: false,
                 symmetric: false,
@@ -8415,7 +8416,7 @@ mod tests {
                         can_commit: true,
                     }),
                     revolve: (tool == Tool::Revolve).then_some(RevolveControl {
-                        faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                        faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                         axis: None,
                         axis_focused: true,
                         symmetric: false,
@@ -8423,22 +8424,22 @@ mod tests {
                         cut_bodies: vec![bkey(2)],
                     }),
                     sweep: (tool == Tool::Sweep).then_some(SweepControl {
-                        faces: vec![crate::model::ExtrudeFace::Circle(0)],
+                        faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
                         path: Vec::new(),
                         path_focused: true,
                         body_choice: crate::actions::RevolveBodyChoice::Cut,
                         cut_bodies: vec![bkey(2)],
                     }),
                     extrude_faces: (tool == Tool::Extrude)
-                        .then_some(vec![crate::model::ExtrudeFace::Circle(0)]),
+                        .then_some(vec![crate::model::ExtrudeFace::Circle(rkey(0))]),
                     loft_sections: (tool == Tool::Loft).then_some(vec![
                         crate::model::LoftSection {
                             sketch: skey(0),
-                            face: crate::model::ExtrudeFace::Circle(0),
+                            face: crate::model::ExtrudeFace::Circle(rkey(0)),
                         },
                         crate::model::LoftSection {
                             sketch: skey(0),
-                            face: crate::model::ExtrudeFace::Circle(1),
+                            face: crate::model::ExtrudeFace::Circle(rkey(1)),
                         },
                     ]),
                     loft_body: (tool == Tool::Loft).then_some(LoftBodyControl {
@@ -8488,7 +8489,7 @@ mod tests {
         let selection = SceneSelection::default();
         let extrude = |target_focused| ContextInput {
             tool: Tool::Extrude,
-            extrude_faces: Some(vec![crate::model::ExtrudeFace::Circle(0)]),
+            extrude_faces: Some(vec![crate::model::ExtrudeFace::Circle(rkey(0))]),
             extrude: Some(ExtrudeControl {
                 distance: "10".to_string(),
                 target: None,
@@ -8607,7 +8608,7 @@ mod tests {
             "a straight sketch line is a valid axis"
         );
         assert!(
-            !axis.picker.accepts(&doc, &SceneElement::Circle(0)),
+            !axis.picker.accepts(&doc, &SceneElement::Circle(rkey(0))),
             "a revolve axis has to be straight"
         );
         assert!(

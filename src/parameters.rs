@@ -807,7 +807,7 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
             *expr = substitute_parameter_name(expr, old, new);
         }
     }
-    for circle in &mut doc.circles {
+    for circle in doc.circles.values_mut() {
         if let Some(expr) = &mut circle.diameter_expr {
             *expr = substitute_parameter_name(expr, old, new);
         }

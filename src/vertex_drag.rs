@@ -57,7 +57,7 @@ pub fn begin_selection_drag_session(
                 }
             }
             SceneElement::Circle(ci) => {
-                if doc.circles.get(*ci).is_some_and(|c| !c.deleted && c.sketch == sketch) {
+                if doc.circles.get(*ci).is_some_and(|c| c.sketch == sketch) {
                     seeds.push(ConstraintPoint::CircleCenter(*ci));
                 }
             }
@@ -358,7 +358,7 @@ fn collect_line_drag_positions(
 fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
     match point {
         ConstraintPoint::LineEndpoint { line, end } => (0, line, end as u8, 0),
-        ConstraintPoint::CircleCenter(circle) => (2, circle, 0, 0),
+        ConstraintPoint::CircleCenter(circle) => (2, circle.index() as usize, 0, 0),
         ConstraintPoint::FaceVertex { index, .. } => (3, index, 0, 0),
         ConstraintPoint::TextAnchor { text, anchor } => (4, text.index() as usize, anchor as u8, 0),
         ConstraintPoint::ImageCalibrationPoint { image, index } => {

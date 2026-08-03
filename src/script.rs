@@ -982,7 +982,7 @@ impl Instruction {
                 let mut polygons = Vec::new();
                 for face in faces {
                     match face {
-                        ExtrudeFace::Circle(i) => circles.push(*i),
+                        ExtrudeFace::Circle(i) => circles.push(i.index() as usize),
                         ExtrudeFace::Polygon(lines) => polygons.push(lines),
                         // Boolean regions aren't loftable sections (no interactive path
                         // constructs one), so nothing to render.
@@ -1135,7 +1135,7 @@ impl Instruction {
                 let circles: Vec<usize> = faces
                     .iter()
                     .filter_map(|f| match f {
-                        ExtrudeFace::Circle(i) => Some(*i),
+                        ExtrudeFace::Circle(i) => Some(i.index() as usize),
                         _ => None,
                     })
                     .collect();
@@ -1176,7 +1176,7 @@ impl Instruction {
                 let circles: Vec<usize> = faces
                     .iter()
                     .filter_map(|f| match f {
-                        ExtrudeFace::Circle(i) => Some(*i),
+                        ExtrudeFace::Circle(i) => Some(i.index() as usize),
                         _ => None,
                     })
                     .collect();
@@ -1881,9 +1881,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The circle's arena slot, not its ordinal (#1070).
         SceneElement::Circle(i) => ElementScriptTokens {
             kind: "circle",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The constraint's arena slot, not its ordinal (#1070).
@@ -2572,9 +2573,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 dimension,
             }
         }),
-        Action::CommitCircle => doc.circles.last().map(|c| {
+        Action::CommitCircle => doc.circles.keys().last().map(|index| {
+            let c = &doc.circles[index];
             // Carry a typed diameter's expression like CommitLine does (#402).
-            let index = doc.circles.len() - 1;
             let diameter_expr = doc.constraints.values().collect::<Vec<_>>().into_iter().rev().find_map(|c| match &c.kind {
                 crate::model::ConstraintKind::Distance {
                     target: crate::model::DistanceTarget::CircleDiameter(i),
@@ -3368,7 +3369,7 @@ fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
     let mut boolean = None;
     for face in faces {
         match face {
-            ExtrudeFace::Circle(i) => circles.push(*i),
+            ExtrudeFace::Circle(i) => circles.push(i.index() as usize),
             ExtrudeFace::Polygon(lines) => {
                 polygon.get_or_insert(lines);
             }
@@ -3427,7 +3428,7 @@ fn boolean_face_lua_table(
 fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
     use crate::model::ExtrudeFace;
     match face {
-        ExtrudeFace::Circle(i) => format!("{{circle = {i}}}"),
+        ExtrudeFace::Circle(i) => format!("{{circle = {}}}", i.index()),
         ExtrudeFace::Polygon(lines) => {
             let idx = lines.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
             format!("{{polygon = {{{idx}}}}}")
@@ -3599,7 +3600,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
 
 fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
     match face {
-        FaceId::Circle(i) => ("circle", *i),
+        FaceId::Circle(i) => ("circle", i.index() as usize),
         FaceId::ConstructionPlane(i) => ("construction_plane", *i),
         // Cap/side faces aren't yet addressable from the two-argument script form.
         FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", extrusion.index() as usize),
@@ -3682,7 +3683,7 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
             format!("kind = \"line\", index = {line}, [\"end\"] = \"{end_name}\"")
         }
         ConstraintPoint::CircleCenter(circle) => {
-            format!("kind = \"circle\", index = {circle}")
+            format!("kind = \"circle\", index = {}", circle.index())
         }
         // #26/#27: mirrors `lua_script::parse_constraint_point_table`'s `"face"` shape.
         ConstraintPoint::FaceVertex { face, index } => {
@@ -3802,7 +3803,7 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
 /// `parse_face_id_table` — a polygon profile isn't a single index, #66).
 fn face_id_lua_ref(face: &FaceId) -> String {
     match face {
-        FaceId::Circle(i) => format!("{{ kind = \"circle\", index = {i} }}"),
+        FaceId::Circle(i) => format!("{{ kind = \"circle\", index = {} }}", i.index()),
         FaceId::ConstructionPlane(i) => format!("{{ kind = \"construction_plane\", index = {i} }}"),
         FaceId::Polygon(lines) => format!(
             "{{ kind = \"polygon\", index = {} }}",
@@ -3839,7 +3840,9 @@ fn face_id_lua_ref(face: &FaceId) -> String {
 
 fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
     match profile {
-        ExtrudeFace::Circle(i) => format!("profile = \"circle\", profile_index = {i}"),
+        ExtrudeFace::Circle(i) => {
+            format!("profile = \"circle\", profile_index = {}", i.index())
+        }
         // Not round-trippable: `parse_face_id_table` only accepts `rect`/`circle` profiles
         // (same limitation as `face_lua_parts`'s polygon case, #66).
         ExtrudeFace::Polygon(lines) => format!(
@@ -3888,7 +3891,7 @@ fn distance_target_lua_ref(target: &DistanceTarget) -> String {
             format!("{{ kind = \"line\", index = {index} }}")
         }
         DistanceTarget::CircleDiameter(index) => {
-            format!("{{ kind = \"circle\", index = {index} }}")
+            format!("{{ kind = \"circle\", index = {} }}", index.index())
         }
         DistanceTarget::LineLineDistance { .. }
         | DistanceTarget::PointPointDistance { .. }

@@ -575,7 +575,7 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
                 }
             }
         }
-        for circle in doc.circles.iter().filter(|c| !c.deleted && c.sketch == si) {
+        for circle in doc.circles.values().filter(|c| c.sketch == si) {
             if let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 48) {
                 for w in pts.windows(2) {
                     edges.push((w[0], w[1]));

@@ -503,7 +503,7 @@ pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize>
                     faces.push(FaceId::ConstructionPlane(pi));
                 }
             }
-            for (ci, circle) in doc.circles.iter().enumerate() {
+            for (ci, circle) in doc.circles.iter() {
                 if circle.sketch == sketch {
                     faces.push(FaceId::Circle(ci));
                 }
@@ -531,7 +531,7 @@ pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
                     faces.push(FaceId::ConstructionPlane(pi));
                 }
             }
-            for (ci, circle) in doc.circles.iter().enumerate() {
+            for (ci, circle) in doc.circles.iter() {
                 if circle.sketch == sketch {
                     faces.push(FaceId::Circle(ci));
                 }
@@ -1307,7 +1307,7 @@ pub enum PickTargetKind {
     /// A standalone sketch line segment.
     Line(usize),
     /// A sketch circle (picked on its perimeter).
-    Circle(usize),
+    Circle(crate::model::CircleKey),
     /// One feature edge of a 3D body's solid mesh (#31) — a mesh boundary or crease between
     /// two non-coplanar triangles, the same edges `ShadingMode::Wireframe` draws, extracted via
     /// `solid_mesh_unique_edges`. Works for any body (extrusion-sourced or STL/STEP-imported),
@@ -2389,8 +2389,8 @@ pub fn nearest_sketch_point_in_sketch(
         );
     }
 
-    for (ci, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted || circle.sketch != sketch {
+    for (ci, circle) in doc.circles.iter() {
+        if circle.sketch != sketch {
             continue;
         }
         if let Some(center) = crate::face::circle_world_center(doc, circle) {
@@ -2588,10 +2588,7 @@ fn nearest_sketch_point(
         );
     }
 
-    for (ci, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted {
-            continue;
-        }
+    for (ci, circle) in doc.circles.iter() {
         if let Some(center) = crate::face::circle_world_center(doc, circle) {
             consider(ConstraintPoint::CircleCenter(ci), center);
         }
@@ -2659,10 +2656,7 @@ fn nearest_sketch_edge(
         }
     }
 
-    for (ci, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted {
-            continue;
-        }
+    for (ci, circle) in doc.circles.iter() {
         let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 32) else {
             continue;
         };
@@ -2931,10 +2925,7 @@ pub fn collect_pick_candidates(
         push_point(&mut raw, ConstraintPoint::LineEndpoint { line: li, end: LineEnd::Start }, a);
         push_point(&mut raw, ConstraintPoint::LineEndpoint { line: li, end: LineEnd::End }, b);
     }
-    for (ci, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted {
-            continue;
-        }
+    for (ci, circle) in doc.circles.iter() {
         if let Some(center) = crate::face::circle_world_center(doc, circle) {
             push_point(&mut raw, ConstraintPoint::CircleCenter(ci), center);
         }
@@ -2983,10 +2974,7 @@ pub fn collect_pick_candidates(
             }
         }
     }
-    for (ci, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted {
-            continue;
-        }
+    for (ci, circle) in doc.circles.iter() {
         if let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 32) {
             for w in pts.windows(2) {
                 push_edge(&mut raw, PickTargetKind::Circle(ci), w[0], w[1]);
@@ -3389,6 +3377,7 @@ pub fn add_line_rectangle(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
@@ -3734,7 +3723,7 @@ mod tests {
             &axis,
             None,
             None,
-            &PickTargetKind::Point(crate::model::ConstraintPoint::CircleCenter(0)),
+            &PickTargetKind::Point(crate::model::ConstraintPoint::CircleCenter(rkey(0))),
             &point_ref,
         )
         .expect("axis + point should complement");
@@ -3883,7 +3872,7 @@ mod tests {
     fn complemented_anchor_rows_stay_point_then_line() {
         let point = SceneElement::Origin;
         let line = SceneElement::Line(3);
-        let other_point = SceneElement::Point(crate::model::ConstraintPoint::CircleCenter(1));
+        let other_point = SceneElement::Point(crate::model::ConstraintPoint::CircleCenter(rkey(1)));
         let other_line = SceneElement::Line(9);
 
         // A line held alone, completed by a point: the point leads.
@@ -3994,10 +3983,10 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
-        state.doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        state.doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         state.doc.shape_order.push(crate::model::ShapeKind::Circle);
         state.apply(Action::SetTool(Tool::Extrude));
-        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Circle(0) });
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Circle(rkey(0)) });
         state.apply(Action::SetExtrudeDistance { distance: 6.0 });
         state.apply(Action::CommitExtrusion);
 

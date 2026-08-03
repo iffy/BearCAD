@@ -456,7 +456,7 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
 fn distance_target_label(target: DistanceTarget) -> String {
     match target {
         DistanceTarget::LineLength(i) => format!("Line {i} length"),
-        DistanceTarget::CircleDiameter(i) => format!("Circle {i} diameter"),
+        DistanceTarget::CircleDiameter(i) => format!("Circle {} diameter", i.index()),
         DistanceTarget::LineLineDistance { .. } => "Line spacing".to_string(),
         DistanceTarget::PointPointDistance { .. } => "Point distance".to_string(),
         DistanceTarget::PointLineDistance { .. } => "Point-line distance".to_string(),
@@ -660,9 +660,13 @@ fn validate_point_in_sketch(
             let entity = doc
                 .circles
                 .get(circle)
-                .ok_or_else(|| format!("Circle {circle} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Circle {circle} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Circle {} is not in sketch {}",
+                    circle.index(),
+                    sketch.index()
+                ));
             }
             Ok(())
         }
@@ -880,9 +884,13 @@ pub fn validate_distance_target(
             let circle = doc
                 .circles
                 .get(i)
-                .ok_or_else(|| format!("Circle {i} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", i.index()))?;
             if circle.sketch != sketch {
-                return Err(format!("Circle {i} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Circle {} is not in sketch {}",
+                    i.index(),
+                    sketch.index()
+                ));
             }
         }
         DistanceTarget::LineLineDistance {
@@ -969,7 +977,7 @@ fn clear_legacy_dimension_locks(doc: &mut Document) {
         line.length_locked = false;
         line.length_expr = None;
     }
-    for circle in &mut doc.circles {
+    for circle in doc.circles.values_mut() {
         circle.diameter_locked = false;
         circle.diameter_expr = None;
     }
@@ -1025,7 +1033,7 @@ pub fn migrate_legacy_dimensions(doc: &mut Document) {
             }
         }
     }
-    for (i, circle) in doc.circles.iter().enumerate() {
+    for (i, circle) in doc.circles.iter() {
         if circle.diameter_locked {
             let expr = circle.diameter_expr.clone().unwrap_or_else(|| {
                 format_length_display_in(circle.diameter(), effective_length_unit(doc, circle.sketch))
@@ -1436,6 +1444,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
@@ -1639,9 +1648,9 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
-        let pt = ConstraintPoint::CircleCenter(0);
+        let pt = ConstraintPoint::CircleCenter(rkey(0));
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 5.0, 0.0, 1.0, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 5.0, 0.0, 1.0, 0.0));
         let on_line0 = push_coincident(
             &mut doc,
             sketch,
@@ -1732,29 +1741,29 @@ mod tests {
     fn add_distance_constraint_for_circle_diameter() {
         let (mut doc, sketch) = sketch_doc();
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Circle);
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::CircleDiameter(0),
+            DistanceTarget::CircleDiameter(rkey(0)),
             "30mm".to_string(),
         )
         .unwrap();
-        assert!((doc.circles[0].r - 15.0).abs() < 1e-3);
-        assert!((doc.circles[0].diameter() - 30.0).abs() < 1e-3);
-        assert!(doc.circles[0].diameter_locked);
+        assert!((doc.circles[rkey(0)].r - 15.0).abs() < 1e-3);
+        assert!((doc.circles[rkey(0)].diameter() - 30.0).abs() < 1e-3);
+        assert!(doc.circles[rkey(0)].diameter_locked);
     }
 
     #[test]
     fn circle_constraint_label_uses_diameter_prefix() {
         let (mut doc, sketch) = sketch_doc();
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::CircleDiameter(0),
+            DistanceTarget::CircleDiameter(rkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
@@ -1785,11 +1794,11 @@ mod tests {
         doc.default_length_unit = crate::value::LengthUnit::Mm;
         doc.sketches[sketch].length_unit = Some(crate::value::LengthUnit::Ft);
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 152.4, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 152.4, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::CircleDiameter(0),
+            DistanceTarget::CircleDiameter(rkey(0)),
             "304.8mm".to_string(),
         )
         .unwrap();

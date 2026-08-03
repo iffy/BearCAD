@@ -547,7 +547,7 @@ fn sketch_local_bounds(doc: &Document, sketch: SketchId) -> Option<SketchZoomBou
             extend_sketch_bounds(&mut bounds, line.x0, line.y0, line.x1, line.y1);
         }
     }
-    for circle in &doc.circles {
+    for circle in doc.circles.values() {
         if circle.sketch == sketch {
             extend_sketch_bounds(
                 &mut bounds,
@@ -745,7 +745,7 @@ pub fn sketch_label(doc: &Document, sketch: SketchId) -> String {
 pub fn face_label(_doc: &Document, face: FaceId) -> String {
     match face {
         FaceId::ConstructionPlane(i) => format!("Construction plane {i}"),
-        FaceId::Circle(i) => format!("Circle face {i}"),
+        FaceId::Circle(i) => format!("Circle face {}", i.index()),
         FaceId::Polygon(lines) => format!("Polygon face ({} lines)", lines.len()),
         FaceId::ExtrudeCap {
             extrusion, top, ..
@@ -945,7 +945,7 @@ pub fn pick_sketch_face(
         }
     };
 
-    for (i, circle) in doc.circles.iter().enumerate().rev() {
+    for (i, circle) in doc.circles.iter().collect::<Vec<_>>().into_iter().rev() {
         if let Some((dist, c)) = circle_face_pick_distance(screen, doc, circle, project) {
             let face = FaceId::Circle(i);
             note_host(&face, dist, doc);
@@ -1142,7 +1142,7 @@ pub fn sketch_faces_near(
         }
     };
 
-    for (i, circle) in doc.circles.iter().enumerate() {
+    for (i, circle) in doc.circles.iter() {
         if let Some((dist, c)) = circle_face_pick_distance(screen, doc, circle, project) {
             push(FaceId::Circle(i), c, dist);
         }
@@ -1492,6 +1492,7 @@ fn dist_point_to_segment_px(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: efr
 
 #[cfg(test)]
 mod pick_tests {
+    use crate::model::circle_key_for_slot as rkey;
     use super::*;
 
     /// #822: a hole drawn inside a bigger profile on the same plane wins the pick — the
@@ -1512,7 +1513,7 @@ mod pick_tests {
                 .push(crate::model::Line::from_local_endpoints(sketch, x0, y0, x1, y1));
         }
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 20.0, 15.0, 3.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 20.0, 15.0, 3.0, 0.0));
 
         let cam = crate::camera::Camera::default();
         let viewport =
@@ -1524,7 +1525,7 @@ mod pick_tests {
 
         assert_eq!(
             pick_sketch_face(at, &project, &doc, cam.eye()),
-            Some(FaceId::Circle(0)),
+            Some(FaceId::Circle(rkey(0))),
             "the hole, not the rectangle around it"
         );
     }
@@ -1532,6 +1533,7 @@ mod pick_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::Sketch;
@@ -1573,8 +1575,8 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 5.0, 7.0, 10.0, 0.0));
-        let frame = sketch_frame(&doc, FaceId::Circle(0)).unwrap();
+            .insert(Circle::from_local_center_radius(sketch, 5.0, 7.0, 10.0, 0.0));
+        let frame = sketch_frame(&doc, FaceId::Circle(rkey(0))).unwrap();
         assert!((frame.origin.x - 5.0).abs() < 1e-4);
         assert!((frame.origin.y - 7.0).abs() < 1e-4);
     }
@@ -1584,8 +1586,8 @@ mod tests {
         let mut doc = Document::default();
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(Circle::from_local_center_radius(s0, 10.0, 10.0, 5.0, 0.0));
-        let s1 = doc.add_sketch(FaceId::Circle(0));
+            .insert(Circle::from_local_center_radius(s0, 10.0, 10.0, 5.0, 0.0));
+        let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
         let frame = sketch_geometry_frame(&doc, s1).unwrap();
         let p = local_to_world(&frame, 2.0, 3.0);
         assert!((p.x - 12.0).abs() < 1e-4);
@@ -1661,10 +1663,10 @@ mod tests {
         doc.construction_planes.truncate(1);
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
         let face = pick_sketch_face(eframe::egui::pos2(5.0, 0.0), &project, &doc, Vec3::new(0.0, 0.0, 100.0));
-        assert_eq!(face, Some(FaceId::Circle(0)));
+        assert_eq!(face, Some(FaceId::Circle(rkey(0))));
     }
 
     #[test]
@@ -1672,8 +1674,8 @@ mod tests {
         let mut doc = Document::default();
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
-        let s1 = doc.add_sketch(FaceId::Circle(0));
+            .insert(Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
+        let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(s1, -5.0, -5.0, 5.0, 5.0));
         let target = sketch_camera_target(&doc, s1).unwrap();
@@ -1899,10 +1901,10 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,
-            faces: vec![crate::model::ExtrudeFace::Circle(0)],
+            faces: vec![crate::model::ExtrudeFace::Circle(rkey(0))],
             distance: 8.0,
             target: None,
             expression: String::new(),
@@ -1910,7 +1912,7 @@ mod tests {
             symmetric: false,
             edge_treatments: Vec::new(),
         });
-        let profile = crate::model::ExtrudeFace::Circle(0);
+        let profile = crate::model::ExtrudeFace::Circle(rkey(0));
         assert_eq!(crate::extrude::side_face_count(&profile), 0);
         assert!(crate::extrude::side_quad_world(&doc, xkey(0), &profile, 0).is_none());
     }

@@ -791,7 +791,7 @@ pub struct CreatingRepeat {
     /// `None` until picked (#439): the path picker starts empty and focused.
     pub axis: Option<crate::model::RevolveAxis>,
     /// A picked **circle** as the path (#840); wins over `axis` while set.
-    pub path_circle: Option<usize>,
+    pub path_circle: Option<crate::model::CircleKey>,
     /// Repeat **around** the picked path rather than along it (#839).
     pub around_axis: bool,
     /// Run the pattern the other way along the picked path (#989).
@@ -900,7 +900,7 @@ impl CreatingRepeat {
 pub struct CreatingSketchOffset {
     pub sketch: crate::model::SketchId,
     pub line_targets: Vec<usize>,
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<crate::model::CircleKey>,
     /// Signed distance expression: positive grows a closed loop/circle.
     pub distance: String,
     pub construction: bool,
@@ -959,7 +959,7 @@ impl CreatingSketchOffset {
             return Some((mid, normal));
         }
         let &ci = self.circle_targets.first()?;
-        let c = doc.circles.get(ci).filter(|c| !c.deleted)?;
+        let c = doc.circles.get(ci)?;
         let center = glam::Vec2::new(c.cx, c.cy);
         Some((center + glam::Vec2::X * c.r, glam::Vec2::X))
     }
@@ -968,7 +968,7 @@ impl CreatingSketchOffset {
 pub struct CreatingSketchRepeat {
     pub sketch: crate::model::SketchId,
     pub line_targets: Vec<usize>,
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<crate::model::CircleKey>,
     /// A picked sketch line whose direction sets the repeat axis; `None` = the sketch U axis.
     pub dir_line: Option<usize>,
     pub mode: crate::model::RepeatMode,
@@ -1114,7 +1114,7 @@ impl Default for CreatingSlice {
 pub struct CreatingSketchSlice {
     pub sketch: SketchId,
     pub line_targets: Vec<usize>,
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<crate::model::CircleKey>,
     /// Face targets as their boundary-loop line indices (#238).
     pub face_targets: Vec<Vec<usize>>,
     pub cutter_lines: Vec<usize>,
@@ -1289,7 +1289,7 @@ pub struct CreatingSketchMirror {
     /// The mirror line (a straight sketch line); `None` until picked.
     pub line: Option<usize>,
     pub line_targets: Vec<usize>,
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<crate::model::CircleKey>,
     pub editing: Option<crate::model::SketchMirrorOpKey>,
 }
 
@@ -2362,14 +2362,14 @@ pub enum Action {
         sketch: crate::model::SketchId,
         line: usize,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
     },
     /// Re-target an existing in-sketch mirror.
     EditSketchMirrorOperation {
         op: crate::model::SketchMirrorOpKey,
         line: usize,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
     },
     /// Commit the in-progress Repeat-tool operation.
     CommitRepeat,
@@ -2381,7 +2381,7 @@ pub enum Action {
         sketch_targets: Vec<crate::model::SketchId>,
         axis: crate::model::RevolveAxis,
         /// A circle used as the path (#840); wins over `axis`.
-        path_circle: Option<usize>,
+        path_circle: Option<crate::model::CircleKey>,
         /// Turn the copies about the axis instead of sliding them along it (#839).
         around_axis: bool,
         /// Run the pattern the other way along the path (#989).
@@ -2401,7 +2401,7 @@ pub enum Action {
         extrusion_targets: Vec<crate::model::ExtrusionKey>,
         sketch_targets: Vec<crate::model::SketchId>,
         axis: crate::model::RevolveAxis,
-        path_circle: Option<usize>,
+        path_circle: Option<crate::model::CircleKey>,
         around_axis: bool,
         flip: bool,
         mode: crate::model::RepeatMode,
@@ -2415,7 +2415,7 @@ pub enum Action {
     CreateSketchRepeatOperation {
         sketch: crate::model::SketchId,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
         dir_u: f32,
         dir_v: f32,
         mode: crate::model::RepeatMode,
@@ -2427,7 +2427,7 @@ pub enum Action {
     EditSketchRepeatOperation {
         op: crate::model::SketchRepeatOpKey,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
         dir_u: f32,
         dir_v: f32,
         mode: crate::model::RepeatMode,
@@ -2453,7 +2453,7 @@ pub enum Action {
     CreateSketchOffsetOperation {
         sketch: crate::model::SketchId,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
         distance: String,
         construction: bool,
     },
@@ -2461,7 +2461,7 @@ pub enum Action {
     EditSketchOffsetOperation {
         op: crate::model::SketchOffsetOpKey,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
         distance: String,
         construction: bool,
     },
@@ -2470,7 +2470,7 @@ pub enum Action {
     CreateSketchSliceOperation {
         sketch: crate::model::SketchId,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
         #[allow(dead_code)]
         face_targets: Vec<Vec<usize>>,
         cutter_lines: Vec<usize>,
@@ -2515,7 +2515,7 @@ pub enum Action {
     EditSketchSliceOperation {
         op: crate::model::SketchSliceOpKey,
         line_targets: Vec<usize>,
-        circle_targets: Vec<usize>,
+        circle_targets: Vec<crate::model::CircleKey>,
         #[allow(dead_code)]
         face_targets: Vec<Vec<usize>>,
         cutter_lines: Vec<usize>,
@@ -5214,16 +5214,15 @@ fn create_implicit_extrude_sketch(
         if let Some((r_in, r_out)) =
             crate::extrude::revolve_side_annulus(doc, revolution, profile, edge as usize)
         {
-            doc.circles
-                .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, r_out, 0.0));
+            let outer = doc.circles.insert(
+                crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, r_out, 0.0),
+            );
             doc.shape_order.push(ShapeKind::Circle);
-            let outer = doc.circles.len() - 1;
             if r_in > 0.01 {
-                doc.circles.push(crate::model::Circle::from_local_center_radius(
-                    sketch, 0.0, 0.0, r_in, 0.0,
-                ));
+                let inner = doc.circles.insert(
+                    crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, r_in, 0.0),
+                );
                 doc.shape_order.push(ShapeKind::Circle);
-                let inner = doc.circles.len() - 1;
                 return Ok(ExtrudeFace::Boolean {
                     op: crate::model::BooleanOp::Difference,
                     a: Box::new(ExtrudeFace::Circle(outer)),
@@ -5265,9 +5264,9 @@ fn add_face_boundary_to_sketch(
         let (cx, cy) = crate::face::world_to_local(&frame, center_world);
         let mut circle = crate::model::Circle::from_local_center_radius(sketch, cx, cy, radius, 0.0);
         circle.construction = construction;
-        doc.circles.push(circle);
+        let key = doc.circles.insert(circle);
         doc.shape_order.push(ShapeKind::Circle);
-        return Ok(ExtrudeFace::Circle(doc.circles.len() - 1));
+        return Ok(ExtrudeFace::Circle(key));
     }
 
     let world_loop = crate::extrude::face_boundary_loop_world(doc, face_id)
@@ -5481,7 +5480,7 @@ fn draw_mode_status(tool: &str, construction: bool) -> String {
 fn distance_target_status_label(target: DistanceTarget) -> String {
     match target {
         DistanceTarget::LineLength(i) => format!("line {i}"),
-        DistanceTarget::CircleDiameter(i) => format!("circle {i} diameter"),
+        DistanceTarget::CircleDiameter(i) => format!("circle {} diameter", i.index()),
         DistanceTarget::LineLineDistance { .. } => "parallel line spacing".to_string(),
         DistanceTarget::PointPointDistance { .. } => "point distance".to_string(),
         DistanceTarget::PointLineDistance { .. } => "point-line distance".to_string(),
@@ -5739,7 +5738,7 @@ fn validate_sketch_repeat_inputs(
     doc: &Document,
     sketch: crate::model::SketchId,
     line_targets: &[usize],
-    circle_targets: &[usize],
+    circle_targets: &[crate::model::CircleKey],
 ) -> Result<(), String> {
     if doc.sketches.get(sketch).is_none() {
         return Err(format!("Sketch {} not found", sketch.index()));
@@ -5761,14 +5760,14 @@ fn validate_sketch_repeat_inputs(
     }
     let mut seen_circles = std::collections::HashSet::new();
     for &ci in circle_targets {
-        let Some(circle) = doc.circles.get(ci).filter(|c| !c.deleted) else {
-            return Err(format!("Circle {ci} not found"));
+        let Some(circle) = doc.circles.get(ci) else {
+            return Err(format!("Circle {} not found", ci.index()));
         };
         if circle.sketch != sketch {
-            return Err(format!("Circle {ci} is not in sketch {}", sketch.index()));
+            return Err(format!("Circle {} is not in sketch {}", ci.index(), sketch.index()));
         }
         if !seen_circles.insert(ci) {
-            return Err(format!("Circle {ci} is picked twice"));
+            return Err(format!("Circle {} is picked twice", ci.index()));
         }
     }
     Ok(())
@@ -5781,7 +5780,7 @@ fn validate_sketch_mirror_inputs(
     sketch: crate::model::SketchId,
     line: usize,
     line_targets: &[usize],
-    circle_targets: &[usize],
+    circle_targets: &[crate::model::CircleKey],
 ) -> Result<(), String> {
     let ml = doc
         .lines
@@ -5800,7 +5799,7 @@ fn validate_sketch_slice_inputs(
     doc: &Document,
     sketch: crate::model::SketchId,
     line_targets: &[usize],
-    circle_targets: &[usize],
+    circle_targets: &[crate::model::CircleKey],
     face_targets: &[Vec<usize>],
     cutter_lines: &[usize],
 ) -> Result<(), String> {
@@ -5834,11 +5833,11 @@ fn validate_sketch_slice_inputs(
         }
     }
     for &ci in circle_targets {
-        let Some(circle) = doc.circles.get(ci).filter(|c| !c.deleted) else {
-            return Err(format!("Circle {ci} not found"));
+        let Some(circle) = doc.circles.get(ci) else {
+            return Err(format!("Circle {} not found", ci.index()));
         };
         if circle.sketch != sketch {
-            return Err(format!("Circle {ci} is not in sketch {}", sketch.index()));
+            return Err(format!("Circle {} is not in sketch {}", ci.index(), sketch.index()));
         }
     }
     Ok(())
@@ -5969,7 +5968,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {i}"),
-        SceneElement::Circle(i) => format!("Circle {i}"),
+        SceneElement::Circle(i) => format!("Circle {}", i.index()),
         SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Extrusion(i) => format!("Extrusion {}", i.index()),
@@ -7062,8 +7061,8 @@ impl AppState {
                                         sm.line_targets.push(li);
                                     }
                                     crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| {
-                                            !c.deleted && c.sketch == session.sketch
+                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                            c.sketch == session.sketch
                                         }) =>
                                     {
                                         sm.circle_targets.push(ci);
@@ -7115,8 +7114,8 @@ impl AppState {
                                         co.line_targets.push(li);
                                     }
                                     crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| {
-                                            !c.deleted && c.sketch == session.sketch
+                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                            c.sketch == session.sketch
                                         }) =>
                                     {
                                         co.circle_targets.push(ci);
@@ -7964,9 +7963,8 @@ impl AppState {
                     Circle::from_local_center_radius(session.sketch, cu, cv, r, angle);
                 circle.construction = cc.construction;
                 if circle.r > 0.25 {
-                    self.doc.circles.push(circle);
+                    let circle_index = self.doc.circles.insert(circle);
                     self.doc.shape_order.push(ShapeKind::Circle);
-                    let circle_index = self.doc.circles.len() - 1;
                     if cc.user_edited {
                         if let Err(e) = add_distance_constraint(
                             &mut self.doc,
@@ -7974,7 +7972,7 @@ impl AppState {
                             DistanceTarget::CircleDiameter(circle_index),
                             cc.text.clone(),
                         ) {
-                            self.doc.circles.pop();
+                            self.doc.circles.remove(circle_index);
                             self.doc.shape_order.pop();
                             self.circle_center_snap = None;
                             self.creating_circle = Some(cc);
@@ -7990,7 +7988,7 @@ impl AppState {
                             target,
                         );
                     }
-                    let diameter = self.doc.circles.last().unwrap().diameter();
+                    let diameter = self.doc.circles[circle_index].diameter();
                     self.status = format!(
                         "Added circle ({})",
                         crate::value::format_diameter_display_in(
@@ -9350,9 +9348,8 @@ impl AppState {
                     return ActionResult::Err("Circle needs a positive radius".to_string());
                 }
                 let circle = Circle::from_local_center_radius(session.sketch, cx, cy, r, 0.0);
-                self.doc.circles.push(circle);
+                let circle_index = self.doc.circles.insert(circle);
                 self.doc.shape_order.push(ShapeKind::Circle);
-                let circle_index = self.doc.circles.len() - 1;
                 if let Err(e) = add_distance_constraint(
                     &mut self.doc,
                     session.sketch,
@@ -9365,7 +9362,7 @@ impl AppState {
                             self.doc.constraints.remove(last);
                         }
                     }
-                    self.doc.circles.pop();
+                    self.doc.circles.remove(circle_index);
                     self.doc.shape_order.pop();
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -13971,7 +13968,6 @@ fn shifted_circle_copy(src: &crate::model::Circle, dx: f32, dy: f32) -> crate::m
         construction: src.construction,
         shadow: src.shadow,
         name: None,
-        deleted: false,
     }
 }
 
@@ -14196,7 +14192,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
     // Circle targets (#237): split each circle into arcs at the cutter crossings, emitting the
     // arcs as bezier fragment lines and shadowing the circle.
     for &ci in &op.circle_targets {
-        let Some(circ) = doc.circles.get(ci).filter(|c| !c.deleted).cloned() else {
+        let Some(circ) = doc.circles.get(ci).cloned() else {
             continue;
         };
         let mut angles: Vec<f32> = Vec::new();
@@ -14400,15 +14396,12 @@ fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: crate::mode
     let want_circles = offsets.len() * op.circle_targets.len();
     let mut circle_outputs = op.circle_outputs.clone();
     while circle_outputs.len() < want_circles {
-        circle_outputs.push(doc.circles.len());
         let seed = doc.circles[op.circle_targets[0]].clone();
-        doc.circles.push(shifted_circle_copy(&seed, 0.0, 0.0));
+        circle_outputs.push(doc.circles.insert(shifted_circle_copy(&seed, 0.0, 0.0)));
         doc.shape_order.push(crate::model::ShapeKind::Circle);
     }
     for extra in circle_outputs.split_off(want_circles) {
-        if let Some(c) = doc.circles.get_mut(extra) {
-            c.deleted = true;
-        }
+        doc.circles.remove(extra);
     }
     for (slot, &out) in circle_outputs.iter().enumerate() {
         let instance = slot / op.circle_targets.len() + 1;
@@ -14538,23 +14531,20 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
     // so closed_line_loops / extrude face picking treats them as faces.
     ensure_offset_joint_coincidences(doc, op.sketch, &line_outputs);
 
-    let want_circles: Vec<usize> = op
+    let want_circles: Vec<crate::model::CircleKey> = op
         .circle_targets
         .iter()
         .copied()
-        .filter(|&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+        .filter(|&ci| doc.circles.contains(ci))
         .collect();
     let mut circle_outputs = op.circle_outputs.clone();
     while circle_outputs.len() < want_circles.len() {
-        circle_outputs.push(doc.circles.len());
         let seed = doc.circles[want_circles[0]].clone();
-        doc.circles.push(seed);
+        circle_outputs.push(doc.circles.insert(seed));
         doc.shape_order.push(crate::model::ShapeKind::Circle);
     }
     for extra in circle_outputs.split_off(want_circles.len()) {
-        if let Some(c) = doc.circles.get_mut(extra) {
-            c.deleted = true;
-        }
+        doc.circles.remove(extra);
     }
     for (&ci, &out) in want_circles.iter().zip(&circle_outputs) {
         let src = doc.circles[ci].clone();
@@ -14652,23 +14642,20 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     }
 
     // Circles: reflect the centre, radius unchanged.
-    let want_circles: Vec<usize> = op
+    let want_circles: Vec<crate::model::CircleKey> = op
         .circle_targets
         .iter()
         .copied()
-        .filter(|&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+        .filter(|&ci| doc.circles.contains(ci))
         .collect();
     let mut circle_outputs = op.circle_outputs.clone();
     while circle_outputs.len() < want_circles.len() {
-        circle_outputs.push(doc.circles.len());
         let seed = doc.circles[want_circles[0]].clone();
-        doc.circles.push(seed);
+        circle_outputs.push(doc.circles.insert(seed));
         doc.shape_order.push(crate::model::ShapeKind::Circle);
     }
     for extra in circle_outputs.split_off(want_circles.len()) {
-        if let Some(c) = doc.circles.get_mut(extra) {
-            c.deleted = true;
-        }
+        doc.circles.remove(extra);
     }
     for (&ci, &out) in want_circles.iter().zip(&circle_outputs) {
         let src = doc.circles[ci].clone();
@@ -15040,8 +15027,10 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
         for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
             l.deleted = true;
         }
-        for c in doc.circles.iter_mut().filter(|c| c.sketch == si) {
-            c.deleted = true;
+        for c in doc.circles.keys().collect::<Vec<_>>() {
+            if doc.circles[c].sketch == si {
+                doc.circles.remove(c);
+            }
         }
         doc.sketches.remove(si);
     }
@@ -15122,15 +15111,15 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
             }
             let src_circles: Vec<crate::model::Circle> = doc
                 .circles
-                .iter()
-                .filter(|c| c.sketch == src && !c.deleted)
+                .values()
+                .filter(|c| c.sketch == src)
                 .cloned()
                 .collect();
             for c in src_circles {
                 let mut copy = shifted_circle_copy(&c, 0.0, 0.0);
                 copy.sketch = sketch_idx;
                 copy.shadow = false;
-                doc.circles.push(copy);
+                doc.circles.insert(copy);
                 doc.shape_order.push(ShapeKind::Circle);
             }
         }
@@ -15929,6 +15918,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::sketch_text_key_for_slot as tkey;
@@ -18371,7 +18361,7 @@ mod tests {
         source.apply(Action::CreateExtrusion {
             expression: None,
             sketch,
-            faces: vec![ExtrudeFace::Circle(0)],
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 20.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
@@ -19235,7 +19225,7 @@ mod tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
         state.doc.construction_planes.push(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
@@ -19252,9 +19242,9 @@ mod tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(top, 0.0, 0.0, 2.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(top, 0.0, 0.0, 2.0, 0.0));
 
-        for (sketch, ci) in [(bottom, 0), (top, 1)] {
+        for (sketch, ci) in [(bottom, rkey(0)), (top, rkey(1))] {
             let result = state.apply(Action::ToggleLoftSection {
                 section: crate::model::LoftSection {
                     sketch,
@@ -19290,11 +19280,11 @@ mod tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         state.apply(Action::ToggleLoftSection {
             section: crate::model::LoftSection {
                 sketch,
-                face: crate::model::ExtrudeFace::Circle(0),
+                face: crate::model::ExtrudeFace::Circle(rkey(0)),
             },
         });
         assert!(matches!(state.apply(Action::CommitLoft), ActionResult::Err(_)));
@@ -19581,7 +19571,7 @@ mod tests {
                 &cp.reference,
                 None,
                 None,
-                &PickTargetKind::Point(ConstraintPoint::CircleCenter(0)),
+                &PickTargetKind::Point(ConstraintPoint::CircleCenter(rkey(0))),
                 &point_ref,
             )
             .expect("axis + point complements");
@@ -21259,7 +21249,7 @@ mod tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(si, 0.0, 0.0, 5.0, 0.0)); // circle 0
+            .insert(crate::model::Circle::from_local_center_radius(si, 0.0, 0.0, 5.0, 0.0)); // circle 0
         // A horizontal cutter through the centre (crosses at (−5,0) and (5,0)).
         state
             .doc
@@ -21269,12 +21259,12 @@ mod tests {
         let result = state.apply(Action::CreateSketchSliceOperation {
             sketch: si,
             line_targets: Vec::new(),
-            circle_targets: vec![0],
+            circle_targets: vec![rkey(0)],
             face_targets: Vec::new(),
             cutter_lines: vec![0],
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert!(state.doc.circles[0].shadow, "sliced circle becomes shadow");
+        assert!(state.doc.circles[rkey(0)].shadow, "sliced circle becomes shadow");
         let op = state.doc.sketch_slice_ops.values().nth(0).unwrap().clone();
         // Two arcs (each split into ≤90° bezier chunks → 2 pieces per semicircle = 4 fragments).
         assert!(!op.line_outputs.is_empty());
@@ -21835,11 +21825,11 @@ mod tests {
         use crate::model::{RepeatMode, RepeatVar};
         let mut cr = CreatingSketchRepeat::new(skey(0));
         cr.line_targets = vec![2, 5];
-        cr.circle_targets = vec![1];
+        cr.circle_targets = vec![rkey(1)];
 
         cr.remove_target(&SceneElement::Line(2));
         assert_eq!(cr.line_targets, vec![5]);
-        cr.remove_target(&SceneElement::Circle(1));
+        cr.remove_target(&SceneElement::Circle(rkey(1)));
         assert!(cr.circle_targets.is_empty());
         // A kind this tool doesn't collect leaves the set alone.
         cr.remove_target(&SceneElement::Body(bkey(0)));
@@ -22218,8 +22208,8 @@ mod tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(cap_sketch, 5.0, 5.0, 3.0, 0.0));
-        let ci = state.doc.circles.len() - 1;
+            .insert(crate::model::Circle::from_local_center_radius(cap_sketch, 5.0, 5.0, 3.0, 0.0));
+        let ci = state.doc.circles.keys().last().unwrap();
         state.doc.shape_order.push(ShapeKind::Circle);
         state.refresh_document_health();
 
@@ -22597,10 +22587,10 @@ mod tests {
     fn extrude_body_face_on_a_circular_cap_creates_a_real_circle() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
             sketch, 0.0, 0.0, 6.0, 0.0,
         ));
-        let profile = ExtrudeFace::Circle(0);
+        let profile = ExtrudeFace::Circle(rkey(0));
         state.apply(Action::CreateExtrusion {
             expression: None,
             sketch,
@@ -22620,7 +22610,7 @@ mod tests {
         let result = state.apply(Action::ExtrudeBodyFace { face_id });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.circles.len(), circles_before + 1);
-        let new_circle = state.doc.circles.last().unwrap();
+        let new_circle = state.doc.circles.values().last().unwrap();
         assert!((new_circle.r - 6.0).abs() < 1e-3, "should mirror the source radius exactly");
         let ce = state.creating_extrusion.as_ref().unwrap();
         assert!(matches!(ce.faces[0], ExtrudeFace::Circle(_)));
@@ -22709,13 +22699,13 @@ mod tests {
             edge: 0,
         };
         let s2 = state.doc.add_sketch(side);
-        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
             s2, 5.0, 2.5, 2.0, 0.0,
         ));
         let result = state.apply(Action::CreateExtrusion {
             expression: Some("cutD".into()),
             sketch: s2,
-            faces: vec![ExtrudeFace::Circle(0)],
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 4.0, // outward
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
@@ -22743,7 +22733,7 @@ mod tests {
         let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
         let side = FaceId::ExtrudeSide { extrusion: xkey(0), profile, edge: 0 };
         let s2 = state.doc.add_sketch(side);
-        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
             s2, 5.0, 2.5, 2.0, 0.0,
         ));
         let before = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
@@ -22753,7 +22743,7 @@ mod tests {
         let result = state.apply(Action::CreateExtrusion {
             expression: None,
             sketch: s2,
-            faces: vec![ExtrudeFace::Circle(0)],
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
@@ -22774,13 +22764,13 @@ mod tests {
         let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
         let side = FaceId::ExtrudeSide { extrusion: xkey(0), profile, edge: 0 };
         let s2 = state.doc.add_sketch(side);
-        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
             s2, 5.0, 20.0, 2.0, 0.0,
         ));
         state.apply(Action::CreateExtrusion {
             expression: None,
             sketch: s2,
-            faces: vec![ExtrudeFace::Circle(0)],
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
@@ -23662,12 +23652,12 @@ mod tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Circle);
         state.apply(Action::CreateExtrusion {
             expression: None,
             sketch,
-            faces: vec![ExtrudeFace::Circle(0)],
+            faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
@@ -23700,14 +23690,14 @@ mod tests {
         // circle radius 5 at the origin. Their intersection is a right half-disk, area pi*r^2/2.
         let rect_lines =
             crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, -20.0, 20.0, 40.0, [false; 4]);
-        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
             sketch, 0.0, 0.0, 5.0, 0.0,
         ));
         state.doc.shape_order.push(ShapeKind::Circle);
         state.refresh_document_health();
 
         let rect_face = ExtrudeFace::Polygon(rect_lines.to_vec());
-        let circle_face = ExtrudeFace::Circle(0);
+        let circle_face = ExtrudeFace::Circle(rkey(0));
         let partner = crate::extrude::overlapping_partner(&state.doc, sketch, &rect_face);
         assert_eq!(
             partner,
@@ -23859,9 +23849,9 @@ mod tests {
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1);
-        assert!((state.doc.circles[0].diameter() - 20.0).abs() < 1e-4);
+        assert!((state.doc.circles[rkey(0)].diameter() - 20.0).abs() < 1e-4);
         assert_eq!(state.doc.constraints.len(), 1);
-        assert!(state.doc.circles[0].diameter_locked);
+        assert!(state.doc.circles[rkey(0)].diameter_locked);
         assert!(state.creating_circle.is_none());
     }
 
@@ -23883,7 +23873,7 @@ mod tests {
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1);
-        let c = &state.doc.circles[0];
+        let c = &state.doc.circles[rkey(0)];
         assert!((c.diameter() - 12.0).abs() < 1e-4, "the span is the diameter: {}", c.diameter());
         // Centre is the midpoint of the two edges → local (6, 0).
         assert!((c.cx - 6.0).abs() < 1e-3 && c.cy.abs() < 1e-3, "centre at midpoint: ({}, {})", c.cx, c.cy);
@@ -23905,10 +23895,10 @@ mod tests {
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1);
-        assert!((state.doc.circles[0].diameter() - 20.0).abs() < 1e-4);
-        assert!(state.doc.circles[0].diameter_locked);
+        assert!((state.doc.circles[rkey(0)].diameter() - 20.0).abs() < 1e-4);
+        assert!(state.doc.circles[rkey(0)].diameter_locked);
         // Centre sits half the locked diameter along the click direction from the pinned edge.
-        assert!((state.doc.circles[0].cx - 10.0).abs() < 1e-3);
+        assert!((state.doc.circles[rkey(0)].cx - 10.0).abs() < 1e-3);
     }
 
     /// #138: typing `name=value` into a dimension text input (here a circle's diameter) creates
@@ -23929,7 +23919,7 @@ mod tests {
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1);
-        assert!((state.doc.circles[0].diameter() - 30.0).abs() < 1e-4);
+        assert!((state.doc.circles[rkey(0)].diameter() - 30.0).abs() < 1e-4);
         let param = state
             .doc
             .parameters
@@ -23962,7 +23952,7 @@ mod tests {
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1, "commit must not fail: {}", state.status);
-        assert!((state.doc.circles[0].diameter() - 30.0).abs() < 1e-4);
+        assert!((state.doc.circles[rkey(0)].diameter() - 30.0).abs() < 1e-4);
         let dia_params: Vec<_> = state
             .doc
             .parameters
@@ -24826,20 +24816,20 @@ mod tests {
     fn begin_sketch_on_circle_face_hosts_child_sketch() {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
-        state.doc.circles.push(Circle::from_local_center_radius(
+        state.doc.circles.insert(Circle::from_local_center_radius(
             sketch, 0.0, 0.0, 20.0, 0.0,
         ));
         state.doc.shape_order.push(ShapeKind::Circle);
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         assert!(matches!(
             state.apply(Action::BeginSketch {
-                face: FaceId::Circle(0),
+                face: FaceId::Circle(rkey(0)),
                 viewport: Some(viewport),
             }),
             ActionResult::Ok
         ));
         assert_eq!(state.doc.sketches.len(), 2);
-        assert_eq!(state.doc.sketches[skey(1)].face, FaceId::Circle(0));
+        assert_eq!(state.doc.sketches[skey(1)].face, FaceId::Circle(rkey(0)));
         assert!(state.sketch_session.is_some());
     }
 

@@ -90,7 +90,7 @@ pub(crate) enum ConstraintRef {
     Line(ConstraintLine),
     Point(ConstraintPoint),
     /// A whole circle (its perimeter), for point-on-circle coincidence.
-    Circle(usize),
+    Circle(crate::model::CircleKey),
     /// The origin (#189), for a point-coincident-to-origin constraint.
     Origin,
 }
@@ -339,8 +339,8 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Point(ConstraintPoint::LineEndpoint { line, end }) => {
             (2, line, end as u8, 0)
         }
-        ConstraintRef::Point(ConstraintPoint::CircleCenter(i)) => (4, i, 0, 0),
-        ConstraintRef::Circle(i) => (5, i, 0, 0),
+        ConstraintRef::Point(ConstraintPoint::CircleCenter(i)) => (4, i.index() as usize, 0, 0),
+        ConstraintRef::Circle(i) => (5, i.index() as usize, 0, 0),
         ConstraintRef::Point(ConstraintPoint::FaceVertex { index, .. }) => (6, index, 0, 0),
         ConstraintRef::Line(ConstraintLine::FaceEdge { index, .. }) => (7, index, 0, 0),
         ConstraintRef::Point(ConstraintPoint::TextAnchor { text, anchor }) => {
@@ -426,7 +426,7 @@ fn build_constraint_kind(
             _ => None,
         })
         .collect();
-    let circles: Vec<usize> = refs
+    let circles: Vec<crate::model::CircleKey> = refs
         .iter()
         .filter_map(|r| match r {
             ConstraintRef::Circle(index) => Some(*index),
@@ -607,9 +607,13 @@ fn validate_entity_ref(
             let entity = doc
                 .circles
                 .get(*circle)
-                .ok_or_else(|| format!("Circle {circle} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Circle {circle} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Circle {} is not in sketch {}",
+                    circle.index(),
+                    sketch.index()
+                ));
             }
             Ok(())
         }
@@ -633,9 +637,13 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
             let entity = doc
                 .circles
                 .get(*circle)
-                .ok_or_else(|| format!("Circle {circle} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Circle {circle} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Circle {} is not in sketch {}",
+                    circle.index(),
+                    sketch.index()
+                ));
             }
         }
         // A face's own vertex has no owning sketch — valid for any sketch as long as the
@@ -848,7 +856,7 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
             let entity = doc
                 .circles
                 .get(circle)
-                .ok_or_else(|| format!("Circle {circle} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             Ok((entity.cx, entity.cy))
         }
         // A face's own vertex has no stored local coordinate: it's a body-space 3D point
@@ -914,7 +922,7 @@ pub fn set_point_uv(
             let entity = doc
                 .circles
                 .get_mut(circle)
-                .ok_or_else(|| format!("Circle {circle} not found"))?;
+                .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
             entity.cx = u;
             entity.cy = v;
             Ok(())
@@ -954,6 +962,7 @@ pub fn set_point_uv(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line, ShapeKind};
@@ -1328,7 +1337,7 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         // Circle radius 10 centered at origin.
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
         // A line whose start sits inside the circle.
         doc.lines
             .push(Line::from_local_endpoints(sketch, 3.0, 1.0, 20.0, 20.0));
@@ -1341,7 +1350,7 @@ mod tests {
         };
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Point(point.clone()), false);
-        click_scene_selection(&mut sel, SceneElement::Circle(0), true);
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), true);
 
         // Selecting a point and a circle enables Coincident.
         let rows = constraint_pane_rows(&sel);
@@ -1367,7 +1376,7 @@ mod tests {
             doc.constraints[nkey(0)].kind,
             ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(_),
-                b: ConstraintEntity::Circle(0),
+                b: ConstraintEntity::Circle(_),
             }
         ));
     }

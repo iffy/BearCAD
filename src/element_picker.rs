@@ -426,7 +426,7 @@ pub fn element_in_sketch(
     element: &SceneElement,
 ) -> bool {
     let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
-    let circle_in = |ci: usize| doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| c.sketch == sketch);
+    let circle_in = |ci: crate::model::CircleKey| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
     let text_in = |ti: crate::model::SketchTextKey| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
     let host_face = doc.sketch_face(sketch);
     let constraint_line_in = |cl: &crate::model::ConstraintLine| match cl {
@@ -1235,6 +1235,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -1377,10 +1378,10 @@ mod tests {
         // #952: Extrude profiles, Revolve/Sweep profiles and Slice cutters all carry a `FaceId`
         // — the *analytic* face, a different identity from the quantized mesh `BodyFace` — and
         // had no scene element, so those inputs kept bespoke `Vec<FaceId>` state.
-        let profile = SceneElement::from_face_id(crate::model::FaceId::Circle(3));
+        let profile = SceneElement::from_face_id(crate::model::FaceId::Circle(rkey(3)));
         assert_eq!(
             profile,
-            SceneElement::SketchFace(crate::model::FaceId::Circle(3))
+            SceneElement::SketchFace(crate::model::FaceId::Circle(rkey(3)))
         );
         // #957: and it is a *different kind* from the mesh face over the same surface, so a
         // picker can say which of the two representations it wants — which is what stops the
@@ -1476,8 +1477,8 @@ mod tests {
     fn a_loft_section_needs_no_element_of_its_own() {
         // A loft section is a closed profile plus its sketch, and the profile is a `FaceId` —
         // so the analytic face element already names it; the sketch follows from the face.
-        let section = crate::model::ExtrudeFace::Circle(4);
-        let element = SceneElement::from_face_id(crate::model::FaceId::Circle(4));
+        let section = crate::model::ExtrudeFace::Circle(rkey(4));
+        let element = SceneElement::from_face_id(crate::model::FaceId::Circle(rkey(4)));
         assert_eq!(
             crate::extrude::extrude_face_scene_element(&section),
             element
@@ -1714,10 +1715,10 @@ mod tests {
             ElementFilter::kinds(&[ElementKind::Circle]),
             PickLimit::Infinite,
         );
-        let circle_face = SceneElement::from_face_id(crate::model::FaceId::Circle(2));
+        let circle_face = SceneElement::from_face_id(crate::model::FaceId::Circle(rkey(2)));
         assert_eq!(
             expand_pick(&doc, &circles, &circle_face, false),
-            vec![SceneElement::Circle(2)]
+            vec![SceneElement::Circle(rkey(2))]
         );
     }
 
@@ -1850,7 +1851,7 @@ mod tests {
             SceneElement::Image(crate::arena::Key::from_bits(0)),
             SceneElement::Sketch(skey(0)),
             SceneElement::Line(0),
-            SceneElement::Circle(0),
+            SceneElement::Circle(rkey(0)),
             SceneElement::Origin,
             SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] },
             body_face(0),

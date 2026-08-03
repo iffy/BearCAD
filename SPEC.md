@@ -182,6 +182,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.1 Sketching (2D)
 - Sketches are created on a datum plane or a planar face.
+- **Circle identity (#1055):** `Document::circles` is an `arena::Arena`, and a circle is
+  named by a `CircleKey` — `SceneElement`/`HierarchyNode::Circle`, `FaceId::Circle`,
+  `ExtrudeFace::Circle`, `ConstraintEntity::Circle`, `ConstraintPoint::CircleCenter`,
+  `DistanceTarget::CircleDiameter`, a repeat op's path circle, and the in-sketch operations'
+  circle targets and outputs. Deleting a circle removes it, so a diameter dimension or an
+  extruded profile on it reads as gone rather than moving onto the next circle. A script
+  names a circle by its **ordinal** among the live ones, resolved to a key at the boundary —
+  which is also why `FaceId::from_script` now takes the document.
 - **Sketch identity (#1055):** `Document::sketches` is an `arena::Arena` and `model::SketchId`
   *is* its key — so every line, circle, constraint, sketch text, extrusion, in-sketch
   operation, drawing view, and open-sketch session names its sketch by key. Deleting a sketch

@@ -719,7 +719,7 @@ impl ViewportScene {
             input.doc.default_length_unit,
         );
 
-        for (ci, circle) in input.doc.circles.iter().enumerate() {
+        for (ci, circle) in input.doc.circles.iter() {
             if !circle_alive(input.doc, ci)
                 || !input
                     .element_visibility
@@ -748,7 +748,7 @@ impl ViewportScene {
                     sketch_color(input.palette.construction, dim),
                     input.document_health.element_status(element),
                 ),
-                shape_fill_depth_bias_laned(ci, 1),
+                shape_fill_depth_bias_laned(ci.index() as usize, 1),
             );
             mesh.set_index_layer(MeshIndexLayer::Base);
         }
@@ -1290,7 +1290,7 @@ impl ViewportScene {
         }
 
         mesh.set_index_layer(MeshIndexLayer::Overlay);
-        for (ci, circle) in input.doc.circles.iter().enumerate() {
+        for (ci, circle) in input.doc.circles.iter() {
             if !circle_alive(input.doc, ci)
                 || !input
                     .element_visibility
@@ -1465,10 +1465,12 @@ impl ViewportScene {
             } else {
                 input.palette.preview
             };
+            // A preview circle isn't in the document yet, so it has no key of its own; the
+            // callee only uses this for a depth lane (#1055).
             mesh.push_circle(
                 input.doc,
                 circle,
-                usize::MAX,
+                crate::arena::Key::from_bits(u64::MAX),
                 input.cam,
                 input.viewport,
                 &vp,
@@ -2331,7 +2333,7 @@ impl<'a> SceneMesh<'a> {
         &mut self,
         doc: &Document,
         circle: &Circle,
-        _index: usize,
+        _index: crate::model::CircleKey,
         cam: &Camera,
         solid: Color32,
         construction: Color32,
@@ -2393,7 +2395,7 @@ impl<'a> SceneMesh<'a> {
         &mut self,
         doc: &Document,
         circle: &Circle,
-        _index: usize,
+        _index: crate::model::CircleKey,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2434,7 +2436,7 @@ impl<'a> SceneMesh<'a> {
         &mut self,
         doc: &Document,
         circle: &Circle,
-        index: usize,
+        index: crate::model::CircleKey,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -3345,7 +3347,7 @@ impl<'a> SceneMesh<'a> {
                         );
                     }
                 }
-                for (ci, circle) in doc.circles.iter().enumerate() {
+                for (ci, circle) in doc.circles.iter() {
                     if circle.sketch == sketch {
                         self.push_pick_target_highlight(
                             doc,
@@ -4834,7 +4836,7 @@ fn construction_geometry_visible(
 fn sketch_circle_is_active(
     doc: &Document,
     session: SketchSession,
-    circle_index: usize,
+    circle_index: crate::model::CircleKey,
     circle_sketch: crate::model::SketchId,
 ) -> bool {
     if circle_sketch == session.sketch {
@@ -7593,7 +7595,7 @@ mod tests {
             .lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 3.0, 10.0, 3.0));
         // …and a construction circle, which follows the same rule.
-        state.doc.circles.push(crate::model::Circle {
+        state.doc.circles.insert(crate::model::Circle {
             construction: true,
             ..crate::model::Circle::from_local_center_radius(sketch, 5.0, 2.5, 1.0, 0.0)
         });
@@ -8540,6 +8542,7 @@ mod tests {
 #[cfg(test)]
 mod perf_probe {
     use crate::model::body_key_for_slot as bkey;
+    use crate::model::circle_key_for_slot as rkey;
     use super::*;
     use crate::actions::{Action, AppState, Tool};
     use crate::hierarchy::{ElementVisibility, SceneElement};
@@ -8552,10 +8555,10 @@ mod perf_probe {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch { face: crate::model::FaceId::ConstructionPlane(0), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
-        state.doc.circles.push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
         state.doc.shape_order.push(crate::model::ShapeKind::Circle);
         state.apply(Action::SetTool(Tool::Extrude));
-        state.apply(Action::ToggleExtrudeFace { face: crate::model::ExtrudeFace::Circle(0) });
+        state.apply(Action::ToggleExtrudeFace { face: crate::model::ExtrudeFace::Circle(rkey(0)) });
         state.apply(Action::SetExtrudeDistance { distance: 60.0 });
         state.apply(Action::CommitExtrusion);
         state.apply(Action::ExitSketch);
@@ -8629,6 +8632,7 @@ mod perf_probe {
 
 #[cfg(test)]
 mod cut_preview_tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::{Action, AppState, Tool};
@@ -8645,11 +8649,11 @@ mod cut_preview_tests {
         state
             .doc
             .circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
         state.doc.shape_order.push(crate::model::ShapeKind::Circle);
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ToggleExtrudeFace {
-            face: crate::model::ExtrudeFace::Circle(0),
+            face: crate::model::ExtrudeFace::Circle(rkey(0)),
         });
         state.apply(Action::SetExtrudeDistance { distance: 60.0 });
         state.apply(Action::CommitExtrusion);

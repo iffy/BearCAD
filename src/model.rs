@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FaceId {
-    Circle(usize),
+    Circle(CircleKey),
     /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
     Polygon(Vec<usize>),
     ConstructionPlane(usize),
@@ -68,9 +68,11 @@ impl FaceId {
         matches!(self, FaceId::ConstructionPlane(_))
     }
 
-    pub fn from_script(kind: &str, index: usize) -> Option<Self> {
+    /// A face from a script's `(kind, index)` pair. A circle is named by its **ordinal**
+    /// among the live ones (#1055), so resolving one needs the document.
+    pub fn from_script(doc: &Document, kind: &str, index: usize) -> Option<Self> {
         match kind.to_ascii_lowercase().as_str() {
-            "circle" => Some(FaceId::Circle(index)),
+            "circle" => Some(FaceId::Circle(doc.circles.keys().nth(index)?)),
             "plane" | "construction_plane" | "constructionplane" => {
                 Some(FaceId::ConstructionPlane(index))
             }
@@ -638,9 +640,10 @@ pub struct Circle {
     /// User-visible label in the Elements pane; empty uses the default.
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// A circle's identity (#1055): stable across deletions of other circles.
+pub type CircleKey = crate::arena::Key<Circle>;
 
 impl Circle {
     pub fn from_local_center_radius(
@@ -662,7 +665,6 @@ impl Circle {
             construction: false,
             shadow: false,
             name: None,
-            deleted: false,
         }
     }
 
@@ -866,7 +868,7 @@ impl TextAnchor {
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintPoint {
     LineEndpoint { line: usize, end: LineEnd },
-    CircleCenter(usize),
+    CircleCenter(CircleKey),
     /// A corner of an extrusion-backed face's own boundary loop (#26/#27): index into
     /// [`crate::extrude::face_boundary_loop_world`]'s ordered vertex list. Scoped to
     /// `FaceId::ExtrudeCap`/`FaceId::ExtrudeSide`; other face kinds never resolve. Fixed by
@@ -932,7 +934,7 @@ pub fn default_constraint_sign() -> ConstraintSign {
 #[serde(rename_all = "snake_case")]
 pub enum DistanceTarget {
     LineLength(usize),
-    CircleDiameter(usize),
+    CircleDiameter(CircleKey),
     /// Spacing between parallel lines. `side` is the sign of the movable line's
     /// perpendicular offset from the reference line (+1 = positive perpendicular side).
     LineLineDistance {
@@ -1077,7 +1079,7 @@ pub enum ConstraintEntity {
     Point(ConstraintPoint),
     Line(ConstraintLine),
     /// A circle's perimeter (point-on-circle when paired with a point).
-    Circle(usize),
+    Circle(CircleKey),
     /// The sketch origin (local UV `(0, 0)`); a fixed point for snapping.
     Origin,
 }
@@ -1116,7 +1118,7 @@ pub enum BooleanOp {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtrudeFace {
-    Circle(usize),
+    Circle(CircleKey),
     /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
     Polygon(Vec<usize>),
     /// A boolean-combined region of two other faces (#16/#62), computed on demand via
@@ -1702,6 +1704,12 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
 /// The same for a joint (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn joint_key_for_slot(n: usize) -> JointKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a circle (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn circle_key_for_slot(n: usize) -> CircleKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2797,7 +2805,7 @@ pub struct RepeatOperation {
     /// A **circle** used as the path (#840): the copies ride around its circumference,
     /// keeping their orientation. When set it wins over `axis`.
     #[serde(default)]
-    pub path_circle: Option<usize>,
+    pub path_circle: Option<CircleKey>,
     /// Repeat **around** the path instead of along it (#839): copies turn about the axis
     /// rather than sliding along it, and `spacing`/`length` are read as angles (degrees).
     #[serde(default)]
@@ -2940,7 +2948,7 @@ pub struct SketchRepeatOperation {
     pub line_targets: Vec<usize>,
     /// Source circle indices to duplicate.
     #[serde(default)]
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<CircleKey>,
     /// Repeat direction in plane-local coords (normalized at recompute; the step is taken along
     /// this unit vector).
     pub dir_u: f32,
@@ -2958,7 +2966,7 @@ pub struct SketchRepeatOperation {
     pub line_outputs: Vec<usize>,
     /// Generated circle-copy indices, instance-major then target.
     #[serde(default)]
-    pub circle_outputs: Vec<usize>,
+    pub circle_outputs: Vec<CircleKey>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -2979,7 +2987,7 @@ pub struct SketchOffsetOperation {
     pub line_targets: Vec<usize>,
     /// Source circle indices to offset.
     #[serde(default)]
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<CircleKey>,
     /// Signed offset distance expression (mm): positive grows a closed loop/circle,
     /// negative shrinks (or flips an open chain's side).
     #[serde(default)]
@@ -2992,7 +3000,7 @@ pub struct SketchOffsetOperation {
     pub line_outputs: Vec<usize>,
     /// Generated circle indices, aligned with `circle_targets`.
     #[serde(default)]
-    pub circle_outputs: Vec<usize>,
+    pub circle_outputs: Vec<CircleKey>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -3014,13 +3022,13 @@ pub struct SketchMirrorOperation {
     pub line_targets: Vec<usize>,
     /// Source circle indices to reflect.
     #[serde(default)]
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<CircleKey>,
     /// Generated line indices, aligned with `line_targets`.
     #[serde(default)]
     pub line_outputs: Vec<usize>,
     /// Generated circle indices, aligned with `circle_targets`.
     #[serde(default)]
-    pub circle_outputs: Vec<usize>,
+    pub circle_outputs: Vec<CircleKey>,
     /// Generated coincidence-constraint indices reflecting the sources' shared corners onto the
     /// outputs (#547), so a mirrored polygon's reflected edges join into a fillable face.
     /// Tombstoned and regenerated on every rebuild, like the output geometry.
@@ -3051,7 +3059,7 @@ pub struct SketchSliceOperation {
     /// Target circle indices (#237); each is split into arcs where the cutters cross it. The arcs
     /// are emitted as curved (bezier) fragment lines, the source circle is shadowed.
     #[serde(default)]
-    pub circle_targets: Vec<usize>,
+    pub circle_targets: Vec<CircleKey>,
     /// Target **face** loops (#238): each entry is the line indices of a closed sketch face to
     /// slice. The cutter is expected to cross the loop's boundary at two points; the two crossed
     /// boundary edges are split, a cut **chord** is emitted between the crossings, and coincidence
@@ -4048,7 +4056,7 @@ pub struct Document {
     pub parameters: crate::arena::Arena<Parameter>,
     pub sketches: crate::arena::Arena<Sketch>,
     pub lines: Vec<Line>,
-    pub circles: Vec<Circle>,
+    pub circles: crate::arena::Arena<Circle>,
     pub constraints: crate::arena::Arena<Constraint>,
     pub construction_planes: Vec<ConstructionPlane>,
     #[serde(default)]
@@ -4324,7 +4332,7 @@ impl Default for Document {
             parameters: crate::arena::Arena::new(),
             sketches: crate::arena::Arena::new(),
             lines: Vec::new(),
-            circles: Vec::new(),
+            circles: crate::arena::Arena::new(),
             constraints: crate::arena::Arena::new(),
             construction_planes: crate::face::default_datum_planes(),
             extrusions: crate::arena::Arena::new(),
@@ -4377,7 +4385,7 @@ impl Document {
     #[allow(dead_code)] // query helper; now exercised only by tests since undo went snapshot-based (#194)
     pub fn sketch_has_geometry(&self, sketch: SketchId) -> bool {
         self.lines.iter().any(|l| l.sketch == sketch)
-            || self.circles.iter().any(|c| c.sketch == sketch)
+            || self.circles.values().any(|c| c.sketch == sketch)
     }
 
     #[allow(dead_code)] // query helper; now exercised only by tests
@@ -4788,7 +4796,15 @@ mod tests {
 
     #[test]
     fn face_id_from_script_parses_circle() {
-        assert_eq!(FaceId::from_script("circle", 2), Some(FaceId::Circle(2)));
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        for i in 0..3 {
+            doc.circles.insert(Circle::from_local_center_radius(
+                sketch, 0.0, 0.0, i as f32 + 1.0, 0.0,
+            ));
+        }
+        let third = doc.circles.keys().nth(2).unwrap();
+        assert_eq!(FaceId::from_script(&doc, "circle", 2), Some(FaceId::Circle(third)));
     }
 
     #[test]

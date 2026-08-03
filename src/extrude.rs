@@ -189,7 +189,7 @@ pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
             }
         }
     }
-    for circle in doc.circles.iter().filter(|c| !c.deleted && !c.construction) {
+    for circle in doc.circles.values().filter(|c| !c.construction) {
         if let Some(frame) = sketch_geometry_frame(doc, circle.sketch) {
             for (du, dv) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                 extend(local_to_world(
@@ -1679,7 +1679,7 @@ pub fn sketch_repeat_extent(
         extend(l.x1 * du + l.y1 * dv);
     }
     for &ci in &op.circle_targets {
-        let c = doc.circles.get(ci).filter(|c| !c.deleted)?;
+        let c = doc.circles.get(ci)?;
         let center = c.cx * du + c.cy * dv;
         extend(center - c.r);
         extend(center + c.r);
@@ -1812,10 +1812,10 @@ pub fn repeat_path_polyline(doc: &Document, axis: crate::model::RevolveAxis) -> 
 pub fn repeat_path_polyline_of(
     doc: &Document,
     axis: crate::model::RevolveAxis,
-    path_circle: Option<usize>,
+    path_circle: Option<crate::model::CircleKey>,
 ) -> Option<Vec<Vec3>> {
     if let Some(ci) = path_circle {
-        let circle = doc.circles.get(ci).filter(|c| !c.deleted)?;
+        let circle = doc.circles.get(ci)?;
         let frame = crate::face::sketch_geometry_frame(doc, circle.sketch)?;
         // Closed: the last point repeats the first, so a pattern can run the whole way round.
         const N: usize = 96;
@@ -3223,7 +3223,7 @@ pub fn loft_section_from_element(
     use crate::hierarchy::SceneElement;
     match element {
         SceneElement::Circle(ci) => {
-            let circle = doc.circles.get(ci).filter(|c| !c.deleted && !c.construction)?;
+            let circle = doc.circles.get(ci).filter(|c| !c.construction)?;
             Some(crate::model::LoftSection {
                 sketch: circle.sketch,
                 face: ExtrudeFace::Circle(ci),
@@ -3528,7 +3528,6 @@ pub fn selection_world_bounds(
                 if let Some((circle, frame)) = doc
                     .circles
                     .get(ci)
-                    .filter(|c| !c.deleted)
                     .and_then(|c| Some((c, sketch_geometry_frame(doc, c.sketch)?)))
                 {
                     for i in 0..CIRCLE_SEGMENTS {
@@ -5114,9 +5113,6 @@ pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec
     match face {
         ExtrudeFace::Circle(index) => {
             let circle = doc.circles.get(*index)?;
-            if circle.deleted {
-                return None;
-            }
             let frame = sketch_geometry_frame(doc, circle.sketch)?;
             let profile = circle_profile_world(&frame, circle.cx, circle.cy, circle.r);
             Some((profile, frame.normal))
@@ -5174,7 +5170,7 @@ pub fn extrude_face_uv_loop(
     match face {
         ExtrudeFace::Circle(i) => {
             let circle = doc.circles.get(*i)?;
-            if circle.deleted || circle.sketch != sketch {
+            if circle.sketch != sketch {
                 return None;
             }
             Some(
@@ -5301,7 +5297,7 @@ pub fn face_region_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3
 /// closed line-loop polygon (#66) whose owning sketch is `sketch`.
 fn raw_faces_in_sketch(doc: &Document, sketch: crate::model::SketchId) -> Vec<ExtrudeFace> {
     let mut out = Vec::new();
-    for (i, c) in doc.circles.iter().enumerate() {
+    for (i, c) in doc.circles.iter() {
         if c.sketch == sketch {
             out.push(ExtrudeFace::Circle(i));
         }
@@ -6441,6 +6437,7 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -7421,8 +7418,8 @@ mod tests {
 
         // A circle is a path too (#840): the copies ride round its circumference.
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 30.0, 0.0));
-        let ring = repeat_path_polyline_of(&doc, RevolveAxis::Z, Some(0)).expect("a circle path");
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 30.0, 0.0));
+        let ring = repeat_path_polyline_of(&doc, RevolveAxis::Z, Some(rkey(0))).expect("a circle path");
         assert!(ring.len() > 8, "sampled round");
         assert!(
             (ring.first().unwrap() - ring.last().unwrap()).length() < 1e-3,
@@ -7602,26 +7599,26 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         // Two circles far apart, plus one nested inside the first (a hole in its wall).
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 40.0, 0.0, 5.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 40.0, 0.0, 5.0, 0.0));
         let faces = vec![
-            ExtrudeFace::Circle(0),
-            ExtrudeFace::Circle(1),
-            ExtrudeFace::Circle(2),
+            ExtrudeFace::Circle(rkey(0)),
+            ExtrudeFace::Circle(rkey(1)),
+            ExtrudeFace::Circle(rkey(2)),
         ];
         let groups = disjoint_face_groups(&doc, &faces);
         assert_eq!(groups.len(), 2, "the ring is one solid, the far circle another: {groups:?}");
         assert!(groups.iter().any(|g| g.len() == 2), "the nested pair stays together");
-        assert!(groups.iter().any(|g| g == &[ExtrudeFace::Circle(2)]));
+        assert!(groups.iter().any(|g| g == &[ExtrudeFace::Circle(rkey(2))]));
 
         // One profile alone is one group, and overlapping profiles are one solid.
         assert_eq!(disjoint_face_groups(&doc, &faces[..1]).len(), 1);
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 44.0, 0.0, 5.0, 0.0));
-        let overlapping = vec![ExtrudeFace::Circle(2), ExtrudeFace::Circle(3)];
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 44.0, 0.0, 5.0, 0.0));
+        let overlapping = vec![ExtrudeFace::Circle(rkey(2)), ExtrudeFace::Circle(rkey(3))];
         assert_eq!(disjoint_face_groups(&doc, &overlapping).len(), 1, "overlapping profiles fuse");
     }
 
@@ -7633,8 +7630,11 @@ mod tests {
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, 20.0, 0.0, 3.0, 0.0));
-        let op = |dir_u: f32, dir_v: f32, lines: Vec<usize>, circles: Vec<usize>| {
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 20.0, 0.0, 3.0, 0.0));
+        let op = |dir_u: f32,
+                  dir_v: f32,
+                  lines: Vec<usize>,
+                  circles: Vec<crate::model::CircleKey>| {
             crate::model::SketchRepeatOperation {
                 sketch,
                 line_targets: lines,
@@ -7657,10 +7657,10 @@ mod tests {
         let e = sketch_repeat_extent(&doc, &op(0.0, 1.0, vec![0], Vec::new())).unwrap();
         assert!(e.abs() < 1e-3, "got {e}");
         // The circle contributes its radius either side of its centre.
-        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), vec![0])).unwrap();
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), vec![rkey(0)])).unwrap();
         assert!((e - 6.0).abs() < 1e-3, "got {e}");
         // Both together span 0..23.
-        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![0], vec![0])).unwrap();
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![0], vec![rkey(0)])).unwrap();
         assert!((e - 23.0).abs() < 1e-3, "got {e}");
         // Nothing picked, or a degenerate direction, has no extent to measure.
         assert!(sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), Vec::new())).is_none());
@@ -7929,10 +7929,10 @@ mod tests {
     #[test]
     fn concentric_circles_resolve_a_ring_and_an_inner_face() {
         let (mut doc, sketch) = sketch_doc();
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0)); // outer
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0)); // inner
-        let outer = ExtrudeFace::Circle(0);
-        let inner = ExtrudeFace::Circle(1);
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0)); // outer
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0)); // inner
+        let outer = ExtrudeFace::Circle(rkey(0));
+        let inner = ExtrudeFace::Circle(rkey(1));
 
         // The outer circle's unique overlapping partner is the inner one.
         assert_eq!(overlapping_partner(&doc, sketch, &outer), Some(inner.clone()));
@@ -7960,12 +7960,12 @@ mod tests {
     #[test]
     fn ring_face_resolves_to_a_holed_region() {
         let (mut doc, sketch) = sketch_doc();
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
         let ring = ExtrudeFace::Boolean {
             op: crate::model::BooleanOp::Difference,
-            a: Box::new(ExtrudeFace::Circle(0)),
-            b: Box::new(ExtrudeFace::Circle(1)),
+            a: Box::new(ExtrudeFace::Circle(rkey(0))),
+            b: Box::new(ExtrudeFace::Circle(rkey(1))),
         };
         // Previously rejected (annulus) — now the outer loop resolves via the region.
         let (outer, holes, _n) = face_region_world(&doc, &ring).expect("ring region");
@@ -8036,12 +8036,12 @@ mod tests {
     fn ring_extrusion_is_a_hollow_tube() {
         let (mut doc, sketch) = sketch_doc();
         let (big_r, small_r, h) = (10.0_f32, 4.0_f32, 20.0_f32);
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, big_r, 0.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, small_r, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, big_r, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, small_r, 0.0));
         let ring = ExtrudeFace::Boolean {
             op: crate::model::BooleanOp::Difference,
-            a: Box::new(ExtrudeFace::Circle(0)),
-            b: Box::new(ExtrudeFace::Circle(1)),
+            a: Box::new(ExtrudeFace::Circle(rkey(0))),
+            b: Box::new(ExtrudeFace::Circle(rkey(1))),
         };
         doc.extrusions.insert(extrusion(sketch, vec![ring], h));
         doc.bodies.insert(crate::model::Body {
@@ -8065,12 +8065,12 @@ mod tests {
     fn cap_hole_loops_report_the_ring_hole_at_the_cap() {
         let (mut doc, sketch) = sketch_doc();
         let h = 20.0_f32;
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
         let ring = ExtrudeFace::Boolean {
             op: crate::model::BooleanOp::Difference,
-            a: Box::new(ExtrudeFace::Circle(0)),
-            b: Box::new(ExtrudeFace::Circle(1)),
+            a: Box::new(ExtrudeFace::Circle(rkey(0))),
+            b: Box::new(ExtrudeFace::Circle(rkey(1))),
         };
         doc.extrusions.insert(extrusion(sketch, vec![ring.clone()], h));
 
@@ -8088,8 +8088,8 @@ mod tests {
         );
 
         // A simply-connected cap (a plain disc) has no holes.
-        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(0)], h));
-        let disc = cap_hole_loops_world(&doc, xkey(1), &ExtrudeFace::Circle(0), true);
+        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], h));
+        let disc = cap_hole_loops_world(&doc, xkey(1), &ExtrudeFace::Circle(rkey(0)), true);
         assert!(disc.is_empty(), "a solid disc cap reports no holes");
     }
 
@@ -8098,8 +8098,8 @@ mod tests {
     #[test]
     fn circle_boss_rim_chamfer_removes_a_ring() {
         let (mut doc, sketch) = sketch_doc();
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
-        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 20.0);
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 20.0);
         ext.edge_treatments.push(EdgeTreatment {
             edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true },
             kind: VertexTreatmentKind::Chamfer,
@@ -8130,8 +8130,8 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0);
         doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
-        let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0);
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
+        let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 6.0);
         hole.edge_treatments.push(EdgeTreatment {
             edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false },
             kind: VertexTreatmentKind::Fillet,
@@ -8167,8 +8167,8 @@ mod tests {
         let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0); // 20×20×5
         doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         // A 2.5mm-radius hole at x = -6.
-        doc.circles.push(Circle::from_local_center_radius(sketch, -6.0, 0.0, 2.5, 0.0));
-        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, -6.0, 0.0, 2.5, 0.0));
+        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 6.0));
         doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
@@ -8318,8 +8318,8 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0);
         doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
-        let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0);
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
+        let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 6.0);
         hole.edge_treatments.push(EdgeTreatment {
             // The hole prism runs z 0..6 through the 5mm plate; its base rim (z=0) is the
             // plate's bottom surface rim.
@@ -8349,8 +8349,8 @@ mod tests {
     #[test]
     fn treatable_edges_include_circle_cap_rims() {
         let (mut doc, sketch) = sketch_doc();
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
-        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 6.0));
         let edges = treatable_edges(&doc);
         let tops: Vec<_> = edges
             .iter()
@@ -8384,11 +8384,11 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, 0.0, 0.0, 50.0, 40.0);
         doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 35.0, 10.0, 2.5, 0.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 35.0, 30.0, 2.5, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 35.0, 10.0, 2.5, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 35.0, 30.0, 2.5, 0.0));
         doc.extrusions.insert(extrusion(
             sketch,
-            vec![ExtrudeFace::Circle(0), ExtrudeFace::Circle(1)],
+            vec![ExtrudeFace::Circle(rkey(0)), ExtrudeFace::Circle(rkey(1))],
             6.0,
         ));
         doc.bodies.insert(crate::model::Body {
@@ -8621,12 +8621,12 @@ mod tests {
     fn revolve_ring_face_makes_a_hollow_torus() {
         let (mut doc, sketch) = sketch_doc();
         let (d, big_r, small_r) = (20.0_f32, 5.0_f32, 2.0_f32);
-        doc.circles.push(Circle::from_local_center_radius(sketch, d, 0.0, big_r, 0.0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, d, 0.0, small_r, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, d, 0.0, big_r, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, d, 0.0, small_r, 0.0));
         let ring = ExtrudeFace::Boolean {
             op: crate::model::BooleanOp::Difference,
-            a: Box::new(ExtrudeFace::Circle(0)),
-            b: Box::new(ExtrudeFace::Circle(1)),
+            a: Box::new(ExtrudeFace::Circle(rkey(0))),
+            b: Box::new(ExtrudeFace::Circle(rkey(1))),
         };
         let rev = doc.revolutions.insert(test_revolution(
             sketch,
@@ -8857,7 +8857,7 @@ mod tests {
         });
         // Cut tool: two circles on planes below and above the plate loft into a frustum
         // column punching through it.
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 3.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 3.0, 0.0));
         doc.construction_planes.push(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
@@ -8871,11 +8871,11 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         ));
         let top = doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1));
-        doc.circles.push(Circle::from_local_center_radius(top, 0.0, 0.0, 3.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(top, 0.0, 0.0, 3.0, 0.0));
         doc.lofts.insert(crate::model::Loft {
             sections: vec![
-                crate::model::LoftSection { sketch, face: ExtrudeFace::Circle(0) },
-                crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
+                crate::model::LoftSection { sketch, face: ExtrudeFace::Circle(rkey(0)) },
+                crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(rkey(1)) },
             ],
             mode: crate::model::LoftMode::Cut(vec![bkey(0)]),
             name: None,
@@ -8907,14 +8907,14 @@ mod tests {
         ));
         let s0 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(s0, -30.0, 0.0, 6.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(s0, -30.0, 0.0, 6.0, 0.0));
         let s1 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(1));
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(s1, -30.0, 0.0, 3.0, 0.0));
+            .insert(crate::model::Circle::from_local_center_radius(s1, -30.0, 0.0, 3.0, 0.0));
         let loft = crate::model::Loft {
             sections: vec![
-                crate::model::LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) },
-                crate::model::LoftSection { sketch: s1, face: ExtrudeFace::Circle(1) },
+                crate::model::LoftSection { sketch: s0, face: ExtrudeFace::Circle(rkey(0)) },
+                crate::model::LoftSection { sketch: s1, face: ExtrudeFace::Circle(rkey(1)) },
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,
@@ -8937,7 +8937,7 @@ mod tests {
         let mut doc = Document::default();
         doc.construction_planes.truncate(1);
         let bottom = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.circles.push(Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
         doc.construction_planes.push(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
@@ -8951,12 +8951,12 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         ));
         let top = doc.add_sketch(FaceId::ConstructionPlane(1));
-        doc.circles.push(Circle::from_local_center_radius(top, 0.0, 0.0, 5.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(top, 0.0, 0.0, 5.0, 0.0));
 
         let loft = crate::model::Loft {
             sections: vec![
-                crate::model::LoftSection { sketch: bottom, face: ExtrudeFace::Circle(0) },
-                crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
+                crate::model::LoftSection { sketch: bottom, face: ExtrudeFace::Circle(rkey(0)) },
+                crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(rkey(1)) },
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,
@@ -8978,11 +8978,11 @@ mod tests {
     fn loft_mesh_requires_two_sections() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         let loft = crate::model::Loft {
             sections: vec![crate::model::LoftSection {
                 sketch,
-                face: ExtrudeFace::Circle(0),
+                face: ExtrudeFace::Circle(rkey(0)),
             }],
             mode: crate::model::LoftMode::NewBody,
             name: None,
@@ -8997,11 +8997,11 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let circle = crate::model::LoftSection {
             sketch: skey(0),
-            face: ExtrudeFace::Circle(3),
+            face: ExtrudeFace::Circle(rkey(3)),
         };
         assert_eq!(
             loft_section_scene_elements(&circle),
-            vec![SceneElement::Circle(3)]
+            vec![SceneElement::Circle(rkey(3))]
         );
         let polygon = crate::model::LoftSection {
             sketch: skey(0),
@@ -9042,20 +9042,20 @@ mod tests {
                 doc.construction_planes.len() - 1
             };
             let sketch = doc.add_sketch(FaceId::ConstructionPlane(plane_idx));
-            doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+            doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
             sketches.push((i, sketch));
         }
         // Pick order: top (z=10), bottom (z=0), middle (z=5).
         let sections = vec![
-            crate::model::LoftSection { sketch: sketches[1].1, face: ExtrudeFace::Circle(1) },
-            crate::model::LoftSection { sketch: sketches[0].1, face: ExtrudeFace::Circle(0) },
-            crate::model::LoftSection { sketch: sketches[2].1, face: ExtrudeFace::Circle(2) },
+            crate::model::LoftSection { sketch: sketches[1].1, face: ExtrudeFace::Circle(rkey(1)) },
+            crate::model::LoftSection { sketch: sketches[0].1, face: ExtrudeFace::Circle(rkey(0)) },
+            crate::model::LoftSection { sketch: sketches[2].1, face: ExtrudeFace::Circle(rkey(2)) },
         ];
         let ordered = order_loft_sections(&doc, sections);
         let order: Vec<_> = ordered
             .iter()
             .map(|s| match s.face {
-                ExtrudeFace::Circle(ci) => ci,
+                ExtrudeFace::Circle(ci) => ci.index() as usize,
                 _ => usize::MAX,
             })
             .collect();
@@ -9129,8 +9129,8 @@ mod tests {
     #[test]
     fn cut_tool_overshoots_past_both_ends() {
         let (mut doc, sketch) = sketch_doc();
-        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
-        let ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 20.0);
+        doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        let ext = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 20.0);
         let flush = occt_extrusion_shape(&doc, &ext, 20.0).unwrap().volume().unwrap();
         let overshot = occt_extrusion_shape_overshoot(&doc, &ext, 20.0, 0.05)
             .unwrap()
@@ -9398,8 +9398,8 @@ mod tests {
     fn circle_extrudes_to_a_cylinder_mesh() {
         let (mut doc, sketch) = sketch_doc();
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
-        let ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 8.0);
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        let ext = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 8.0);
         let mesh = extrusion_mesh(&doc, &ext).unwrap();
         // The kernel tessellates a *true* cylinder (triangle count varies with the
         // mesher); the hand-rolled fallback path is covered by its own tests.
@@ -9432,8 +9432,8 @@ mod tests {
         ));
         let target_plane = doc.construction_planes.len() - 1;
         doc.circles
-            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
-        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 40.0);
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 40.0);
         ext.target = Some(crate::model::ExtrudeTarget::Plane(target_plane));
         let mesh = extrusion_mesh(&doc, &ext).expect("mesh built");
         assert_watertight(&mesh);
@@ -9786,9 +9786,9 @@ mod tests {
 
         let (mut cdoc, csketch) = sketch_doc();
         cdoc.circles
-            .push(Circle::from_local_center_radius(csketch, 0.0, 0.0, 5.0, 0.0));
+            .insert(Circle::from_local_center_radius(csketch, 0.0, 0.0, 5.0, 0.0));
         cdoc.extrusions
-            .insert(extrusion(csketch, vec![ExtrudeFace::Circle(0)], 6.0));
+            .insert(extrusion(csketch, vec![ExtrudeFace::Circle(rkey(0))], 6.0));
         // Circle profiles have no polygonal edges; their two cap rims are treatable
         // (#177), emitted as chord segments naming Cap { edge: 0 }.
         let circle_edges = treatable_edges(&cdoc);

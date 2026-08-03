@@ -35,7 +35,7 @@ pub enum HierarchyNode {
     ConstructionPlane(usize),
     Sketch(SketchId),
     Line(usize),
-    Circle(usize),
+    Circle(crate::model::CircleKey),
     Constraint(crate::model::ConstraintKey),
     Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
@@ -129,7 +129,7 @@ pub enum SceneElement {
     ConstructionPlane(usize),
     Sketch(SketchId),
     Line(usize),
-    Circle(usize),
+    Circle(crate::model::CircleKey),
     Point(ConstraintPoint),
     Constraint(crate::model::ConstraintKey),
     Extrusion(crate::model::ExtrusionKey),
@@ -1940,7 +1940,7 @@ pub fn build_hierarchy(
         children.extend(
             op.circle_outputs
                 .iter()
-                .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+                .filter(|&&ci| doc.circles.contains(ci))
                 .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
         );
         roots.push(HierarchyEntry {
@@ -1968,7 +1968,7 @@ pub fn build_hierarchy(
         children.extend(
             op.circle_outputs
                 .iter()
-                .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+                .filter(|&&ci| doc.circles.contains(ci))
                 .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
         );
         roots.push(HierarchyEntry {
@@ -2759,7 +2759,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     out.insert(SceneElement::Line(li));
                 }
             }
-            for (ci, circle) in doc.circles.iter().enumerate() {
+            for (ci, circle) in doc.circles.iter() {
                 if circle.sketch == sketch {
                     out.insert(SceneElement::Circle(ci));
                 }
@@ -3539,7 +3539,7 @@ fn is_sketch_repeat_line_output(doc: &Document, li: usize) -> bool {
         })
 }
 
-fn is_sketch_repeat_circle_output(doc: &Document, ci: usize) -> bool {
+fn is_sketch_repeat_circle_output(doc: &Document, ci: crate::model::CircleKey) -> bool {
     doc.sketch_repeat_ops
         .values()
         .any(|op| op.circle_outputs.contains(&ci))
@@ -3562,7 +3562,7 @@ fn build_sketch_offset_entry(doc: &Document, oi: crate::model::SketchOffsetOpKey
     children.extend(
         op.circle_outputs
             .iter()
-            .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+            .filter(|&&ci| doc.circles.contains(ci))
             .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
     );
     HierarchyEntry {
@@ -3611,8 +3611,8 @@ fn build_sketch_entry(
             }
             children.push(entry);
         }
-        for (ci, circle) in doc.circles.iter().enumerate() {
-            if circle.deleted || circle.sketch != sketch || is_sketch_repeat_circle_output(doc, ci) {
+        for (ci, circle) in doc.circles.iter() {
+            if circle.sketch != sketch || is_sketch_repeat_circle_output(doc, ci) {
                 continue;
             }
             let nested = build_face_sketches(doc, FaceId::Circle(ci), sketch_session);
@@ -3640,8 +3640,8 @@ fn build_sketch_entry(
             });
         }
     } else {
-        for (ci, circle) in doc.circles.iter().enumerate() {
-            if circle.deleted || circle.sketch != sketch || is_sketch_repeat_circle_output(doc, ci) {
+        for (ci, circle) in doc.circles.iter() {
+            if circle.sketch != sketch || is_sketch_repeat_circle_output(doc, ci) {
                 continue;
             }
             let nested = build_face_sketches(doc, FaceId::Circle(ci), sketch_session);
@@ -5456,6 +5456,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -6463,8 +6464,8 @@ label_hidden: false,
         doc.construction_planes.truncate(1);
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
-            .push(crate::model::Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
-        let s1 = doc.add_sketch(FaceId::Circle(0));
+            .insert(crate::model::Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
+        let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
 
         let list = build_element_list(&doc, None);
         assert_eq!(
@@ -6473,7 +6474,7 @@ label_hidden: false,
                 HierarchyNode::Document,
                 HierarchyNode::ConstructionPlane(0),
                 HierarchyNode::Sketch(skey(0)),
-                HierarchyNode::Circle(0),
+                HierarchyNode::Circle(rkey(0)),
                 HierarchyNode::Sketch(skey(1)),
             ]
         );
@@ -7309,9 +7310,9 @@ label_hidden: false,
         let mut doc = Document::default();
         let loft_key = doc.lofts.insert(Loft {
             sections: vec![
-                LoftSection { sketch: skey(0), face: ExtrudeFace::Circle(0) },
-                LoftSection { sketch: skey(1), face: ExtrudeFace::Circle(1) },
-                LoftSection { sketch: skey(2), face: ExtrudeFace::Circle(2) },
+                LoftSection { sketch: skey(0), face: ExtrudeFace::Circle(rkey(0)) },
+                LoftSection { sketch: skey(1), face: ExtrudeFace::Circle(rkey(1)) },
+                LoftSection { sketch: skey(2), face: ExtrudeFace::Circle(rkey(2)) },
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,

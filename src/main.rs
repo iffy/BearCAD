@@ -2857,7 +2857,7 @@ fn draw_touch_draw_loupe(
             }
         }
     }
-    for circle in doc.circles.iter().filter(|c| !c.deleted && c.sketch == session.sketch) {
+    for circle in doc.circles.values().filter(|c| c.sketch == session.sketch) {
         let color = if circle.construction { col::CONSTRUCTION } else { col::RECT_LINE };
         if let Some(poly) = face::circle_world_perimeter(doc, circle, 64) {
             chain(&poly, egui::Stroke::new(1.6, color));
@@ -6555,7 +6555,7 @@ impl App {
                 }
             }
             for &ci in &cr.circle_targets {
-                if let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) {
+                if let Some(c) = doc.circles.get(ci) {
                     const N: usize = 48;
                     let mut prev = None;
                     for k in 0..=N {
@@ -6638,7 +6638,7 @@ impl App {
             }
         }
         for &ci in &co.circle_targets {
-            if let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) {
+            if let Some(c) = doc.circles.get(ci) {
                 let r = crate::offset::offset_circle_radius(c.r, distance);
                 const N: usize = 48;
                 let mut prev = None;
@@ -6809,8 +6809,8 @@ impl App {
                 let lines = match face {
                     Some(model::FaceId::Polygon(lines)) => lines,
                     Some(model::FaceId::Circle(ci))
-                        if self.state.doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| {
-                            !c.deleted && c.sketch == session.sketch
+                        if self.state.doc.circles.get(ci).is_some_and(|c| {
+                            c.sketch == session.sketch
                         }) =>
                     {
                         if let Some(co) = self.state.creating_sketch_offset.as_mut() {
@@ -7695,7 +7695,7 @@ impl App {
                         .doc
                         .circles
                         .get(ci)
-                        .filter(|c| !c.deleted && c.sketch == session.sketch)
+                        .filter(|c| c.sketch == session.sketch)
                     {
                         acc(c.cx, c.cy);
                     }
@@ -8806,7 +8806,7 @@ impl App {
             }
         }
         for &ci in &sm.circle_targets {
-            let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) else { continue };
+            let Some(c) = doc.circles.get(ci) else { continue };
             let dashed = c.construction;
             let center = reflect(glam::Vec2::new(c.cx, c.cy));
             const N: usize = 48;
@@ -25281,7 +25281,7 @@ impl App {
                     draw_line_segment(&painter, &project, doc, line, color, 2.0);
                 }
             }
-            for (ci, circle) in doc.circles.iter().enumerate() {
+            for (ci, circle) in doc.circles.iter() {
                 if !circle_alive(doc, ci)
                     || !visibility.effective_visible(doc, SceneElement::Circle(ci))
                 {
@@ -27291,7 +27291,7 @@ fn sketch_color(color: egui::Color32, dim: bool) -> egui::Color32 {
 fn sketch_circle_is_active(
     doc: &model::Document,
     session: SketchSession,
-    circle_index: usize,
+    circle_index: model::CircleKey,
     circle_sketch: SketchId,
 ) -> bool {
     if circle_sketch == session.sketch {
@@ -27349,6 +27349,7 @@ fn draw_ground(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
@@ -28415,7 +28416,7 @@ mod tests {
         let mut state = AppState::default();
         // Two circles on planes 10 mm apart, so the loft blends through real space.
         let s0 = state.doc.add_sketch(FaceId::ConstructionPlane(0));
-        state.doc.circles.push(Circle::from_local_center_radius(s0, 0.0, 0.0, 5.0, 0.0));
+        state.doc.circles.insert(Circle::from_local_center_radius(s0, 0.0, 0.0, 5.0, 0.0));
         state.doc.construction_planes.push(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
@@ -28429,7 +28430,7 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         ));
         let s1 = state.doc.add_sketch(FaceId::ConstructionPlane(1));
-        state.doc.circles.push(Circle::from_local_center_radius(s1, 0.0, 0.0, 3.0, 0.0));
+        state.doc.circles.insert(Circle::from_local_center_radius(s1, 0.0, 0.0, 3.0, 0.0));
         state.tool = Tool::Loft;
 
         let cam = state.cam.clone();
@@ -28492,7 +28493,7 @@ mod tests {
 
         // One section: nothing to blend yet, no preview.
         state.creating_loft = Some(CreatingLoft {
-            sections: vec![LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) }],
+            sections: vec![LoftSection { sketch: s0, face: ExtrudeFace::Circle(rkey(0)) }],
             ..CreatingLoft::default()
         });
         assert!(!build(&state), "a single section shouldn't preview a loft");
@@ -28500,8 +28501,8 @@ mod tests {
         // Two sections: the blended solid previews.
         state.creating_loft = Some(CreatingLoft {
             sections: vec![
-                LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) },
-                LoftSection { sketch: s1, face: ExtrudeFace::Circle(1) },
+                LoftSection { sketch: s0, face: ExtrudeFace::Circle(rkey(0)) },
+                LoftSection { sketch: s1, face: ExtrudeFace::Circle(rkey(1)) },
             ],
             ..CreatingLoft::default()
         });
@@ -29699,7 +29700,7 @@ mod tests {
         let lines =
             construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         doc.circles
-            .push(model::Circle::from_local_center_radius(sketch, 20.0, 20.0, 4.0, 0.0));
+            .insert(model::Circle::from_local_center_radius(sketch, 20.0, 20.0, 4.0, 0.0));
         doc.extrusions.insert(model::Extrusion {
             sketch,
             faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
@@ -29721,7 +29722,7 @@ mod tests {
 
         for kind in [
             PK::Line(lines[0]),
-            PK::Circle(0),
+            PK::Circle(model::circle_key_for_slot(0)),
             PK::Point(model::ConstraintPoint::LineEndpoint {
                 line: lines[0],
                 end: model::LineEnd::Start,
@@ -30395,7 +30396,7 @@ mod tests {
         let edge_rank = crowd_type_rank(&K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X });
         assert_eq!(line_rank, edge_rank, "lines and body edges group together");
         // ...and distinct from circles and faces.
-        assert_ne!(line_rank, crowd_type_rank(&K::Circle(0)));
+        assert_ne!(line_rank, crowd_type_rank(&K::Circle(model::circle_key_for_slot(0))));
         assert_ne!(
             line_rank,
             crowd_type_rank(&K::BodyFace {
@@ -30420,7 +30421,7 @@ mod tests {
             pts.push(egui::pos2((i % per) as f32 * 50.0, (i / per) as f32 * 50.0));
             kinds.push(match i / per {
                 0 => K::Line(i),
-                1 => K::Circle(i),
+                1 => K::Circle(model::circle_key_for_slot(i)),
                 _ => K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
             });
         }
@@ -30450,7 +30451,7 @@ mod tests {
         let total = n_lines + 1;
         let pts: Vec<egui::Pos2> = (0..total).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
         let mut kinds: Vec<K> = (0..n_lines).map(K::Line).collect();
-        kinds.push(K::Circle(0));
+        kinds.push(K::Circle(model::circle_key_for_slot(0)));
         let idxs: Vec<usize> = (0..total).collect();
         let tree = build_exploder_tree(&idxs, &pts, &kinds);
         assert_eq!(tree.len(), 2, "two type nodes (lines, circle)");
@@ -30470,7 +30471,7 @@ mod tests {
         let kinds: Vec<K> = (0..n)
             .map(|i| match i % 3 {
                 0 => K::Line(i),
-                1 => K::Circle(i),
+                1 => K::Circle(model::circle_key_for_slot(i)),
                 _ => K::BodyFace {
                     body: bkey(0),
                     triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]],
@@ -30572,7 +30573,7 @@ mod tests {
         use crate::element_picker::{ElementFilter, ElementKind, PickLimit};
         use construction::PickTargetKind as K;
         let plane = K::SketchFace(FaceId::ConstructionPlane(1));
-        let cap = K::SketchFace(FaceId::Circle(0));
+        let cap = K::SketchFace(FaceId::Circle(rkey(0)));
         let body_face = K::BodyFace {
             body: bkey(0),
             triangles: Vec::new(),

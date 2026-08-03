@@ -69,7 +69,7 @@ pub fn scene_element_from_kind(
         }
         "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
         "line" => Some(SceneElement::Line(index)),
-        "circle" => Some(SceneElement::Circle(index)),
+        "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
@@ -203,9 +203,8 @@ pub fn scene_element_selection_index(
             crate::construction::GlobalAxis::Y => 1,
             crate::construction::GlobalAxis::Z => 2,
         }),
-        SceneElement::ConstructionPlane(i)
-        | SceneElement::Line(i)
-        | SceneElement::Circle(i) => Some(*i),
+        SceneElement::ConstructionPlane(i) | SceneElement::Line(i) => Some(*i),
+        SceneElement::Circle(key) => doc.circles.keys().position(|k| k == *key),
         SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == *key),
         SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
         SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
@@ -333,7 +332,7 @@ pub fn instruction_from_json(
         "begin_sketch" => {
             let kind = req_str(o, "kind", "begin_sketch")?;
             let index = req_usize(o, "index", "begin_sketch")?;
-            let face = FaceId::from_script(&kind, index)
+            let face = FaceId::from_script(doc, &kind, index)
                 .ok_or_else(|| format!("unknown sketch face kind '{kind}'"))?;
             Ok(Instruction::BeginSketch { face })
         }
@@ -440,7 +439,7 @@ pub fn instruction_from_json(
 
         // ----- Declarative 3D modeling ops. -----
         "revolve" => {
-            let faces = collect_profile_faces(o, false)?;
+            let faces = collect_profile_faces(doc, o, false)?;
             if faces.is_empty() {
                 return Err("revolve requires a `circle`/`circles`/`polygon` face".into());
             }
@@ -462,7 +461,7 @@ pub fn instruction_from_json(
             Ok(Instruction::Revolve { faces, axis, angle_deg, symmetric, body, bodies })
         }
         "loft" => {
-            let faces = collect_profile_faces(o, true)?;
+            let faces = collect_profile_faces(doc, o, true)?;
             if faces.len() < 2 {
                 return Err("loft requires at least two sections (`circles`/`polygons`)".into());
             }
@@ -607,7 +606,7 @@ pub fn instruction_from_json(
                 .get("target")
                 .ok_or("add_constraint requires a `target`")?;
             Ok(Instruction::AddDistanceConstraint {
-                target: distance_target_from_json(target)?,
+                target: distance_target_from_json(doc, target)?,
                 expression: req_expr(o, "expression", "add_constraint")?,
             })
         }
@@ -920,18 +919,25 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 None => return Err("extrude requires a `distance` or `to`".into()),
             };
             let mut faces = Vec::new();
+            // A script names a circle by its ordinal among the live ones (#1055).
+            let circle_key = |ordinal: usize| {
+                doc.circles
+                    .keys()
+                    .nth(ordinal)
+                    .ok_or_else(|| format!("no circle {ordinal}"))
+            };
             if let Some(i) = opt_usize(o, "circle")? {
-                faces.push(ExtrudeFace::Circle(i));
+                faces.push(ExtrudeFace::Circle(circle_key(i)?));
             }
             for i in usize_list(o, "circles")? {
-                faces.push(ExtrudeFace::Circle(i));
+                faces.push(ExtrudeFace::Circle(circle_key(i)?));
             }
             if let Some(lines) = opt_usize_array(o, "polygon")? {
                 faces.push(ExtrudeFace::Polygon(lines));
             }
             if let Some(b) = o.get("boolean") {
                 if !b.is_null() {
-                    faces.push(boolean_face_from_json(b)?);
+                    faces.push(boolean_face_from_json(doc, b)?);
                 }
             }
             if faces.is_empty() {
@@ -1035,7 +1041,7 @@ fn extrude_target_from_json(
             if fo.contains_key("kind") || fo.contains_key("type") {
                 return Ok(ExtrudeTarget::BodyFace(face_id_from_json(doc, face)?));
             }
-            return Ok(ExtrudeTarget::Face(extrude_face_from_json(face)?));
+            return Ok(ExtrudeTarget::Face(extrude_face_from_json(doc, face)?));
         }
     }
     if let Some(vertex) = t.get("vertex") {
@@ -1048,24 +1054,32 @@ fn extrude_target_from_json(
 
 /// An `ExtrudeFace` from a face-spec object: `{circle=i}`, `{polygon=[..]}`, or a nested
 /// `{boolean={op,a,b}}` (mirrors `parse_extrude_face_table`).
-fn extrude_face_from_json(v: &Value) -> Result<ExtrudeFace, String> {
+fn extrude_face_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<ExtrudeFace, String> {
     let t = v.as_object().ok_or("face spec must be an object")?;
-    if let Some(i) = opt_usize(t, "circle")? {
-        return Ok(ExtrudeFace::Circle(i));
+    if let Some(ordinal) = opt_usize(t, "circle")? {
+        let key = doc
+            .circles
+            .keys()
+            .nth(ordinal)
+            .ok_or_else(|| format!("no circle {ordinal}"))?;
+        return Ok(ExtrudeFace::Circle(key));
     }
     if let Some(lines) = opt_usize_array(t, "polygon")? {
         return Ok(ExtrudeFace::Polygon(lines));
     }
     if let Some(b) = t.get("boolean") {
         if !b.is_null() {
-            return boolean_face_from_json(b);
+            return boolean_face_from_json(doc, b);
         }
     }
     Err("face spec requires one of circle/polygon/boolean".into())
 }
 
 /// A `{ op, a, b }` boolean region (mirrors `parse_boolean_face_table`).
-fn boolean_face_from_json(v: &Value) -> Result<ExtrudeFace, String> {
+fn boolean_face_from_json(doc: &crate::model::Document, v: &Value) -> Result<ExtrudeFace, String> {
     let t = v.as_object().ok_or("boolean face must be an object")?;
     let op = match req_str(t, "op", "boolean")?.to_ascii_lowercase().as_str() {
         "intersection" => BooleanOp::Intersection,
@@ -1076,8 +1090,8 @@ fn boolean_face_from_json(v: &Value) -> Result<ExtrudeFace, String> {
             ))
         }
     };
-    let a = extrude_face_from_json(t.get("a").ok_or("boolean face requires `a`")?)?;
-    let b = extrude_face_from_json(t.get("b").ok_or("boolean face requires `b`")?)?;
+    let a = extrude_face_from_json(doc, t.get("a").ok_or("boolean face requires `a`")?)?;
+    let b = extrude_face_from_json(doc, t.get("b").ok_or("boolean face requires `b`")?)?;
     Ok(ExtrudeFace::Boolean { op, a: Box::new(a), b: Box::new(b) })
 }
 
@@ -1109,7 +1123,12 @@ fn constraint_point_from_json(
             };
             Ok(ConstraintPoint::LineEndpoint { line: index, end })
         }
-        "circle" => Ok(ConstraintPoint::CircleCenter(index)),
+        "circle" => Ok(ConstraintPoint::CircleCenter(
+            doc.circles
+                .keys()
+                .nth(index)
+                .ok_or_else(|| format!("no circle {index}"))?,
+        )),
         other => Err(format!("unknown point parent '{other}'")),
     }
 }
@@ -1177,13 +1196,21 @@ fn extrusion_edge_set_from_json(
 
 /// A distance-constraint target from a `{ kind, index }` object (mirrors
 /// `parse_distance_target`): a line's length or a circle's diameter.
-fn distance_target_from_json(v: &Value) -> Result<DistanceTarget, String> {
+fn distance_target_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<DistanceTarget, String> {
     let t = v.as_object().ok_or("constraint target must be an object")?;
     let kind = req_str(t, "kind", "target")?;
     let index = req_usize(t, "index", "target")?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => Ok(DistanceTarget::LineLength(index)),
-        "circle" => Ok(DistanceTarget::CircleDiameter(index)),
+        "circle" => Ok(DistanceTarget::CircleDiameter(
+            doc.circles
+                .keys()
+                .nth(index)
+                .ok_or_else(|| format!("no circle {index}"))?,
+        )),
         other => Err(format!("unknown constraint target '{other}'")),
     }
 }
@@ -1206,13 +1233,23 @@ fn geometric_constraint_from_name(name: &str) -> Option<GeometricConstraintType>
 /// `extrude`): a single `circle`, a `circles` list, a single `polygon` loop, and — only for
 /// `loft` (`allow_polygons`) — a `polygons` list of loops. Order matches the closures: single
 /// circle, circles list, polygon, polygons.
-fn collect_profile_faces(o: &Map<String, Value>, allow_polygons: bool) -> Result<Vec<ExtrudeFace>, String> {
+fn collect_profile_faces(
+    doc: &crate::model::Document,
+    o: &Map<String, Value>,
+    allow_polygons: bool,
+) -> Result<Vec<ExtrudeFace>, String> {
     let mut faces = Vec::new();
+    let circle_key = |ordinal: usize| {
+        doc.circles
+            .keys()
+            .nth(ordinal)
+            .ok_or_else(|| format!("no circle {ordinal}"))
+    };
     if let Some(i) = opt_usize(o, "circle")? {
-        faces.push(ExtrudeFace::Circle(i));
+        faces.push(ExtrudeFace::Circle(circle_key(i)?));
     }
     for i in usize_list(o, "circles")? {
-        faces.push(ExtrudeFace::Circle(i));
+        faces.push(ExtrudeFace::Circle(circle_key(i)?));
     }
     if let Some(lines) = opt_usize_array(o, "polygon")? {
         faces.push(ExtrudeFace::Polygon(lines));
@@ -1703,7 +1740,12 @@ fn face_id_from_json(doc: &crate::model::Document, v: &Value) -> Result<FaceId, 
                 None => opt_usize(t, "index")?.unwrap_or(0),
             };
             let profile = match profile_kind.to_ascii_lowercase().as_str() {
-                "circle" => ExtrudeFace::Circle(profile_index),
+                "circle" => ExtrudeFace::Circle(
+                    doc.circles
+                        .keys()
+                        .nth(profile_index)
+                        .ok_or_else(|| format!("no circle {profile_index}"))?,
+                ),
                 "polygon" => {
                     let lines = match opt_usize_array(t, "profile_lines")? {
                         Some(l) => l,
@@ -1714,7 +1756,7 @@ fn face_id_from_json(doc: &crate::model::Document, v: &Value) -> Result<FaceId, 
                 }
                 // A boolean-combined profile's cap (#406): same descriptor as `extrude`'s
                 // `boolean =`.
-                "boolean" => boolean_face_from_json(
+                "boolean" => boolean_face_from_json(doc, 
                     t.get("boolean").ok_or("boolean profile requires a `boolean` table")?,
                 )?,
                 other => {
@@ -1739,7 +1781,7 @@ fn face_id_from_json(doc: &crate::model::Document, v: &Value) -> Result<FaceId, 
         }
         _ => {
             let index = req_usize(t, "index", "face")?;
-            FaceId::from_script(kind, index)
+            FaceId::from_script(doc, kind, index)
                 .ok_or_else(|| format!("unknown sketch face kind '{kind}'"))
         }
     }
@@ -1760,7 +1802,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
             let kind = req_str(o, "kind", "count")?;
             let n = match kind.to_ascii_lowercase().as_str() {
                 "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
-                "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
+                "circle" => doc.circles.len(),
                 "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
@@ -1836,7 +1878,8 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             );
         }
         "circle" => {
-            let Some(circle) = doc.circles.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the circle's ordinal (#1055).
+            let Some(circle) = doc.circles.keys().nth(index).map(|k| &doc.circles[k]) else {
                 return Ok(Value::Null);
             };
             t.insert("x".into(), json!(circle.cx));
@@ -2227,6 +2270,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
@@ -2333,7 +2377,9 @@ mod tests {
         );
         assert_eq!(
             instruction_from_json(&Document::default(), "begin_sketch", &json!({ "kind": "plane", "index": 0 })),
-            Ok(Instruction::BeginSketch { face: FaceId::from_script("plane", 0).unwrap() })
+            Ok(Instruction::BeginSketch {
+                face: FaceId::from_script(&Document::default(), "plane", 0).unwrap(),
+            })
         );
         assert_eq!(
             instruction_from_json(&Document::default(), "open_sketch", &json!({ "sketch": 2 })),
@@ -2396,10 +2442,12 @@ mod tests {
 
     #[test]
     fn revolve_defaults_match_the_closure() {
+        // Circles are named by ordinal (#1055), so the document must hold them.
+        let doc = doc_with_circles(1);
         // Bare `bearcad.revolve{ polygon = {0,1,2,3}, axis = "y" }`: angle 360, not symmetric,
         // new body, no explicit body list.
         assert_eq!(
-            instruction_from_json(&Document::default(), "revolve", &json!({ "polygon": [0, 1, 2, 3], "axis": "y" })),
+            instruction_from_json(&doc, "revolve", &json!({ "polygon": [0, 1, 2, 3], "axis": "y" })),
             Ok(Instruction::Revolve {
                 faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
                 axis: RevolveAxis::Y,
@@ -2410,13 +2458,13 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc, 
                 "revolve",
                 &json!({ "circle": 0, "axis": { "line": 3 }, "angle": 90, "symmetric": true,
                          "body": "cut", "bodies": [1, 2] })
             ),
             Ok(Instruction::Revolve {
-                faces: vec![ExtrudeFace::Circle(0)],
+                faces: vec![ExtrudeFace::Circle(rkey(0))],
                 axis: RevolveAxis::Line(3),
                 angle_deg: 90.0,
                 symmetric: true,
@@ -2424,21 +2472,23 @@ mod tests {
                 bodies: vec![1, 2],
             })
         );
-        assert!(instruction_from_json(&Document::default(), "revolve", &json!({ "circle": 0 })).is_err());
-        assert!(instruction_from_json(&Document::default(), "revolve", &json!({ "axis": "x" })).is_err());
+        assert!(instruction_from_json(&doc, "revolve", &json!({ "circle": 0 })).is_err());
+        assert!(instruction_from_json(&doc, "revolve", &json!({ "axis": "x" })).is_err());
     }
 
     #[test]
     fn loft_gathers_circles_and_polygons() {
+        // Circles are named by ordinal (#1055), so the document must hold them.
+        let doc = doc_with_circles(2);
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "loft",
                 &json!({ "circles": [0, 1], "polygons": [[2, 3, 4, 5]] })
             ),
             Ok(Instruction::Loft {
                 faces: vec![
-                    ExtrudeFace::Circle(0),
-                    ExtrudeFace::Circle(1),
+                    ExtrudeFace::Circle(rkey(0)),
+                    ExtrudeFace::Circle(rkey(1)),
                     ExtrudeFace::Polygon(vec![2, 3, 4, 5]),
                 ],
                 body: RevolveBodyChoice::NewBody,
@@ -2446,7 +2496,7 @@ mod tests {
             })
         );
         // Fewer than two sections is rejected, as in the closure.
-        assert!(instruction_from_json(&Document::default(), "loft", &json!({ "circle": 0 })).is_err());
+        assert!(instruction_from_json(&doc,"loft", &json!({ "circle": 0 })).is_err());
     }
 
     #[test]
@@ -2728,8 +2778,10 @@ mod tests {
 
     #[test]
     fn constraint_verbs_map_to_instructions() {
+        // A circle-diameter target is named by ordinal (#1055).
+        let doc = doc_with_circles(3);
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "add_constraint",
                 &json!({ "target": { "kind": "line", "index": 0 }, "expression": "40" })
             ),
@@ -2739,18 +2791,18 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "add_constraint",
                 &json!({ "target": { "kind": "circle", "index": 2 }, "expression": 12 })
             ),
             Ok(Instruction::AddDistanceConstraint {
-                target: DistanceTarget::CircleDiameter(2),
+                target: DistanceTarget::CircleDiameter(rkey(2)),
                 expression: "12".into(),
             })
         );
         // Angle: `value` string form, and `angle`-number form; default sign +1.
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "add_angle_constraint",
                 &json!({ "a": 0, "b": 5, "value": "120" })
             ),
@@ -2762,7 +2814,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "add_angle_constraint",
                 &json!({ "a": 0, "b": 5, "angle": 90, "sign": -1 })
             ),
@@ -2774,17 +2826,17 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), "add_geometric_constraint", &json!({ "name": "parallel" })),
+            instruction_from_json(&doc,"add_geometric_constraint", &json!({ "name": "parallel" })),
             Ok(Instruction::AddGeometricConstraint(GeometricConstraintType::Parallel))
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), "constraint_shortcut", &json!({ "key": "p" })),
+            instruction_from_json(&doc,"constraint_shortcut", &json!({ "key": "p" })),
             Ok(Instruction::ApplyConstraintShortcut('p'))
         );
         assert!(
-            instruction_from_json(&Document::default(), "add_geometric_constraint", &json!({ "name": "nope" })).is_err()
+            instruction_from_json(&doc,"add_geometric_constraint", &json!({ "name": "nope" })).is_err()
         );
-        assert!(instruction_from_json(&Document::default(), "add_angle_constraint", &json!({ "a": 0, "b": 5 })).is_err());
+        assert!(instruction_from_json(&doc,"add_angle_constraint", &json!({ "a": 0, "b": 5 })).is_err());
     }
 
     #[test]
@@ -2887,7 +2939,14 @@ mod tests {
                 edge_treatments: Vec::new(),
             });
         }
-        for _ in 0..4 {
+        for i in 0..4 {
+            doc.circles.insert(crate::model::Circle::from_local_center_radius(
+                doc.sketches.keys().next().unwrap(),
+                0.0,
+                0.0,
+                i as f32 + 1.0,
+                0.0,
+            ));
             doc.constraints.insert(crate::model::Constraint {
                 sketch: skey(0),
                 kind: crate::model::ConstraintKind::Coincident {
@@ -3027,8 +3086,10 @@ mod tests {
 
     #[test]
     fn chamfer_and_fillet_verbs() {
+        // A circle-centre point is named by ordinal (#1055).
+        let doc = doc_with_circles(2);
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "chamfer_vertex",
                 &json!({ "point": { "kind": "line", "index": 0, "end": "start" }, "distance": 2 })
             ),
@@ -3039,18 +3100,18 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "fillet_vertex",
                 &json!({ "point": { "kind": "circle", "index": 1 }, "radius": 3 })
             ),
             Ok(Instruction::VertexTreatment {
-                point: ConstraintPoint::CircleCenter(1),
+                point: ConstraintPoint::CircleCenter(rkey(1)),
                 kind: VertexTreatmentKind::Fillet,
                 amount: "3".to_string(),
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "fillet_edge",
                 &json!({ "extrusion": 0, "edge": { "kind": "vertical", "face": 0, "edge": 2 }, "radius": 1.5 })
             ),
@@ -3061,7 +3122,7 @@ mod tests {
             })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "chamfer_edge",
                 &json!({ "extrusion": 1, "edge": { "kind": "cap", "face": 0, "edge": 3, "top": true }, "distance": 2 })
             ),
@@ -3073,7 +3134,7 @@ mod tests {
         );
         // The plural form (#672): one call, one operation over the whole set.
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "fillet_edge",
                 &json!({ "extrusion": 0, "edges": [
                     { "kind": "vertical", "face": 0, "edge": 0 },
@@ -3089,8 +3150,8 @@ mod tests {
                 amount: 8.0,
             })
         );
-        assert!(instruction_from_json(&Document::default(), "fillet_edge", &json!({ "edges": [], "radius": 1 })).is_err());
-        assert!(instruction_from_json(&Document::default(), "chamfer_vertex", &json!({ "distance": 2 })).is_err());
+        assert!(instruction_from_json(&doc,"fillet_edge", &json!({ "edges": [], "radius": 1 })).is_err());
+        assert!(instruction_from_json(&doc,"chamfer_vertex", &json!({ "distance": 2 })).is_err());
     }
 
     #[test]
@@ -3193,7 +3254,26 @@ mod tests {
             v
         };
         doc.lines = serde_json::from_value(resolve(lines)).unwrap();
-        doc.circles = serde_json::from_value(resolve(circles)).unwrap();
+        for circle in serde_json::from_value::<Vec<crate::model::Circle>>(resolve(circles)).unwrap()
+        {
+            doc.circles.insert(circle);
+        }
+        doc
+    }
+
+    /// A document holding `n` circles, for the verbs that name one by ordinal (#1055).
+    fn doc_with_circles(n: usize) -> Document {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        for i in 0..n {
+            doc.circles.insert(crate::model::Circle::from_local_center_radius(
+                sketch,
+                0.0,
+                0.0,
+                i as f32 + 1.0,
+                0.0,
+            ));
+        }
         doc
     }
 
@@ -3242,7 +3322,7 @@ mod tests {
             Ok(Instruction::Extrude {
                 expression: None,
                 sketch: 0,
-                faces: vec![ExtrudeFace::Circle(0)],
+                faces: vec![ExtrudeFace::Circle(rkey(0))],
                 distance: 10.0,
                 body: ExtrudeBodyChoice::New,
                 target: None,

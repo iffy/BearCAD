@@ -90,10 +90,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Line(index));
         }
     }
-    for (index, circle) in doc.circles.iter().enumerate() {
-        if circle.deleted {
-            continue;
-        }
+    for (index, circle) in doc.circles.iter() {
         if name_matches(circle.name.as_deref(), query) {
             return Some(SceneElement::Circle(index));
         }
@@ -232,7 +229,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let circle = doc
                 .circles
                 .get_mut(index)
-                .ok_or_else(|| format!("circle {index} not found"))?;
+                .ok_or_else(|| format!("circle {} not found", index.index()))?;
             circle.name = stored;
         }
         SceneElement::DrawingElement { .. } => {
@@ -490,7 +487,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             let circle = &doc.circles[i];
             let diameter = circle.diameter();
             let unit = effective_length_unit(doc, circle.sketch);
-            format!("Circle {i} ({})", crate::value::format_diameter_display_in(diameter, unit))
+            format!(
+                "Circle {} ({})",
+                i.index(),
+                crate::value::format_diameter_display_in(diameter, unit)
+            )
         }
         HierarchyNode::Constraint(i) => constraint_label(doc, i),
         HierarchyNode::Extrusion(i) => {
@@ -701,7 +702,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::UnitInstance(i) => format!("Unit {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {i}"),
-        SceneElement::Circle(i) => format!("Circle {i}"),
+        SceneElement::Circle(i) => format!("Circle {}", i.index()),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
         SceneElement::Point(_) => "Point".to_string(),

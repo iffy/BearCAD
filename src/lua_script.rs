@@ -204,8 +204,8 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         }
         SceneElement::ConstructionPlane(i)
         | SceneElement::Line(i)
-        | SceneElement::Circle(i)
         => i,
+        SceneElement::Circle(key) => doc.circles.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Constraint(key) => {
             doc.constraints.keys().position(|k| k == key).unwrap_or(0)
@@ -267,7 +267,7 @@ pub fn scene_element_from_kind(
         }
         "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
         "line" => Some(SceneElement::Line(index)),
-        "circle" => Some(SceneElement::Circle(index)),
+        "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
@@ -363,6 +363,15 @@ fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.body_at(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
+}
+
+/// The circle a script ordinal names (#1055) — circles are keyed, scripts count.
+fn circle_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model::CircleKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.circles.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no circle {ordinal}")))
 }
 
 /// The sketch a script ordinal names (#1055) — sketches are keyed, scripts count.
@@ -528,7 +537,10 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                 .or_else(|_| table.get("index"))
                 .unwrap_or(0);
             let profile = match profile_kind.to_ascii_lowercase().as_str() {
-                "circle" => crate::model::ExtrudeFace::Circle(profile_index),
+                "circle" => crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+                    lua,
+                    profile_index,
+                )?),
                 // A rectangle is now a `Polygon` loop (#66); give its four line indices as
                 // `profile_lines = {..}`.
                 "polygon" => {
@@ -542,7 +554,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                 // descriptor `extrude`'s `boolean =` takes.
                 "boolean" => {
                     let spec: Table = table.get("boolean")?;
-                    parse_boolean_face_table(&spec)?
+                    parse_boolean_face_table(lua, &spec)?
                 }
                 other => {
                     return Err(mlua::Error::external(format!(
@@ -589,7 +601,10 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                 .or_else(|_| table.get("index"))
                 .unwrap_or(0);
             let profile = match profile_kind.to_ascii_lowercase().as_str() {
-                "circle" => crate::model::ExtrudeFace::Circle(profile_index),
+                "circle" => crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+                    lua,
+                    profile_index,
+                )?),
                 "polygon" => {
                     let lines: Vec<usize> = table
                         .get("profile_lines")
@@ -598,7 +613,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                 }
                 "boolean" => {
                     let spec: Table = table.get("boolean")?;
-                    parse_boolean_face_table(&spec)?
+                    parse_boolean_face_table(lua, &spec)?
                 }
                 other => {
                     return Err(mlua::Error::external(format!(
@@ -624,9 +639,11 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
         }
         _ => {
             let index: usize = table.get("index")?;
-            FaceId::from_script(&kind, index).ok_or_else(|| {
-                mlua::Error::external(format!("unknown sketch face kind '{kind}'"))
-            })
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let face = unsafe { FaceId::from_script(&tick.state().doc, &kind, index) };
+            face.ok_or_else(|| mlua::Error::external(format!("unknown sketch face kind '{kind}'")))
         }
     }
 }
@@ -635,15 +652,18 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
 /// or a nested `{boolean = {op = "intersection"|"difference", a = <face spec>, b = <face
 /// spec>}}` (#16/#62). Mirrors `extrude_face_spec_table`/`boolean_face_lua_table` in
 /// src/script.rs, which render this same shape back out for the recorded-script export.
-fn parse_extrude_face_table(table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
+fn parse_extrude_face_table(
+    lua: &Lua,
+    table: &Table,
+) -> mlua::Result<crate::model::ExtrudeFace> {
     if let Some(i) = table.get::<Option<usize>>("circle")? {
-        return Ok(crate::model::ExtrudeFace::Circle(i));
+        return Ok(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
     }
     if let Some(lines) = table.get::<Option<Vec<usize>>>("polygon")? {
         return Ok(crate::model::ExtrudeFace::Polygon(lines));
     }
     if let Some(boolean) = table.get::<Option<Table>>("boolean")? {
-        return parse_boolean_face_table(&boolean);
+        return parse_boolean_face_table(lua, &boolean);
     }
     Err(mlua::Error::external(
         "face spec requires one of circle/polygon/boolean",
@@ -667,7 +687,7 @@ fn parse_text_anchor(name: &str) -> mlua::Result<crate::model::TextAnchor> {
     })
 }
 
-fn parse_boolean_face_table(table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
+fn parse_boolean_face_table(lua: &Lua, table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
     let op: String = table.get("op")?;
     let op = match op.to_ascii_lowercase().as_str() {
         "intersection" => crate::model::BooleanOp::Intersection,
@@ -682,8 +702,8 @@ fn parse_boolean_face_table(table: &Table) -> mlua::Result<crate::model::Extrude
     let b: Table = table.get("b")?;
     Ok(crate::model::ExtrudeFace::Boolean {
         op,
-        a: Box::new(parse_extrude_face_table(&a)?),
-        b: Box::new(parse_extrude_face_table(&b)?),
+        a: Box::new(parse_extrude_face_table(lua, &a)?),
+        b: Box::new(parse_extrude_face_table(lua, &b)?),
     })
 }
 
@@ -727,7 +747,7 @@ fn parse_extrude_target_table(
             }
             return Ok(crate::model::ExtrudeTarget::BodyFace(face_id));
         }
-        return Ok(crate::model::ExtrudeTarget::Face(parse_extrude_face_table(
+        return Ok(crate::model::ExtrudeTarget::Face(parse_extrude_face_table(lua, 
             &face,
         )?));
     }
@@ -809,7 +829,7 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
             };
             Ok(ConstraintPoint::LineEndpoint { line: index, end })
         }
-        "circle" => Ok(ConstraintPoint::CircleCenter(index)),
+        "circle" => Ok(ConstraintPoint::CircleCenter(circle_key_from_ordinal(lua, index)?)),
         // A calibrated image's reference point (#425): `{ kind = "image", index = i,
         // point = 0|1 }`.
         "image" => {
@@ -1527,7 +1547,10 @@ fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => Ok(DistanceTarget::LineLength(table.get("index")?)),
-        "circle" => Ok(DistanceTarget::CircleDiameter(table.get("index")?)),
+        "circle" => Ok(DistanceTarget::CircleDiameter(circle_key_from_ordinal(
+            lua,
+            table.get("index")?,
+        )?)),
         // Positioning dimensions (#809), the scripted twins of picking two things under the
         // Dimension tool. The side/direction each one is measured on is captured from the
         // current geometry by `constraints::finalize_distance_target`, exactly as it is for
@@ -2096,7 +2119,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     Some(Value::Number(n)) => n.round() as usize,
                     _ => return Err(mlua::Error::external("begin_sketch requires face index")),
                 };
-                FaceId::from_script(&kind, index).ok_or_else(|| {
+                let tick = lua
+                    .app_data_ref::<ScriptTickData>()
+                    .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+                let face = unsafe { FaceId::from_script(&tick.state().doc, &kind, index) };
+                face.ok_or_else(|| {
                     mlua::Error::external(format!("unknown sketch face kind '{kind}'"))
                 })?
             };
@@ -2538,7 +2565,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let doc = unsafe { &tick.state().doc };
             let count = match kind.to_ascii_lowercase().as_str() {
                 "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
-                "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
+                "circle" => doc.circles.len(),
                 "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
@@ -2604,7 +2631,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("sketch", doc.sketches.keys().position(|k| k == line.sketch))?;
                 }
                 "circle" => {
-                    let Some(circle) = doc.circles.get(index).filter(|e| !e.deleted) else {
+                    // The script's `index` is the circle's ordinal (#1055).
+                    let Some(circle) = doc.circles.keys().nth(index).map(|k| &doc.circles[k])
+                    else {
                         return Ok(Value::Nil);
                     };
                     t.set("x", circle.cx)?;
@@ -4103,9 +4132,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 tick.exec(Instruction::CreateCircle { cx, cy, r, diameter_expr })?;
             }
-            let element =
-                SceneElement::Circle(unsafe { tick.state().doc.circles.len().saturating_sub(1) });
-            apply_optional_name(lua, element, Some(opts))
+            // The circle just committed (#1055): the newest live one.
+            let Some(key) = (unsafe { tick.state().doc.circles.keys().last() }) else {
+                return Ok(());
+            };
+            apply_optional_name(lua, SceneElement::Circle(key), Some(opts))
         })?,
     )?;
 
@@ -4241,10 +4272,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // (#66 — a rectangle is four lines forming such a loop), or a `boolean` region.
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
             if let Some(i) = opts.get::<Option<usize>>("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(i));
+                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
             if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
-                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+                for i in list {
+                    faces
+                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+                }
             }
             // `polygon = {line0, line1, ...}`: a single closed-loop face (#66).
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
@@ -4271,7 +4305,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // (#16/#62) — the toggleable intersection/difference regions of two overlapping
             // shapes.
             if let Some(boolean) = opts.get::<Option<Table>>("boolean")? {
-                faces.push(parse_boolean_face_table(&boolean)?);
+                faces.push(parse_boolean_face_table(lua, &boolean)?);
             }
             if faces.is_empty() {
                 return Err(mlua::Error::external(
@@ -4449,6 +4483,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
+            let circles = circles
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchRepeatOperation {
                     sketch,
@@ -4481,6 +4519,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let op: usize = opts.get("index")?;
             let (_sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
+            let circles = circles
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchRepeatOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -4524,6 +4566,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (sketch, lines, circles, distance, construction) =
                 parse_sketch_offset_op_args(&opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
+            let circles = circles
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchOffsetOperation {
                     sketch,
@@ -4552,6 +4598,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let op: usize = opts.get("index")?;
             let (_sketch, lines, circles, distance, construction) =
                 parse_sketch_offset_op_args(&opts)?;
+            let circles = circles
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchOffsetOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -4583,6 +4633,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(&opts, "mirror_sketch", &["sketch", "line", "lines", "circles"])?;
             let (sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
+            let circles = circles
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchMirrorOperation {
                     sketch,
@@ -4609,6 +4663,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let op: usize = opts.get("index")?;
             let (_sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
+            let circles = circles
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchMirrorOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -4721,7 +4779,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let sketch = sketch_key_from_ordinal(lua, opts.get::<Option<usize>>("sketch")?.unwrap_or(0))?;
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
-            let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+            let circle_targets = opts
+                .get::<Option<Vec<usize>>>("circles")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let face_targets: Vec<Vec<usize>> =
                 opts.get::<Option<Vec<Vec<usize>>>>("faces")?.unwrap_or_default();
             let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
@@ -4752,7 +4815,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let op: usize = opts.get("index")?;
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
-            let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+            let circle_targets = opts
+                .get::<Option<Vec<usize>>>("circles")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|o| circle_key_from_ordinal(lua, o))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let face_targets: Vec<Vec<usize>> =
                 opts.get::<Option<Vec<Vec<usize>>>>("faces")?.unwrap_or_default();
             let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
@@ -5044,10 +5112,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
             if let Some(i) = opts.get::<Option<usize>>("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(i));
+                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
             if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
-                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+                for i in list {
+                    faces
+                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+                }
             }
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(lines));
@@ -5163,10 +5234,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
             if let Some(i) = opts.get::<Option<usize>>("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(i));
+                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
             if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
-                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+                for i in list {
+                    faces
+                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+                }
             }
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(lines));
@@ -5208,10 +5282,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
             if let Some(i) = opts.get::<Option<usize>>("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(i));
+                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
             }
             if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
-                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+                for i in list {
+                    faces
+                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+                }
             }
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(lines));
@@ -5730,6 +5807,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -5844,14 +5922,14 @@ mod tests {
             assert_eq!(
                 count_nodes(&tree, &|n| matches!(n, HierarchyNode::Circle(c) if *c == ci)),
                 1,
-                "copy circle {ci} is listed once"
+                "copy circle {ci:?} is listed once"
             );
         }
         // Deleting the op tombstones the copies.
         crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchRepeatOp(skop(0)));
         assert!(state.doc.sketch_repeat_ops.is_empty(), "the op is removed, not tombstoned");
         for &ci in &op.circle_outputs {
-            assert!(state.doc.circles[ci].deleted, "copy circle {ci} removed with the op");
+            assert!(!state.doc.circles.contains(ci), "copy circle {ci:?} removed with the op");
         }
     }
 
@@ -6064,7 +6142,7 @@ mod tests {
 
         // The outputs track source geometry through recompute (the circle's centre is
         // free — its radius is dimension-locked by the declarative call).
-        state.doc.circles[0].cx = 55.0;
+        state.doc.circles[rkey(0)].cx = 55.0;
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         assert!(
             (state.doc.circles[op.circle_outputs[0]].cx - 55.0).abs() < 1e-3,
@@ -6098,7 +6176,7 @@ mod tests {
         for &li in &op.line_outputs {
             assert!(state.doc.lines[li].deleted);
         }
-        assert!(state.doc.circles[op.circle_outputs[0]].deleted);
+        assert!(!state.doc.circles.contains(op.circle_outputs[0]));
     }
 
     /// #495: a closed offset of a rectangle must form a pickable/extrudable inner face
@@ -6196,7 +6274,7 @@ mod tests {
         assert!((pz(1) - 20.0).abs() < 1e-4);
         // Each copy sketch carries a circle with the source's plane-local centre/radius.
         for &si in &op.sketch_outputs {
-            let c = state.doc.circles.iter().find(|c| c.sketch == si && !c.deleted).unwrap();
+            let c = state.doc.circles.values().find(|c| c.sketch == si).unwrap();
             assert_eq!((c.cx, c.cy, c.r), (1.0, 2.0, 3.0));
         }
 
@@ -6252,7 +6330,7 @@ mod tests {
         let pz = state.doc.construction_planes[op.sketch_plane_outputs[0]].origin.z;
         assert!((pz - 15.0).abs() < 1e-3, "host plane at cap (10) + gap (5), got {pz}");
         let si = op.sketch_outputs[0];
-        assert!(state.doc.circles.iter().any(|c| c.sketch == si && !c.deleted));
+        assert!(state.doc.circles.values().any(|c| c.sketch == si));
     }
 
     /// #224: slicing a line by a crossing line shadows the original and emits two fragments that
@@ -6674,7 +6752,7 @@ mod tests {
                                      line  = { kind = "axis", axis = "y" } }, "8mm")
         "#,
         );
-        let circle = &state.doc.circles[0];
+        let circle = &state.doc.circles[rkey(0)];
         assert!((circle.cy - 15.0).abs() < 0.05, "off the edge: cy={}", circle.cy);
         assert!((circle.cx - 8.0).abs() < 0.05, "off the Y axis: cx={}", circle.cx);
 
@@ -6688,7 +6766,7 @@ mod tests {
                                      mover  = { kind = "circle", index = 0 } }, "25mm")
         "#,
         );
-        let circle = &state.doc.circles[0];
+        let circle = &state.doc.circles[rkey(0)];
         let dist = (circle.cx * circle.cx + circle.cy * circle.cy).sqrt();
         assert!((dist - 25.0).abs() < 0.1, "point-to-point: {dist}");
 
@@ -6808,7 +6886,7 @@ mod tests {
         );
         assert_eq!(
             state.scene_selection.iter().next(),
-            Some(SceneElement::Point(ConstraintPoint::CircleCenter(0)))
+            Some(SceneElement::Point(ConstraintPoint::CircleCenter(rkey(0))))
         );
     }
 
@@ -7366,12 +7444,12 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.circles.len(), 1);
-        let circle = &state.doc.circles[0];
+        let circle = &state.doc.circles[rkey(0)];
         assert!((circle.cx - 10.0).abs() < 1e-3 && (circle.cy - 5.0).abs() < 1e-3);
         assert!((circle.r - 12.0).abs() < 1e-3);
         assert_eq!(
             find_element_by_name(&state.doc, "Hole"),
-            Some(SceneElement::Circle(0))
+            Some(SceneElement::Circle(rkey(0)))
         );
     }
 
@@ -7384,7 +7462,7 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.circles.len(), 1);
-        assert!((state.doc.circles[0].r - 15.0).abs() < 1e-3);
+        assert!((state.doc.circles[rkey(0)].r - 15.0).abs() < 1e-3);
     }
 
     #[test]
@@ -7952,8 +8030,8 @@ mod tests {
         let l = &state.doc.lines[0];
         let width = ((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)).sqrt();
         assert!((width - 24.0).abs() < 1e-3, "rect width, got {width}");
-        assert!((state.doc.circles[0].r - 6.0).abs() < 1e-3, "radius expr");
-        assert!((state.doc.circles[1].r - 12.0).abs() < 1e-3, "diameter expr");
+        assert!((state.doc.circles[rkey(0)].r - 6.0).abs() < 1e-3, "radius expr");
+        assert!((state.doc.circles[rkey(1)].r - 12.0).abs() < 1e-3, "diameter expr");
         assert!((state.doc.extrusions[xkey(0)].distance - 12.0).abs() < 1e-3);
         // Expressions stored, not baked numbers: the dims reference the parameter…
         assert_eq!(state.doc.extrusions[xkey(0)].expression, "w / 2");

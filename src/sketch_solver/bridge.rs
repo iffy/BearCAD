@@ -36,7 +36,7 @@ pub struct SketchBridge {
     pub system: System,
     sketch: SketchId,
     point_vars: HashMap<ConstraintPoint, (VarId, VarId)>,
-    circle_radius: HashMap<usize, VarId>,
+    circle_radius: HashMap<crate::model::CircleKey, VarId>,
     hold_references: bool,
     constraint_equations: HashMap<crate::model::ConstraintKey, Vec<usize>>,
 }
@@ -72,8 +72,8 @@ impl SketchBridge {
             self.ensure_line_endpoint(doc, index, LineEnd::Start)?;
             self.ensure_line_endpoint(doc, index, LineEnd::End)?;
         }
-        for (index, circle) in doc.circles.iter().enumerate() {
-            if circle.deleted || circle.sketch != self.sketch {
+        for (index, circle) in doc.circles.iter() {
+            if circle.sketch != self.sketch {
                 continue;
             }
             let center = ConstraintPoint::CircleCenter(index);
@@ -317,7 +317,7 @@ impl SketchBridge {
                     .circle_radius
                     .get(&index)
                     .copied()
-                    .ok_or_else(|| format!("Circle {index} not in solver graph"))?;
+                    .ok_or_else(|| format!("Circle {} not in solver graph", index.index()))?;
                 self.system.add_equation(Equation::CircleDiameter {
                     radius,
                     weight: DEFAULT_WEIGHT,
@@ -507,7 +507,7 @@ impl SketchBridge {
                     .circle_radius
                     .get(&circle)
                     .copied()
-                    .ok_or_else(|| format!("Circle {circle} not in solver graph"))?;
+                    .ok_or_else(|| format!("Circle {} not in solver graph", circle.index()))?;
                 // The circle is the reference: hold its radius so the point moves to the
                 // perimeter rather than the circle shrinking to meet the point.
                 if self.hold_references {

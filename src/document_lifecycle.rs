@@ -16,8 +16,8 @@ pub fn line_alive(doc: &Document, index: usize) -> bool {
     doc.lines.get(index).is_some_and(|l| !l.deleted)
 }
 
-pub fn circle_alive(doc: &Document, index: usize) -> bool {
-    doc.circles.get(index).is_some_and(|c| !c.deleted)
+pub fn circle_alive(doc: &Document, index: crate::model::CircleKey) -> bool {
+    doc.circles.contains(index)
 }
 
 pub fn constraint_alive(doc: &Document, index: crate::model::ConstraintKey) -> bool {
@@ -295,8 +295,10 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
                             l.deleted = true;
                         }
-                        for c in doc.circles.iter_mut().filter(|c| c.sketch == si) {
-                            c.deleted = true;
+                        for c in doc.circles.keys().collect::<Vec<_>>() {
+                            if doc.circles[c].sketch == si {
+                                doc.circles.remove(c);
+                            }
                         }
                         doc.sketches.remove(si);
                     }
@@ -315,9 +317,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &out in &op.circle_outputs {
-                        if let Some(c) = doc.circles.get_mut(out) {
-                            c.deleted = true;
-                        }
+                        doc.circles.remove(out);
                     }
                     changed = true;
                 }
@@ -334,9 +334,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &out in &op.circle_outputs {
-                        if let Some(c) = doc.circles.get_mut(out) {
-                            c.deleted = true;
-                        }
+                        doc.circles.remove(out);
                     }
                     changed = true;
                 }
@@ -353,9 +351,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &out in &op.circle_outputs {
-                        if let Some(c) = doc.circles.get_mut(out) {
-                            c.deleted = true;
-                        }
+                        doc.circles.remove(out);
                     }
                     // The reflected corner-coincidences go with it too (#547).
                     for &ci in &op.constraint_outputs {
@@ -661,11 +657,10 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
     for li in lines {
         tombstone_line(doc, li);
     }
-    let circles: Vec<usize> = doc
+    let circles: Vec<crate::model::CircleKey> = doc
         .circles
         .iter()
-        .enumerate()
-        .filter(|(_, circle)| circle.sketch == sketch && !circle.deleted)
+        .filter(|(_, circle)| circle.sketch == sketch)
         .map(|(i, _)| i)
         .collect();
     for ci in circles {
@@ -696,15 +691,14 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
     true
 }
 
-fn tombstone_circle(doc: &mut Document, index: usize) -> bool {
-    let Some(circle) = doc.circles.get_mut(index) else {
+fn tombstone_circle(doc: &mut Document, index: crate::model::CircleKey) -> bool {
+    // The history-tape marker to drop is the one for this circle's place among the live
+    // ones, read before the removal (#1055).
+    let Some(ordinal) = doc.circles.keys().position(|k| k == index) else {
         return false;
     };
-    if circle.deleted {
-        return false;
-    }
-    circle.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Circle, index);
+    doc.circles.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::Circle, ordinal);
     let face = FaceId::Circle(index);
     for sketch in doc.sketches_on_face(face).collect::<Vec<_>>() {
         tombstone_sketch(doc, sketch);
