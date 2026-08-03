@@ -1450,7 +1450,12 @@ mod tests {
             MovePointRef::Origin,
             MovePointRef::EdgeMidpoint { body: bkey(0), a: [0; 3], b: [5; 3] },
             MovePointRef::OnEdge { body: bkey(0), p: [7; 3] },
-            MovePointRef::FaceCenter { body: bkey(4), centroid: [1; 3], normal: [0, 0, 100] },
+            MovePointRef::OnFace {
+                body: bkey(4),
+                centroid: [1; 3],
+                normal: [0, 0, 100],
+                uv: [0, 0],
+            },
         ] {
             assert_eq!(
                 SceneElement::from_move_point(point).as_move_point(),

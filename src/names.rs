@@ -777,9 +777,10 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                         format!("Edge midpoint of {body}")
                     }
                     crate::model::MovePointRef::OnEdge { .. } => format!("On an edge of {body}"),
-                    crate::model::MovePointRef::FaceCenter { .. } => {
+                    crate::model::MovePointRef::OnFace { uv, .. } if *uv == [0, 0] => {
                         format!("Middle of a face of {body}")
                     }
+                    crate::model::MovePointRef::OnFace { .. } => format!("On a face of {body}"),
                     crate::model::MovePointRef::Origin => "Origin".to_string(),
                 }
             }

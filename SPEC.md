@@ -894,10 +894,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   default) or **Free**. Free is the classic behaviour — typed/dragged X/Y/Z. Snap instead
   derives the offset from two picked points:
   - A **Start point A** picker (#649/#668) takes a corner, the midpoint of a feature edge,
-    or the middle of a planar face (#738) on one of the **moving** bodies
+    or a point on a planar face (#738/#1074) on one of the **moving** bodies
     (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/`BodyEdge`/`BodyFace` and
-    resolved against the live mesh — a face centre re-finds its coplanar group by quantized
-    centroid+normal, `MovePointRef::FaceCenter`). While one is set the moving bodies render
+    resolved against the live mesh — a point on a face re-finds its coplanar group by
+    quantized centroid+normal, `MovePointRef::OnFace`). While one is set the moving bodies render
     **translucent** (they join `faded_bodies`) so the gizmos and points stay visible through
     the solid.
   - An **End point A** picker (#650/#668) takes the same kinds of point on a body that
@@ -945,6 +945,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover marks
   the exact candidate **point** (#739) — the corner, the edge's midpoint, or the face's
   middle (#738) — never the whole edge or face it sits on.
+
+  **A point within a face (#1074).** `MovePointRef::OnFace { body, centroid, normal, uv }`
+  names a point lying **on** one of a body's planar faces — the vocabulary a Face Snap mate
+  needs, and the general case of the face **centre** that used to be the only face point
+  (#738), which is simply `uv == [0, 0]`. The face is keyed like every other face reference;
+  the point is an offset from the face's centre **in the face's own plane**
+  (`construction::plane_basis` of its normal, so it is the frame a sketch on that face would
+  get). Holding it in the face's axes rather than in world space is what lets the same offset
+  keep naming the same spot after a rebuild moves or resizes the face — a world position
+  would be left behind. Scripted as
+  `{ body =, on_face = {x,y,z}, normal = {x,y,z}, uv? = {du, dv} }`, with no `uv` — and the
+  older `face_center =` spelling — meaning the middle.
 
   **The point pickers are real element pickers (#955).** Each takes a single point — a body
   corner, an edge midpoint, or a planar face's middle (`SceneElement::MovePoint`) — and carries
@@ -1581,7 +1593,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   slide_max?, slide_min_to?, slide_max_to?, turn_min?, turn_max?, name? }`, where a mate pick is
   `{ body =, face = {x,y,z}, normal = {x,y,z} }`, `{ plane = i }`,
   `{ body =, edge = { {x,y,z}, {x,y,z} } }`, `{ axis = "x"|"y"|"z" }`, or a point
-  (`vertex`/`on_edge`/`face_center`/`midpoint`/`origin`);
+  (`vertex`/`on_edge`/`on_face`/`midpoint`/`origin`);
   `bearcad.body_faces(i)` and `bearcad.body_edges(i)` report a body's faces and edges in exactly
   that spelling, so a script names one without guessing its key;
   `bearcad.edit_joint{ index, … }`, `bearcad.begin_joint{ … }` (arms the tool without

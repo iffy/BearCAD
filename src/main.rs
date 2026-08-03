@@ -9271,10 +9271,11 @@ impl App {
                 return Some(if faces_only {
                     model::MateRef::Face { body, centroid, normal }
                 } else {
-                    model::MateRef::Point(model::MovePointRef::FaceCenter {
+                    model::MateRef::Point(model::MovePointRef::OnFace {
                         body,
                         centroid,
                         normal,
+                        uv: [0, 0],
                     })
                 });
             }
@@ -9590,10 +9591,11 @@ impl App {
         let construction::PickTargetKind::BodyFace { body, triangles, normal } = &kind else {
             return None;
         };
-        allowed(*body).then(|| model::MovePointRef::FaceCenter {
+        allowed(*body).then(|| model::MovePointRef::OnFace {
             body: *body,
             centroid: hierarchy::quantize_body_point(extrude::face_group_center(triangles)),
             normal: hierarchy::quantize_body_point(*normal),
+            uv: [0, 0],
         })
     }
 

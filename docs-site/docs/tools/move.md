@@ -160,7 +160,9 @@ bearcad.begin_move{ bodies = {0},
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or
 edge you mean. `vertex` is a corner, `edge` takes an edge's midpoint, `on_edge` is a position
-along one, and `face_center = {x,y,z}, normal = {x,y,z}` is the middle of a flat face.
+along one, and `on_face = {x,y,z}, normal = {x,y,z}` is a point on a flat face — the middle of
+it unless you add `uv = {du, dv}`, which steps that far across the face in its own axes.
+`face_center =` is the same thing as `on_face =` with no `uv`.
 
 ## Moving geometry inside a sketch
 

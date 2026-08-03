@@ -1607,16 +1607,34 @@ fn move_point_from_json(
     if let Some(v) = t.get("vertex").filter(|v| !v.is_null()) {
         return Ok(Some(crate::model::MovePointRef::Vertex { body, p: point(v)? }));
     }
-    // A face centre (#738): the face's centroid plus its normal — the selection key.
-    if let Some(v) = t.get("face_center").filter(|v| !v.is_null()) {
+    // A point on a face (#738/#1074): the face's centroid plus its normal — the selection
+    // key — and optionally how far across the face to sit, in the face's own axes.
+    if let Some(v) = t
+        .get("on_face")
+        .or_else(|| t.get("face_center"))
+        .filter(|v| !v.is_null())
+    {
         let n = t
             .get("normal")
             .filter(|v| !v.is_null())
-            .ok_or_else(|| format!("move `{what}.face_center` needs a `normal`"))?;
-        return Ok(Some(crate::model::MovePointRef::FaceCenter {
+            .ok_or_else(|| format!("move `{what}.on_face` needs a `normal`"))?;
+        let uv = match t.get("uv").and_then(Value::as_array) {
+            Some(a) if a.len() == 2 => {
+                let n = |i: usize| -> Result<i32, String> {
+                    a[i].as_f64()
+                        .map(|v| (v * 100.0).round() as i32)
+                        .ok_or_else(|| format!("move `{what}.uv` needs two numbers"))
+                };
+                [n(0)?, n(1)?]
+            }
+            Some(_) => return Err(format!("move `{what}.uv` needs two numbers")),
+            None => [0, 0],
+        };
+        return Ok(Some(crate::model::MovePointRef::OnFace {
             body,
             centroid: point(v)?,
             normal: point(n)?,
+            uv,
         }));
     }
     let ends = t
@@ -2713,6 +2731,56 @@ mod tests {
                 limits: Default::default(),
             })
         );
+    }
+
+    /// #1074: a script names a point on a face by the face's selection key plus, optionally,
+    /// how far across the face it sits in that face's own axes. `face_center` still spells
+    /// the middle of one, which is all there used to be (#738).
+    #[test]
+    fn move_bodies_reads_a_point_on_a_face() {
+        // The body is named by ordinal (#1055), so the document has to hold one.
+        let mut doc = Document::default();
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let on_face = |uv: [i32; 2]| {
+            Some(crate::model::MovePointRef::OnFace {
+                body: bkey(0),
+                centroid: [0, 0, 500],
+                normal: [0, 0, 100],
+                uv,
+            })
+        };
+        let parse = |from: Value| {
+            instruction_from_json(&doc, "move_bodies", &json!({ "bodies": [0], "from": from }))
+                .map(|i| match i {
+                    Instruction::CreateMoveOp { start_point_a, .. } => start_point_a,
+                    other => panic!("expected a move: {other:?}"),
+                })
+        };
+        assert_eq!(
+            parse(json!({ "body": 0, "on_face": [0, 0, 5], "normal": [0, 0, 1], "uv": [3, -2] })),
+            Ok(on_face([300, -200]))
+        );
+        // No `uv` is the middle of the face...
+        assert_eq!(
+            parse(json!({ "body": 0, "on_face": [0, 0, 5], "normal": [0, 0, 1] })),
+            Ok(on_face([0, 0]))
+        );
+        // ...and so is the older `face_center` spelling.
+        assert_eq!(
+            parse(json!({ "body": 0, "face_center": [0, 0, 5], "normal": [0, 0, 1] })),
+            Ok(on_face([0, 0]))
+        );
+        // The face key is meaningless without a normal, and `uv` is a pair or nothing.
+        assert!(parse(json!({ "body": 0, "on_face": [0, 0, 5] })).is_err());
+        assert!(parse(
+            json!({ "body": 0, "on_face": [0, 0, 5], "normal": [0, 0, 1], "uv": [1, 2, 3] })
+        )
+        .is_err());
     }
 
     #[test]

@@ -3827,13 +3827,25 @@ pub fn move_point_lua(point: &crate::model::MovePointRef) -> String {
         crate::model::MovePointRef::OnEdge { body, p } => {
             format!("{{ body = {}, on_edge = {} }}", body.index(), mm_point_lua(*p))
         }
-        // A face centre (#738) spells its selection key: the face's centroid plus normal.
-        crate::model::MovePointRef::FaceCenter { body, centroid, normal } => format!(
-            "{{ body = {}, face_center = {}, normal = {} }}",
-            body.index(),
-            mm_point_lua(*centroid),
-            mm_point_lua(*normal)
-        ),
+        // A point on a face (#738/#1074) spells its selection key — the face's centroid plus
+        // normal — and, when it isn't the middle, how far across the face it sits.
+        crate::model::MovePointRef::OnFace { body, centroid, normal, uv } => {
+            let head = format!(
+                "{{ body = {}, on_face = {}, normal = {}",
+                body.index(),
+                mm_point_lua(*centroid),
+                mm_point_lua(*normal)
+            );
+            if *uv == [0, 0] {
+                format!("{head} }}")
+            } else {
+                format!(
+                    "{head}, uv = {{ {}, {} }} }}",
+                    uv[0] as f32 / 100.0,
+                    uv[1] as f32 / 100.0
+                )
+            }
+        }
         // The world origin (#946): no body, so it spells itself.
         crate::model::MovePointRef::Origin => "{ origin = true }".to_string(),
     }
@@ -7468,6 +7480,27 @@ mod tests {
         assert!(opts.exit_on_complete);
         assert!(opts.script_path.is_none());
         assert!(opts.document_path.is_none());
+    }
+
+    /// #1074: an exported script spells a point on a face by the face's key, and only mentions
+    /// how far across the face it sits when that isn't the middle — so the common case reads
+    /// exactly as it did when a face point could only ever be the centre (#738).
+    #[test]
+    fn move_point_on_a_face_exports_its_offset_only_when_it_has_one() {
+        let on_face = |uv: [i32; 2]| crate::model::MovePointRef::OnFace {
+            body: crate::model::body_key_for_slot(2),
+            centroid: [0, 0, 500],
+            normal: [0, 0, 100],
+            uv,
+        };
+        assert_eq!(
+            move_point_lua(&on_face([0, 0])),
+            "{ body = 2, on_face = { 0, 0, 5 }, normal = { 0, 0, 1 } }"
+        );
+        assert_eq!(
+            move_point_lua(&on_face([300, -250])),
+            "{ body = 2, on_face = { 0, 0, 5 }, normal = { 0, 0, 1 }, uv = { 3, -2.5 } }"
+        );
     }
 
     #[test]

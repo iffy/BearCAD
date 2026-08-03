@@ -1118,15 +1118,33 @@ fn parse_move_point(
     if let Some(v) = t.get::<Option<Vec<f32>>>("on_edge")? {
         return Ok(Some(crate::model::MovePointRef::OnEdge { body, p: mm(v)? }));
     }
-    // A face centre (#738): the face's centroid plus its normal — the selection key.
-    if let Some(v) = t.get::<Option<Vec<f32>>>("face_center")? {
+    // A point on a face (#738/#1074): the face's centroid plus its normal — the selection
+    // key — and optionally how far across the face to sit, in the face's own axes. Named
+    // `on_face`, and `face_center` still spells the middle of one.
+    let face_key = match t.get::<Option<Vec<f32>>>("on_face")? {
+        Some(v) => Some(v),
+        None => t.get::<Option<Vec<f32>>>("face_center")?,
+    };
+    if let Some(v) = face_key {
         let n: Vec<f32> = t.get("normal").map_err(|_| {
-            mlua::Error::external(format!("move `{what}.face_center` needs a `normal`"))
+            mlua::Error::external(format!("move `{what}.on_face` needs a `normal`"))
         })?;
-        return Ok(Some(crate::model::MovePointRef::FaceCenter {
+        let uv = match t.get::<Option<Vec<f32>>>("uv")? {
+            Some(uv) if uv.len() == 2 => {
+                [(uv[0] * 100.0).round() as i32, (uv[1] * 100.0).round() as i32]
+            }
+            Some(_) => {
+                return Err(mlua::Error::external(format!(
+                    "move `{what}.uv` needs two numbers"
+                )))
+            }
+            None => [0, 0],
+        };
+        return Ok(Some(crate::model::MovePointRef::OnFace {
             body,
             centroid: mm(v)?,
             normal: mm(n)?,
+            uv,
         }));
     }
     let ends: Vec<Vec<f32>> = t.get("edge").map_err(|_| {
@@ -8814,6 +8832,42 @@ mod tests {
         assert!(
             (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,
             "midpoint-to-midpoint offset should be +40 X, got {t:?}"
+        );
+    }
+
+    /// #1074: `on_face` puts a point **within** a face — the face's selection key plus how far
+    /// across it to sit, in the face's own axes. A move from a corner of one box's top cap
+    /// onto the middle of another's lands where those two points meet.
+    #[test]
+    fn lua_move_snaps_from_a_point_on_a_face() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            -- A's top cap (centre 5,5,5) offset +5 along the face's u axis, onto the
+            -- middle of B's top cap (45, 5, 5).
+            bearcad.move_bodies{
+                bodies = {0},
+                from = { body = 0, on_face = {5, 5, 5}, normal = {0, 0, 1}, uv = {5, 0} },
+                to   = { body = 1, face_center = {45, 5, 5}, normal = {0, 0, 1} },
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops.values().next().unwrap();
+        let from = op.start_point_a.as_ref().expect("the source point");
+        assert!(
+            matches!(from, crate::model::MovePointRef::OnFace { uv, .. } if *uv == [500, 0]),
+            "the offset across the face is stored: {from:?}"
+        );
+        let a = crate::extrude::move_point_world(&state.doc, from).expect("source resolves");
+        // The top cap's frame is `plane_basis(+Z)` = (u = +X, v = +Y), so +5u is x = 10.
+        assert!((a - glam::Vec3::new(10.0, 5.0, 5.0)).length() < 1e-2, "{a:?}");
+        let t = crate::extrude::move_op_translation(&state.doc, op).expect("translation");
+        assert!(
+            (t - glam::Vec3::new(35.0, 0.0, 0.0)).length() < 1e-2,
+            "corner-to-centre offset should be +35 X, got {t:?}"
         );
     }
 

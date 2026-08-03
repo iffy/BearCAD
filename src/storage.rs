@@ -1002,6 +1002,58 @@ mod tests {
         }
     }
 
+    /// #1074: a Face Snap mate's point on a face — its face key and its offset across that
+    /// face — survives a save. The offset is the new part; a file that dropped it would
+    /// silently move every such mate to the middle of its face.
+    #[test]
+    fn a_point_on_a_face_survives_a_save_and_reload() {
+        let mut doc = Document::default();
+        let body = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let point = crate::model::MovePointRef::OnFace {
+            body,
+            centroid: [0, 0, 500],
+            normal: [0, 0, 100],
+            uv: [325, -750],
+        };
+        let op = doc.move_ops.insert(crate::model::MoveOperation {
+            targets: vec![body],
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            outputs: Vec::new(),
+            translate_mode: crate::model::MoveTranslateMode::Snap,
+            start_point_a: Some(point),
+            end_point_a: Some(crate::model::MovePointRef::Origin),
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            name: None,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_on_face_point_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+            assert_eq!(
+                loaded.move_ops.get(op).and_then(|o| o.start_point_a),
+                Some(point),
+                "{suffix}: the face key and the offset across it both came back"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: lines keep their keys across a save, and so does everything that names one — a
     /// constraint on its endpoint, a length dimension, an extruded polygon profile, and the
     /// bridging line that records it as its chamfer parent.

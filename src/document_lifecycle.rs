@@ -76,7 +76,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             crate::model::MovePointRef::Vertex { body, .. }
             | crate::model::MovePointRef::EdgeMidpoint { body, .. }
             | crate::model::MovePointRef::OnEdge { body, .. }
-            | crate::model::MovePointRef::FaceCenter { body, .. } => body_alive(doc, body),
+            | crate::model::MovePointRef::OnFace { body, .. } => body_alive(doc, body),
         },
         SceneElement::UnitInstance(index) => doc.unit_instances.contains(index),
         SceneElement::Component(index) => doc.components.contains(index),

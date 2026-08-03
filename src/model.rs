@@ -2213,13 +2213,25 @@ pub enum MovePointRef {
         body: BodyKey,
         p: [i32; 3],
     },
-    /// The middle of one of a body's planar faces (#738), keyed by quantized
-    /// centroid+normal exactly like [`crate::hierarchy::SceneElement::BodyFace`] — resolved
-    /// against the live mesh's coplanar-triangle groups, so it follows the geometry.
-    FaceCenter {
+    /// A point lying **within** one of a body's planar faces (#738/#1074) — what a Face Snap
+    /// mate puts onto another face. The face is keyed by quantized centroid+normal exactly
+    /// like [`crate::hierarchy::SceneElement::BodyFace`] and resolved against the live mesh's
+    /// coplanar-triangle groups, so it follows the geometry.
+    ///
+    /// The point itself is held as an offset from the face's centre **in the face's own
+    /// plane**, not as a world position: a rebuild that moves or resizes the face carries the
+    /// point with it, which is the whole reason a mate can survive a parameter change. The
+    /// face **centre** (#738, the only kind of face point there used to be) is simply
+    /// `uv == [0, 0]`.
+    OnFace {
         body: BodyKey,
         centroid: [i32; 3],
         normal: [i32; 3],
+        /// Offset from the face centre along the face frame's u and v axes
+        /// ([`crate::construction::plane_basis`]), quantized like every other body point so
+        /// the variant stays `Eq`/`Hash`.
+        #[serde(default)]
+        uv: [i32; 2],
     },
     /// The **world origin** (#946): a fixed stationary point every document has, so a body can
     /// be snapped onto (0, 0, 0) or turned about it without a body having a corner there.
@@ -2263,7 +2275,7 @@ impl MovePointRef {
             MovePointRef::Vertex { body, .. }
             | MovePointRef::EdgeMidpoint { body, .. }
             | MovePointRef::OnEdge { body, .. }
-            | MovePointRef::FaceCenter { body, .. } => Some(*body),
+            | MovePointRef::OnFace { body, .. } => Some(*body),
             MovePointRef::Origin => None,
         }
     }

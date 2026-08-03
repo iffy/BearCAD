@@ -820,13 +820,15 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
             doc.bodies.get(*body)?;
             Some(crate::hierarchy::dequantize_body_point(*p))
         }
-        // A face centre (#738): re-find the coplanar group by its key; its live centre is
-        // the point. Uncached mesher for the same borrow reason as the vertex arm.
-        crate::model::MovePointRef::FaceCenter { body, centroid, normal } => {
+        // A point on a face (#738/#1074): re-find the coplanar group by its key, then step
+        // out from its live centre along the live face's own in-plane axes — so a rebuild
+        // that moves or resizes the face takes the point with it. Uncached mesher for the
+        // same borrow reason as the vertex arm.
+        crate::model::MovePointRef::OnFace { body, centroid, normal, uv } => {
             doc.bodies.get(*body)?;
             let solid = body_solid_mesh_uncached_pub(doc, *body)?;
-            face_group_matching(&solid, *centroid, *normal)
-                .map(|tris| face_group_center(&tris))
+            let tris = face_group_matching(&solid, *centroid, *normal)?;
+            Some(face_uv_world(&tris, *uv))
         }
         // The world origin (#946) is fixed and always resolves — no body to outlive.
         crate::model::MovePointRef::Origin => Some(Vec3::ZERO),
@@ -3359,6 +3361,30 @@ pub fn face_group_matching(
 pub fn face_group_center(tris: &[[Vec3; 3]]) -> Vec3 {
     let count = (tris.len() * 3).max(1) as f32;
     tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count
+}
+
+/// A face group's own in-plane axes (#1074): [`crate::construction::plane_basis`] of its
+/// normal, so the frame is the same one a sketch on that face would get and a point keeps
+/// meaning the same thing across rebuilds.
+pub fn face_group_basis(tris: &[[Vec3; 3]]) -> (Vec3, Vec3) {
+    let n = (tris[0][1] - tris[0][0])
+        .cross(tris[0][2] - tris[0][0])
+        .normalize_or_zero();
+    crate::construction::plane_basis(n)
+}
+
+/// The world point at a quantized in-plane offset from a face group's centre (#1074).
+pub fn face_uv_world(tris: &[[Vec3; 3]], uv: [i32; 2]) -> Vec3 {
+    let (u, v) = face_group_basis(tris);
+    face_group_center(tris) + u * (uv[0] as f32 / 100.0) + v * (uv[1] as f32 / 100.0)
+}
+
+/// The quantized in-plane offset of a world point from a face group's centre (#1074) — the
+/// inverse of [`face_uv_world`], for turning a pick into a stored reference.
+pub fn face_world_uv(tris: &[[Vec3; 3]], world: Vec3) -> [i32; 2] {
+    let (u, v) = face_group_basis(tris);
+    let d = world - face_group_center(tris);
+    [(d.dot(u) * 100.0).round() as i32, (d.dot(v) * 100.0).round() as i32]
 }
 
 /// World bounds of the current selection (#164):/// World bounds of the current selection (#164): union of every selected element's own
@@ -9756,6 +9782,84 @@ mod tests {
         crate::selection::click_scene_selection(&mut selection, SceneElement::Body(bkey(0)), true);
         let resolved = treatable_edges_in_selection(&doc, &selection);
         assert_eq!(resolved, vec![(expect_ei, expect_edge)]);
+    }
+
+    /// #1074: a point on a face is stored as an offset in the **face's own axes**, resolved
+    /// against the live triangle group — so the same offset names the same corner of the face
+    /// wherever that face has got to. A world-space position would name a fixed spot instead,
+    /// and a raised face would slide out from under it.
+    #[test]
+    fn a_point_on_a_face_names_the_same_spot_after_the_face_moves() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let solid = body_solid_mesh(&doc, bkey(0)).unwrap();
+        let cap = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+            .into_iter()
+            .find(|tris| {
+                (tris[0][1] - tris[0][0])
+                    .cross(tris[0][2] - tris[0][0])
+                    .normalize_or_zero()
+                    .z
+                    > 0.9
+            })
+            .expect("the top cap");
+        let q = crate::hierarchy::quantize_body_point;
+        let key = |uv: [i32; 2]| crate::model::MovePointRef::OnFace {
+            body: bkey(0),
+            centroid: q(face_group_center(&cap)),
+            normal: q((cap[0][1] - cap[0][0]).cross(cap[0][2] - cap[0][0]).normalize_or_zero()),
+            uv,
+        };
+
+        // The centre is uv = [0, 0] — the #738 face-centre point, unchanged.
+        let center = move_point_world(&doc, &key([0, 0])).expect("the face centre");
+        assert!((center - face_group_center(&cap)).length() < 1e-3, "{center:?}");
+
+        // A corner of the cap, expressed in the face's axes, is that corner in the world.
+        let corner = cap.iter().flat_map(|t| t.iter()).copied().fold(
+            Vec3::new(f32::MIN, f32::MIN, 0.0),
+            |a, b| Vec3::new(a.x.max(b.x), a.y.max(b.y), b.z),
+        );
+        let uv = face_world_uv(&cap, corner);
+        assert_ne!(uv, [0, 0], "a corner is not the centre");
+        let resolved = move_point_world(&doc, &key(uv)).expect("the corner");
+        assert!((resolved - corner).length() < 1e-2, "{resolved:?} vs {corner:?}");
+
+        // Now raise the box. The cap's centroid key moves with it (that is how every
+        // face-keyed reference works), so re-derive the key — what is under test is that the
+        // *offset* still lands on the same corner, now 4 mm higher.
+        doc.extrusions[xkey(0)].distance = 9.0;
+        let solid = body_solid_mesh(&doc, bkey(0)).unwrap();
+        let moved_cap = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+            .into_iter()
+            .find(|tris| {
+                (tris[0][1] - tris[0][0])
+                    .cross(tris[0][2] - tris[0][0])
+                    .normalize_or_zero()
+                    .z
+                    > 0.9
+            })
+            .expect("the raised cap");
+        let raised_key = crate::model::MovePointRef::OnFace {
+            body: bkey(0),
+            centroid: q(face_group_center(&moved_cap)),
+            normal: q((moved_cap[0][1] - moved_cap[0][0])
+                .cross(moved_cap[0][2] - moved_cap[0][0])
+                .normalize_or_zero()),
+            uv,
+        };
+        let raised = move_point_world(&doc, &raised_key).expect("the corner, raised");
+        assert!((raised.z - 9.0).abs() < 1e-2, "the point rode up with its face: {raised:?}");
+        assert!(
+            (raised.x - resolved.x).abs() < 1e-2 && (raised.y - resolved.y).abs() < 1e-2,
+            "and stayed the same corner: {raised:?} vs {resolved:?}"
+        );
     }
 
     /// #162: `body_solid_mesh` is memoized on document geometry — an in-place mutation
