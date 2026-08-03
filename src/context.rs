@@ -4904,7 +4904,7 @@ pub fn show_pane(
                 })
                 .collect();
             let pickable = anchor
-                .map(|v| v.picker.filter().pickable_icons())
+                .map(|v| v.picker.active_filter().pickable_icons())
                 .unwrap_or_else(|| vec![crate::icons::IconId::Plane]);
             if let Some(event) = crate::element_picker::show_rows(
                 ui,

@@ -334,12 +334,45 @@ pub enum PickRule {
     Construction(bool),
     /// Excludes what a sibling picker already holds — Combine's B side against its A side.
     NotIn(Vec<SceneElement>),
+    /// Only points lying **on** this face (#1075) — the second half of a Face Snap pick.
+    /// The face is whatever the picker's first stage took, so this rule is injected by the
+    /// picker rather than configured by the caller.
+    OnFace(Box<SceneElement>),
+}
+
+/// Whether `element` is a point lying on `face` (#1075) — the filter Face Snap's second pick
+/// runs on. "On the face" is geometric, not structural: any point that resolves to a world
+/// position in the face's plane and inside its outline counts, so a corner, an edge midpoint,
+/// or a point already recorded as being on that face all pass, while a corner on the far side
+/// of the body does not.
+fn point_lies_on_face(doc: &Document, face: &SceneElement, element: &SceneElement) -> bool {
+    let SceneElement::BodyFace { body, centroid, normal } = face else {
+        return false;
+    };
+    let Some(world) = point_world_position(doc, element) else {
+        return false;
+    };
+    crate::extrude::body_face_triangles(doc, *body, *centroid, *normal)
+        .is_some_and(|tris| crate::extrude::face_group_contains(&tris, world))
+}
+
+/// The world position of an element that *is* a point — a picked snap point, or a body corner
+/// picked directly. `None` for anything with extent, which is never a point on a face.
+fn point_world_position(doc: &Document, element: &SceneElement) -> Option<glam::Vec3> {
+    match element {
+        SceneElement::MovePoint(point) => crate::extrude::move_point_world(doc, point),
+        SceneElement::BodyVertex { body, p } => {
+            crate::parameters::body_vertex_world_position(doc, *body, *p)
+        }
+        _ => None,
+    }
 }
 
 impl PickRule {
     /// Whether this rule lets the element through.
     pub fn allows(&self, doc: &Document, element: &SceneElement) -> bool {
         match self {
+            PickRule::OnFace(face) => point_lies_on_face(doc, face, element),
             PickRule::InSketch(sketch) => element_in_sketch(doc, *sketch, element),
             PickRule::ProjectableInto(sketch) => match element {
                 // A projected line of this sketch is re-picked to un-project it; every other
@@ -541,7 +574,7 @@ pub fn expand_pick(
     // A picker that takes whole **bodies** takes a click anywhere on one (#218): its faces,
     // edges and corners all resolve to the body they belong to. Checked before the face
     // expansion, so a body picker gets the body rather than the face's edges.
-    if picker.filter().accepts_kind(ElementKind::Body) {
+    if picker.active_filter().accepts_kind(ElementKind::Body) {
         if let Some(body) = element_body(doc, element) {
             let whole = SceneElement::Body(body);
             if picker.accepts(doc, &whole) {
@@ -600,6 +633,22 @@ fn face_boundary_elements(doc: &Document, face: &SceneElement) -> Vec<SceneEleme
         },
         _ => Vec::new(),
     }
+}
+
+/// The second half of a [staged picker](ElementPicker::face_then_point) (#1075).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickStage {
+    /// What the second pick accepts, before the first pick scopes it.
+    filter: ElementFilter,
+    /// How the first pick scopes it.
+    scope: PickScope,
+}
+
+/// How a staged picker's first pick narrows its second (#1075).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickScope {
+    /// Only points lying on the face picked first.
+    OnPickedFace,
 }
 
 /// Which elements a picker will accept.
@@ -774,6 +823,9 @@ pub enum PickOutcome {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ElementPicker {
     filter: ElementFilter,
+    /// A second stage (#1075): once the first element is picked, this filter — scoped by
+    /// that pick — is what the picker accepts. `None` is the ordinary flat picker.
+    stage: Option<PickStage>,
     limit: PickLimit,
     /// Overrides the theme selection color for this picker's highlights (e.g. Slice cutters red).
     selected_color: Option<Color32>,
@@ -791,12 +843,26 @@ impl ElementPicker {
     pub fn new(filter: ElementFilter, limit: PickLimit) -> ElementPicker {
         ElementPicker {
             filter,
+            stage: None,
             limit,
             selected_color: None,
             priority: Vec::new(),
             picked: Vec::new(),
             focused: false,
         }
+    }
+
+    /// A picker that takes **two elements in sequence** (#1075), the second scoped by the
+    /// first: a face, then a point on that face.
+    ///
+    /// The alternative was a bespoke two-click interaction, which would have had to
+    /// reimplement the Selection Exploder — the exploder asks the picker what it accepts, so
+    /// putting the sequence inside the picker gets the crowd fan-out of the currently-valid
+    /// set for nothing.
+    pub fn face_then_point(face: ElementFilter, point: ElementFilter) -> ElementPicker {
+        let mut picker = ElementPicker::new(face, PickLimit::Finite(2));
+        picker.stage = Some(PickStage { filter: point, scope: PickScope::OnPickedFace });
+        picker
     }
 
     /// The scene selection's picker (#966): accepts everything, unbounded, focused.
@@ -852,6 +918,27 @@ impl ElementPicker {
         &self.filter
     }
 
+    /// The filter in force **right now** (#1075). For a flat picker that is always the base
+    /// filter; for a staged one it becomes the second stage's, scoped by the first pick, as
+    /// soon as there is a first pick. Everything that asks what this picker takes — the
+    /// exploder, the hover, the click — goes through [`accepts`](Self::accepts), so the
+    /// selectable set changes as the picker is used without any of them knowing.
+    pub fn active_filter(&self) -> ElementFilter {
+        match (&self.stage, self.picked.first()) {
+            (Some(stage), Some(first)) => match stage.scope {
+                PickScope::OnPickedFace => {
+                    stage.filter.clone().rule(PickRule::OnFace(Box::new(first.clone())))
+                }
+            },
+            _ => self.filter.clone(),
+        }
+    }
+
+    /// Whether this picker takes its two elements in sequence (#1075).
+    pub fn is_staged(&self) -> bool {
+        self.stage.is_some()
+    }
+
     pub fn limit(&self) -> PickLimit {
         self.limit
     }
@@ -864,7 +951,7 @@ impl ElementPicker {
 
     /// Whether this element is one this picker would accept (delegates to the filter).
     pub fn accepts(&self, doc: &Document, element: &SceneElement) -> bool {
-        self.filter.accepts(doc, element)
+        self.active_filter().accepts(doc, element)
     }
 
     // ---- focus ----------------------------------------------------------------------------
@@ -908,10 +995,19 @@ impl ElementPicker {
     /// filter accepts it and there is room, replacing the sole element for a single-select picker.
     pub fn pick(&mut self, doc: &Document, element: SceneElement) -> PickOutcome {
         if let Some(pos) = self.picked.iter().position(|e| e == &element) {
-            self.picked.remove(pos);
+            // `remove_index` is what drops a staged picker's second element along with its
+            // first (#1075).
+            self.remove_index(pos);
             return PickOutcome::Removed;
         }
-        if !self.filter.accepts(doc, &element) {
+        // A staged picker that is full still takes a **new face**: starting the sequence over
+        // is the only thing a second face could mean (#1075).
+        if self.stage.is_some() && self.is_full() && self.filter.accepts(doc, &element) {
+            self.picked.clear();
+            self.picked.push(element);
+            return PickOutcome::Replaced;
+        }
+        if !self.accepts(doc, &element) {
             return PickOutcome::NotAccepted;
         }
         if self.is_full() {
@@ -928,17 +1024,28 @@ impl ElementPicker {
 
     /// Remove a specific element if present; returns whether it was there.
     pub fn remove(&mut self, element: &SceneElement) -> bool {
-        if let Some(pos) = self.picked.iter().position(|e| e == element) {
-            self.picked.remove(pos);
-            true
-        } else {
-            false
+        match self.picked.iter().position(|e| e == element) {
+            Some(pos) => {
+                self.remove_index(pos);
+                true
+            }
+            None => false,
         }
     }
 
     /// Remove the element at a popup-row index (the popup builds rows from [`picked`]).
+    ///
+    /// On a staged picker (#1075) removing the first element removes the second too: the
+    /// second was only ever "a point on *that* face".
     pub fn remove_index(&mut self, index: usize) -> Option<SceneElement> {
-        (index < self.picked.len()).then(|| self.picked.remove(index))
+        if index >= self.picked.len() {
+            return None;
+        }
+        let gone = self.picked.remove(index);
+        if self.stage.is_some() && index == 0 {
+            self.picked.clear();
+        }
+        Some(gone)
     }
 
     pub fn clear(&mut self) {
@@ -1169,7 +1276,7 @@ pub fn show(
         id_source,
         picker.is_focused(),
         picker.limit().is_single(),
-        &picker.filter().pickable_icons(),
+        &picker.active_filter().pickable_icons(),
         &picker.summary(),
         &rows,
     )
@@ -1276,6 +1383,168 @@ mod tests {
             centroid: [0, 0, 0],
             normal: [0, 0, 1],
         }
+    }
+
+    /// A 10x10x5 box body, for the staged-picker tests below — they need real face triangles.
+    fn box_doc() -> Document {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let lines = crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc.extrusions.insert(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc
+    }
+
+    /// The box's top cap, as a pickable face element.
+    fn top_cap(doc: &Document) -> SceneElement {
+        let solid = crate::extrude::body_solid_mesh(doc, bkey(0)).expect("box mesh");
+        let tris = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+            .into_iter()
+            .find(|t| {
+                (t[0][1] - t[0][0]).cross(t[0][2] - t[0][0]).normalize_or_zero().z > 0.9
+            })
+            .expect("the top cap");
+        let q = crate::hierarchy::quantize_body_point;
+        SceneElement::BodyFace {
+            body: bkey(0),
+            centroid: q(crate::extrude::face_group_center(&tris)),
+            normal: q((tris[0][1] - tris[0][0]).cross(tris[0][2] - tris[0][0]).normalize_or_zero()),
+        }
+    }
+
+    fn point_on(face: &SceneElement, uv: [i32; 2]) -> SceneElement {
+        let SceneElement::BodyFace { body, centroid, normal } = face else {
+            panic!("not a face");
+        };
+        SceneElement::MovePoint(crate::model::MovePointRef::OnFace {
+            body: *body,
+            centroid: *centroid,
+            normal: *normal,
+            uv,
+        })
+    }
+
+    /// #1075: a staged picker takes a face, and only *then* takes points — and only points on
+    /// that face. The selectable set changes as the picker is used, which no flat picker does.
+    #[test]
+    fn a_staged_picker_only_takes_points_once_it_has_a_face() {
+        let doc = box_doc();
+        let cap = top_cap(&doc);
+        let mut picker = ElementPicker::face_then_point(
+            ElementFilter::kind(ElementKind::Face),
+            ElementFilter::kind(ElementKind::Vertex),
+        );
+        assert!(picker.is_staged());
+
+        // Before the face, a point is not on offer at all.
+        assert!(!picker.accepts(&doc, &point_on(&cap, [0, 0])));
+        assert!(picker.accepts(&doc, &cap));
+
+        assert_eq!(picker.pick(&doc, cap.clone()), PickOutcome::Added);
+        // After the face, the face itself is no longer what this picker wants — points are.
+        assert!(picker.accepts(&doc, &point_on(&cap, [0, 0])));
+        assert_eq!(picker.pick(&doc, point_on(&cap, [200, 200])), PickOutcome::Added);
+        assert_eq!(picker.picked().len(), 2);
+    }
+
+    /// #1075: "points on that face" is geometric — a point beyond the face's outline, or on
+    /// another face of the same body, is not on offer.
+    #[test]
+    fn a_staged_pickers_second_stage_refuses_points_off_the_face() {
+        let doc = box_doc();
+        let cap = top_cap(&doc);
+        let mut picker = ElementPicker::face_then_point(
+            ElementFilter::kind(ElementKind::Face),
+            ElementFilter::kind(ElementKind::Vertex),
+        );
+        picker.pick(&doc, cap.clone());
+
+        // Inside the 10x10 cap (centre-relative), fine.
+        assert!(picker.accepts(&doc, &point_on(&cap, [400, 400])));
+        // A metre off the side of it, not.
+        assert!(!picker.accepts(&doc, &point_on(&cap, [100_000, 0])));
+        // A corner of the *bottom* cap is a real point on the body, but not on this face.
+        let bottom = SceneElement::MovePoint(crate::model::MovePointRef::Vertex {
+            body: bkey(0),
+            p: crate::hierarchy::quantize_body_point(glam::Vec3::ZERO),
+        });
+        assert!(!picker.accepts(&doc, &bottom));
+    }
+
+    /// #1075: the whole reason the sequence lives inside the picker — `expand_pick`, which is
+    /// what the Selection Exploder fans a crowd out through, follows the stage without knowing
+    /// anything about it. A face click that would have meant "the whole body" in stage 0 means
+    /// nothing in stage 1, because the picker no longer takes bodies.
+    #[test]
+    fn a_staged_picker_changes_what_a_crowd_expands_into() {
+        let doc = box_doc();
+        let cap = top_cap(&doc);
+        let mut picker = ElementPicker::face_then_point(
+            ElementFilter::kind(ElementKind::Face),
+            ElementFilter::kind(ElementKind::Vertex),
+        );
+        // Stage 0 takes the face itself, and a point on it is not on offer.
+        assert_eq!(expand_pick(&doc, &picker, &cap, false), vec![cap.clone()]);
+        let p = point_on(&cap, [100, 100]);
+        assert!(expand_pick(&doc, &picker, &p, false).is_empty());
+
+        picker.pick(&doc, cap.clone());
+        // Stage 1 has swapped them over: the face is spent, the point is what it wants.
+        assert!(expand_pick(&doc, &picker, &cap, false).is_empty());
+        assert_eq!(expand_pick(&doc, &picker, &p, false), vec![p]);
+    }
+
+    /// #1075: the second pick is only ever "a point on *that* face", so dropping the face
+    /// drops the point with it — and picking a different face starts the sequence over.
+    #[test]
+    fn dropping_a_staged_pickers_face_drops_its_point() {
+        let doc = box_doc();
+        let cap = top_cap(&doc);
+        let mut picker = ElementPicker::face_then_point(
+            ElementFilter::kind(ElementKind::Face),
+            ElementFilter::kind(ElementKind::Vertex),
+        );
+        picker.pick(&doc, cap.clone());
+        picker.pick(&doc, point_on(&cap, [200, 200]));
+
+        // A second face replaces the pair rather than being refused as "full".
+        let side = {
+            let solid = crate::extrude::body_solid_mesh(&doc, bkey(0)).expect("box mesh");
+            let tris = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+                .into_iter()
+                .find(|t| {
+                    (t[0][1] - t[0][0]).cross(t[0][2] - t[0][0]).normalize_or_zero().z.abs() < 0.1
+                })
+                .expect("a side wall");
+            let q = crate::hierarchy::quantize_body_point;
+            SceneElement::BodyFace {
+                body: bkey(0),
+                centroid: q(crate::extrude::face_group_center(&tris)),
+                normal: q((tris[0][1] - tris[0][0]).cross(tris[0][2] - tris[0][0]).normalize_or_zero()),
+            }
+        };
+        assert_eq!(picker.pick(&doc, side.clone()), PickOutcome::Replaced);
+        assert_eq!(picker.picked(), std::slice::from_ref(&side));
+
+        // And removing the face row takes the point row with it.
+        picker.pick(&doc, point_on(&side, [0, 0]));
+        assert_eq!(picker.picked().len(), 2);
+        picker.remove_index(0);
+        assert!(picker.picked().is_empty(), "{:?}", picker.picked());
     }
 
     #[test]

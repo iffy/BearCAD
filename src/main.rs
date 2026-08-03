@@ -1411,8 +1411,12 @@ fn exploder_keep_for_picker(
     candidates: &mut Vec<construction::CrowdCandidate>,
 ) {
     use crate::element_picker::{expand_pick, ElementKind};
-    let takes_both = picker.filter().accepts_kind(ElementKind::Profile)
-        && picker.filter().accepts_kind(ElementKind::Face);
+    // What the picker takes **right now** — a staged picker (#1075) has already moved on to
+    // points by the time it holds a face, and the exploder must fan out that set, not the one
+    // the picker started with.
+    let active = picker.active_filter();
+    let takes_both =
+        active.accepts_kind(ElementKind::Profile) && active.accepts_kind(ElementKind::Face);
     // A picker that takes whole bodies turns a face, an edge and a corner of the same body all
     // into that body — one leaf, not four. Keyed on what the pick would *become*, and the leaf
     // is relabelled as that: the loupe should show the body it would pick, not the facet the

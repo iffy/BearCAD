@@ -3379,6 +3379,22 @@ pub fn face_uv_world(tris: &[[Vec3; 3]], uv: [i32; 2]) -> Vec3 {
     face_group_center(tris) + u * (uv[0] as f32 / 100.0) + v * (uv[1] as f32 / 100.0)
 }
 
+/// Whether a world point lies **on** a face group (#1075): in its plane, and inside one of
+/// its triangles. The tolerance is the same 0.01 mm the quantized body-point keys round to,
+/// so a point derived from a mesh vertex of this face always counts as on it.
+pub fn face_group_contains(tris: &[[Vec3; 3]], world: Vec3) -> bool {
+    let (u, v) = face_group_basis(tris);
+    let n = u.cross(v).normalize_or_zero();
+    let origin = face_group_center(tris);
+    if (world - origin).dot(n).abs() > 0.01 {
+        return false;
+    }
+    let flat = |p: Vec3| ((p - origin).dot(u), (p - origin).dot(v));
+    let p = flat(world);
+    tris.iter()
+        .any(|t| crate::polygon::point_in_triangle_2d(p, flat(t[0]), flat(t[1]), flat(t[2])))
+}
+
 /// The quantized in-plane offset of a world point from a face group's centre (#1074) — the
 /// inverse of [`face_uv_world`], for turning a pick into a stored reference.
 pub fn face_world_uv(tris: &[[Vec3; 3]], world: Vec3) -> [i32; 2] {

@@ -966,6 +966,20 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   picker, so the pane, the viewport hover, and the click path can't disagree about what a valid
   pick is.
 
+  **A picker can take two elements in sequence (#1075).** `ElementPicker::face_then_point`
+  takes a **face** first, and from then on takes only **points lying on that face** — its
+  selectable set changes as it is used, which no other picker's does. The second stage is a
+  filter plus a `PickScope` saying how the first pick narrows it; the picker injects
+  `PickRule::OnFace(face)` itself, since nothing outside can know the face in advance.
+  Everything asking what a picker takes goes through `ElementPicker::accepts` /
+  `active_filter`, so the pane's icons, the viewport hover, the click path, and the
+  **Selection Exploder**'s crowd fan all follow the stage without knowing it exists — which
+  is exactly why this lives in the picker rather than in a bespoke two-click interaction.
+  "On the face" is geometric: any point resolving into the face's plane and inside its
+  outline counts, so a corner or an edge midpoint on that face passes and one on the far side
+  of the body does not. Dropping the face drops the point with it, and picking a second face
+  starts the sequence over rather than reading as full.
+
   **The chain is generic (#954/#962).** A tool declares its pickers in order with whether each
   is filled (`FocusChain`); focus is the first unfilled one (`focus_chain_step`), which is how a
   single-pick picker hands focus to the next input the moment it's filled. A hand-picked focus
