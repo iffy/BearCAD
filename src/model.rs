@@ -2171,20 +2171,68 @@ pub type BooleanOpKey = crate::arena::Key<BooleanOperation>;
 #[serde(rename_all = "snake_case")]
 pub enum MoveTranslateMode {
     /// Snap a picked **source point** on the moving bodies onto a picked **target point** on
-    /// the stationary geometry (#650). The default.
+    /// the stationary geometry (#650). The Move tool's default.
     #[default]
-    Snap,
-    /// Type or drag X/Y/Z components outright (#648) — the pre-#648 behavior.
+    PointSnap,
+    /// Put a picked **face** on the moving part onto a picked face on a fixed one (#1076),
+    /// point to point, with a side to land on and a turn about the target's normal. The
+    /// Joint tool's default — a mate is nearly always a face going onto a face.
+    FaceSnap,
+    /// Type or drag X/Y/Z amounts and X/Y/Z turns outright (#648/#1076) — no reference to any
+    /// other object.
     Free,
+    /// The part is already where it belongs, so the move is the identity (#1076). Offered by
+    /// the **Joint tool only**: a joint often just needs saying "don't move anything", and
+    /// without this the user has to fight the tool to say it. It takes no picks and no
+    /// values, which is also how the pane says so — by offering nothing.
+    InPlace,
 }
 
 impl MoveTranslateMode {
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
-            "snap" | "points" => Some(Self::Snap),
+            "snap" | "points" | "point_snap" => Some(Self::PointSnap),
+            "face" | "faces" | "face_snap" => Some(Self::FaceSnap),
             "free" | "components" | "xyz" => Some(Self::Free),
+            "in_place" | "place" | "none" => Some(Self::InPlace),
             _ => None,
         }
+    }
+
+    /// The name scripts and the status line use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PointSnap => "point_snap",
+            Self::FaceSnap => "face_snap",
+            Self::Free => "free",
+            Self::InPlace => "in_place",
+        }
+    }
+
+    /// The pane's label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PointSnap => "Point Snap",
+            Self::FaceSnap => "Face Snap",
+            Self::Free => "Free",
+            Self::InPlace => "In place",
+        }
+    }
+
+    /// The modes a tool offers, in pane order (#1076). Only the Joint tool offers
+    /// [`InPlace`](Self::InPlace) — a Move that moves nothing is a no-op, not a mode.
+    pub fn for_tool(joint: bool) -> Vec<Self> {
+        let mut modes = vec![Self::PointSnap, Self::FaceSnap, Self::Free];
+        if joint {
+            modes.push(Self::InPlace);
+        }
+        modes
+    }
+
+    /// Whether this mode derives its placement from picked geometry rather than from typed
+    /// amounts — the two snapping modes.
+    pub fn is_snap(self) -> bool {
+        matches!(self, Self::PointSnap | Self::FaceSnap)
     }
 }
 
@@ -2244,7 +2292,9 @@ impl MoveOperation {
     /// image move — still reads its `tx`/`ty`/`tz` expressions, so the tool stays usable while
     /// the points are being picked and gizmo drags keep working.
     pub fn has_snap_translation(&self) -> bool {
-        self.translate_mode == MoveTranslateMode::Snap
+        // Both snapping modes (#1076) derive their translation from the A pair; Face Snap
+        // simply picks its points on faces.
+        self.translate_mode.is_snap()
             && self.start_point_a.is_some()
             && self.end_point_a.is_some()
     }
@@ -2335,6 +2385,17 @@ pub struct MoveOperation {
     pub ty: String,
     #[serde(default)]
     pub tz: String,
+    /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions; empty = 0.
+    /// Applied about the moving bodies' own centre, in X-then-Y-then-Z order, before the
+    /// translation — so typing a turn spins the part where it stands rather than swinging it
+    /// around the world origin. Ignored by every other mode, which get their rotation from
+    /// the geometry they snap to.
+    #[serde(default)]
+    pub rx: String,
+    #[serde(default)]
+    pub ry: String,
+    #[serde(default)]
+    pub rz: String,
     /// Output bodies, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<BodyKey>,
@@ -4593,6 +4654,30 @@ mod tests {
         let json = serde_json::to_string(&parallel).unwrap();
         assert!(!json.contains("horizontal") && !json.contains("vertical"));
         assert_eq!(serde_json::from_str::<ConstraintKind>(&json).unwrap(), parallel);
+    }
+
+    /// #1076: four move modes, and only the Joint tool offers **In place** — a Move that moves
+    /// nothing is a no-op, not a mode. Both snapping modes derive their translation from the
+    /// A pair; Face Snap just picks its points on faces.
+    #[test]
+    fn move_modes_and_which_tool_offers_them() {
+        use MoveTranslateMode as M;
+        assert_eq!(M::default(), M::PointSnap, "the Move tool's default");
+        assert_eq!(
+            M::for_tool(false),
+            vec![M::PointSnap, M::FaceSnap, M::Free],
+            "no In place outside the Joint tool"
+        );
+        assert_eq!(M::for_tool(true).last(), Some(&M::InPlace));
+        assert!(M::PointSnap.is_snap() && M::FaceSnap.is_snap());
+        assert!(!M::Free.is_snap() && !M::InPlace.is_snap());
+        // Every mode round-trips through its scripted name, and the old spellings still read.
+        for m in M::for_tool(true) {
+            assert_eq!(M::from_name(m.name()), Some(m), "{m:?}");
+        }
+        assert_eq!(M::from_name("snap"), Some(M::PointSnap));
+        assert_eq!(M::from_name("xyz"), Some(M::Free));
+        assert_eq!(M::from_name("nope"), None);
     }
 
     /// #257: the count/gap/distance UI mapping round-trips through `RepeatMode`, and each toggle

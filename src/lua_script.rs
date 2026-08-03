@@ -1033,6 +1033,9 @@ fn parse_move_op_args(
     String,
     String,
     String,
+    String,
+    String,
+    String,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
@@ -1055,6 +1058,8 @@ fn parse_move_op_args(
         })
     };
     let (tx, ty, tz) = (expr("x")?, expr("y")?, expr("z")?);
+    // Free-mode turns about the world axes (#1076), in degrees.
+    let (rx, ry, rz) = (expr("rx")?, expr("ry")?, expr("rz")?);
     // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
     // `from` exactly on `to`, and x/y/z are ignored.
     let start_point_a = parse_move_point(lua, opts.get::<Value>("from")?, "from")?;
@@ -1070,6 +1075,9 @@ fn parse_move_op_args(
         tx,
         ty,
         tz,
+        rx,
+        ry,
+        rz,
         start_point_a,
         end_point_a,
         start_point_b,
@@ -4964,12 +4972,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
+            let (targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b,
+                 end_point_b, start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                    start_point_c, end_point_c,
+                    targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b,
+                    end_point_b, start_point_c, end_point_c,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -4991,12 +4999,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "begin_move",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
+            let (targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b,
+                 end_point_b, start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::BeginMoveOp {
-                    targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                    start_point_c, end_point_c,
+                    targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b,
+                    end_point_b, start_point_c, end_point_c,
                 })?;
             }
             Ok(())
@@ -5008,12 +5016,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                 start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
+            let (targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b,
+                 end_point_b, start_point_c, end_point_c) = parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
-                    start_point_c, end_point_c,
+                    op, targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a,
+                    start_point_b, end_point_b, start_point_c, end_point_c,
                 })?;
             }
             Ok(())
@@ -8259,7 +8267,7 @@ mod tests {
             "#,
         );
         let op = &state.doc.move_ops.values().nth(0).unwrap();
-        assert_eq!(op.translate_mode, crate::model::MoveTranslateMode::Snap);
+        assert_eq!(op.translate_mode, crate::model::MoveTranslateMode::PointSnap);
         assert!(op.has_snap_translation());
         let t = crate::extrude::move_op_translation(&state.doc, op).expect("translation");
         assert!(
@@ -8395,7 +8403,7 @@ mod tests {
         assert!(state.doc.move_ops.is_empty(), "nothing is committed");
         let cm = state.creating_move.as_ref().expect("a move in progress");
         assert_eq!(cm.targets, vec![bkey(1)]);
-        assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::Snap);
+        assert_eq!(cm.translate_mode, crate::model::MoveTranslateMode::PointSnap);
         for (what, point) in [
             ("start A", cm.start_point_a),
             ("end A", cm.end_point_a),
@@ -8833,6 +8841,51 @@ mod tests {
             (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,
             "midpoint-to-midpoint offset should be +40 X, got {t:?}"
         );
+    }
+
+    /// #1076: Free mode's turns are scriptable alongside its amounts, and `set_mode` names all
+    /// the modes the Move tool has — but not In place, which is the Joint tool's.
+    #[test]
+    fn lua_move_free_mode_turns_and_names_its_modes() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.move_bodies{ bodies = {0}, x = 10, rz = 90 }
+            "#,
+        );
+        let op = state.doc.move_ops.values().next().unwrap();
+        assert_eq!(op.rz, "90");
+        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
+        // Turned about the box's own centre (5, 5), then carried 10 along +X.
+        let corner = m.transform_point3(glam::Vec3::ZERO);
+        assert!((corner - glam::Vec3::new(20.0, 0.0, 0.0)).length() < 1e-3, "{corner:?}");
+
+        // The mode names the tool answers to.
+        for name in ["point_snap", "snap", "face_snap", "free", "xyz"] {
+            let s = run_lua(&format!(
+                r#"
+                bearcad.rect{{ width = 10, height = 10 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+                bearcad.begin_move{{ bodies = {{0}} }}
+                bearcad.ui.tool_mode("{name}")
+                "#
+            ));
+            assert!(s.creating_move.is_some(), "{name}");
+        }
+        // In place belongs to the Joint tool, so Move refuses it rather than silently
+        // accepting a mode it has no rows for.
+        let refused = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.begin_move{ bodies = {0} }
+            local ok, err = pcall(bearcad.ui.tool_mode, "in_place")
+            assert(not ok, "the Move tool has no In place mode")
+            assert(tostring(err):find("in_place"), "unexpected error: " .. tostring(err))
+            "#,
+        );
+        assert!(refused.creating_move.is_some());
     }
 
     /// #1074: `on_face` puts a point **within** a face — the face's selection key plus how far

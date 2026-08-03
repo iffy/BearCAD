@@ -277,8 +277,15 @@ pub struct MoveControl {
     /// that move", and splitting them by kind would be three near-empty inputs (#963).
     pub plane_targets: Vec<crate::model::ConstructionPlaneKey>,
     pub image_targets: Vec<crate::model::TracingImageKey>,
-    /// Snap (default) or free translation (#648) — the Translate dropdown.
+    /// Which of the move modes (#648/#1076) — the Translate dropdown.
     pub translate_mode: crate::model::MoveTranslateMode,
+    /// Whether **In place** is on offer (#1076): the Joint tool's mate may legitimately be a
+    /// no-op, but a Move that moves nothing is not a mode.
+    pub allow_in_place: bool,
+    /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions.
+    pub rx: String,
+    pub ry: String,
+    pub rz: String,
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
     /// other pickers is armed.
     pub bodies_focused: bool,
@@ -318,6 +325,10 @@ pub enum MoveEdit {
     Tz(String),
     /// Translate dropdown (#648).
     TranslateMode(crate::model::MoveTranslateMode),
+    /// Free-mode turns about the world X/Y/Z axes (#1076).
+    Rx(String),
+    Ry(String),
+    Rz(String),
     /// Arm / clear the source-point picker (#649).
     StartAFocus,
     ClearStartA,
@@ -5083,21 +5094,19 @@ pub fn show_pane(
         ui.separator();
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<MoveEdit> = None;
-        // Translate mode (#648): snapping a picked point onto another (the default), or typing
-        // and dragging X/Y/Z outright.
+        // Move mode (#648/#1076): snap a point onto a point, put a face on a face, type the
+        // amounts outright, or — for a joint — leave the part where it already is.
         {
             use crate::model::MoveTranslateMode as M;
             let mut mode = control.translate_mode;
             labeled_row(ui, "Translate", |ui| {
                 egui::ComboBox::from_id_salt("move_translate_mode")
-                    .selected_text(match mode {
-                        M::Snap => "Snap",
-                        M::Free => "Free",
-                    })
+                    .selected_text(mode.label())
                     .width(110.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut mode, M::Snap, "Snap");
-                        ui.selectable_value(&mut mode, M::Free, "Free");
+                        for m in M::for_tool(control.allow_in_place) {
+                            ui.selectable_value(&mut mode, m, m.label());
+                        }
                     });
             });
             if mode != control.translate_mode {
@@ -5131,18 +5140,22 @@ pub fn show_pane(
                 }
             });
         };
-        picker_row(
-            ui,
-            "Start point A",
-            "move_start_point_a",
-            PickerTarget::MoveStartA,
-            MoveEdit::StartAFocus,
-            MoveEdit::ClearStartA,
-        );
+        // In place (#1076) has nothing to pick and nothing to type — the mate is the identity.
+        // Offering no rows is how the pane says so; there is no prose to say it with.
+        if control.translate_mode != crate::model::MoveTranslateMode::InPlace {
+            picker_row(
+                ui,
+                "Start point A",
+                "move_start_point_a",
+                PickerTarget::MoveStartA,
+                MoveEdit::StartAFocus,
+                MoveEdit::ClearStartA,
+            );
+        }
         // Snap (#650/#668): end point A on stationary geometry; the offset is derived from
         // the pair, so there are no X/Y/Z fields. The optional B pair below it adds the
         // rotation (#669) — start B on a moving body, end B on the constraint sphere.
-        if control.translate_mode == crate::model::MoveTranslateMode::Snap {
+        if control.translate_mode == crate::model::MoveTranslateMode::PointSnap {
             picker_row(
                 ui,
                 "End point A",
@@ -5239,6 +5252,12 @@ pub fn show_pane(
                 field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
                 field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
                 field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
+                // Free turns too (#1076), about the part's own centre — so Free is a whole
+                // placement in its own right and not only a slide.
+                section_label(ui, "Rotation");
+                field(ui, "X", &control.rx, ValueKind::Angle, &MoveEdit::Rx);
+                field(ui, "Y", &control.ry, ValueKind::Angle, &MoveEdit::Ry);
+                field(ui, "Z", &control.rz, ValueKind::Angle, &MoveEdit::Rz);
             }
         }
         if let Some(edit) = pending {
@@ -8147,6 +8166,7 @@ mod tests {
                 image_targets: Vec::new(),
                 angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
                 translate_mode: crate::model::MoveTranslateMode::Free,
+                allow_in_place: false,
                 bodies_focused: true,
                 start_a: None,
                 start_a_focused: false,
@@ -8164,6 +8184,9 @@ mod tests {
                 tx: String::new(),
                 ty: String::new(),
                 tz: String::new(),
+                rx: String::new(),
+                ry: String::new(),
+                rz: String::new(),
                 editing: false,
                 can_commit: true,
             }),

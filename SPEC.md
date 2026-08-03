@@ -890,9 +890,19 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   back out for now (#663), so the tool translates only. One multi-select body picker (viewport
   clicks toggle); translation X/Y/Z are **expressions** (parameters work — moves rebuild
   parametrically).
-  **Translate mode (#648, `model::MoveTranslateMode`):** a pane dropdown picks **Snap** (the
-  default) or **Free**. Free is the classic behaviour — typed/dragged X/Y/Z. Snap instead
-  derives the offset from two picked points:
+  **Move mode (#648/#1076, `model::MoveTranslateMode`):** a pane dropdown picks one of four.
+  **Point Snap** (the Move tool's default) derives the placement from picked points; **Face
+  Snap** (the Joint tool's default) puts a face on a face; **Free** takes typed/dragged X/Y/Z
+  amounts *and* X/Y/Z turns; **In place** is the identity, and is offered by the **Joint tool
+  only** — a joint often just needs saying "leave the part where it is", while a Move that
+  moves nothing is a no-op rather than a mode (`MoveTranslateMode::for_tool`). In place takes
+  no picks and no values, and the pane says so by offering no rows, not by a sentence.
+
+  Free's turns (`rx`/`ry`/`rz`, degree expressions) act about the **moving part's own
+  centre**, X then Y then Z, before the translation carries it away: typing "45° about Z"
+  means "turn it where it stands", not "swing it around the world origin".
+
+  Point Snap derives the offset from two picked points:
   - A **Start point A** picker (#649/#668) takes a corner, the midpoint of a feature edge,
     or a point on a planar face (#738/#1074) on one of the **moving** bodies
     (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/`BodyEdge`/`BodyFace` and

@@ -5583,17 +5583,12 @@ impl App {
                         .state
                         .creating_move
                         .get_or_insert_with(actions::CreatingMove::default);
-                    cm.translate_mode = match cm.translate_mode {
-                        model::MoveTranslateMode::Snap => model::MoveTranslateMode::Free,
-                        model::MoveTranslateMode::Free => model::MoveTranslateMode::Snap,
-                    };
-                    self.state.status = format!(
-                        "Move: {} translate",
-                        match cm.translate_mode {
-                            model::MoveTranslateMode::Snap => "snap",
-                            model::MoveTranslateMode::Free => "free",
-                        }
-                    );
+                    // Cycle through the modes this tool offers, in pane order (#1076).
+                    let modes = model::MoveTranslateMode::for_tool(false);
+                    let at = modes.iter().position(|m| *m == cm.translate_mode).unwrap_or(0);
+                    cm.translate_mode = modes[(at + 1) % modes.len()];
+                    self.state.status =
+                        format!("Move: {}", cm.translate_mode.label().to_lowercase());
                 }
             }
 
@@ -8279,6 +8274,9 @@ impl App {
                         ty: existing.ty,
                         tz: existing.tz,
                         editing: Some(op),
+                        rx: String::new(),
+                        ry: String::new(),
+                        rz: String::new(),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
@@ -12359,6 +12357,9 @@ impl eframe::App for App {
                     plane_targets: cm.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                     image_targets: cm.map(|c| c.image_targets.clone()).unwrap_or_default(),
                     translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
+                    // Only the Joint tool's mate may legitimately move nothing (#1076); it
+                    // drives `CreatingMove` itself in #1079.
+                    allow_in_place: false,
                     bodies_focused: move_focus == MoveFocus::Bodies,
                     start_a: cm.and_then(|c| c.start_point_a),
                     start_a_focused: move_focus == MoveFocus::StartPointA,
@@ -12375,6 +12376,9 @@ impl eframe::App for App {
                     tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                     ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                     tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
+                    rx: cm.map(|c| c.rx.clone()).unwrap_or_default(),
+                    ry: cm.map(|c| c.ry.clone()).unwrap_or_default(),
+                    rz: cm.map(|c| c.rz.clone()).unwrap_or_default(),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: cm
                         .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
@@ -13379,6 +13383,9 @@ impl eframe::App for App {
                             context::MoveEdit::Tx(v) => cm.tx = v,
                             context::MoveEdit::Ty(v) => cm.ty = v,
                             context::MoveEdit::Tz(v) => cm.tz = v,
+                            context::MoveEdit::Rx(v) => cm.rx = v,
+                            context::MoveEdit::Ry(v) => cm.ry = v,
+                            context::MoveEdit::Rz(v) => cm.rz = v,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearStartA => cm.start_point_a = None,
                             context::MoveEdit::ClearEndA => cm.end_point_a = None,
@@ -15288,6 +15295,9 @@ fn move_ghost_target_transform(
         tx: cm.tx.clone(),
         ty: cm.ty.clone(),
         tz: cm.tz.clone(),
+        rx: cm.rx.clone(),
+        ry: cm.ry.clone(),
+        rz: cm.rz.clone(),
         outputs: Vec::new(),
         name: None,
     };
@@ -15557,6 +15567,9 @@ impl SnapPreviewPoints {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: Vec::new(),
             name: None,
         }
@@ -15636,7 +15649,7 @@ fn move_focus_chain(cm: &actions::CreatingMove) -> FocusChain<MoveFocus> {
         (MoveFocus::Bodies, !cm.targets.is_empty()),
         (MoveFocus::StartPointA, cm.start_point_a.is_some()),
     ];
-    if cm.translate_mode == model::MoveTranslateMode::Snap {
+    if cm.translate_mode == model::MoveTranslateMode::PointSnap {
         chain.extend([
             (MoveFocus::EndPointA, cm.end_point_a.is_some()),
             (MoveFocus::StartPointB, cm.start_point_b.is_some()),
@@ -28254,7 +28267,7 @@ mod tests {
         assert_eq!(ghosts(None).len(), 0);
         let picking = actions::CreatingMove {
             targets: vec![bkey(0)],
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(glam::Vec3::ZERO) }),
             ..Default::default()
         };
@@ -29574,7 +29587,7 @@ mod tests {
         assert_eq!(move_focus_for(None, None), MoveFocus::Bodies, "no move in progress");
 
         let mut cm = actions::CreatingMove {
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             ..Default::default()
         };
         assert_eq!(focus(&cm), MoveFocus::Bodies, "no bodies picked yet");
@@ -29622,7 +29635,7 @@ mod tests {
         let held = Some(MoveFocus::EndPointA);
         let mut partial = actions::CreatingMove {
             targets: vec![bkey(0)],
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: Some(point(bkey(0))),
             ..Default::default()
         };
@@ -29902,7 +29915,7 @@ mod tests {
         let point = |body| model::MovePointRef::Vertex { body, p: [0; 3] };
         let cm = actions::CreatingMove {
             targets: vec![bkey(0)],
-            translate_mode: model::MoveTranslateMode::Snap,
+            translate_mode: model::MoveTranslateMode::PointSnap,
             start_point_a: Some(point(bkey(0))),
             end_point_a: Some(point(bkey(1))),
             start_point_b: Some(point(bkey(0))),

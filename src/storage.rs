@@ -1026,7 +1026,7 @@ mod tests {
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
             outputs: Vec::new(),
-            translate_mode: crate::model::MoveTranslateMode::Snap,
+            translate_mode: crate::model::MoveTranslateMode::PointSnap,
             start_point_a: Some(point),
             end_point_a: Some(crate::model::MovePointRef::Origin),
             start_point_b: None,
@@ -1036,6 +1036,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             name: None,
         });
 
@@ -1657,6 +1660,9 @@ mod tests {
             tx: "5mm".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             name: None,
         });
         doc.joints.insert(crate::model::Joint {

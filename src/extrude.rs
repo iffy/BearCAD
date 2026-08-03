@@ -1391,7 +1391,26 @@ pub fn move_snap_roll(doc: &Document, op: &crate::model::MoveOperation) -> Optio
 }
 
 pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
+    // In place (#1076) is the identity by definition — the part is already where it belongs.
+    if op.translate_mode == crate::model::MoveTranslateMode::InPlace {
+        return Some(glam::Mat4::IDENTITY);
+    }
     let translation = glam::Mat4::from_translation(move_op_translation(doc, op)?);
+    // Free mode's typed turns (#1076) spin the part about its own centre, before the
+    // translation carries it away — typing "45° about Z" means "turn it where it stands",
+    // not "swing it around the world origin".
+    if op.translate_mode == crate::model::MoveTranslateMode::Free {
+        let Some(free) = move_op_free_rotation(doc, op) else {
+            return Some(translation);
+        };
+        let pivot = move_targets_center(doc, op)?;
+        return Some(
+            translation
+                * glam::Mat4::from_translation(pivot)
+                * glam::Mat4::from_mat3(free)
+                * glam::Mat4::from_translation(-pivot),
+        );
+    }
     // The B pair adds a rotation about end point A, applied after the translation (#669).
     let Some(rot) = move_snap_rotation(doc, op) else {
         return Some(translation);
@@ -1405,6 +1424,53 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
             * glam::Mat4::from_translation(-pivot)
             * translation,
     )
+}
+
+/// Free mode's typed turns as one rotation (#1076): X, then Y, then Z, about the world axes.
+/// `None` when nothing is typed (so the caller can skip the pivot work) or an expression
+/// doesn't evaluate.
+fn move_op_free_rotation(
+    doc: &Document,
+    op: &crate::model::MoveOperation,
+) -> Option<glam::Mat3> {
+    let eval = |expr: &str| -> Option<f32> {
+        if expr.trim().is_empty() {
+            return Some(0.0);
+        }
+        crate::value::eval_angle_rad_in_doc(expr, doc)
+    };
+    let (x, y, z) = (eval(&op.rx)?, eval(&op.ry)?, eval(&op.rz)?);
+    if x.abs() < 1e-9 && y.abs() < 1e-9 && z.abs() < 1e-9 {
+        return None;
+    }
+    Some(
+        glam::Mat3::from_rotation_z(z)
+            * glam::Mat3::from_rotation_y(y)
+            * glam::Mat3::from_rotation_x(x),
+    )
+}
+
+/// The centre of what a move operation moves (#1076) — the pivot Free mode's typed turns act
+/// about. `None` when nothing it moves has world extent.
+fn move_targets_center(doc: &Document, op: &crate::model::MoveOperation) -> Option<Vec3> {
+    let mut lo = Vec3::splat(f32::MAX);
+    let mut hi = Vec3::splat(f32::MIN);
+    let mut any = false;
+    for &body in &op.targets {
+        if let Some((a, b)) = body_solid_mesh(doc, body).and_then(|m| m.bounds()) {
+            lo = lo.min(a);
+            hi = hi.max(b);
+            any = true;
+        }
+    }
+    for &plane in &op.plane_targets {
+        if let Some(p) = doc.construction_planes.get(plane) {
+            lo = lo.min(p.origin);
+            hi = hi.max(p.origin);
+            any = true;
+        }
+    }
+    any.then(|| (lo + hi) * 0.5)
 }
 
 /// Resolve a rotation/revolve axis to world origin + unit direction.
@@ -6847,7 +6913,7 @@ mod tests {
         // Start B = +10X; end B = +10Y is exactly 10 from the pivot, so it's reachable.
         let op = MoveOperation {
             targets: vec![bkey(0)],
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: vertex(o),
             end_point_a: vertex(o),
             start_point_b: vertex(x),
@@ -6860,6 +6926,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: Vec::new(),
             name: None,
         };
@@ -6934,7 +7003,7 @@ mod tests {
         // and the bodies are free to spin about the X axis — exactly the ambiguity C fixes.
         let base = MoveOperation {
             targets: vec![bkey(0)],
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: vertex(o),
             end_point_a: vertex(o),
             start_point_b: vertex(x),
@@ -6947,6 +7016,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: Vec::new(),
             name: None,
         };
@@ -7068,7 +7140,7 @@ mod tests {
         });
         let op = MoveOperation {
             targets: vec![bkey(0)],
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::ZERO) }),
             end_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::new(10.0, 0.0, 0.0)) }),
             start_point_b: Some(MovePointRef::Vertex { body: bkey(0), p: q(Vec3::new(10.0, 0.0, 0.0)) }),
@@ -7081,6 +7153,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: Vec::new(),
             name: None,
         };
@@ -7145,7 +7220,7 @@ mod tests {
         let doc = Document::default();
         let base = MoveOperation {
             targets: Vec::new(),
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: None,
             end_point_a: None,
             start_point_b: None,
@@ -7158,6 +7233,9 @@ mod tests {
             tx: "7".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: Vec::new(),
             name: None,
         };
@@ -7258,7 +7336,7 @@ mod tests {
         });
         let op = MoveOperation {
             targets: vec![bkey(0)],
-            translate_mode: MoveTranslateMode::Snap,
+            translate_mode: MoveTranslateMode::PointSnap,
             start_point_a: Some(MovePointRef::Vertex { body: bkey(0), p: q(corner) }),
             end_point_a: Some(MovePointRef::Origin),
             start_point_b: None,
@@ -7271,6 +7349,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: Vec::new(),
             name: None,
         };
@@ -7386,6 +7467,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: vec![bkey(3)],
             name: None,
         });
@@ -7741,6 +7825,9 @@ mod tests {
             tx: "0mm".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: vec![bkey(1)],
             name: None,
         });
@@ -8328,6 +8415,9 @@ mod tests {
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
             outputs: vec![bkey(1)],
             name: None,
         });
@@ -9798,6 +9888,69 @@ mod tests {
         crate::selection::click_scene_selection(&mut selection, SceneElement::Body(bkey(0)), true);
         let resolved = treatable_edges_in_selection(&doc, &selection);
         assert_eq!(resolved, vec![(expect_ei, expect_edge)]);
+    }
+
+    /// #1076: Free mode grows a rotation — X/Y/Z turns typed alongside the X/Y/Z amounts —
+    /// and it acts about the moving part's **own centre**, so typing a turn spins the part
+    /// where it stands rather than swinging it around the world origin. And In place is the
+    /// identity by definition, whatever else is filled in.
+    #[test]
+    fn free_mode_turns_the_part_about_its_own_centre() {
+        use crate::model::{MoveOperation, MoveTranslateMode};
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint at the origin, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let op = |mode: MoveTranslateMode, rz: &str, tx: &str| MoveOperation {
+            targets: vec![bkey(0)],
+            translate_mode: mode,
+            start_point_a: None,
+            end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: tx.to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: rz.to_string(),
+            outputs: Vec::new(),
+            name: None,
+        };
+
+        // No turn typed: a plain translation, exactly as before (#648).
+        let plain = move_op_transform(&doc, &op(MoveTranslateMode::Free, "", "10")).unwrap();
+        assert_eq!(plain, glam::Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)));
+
+        // 90° about Z, no translation. The box spans 0..10 in x and y, so its centre is
+        // (5, 5); turning about that centre leaves the footprint where it is.
+        let turned = move_op_transform(&doc, &op(MoveTranslateMode::Free, "90", "")).unwrap();
+        let corner = turned.transform_point3(Vec3::ZERO);
+        assert!((corner - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-3, "{corner:?}");
+        let far = turned.transform_point3(Vec3::new(10.0, 10.0, 0.0));
+        assert!((far - Vec3::new(0.0, 10.0, 0.0)).length() < 1e-3, "{far:?}");
+        // A turn about the world origin would have thrown the corner somewhere else entirely.
+        assert!(
+            (corner - glam::Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2)
+                .transform_point3(Vec3::new(10.0, 0.0, 0.0)))
+            .length()
+                > 1.0
+        );
+
+        // In place ignores every amount typed: the mate is the identity (#1076).
+        assert_eq!(
+            move_op_transform(&doc, &op(MoveTranslateMode::InPlace, "90", "10")),
+            Some(glam::Mat4::IDENTITY)
+        );
     }
 
     /// #1074: a point on a face is stored as an offset in the **face's own axes**, resolved

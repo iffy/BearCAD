@@ -23,9 +23,9 @@ Move slides whole bodies to a new place, producing moved copies.
 ## How to use it
 
 1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one.
-   Pressing **M** again switches between the two Translate modes.
+   Pressing **M** again steps through the Translate modes.
 2. Choose how to **Translate**:
-   - **Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
+   - **Point Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
      second. Either point can be a corner, the midpoint of an edge, or the middle of a flat
      face; an end point can also be the **origin**. Hovering marks the exact point a click
@@ -53,7 +53,8 @@ Move slides whole bodies to a new place, producing moved copies.
      turn apart on it are marked in blue: as it sits now, a quarter turn either way, and
      upside down.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
-     box beside its handle). They're expressions, so the move stays parametric.
+     box beside its handle). Under **Rotation**, type **X / Y / Z** turns as well; they spin
+     the part about its own centre. Everything is an expression, so the move stays parametric.
 3. Press **Enter**.
 
 ### What each pair decides
@@ -119,10 +120,11 @@ it, with the angle reading out as you move.
 ## Scripting
 
 ```lua
--- Free: explicit components.
+-- Free: explicit components, and turns about the part's own centre.
 bearcad.move_bodies{ bodies = {0}, x = 40, z = "plate_thickness" }
+bearcad.move_bodies{ bodies = {0}, rz = 90 }
 
--- Snap: land one point on another. `vertex` is a corner; `edge` takes a midpoint.
+-- Point Snap: land one point on another. `vertex` is a corner; `edge` takes a midpoint.
 bearcad.move_bodies{ bodies = {0},
   from = { body = 0, vertex = {0, 0, 0} },
   to   = { body = 1, vertex = {40, 0, 0} } }

@@ -1171,6 +1171,10 @@ pub struct CreatingMove {
     pub tx: String,
     pub ty: String,
     pub tz: String,
+    /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions.
+    pub rx: String,
+    pub ry: String,
+    pub rz: String,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<crate::model::MoveOpKey>,
 }
@@ -2284,6 +2288,10 @@ pub enum Action {
         tx: String,
         ty: String,
         tz: String,
+        /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions.
+        rx: String,
+        ry: String,
+        rz: String,
     },
     /// Re-point an existing move operation.
     EditMoveOperation {
@@ -2307,6 +2315,10 @@ pub enum Action {
         tx: String,
         ty: String,
         tz: String,
+        /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions.
+        rx: String,
+        ry: String,
+        rz: String,
     },
     /// Commit the in-progress Joint-tool operation (#894).
     CommitJoint,
@@ -11411,7 +11423,7 @@ label_hidden: false,
                 };
                 if let Err(e) = commit_inline_parameter_defs(
                     &mut self.doc,
-                    [&mut cm.tx, &mut cm.ty, &mut cm.tz],
+                    [&mut cm.tx, &mut cm.ty, &mut cm.tz, &mut cm.rx, &mut cm.ry, &mut cm.rz],
                 ) {
                     self.status = e.clone();
                     self.creating_move = Some(cm);
@@ -11434,6 +11446,9 @@ label_hidden: false,
                         tx: cm.tx.clone(),
                         ty: cm.ty.clone(),
                         tz: cm.tz.clone(),
+                        rx: cm.rx.clone(),
+                        ry: cm.ry.clone(),
+                        rz: cm.rz.clone(),
                     }),
                     None => {
                         // Coalesce (#217): re-moving the same element folds into its existing
@@ -11461,6 +11476,11 @@ label_hidden: false,
                                     tx,
                                     ty,
                                     tz,
+                                    // Coalescing only folds free translations, which carry
+                                    // no turn (#1076).
+                                    rx: String::new(),
+                                    ry: String::new(),
+                                    rz: String::new(),
                                 })
                             }
                             None => self.apply(Action::CreateMoveOperation {
@@ -11478,6 +11498,9 @@ label_hidden: false,
                                 tx: cm.tx.clone(),
                                 ty: cm.ty.clone(),
                                 tz: cm.tz.clone(),
+                                rx: cm.rx.clone(),
+                                ry: cm.ry.clone(),
+                                rz: cm.rz.clone(),
                             }),
                         }
                     }
@@ -11489,7 +11512,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz } => {
                 if targets.is_empty()
                     && plane_targets.is_empty()
                     && image_targets.is_empty()
@@ -11517,7 +11540,12 @@ label_hidden: false,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
                     instance_targets: instance_targets.clone(),
-                    tx,                    ty,                    tz,
+                    tx,
+                    ty,
+                    tz,
+                    rx,
+                    ry,
+                    rz,
                     outputs: Vec::new(),
                     name: None,
                 });
@@ -11556,7 +11584,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz } => {
                 if self.doc.move_ops.get(op).is_none() {
                     let e = format!("Move operation {op:?} not found");
                     self.status = e.clone();
@@ -11590,6 +11618,9 @@ label_hidden: false,
                     entry.tx = tx;
                     entry.ty = ty;
                     entry.tz = tz;
+                    entry.rx = rx;
+                    entry.ry = ry;
+                    entry.rz = rz;
                 }
                 if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op]).is_none() {
                     self.doc.move_ops[op] = old.clone();
@@ -15818,6 +15849,10 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
         Tool::Move => {
             let mode = crate::model::MoveTranslateMode::from_name(name)
                 .ok_or_else(|| format!("unknown Move mode '{name}'"))?;
+            // In place is the Joint tool's (#1076): a Move that moves nothing is a no-op.
+            if mode == crate::model::MoveTranslateMode::InPlace {
+                return Err(format!("the Move tool has no '{}' mode", mode.name()));
+            }
             match state.creating_move.as_mut() {
                 Some(cm) => {
                     cm.translate_mode = mode;
@@ -16636,6 +16671,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: "40mm".to_string(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let moved = state.doc.construction_planes[pkey(0)].origin;
@@ -16663,6 +16701,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!((state.doc.construction_planes[pkey(0)].origin.z - base.z).abs() < 1e-3);
     }
@@ -16740,6 +16781,9 @@ mod tests {
             tx: "25mm".to_string(),
             ty: String::new(),
             tz: "7mm".to_string(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let img = &state.doc.tracing_images[image];
@@ -16768,6 +16812,9 @@ mod tests {
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(state.doc.tracing_images[image].origin.0.abs() < 1e-3);
 
@@ -16788,6 +16835,9 @@ mod tests {
             tx: "25mm".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         let img = &state.doc.tracing_images[image];
         assert_eq!(img.origin, (0.0, 0.0), "image snaps back to authored base");
@@ -17119,6 +17169,9 @@ mod tests {
             ty: String::new(),
             tz: String::new(),
             editing: None,
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));
@@ -18255,6 +18308,9 @@ mod tests {
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
         assert!(state.doc.move_ops.values().nth(0).unwrap().outputs.is_empty(), "the instance itself moves");
@@ -20977,6 +21033,9 @@ mod tests {
             tx: "25".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.len(), 1);
@@ -21021,6 +21080,9 @@ mod tests {
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
@@ -21039,6 +21101,9 @@ mod tests {
             tx: "5".to_string(),
             ty: "2".to_string(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 2);
@@ -21068,6 +21133,9 @@ mod tests {
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.move_ops.values().nth(0).unwrap().clone();
@@ -22112,6 +22180,9 @@ mod tests {
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!((state.doc.construction_planes[pkey(0)].origin.x - 5.0).abs() < 1e-3);

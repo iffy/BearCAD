@@ -381,6 +381,10 @@ pub enum Instruction {
         tx: String,
         ty: String,
         tz: String,
+        /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions.
+        rx: String,
+        ry: String,
+        rz: String,
         /// Snap-translate points (#649/#650): with both set the move snaps `source` onto
         /// `target` and the tx/ty/tz expressions are ignored.
         start_point_a: Option<crate::model::MovePointRef>,
@@ -396,6 +400,9 @@ pub enum Instruction {
     EditMoveOp {
         op: usize,
         targets: Vec<usize>,
+        rx: String,
+        ry: String,
+        rz: String,
         tx: String,
         ty: String,
         tz: String,
@@ -416,6 +423,10 @@ pub enum Instruction {
         tx: String,
         ty: String,
         tz: String,
+        /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions.
+        rx: String,
+        ry: String,
+        rz: String,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
         start_point_b: Option<crate::model::MovePointRef>,
@@ -1225,14 +1236,14 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.begin_move", None, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.begin_move", None, targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::CreateJointOp { members, base, kind, mate, position, position2, position3, limits } => {
                 joint_op_lua("bearcad.joint", None, members, *base, kind, mate, position, position2, position3, limits)
@@ -2390,12 +2401,15 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
+        Action::CreateMoveOperation { targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: body_ordinals(doc, targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
                 tz: tz.clone(),
+                rx: rx.clone(),
+                ry: ry.clone(),
+                rz: rz.clone(),
                 start_point_a: *start_point_a,
                 end_point_a: *end_point_a,
                 start_point_b: *start_point_b,
@@ -2404,13 +2418,16 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 end_point_c: *end_point_c,
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
+        Action::EditMoveOperation { op, targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::EditMoveOp {
                 op: move_op_ordinal(doc, *op)?,
                 targets: body_ordinals(doc, targets)?,
                 tx: tx.clone(),
                 ty: ty.clone(),
                 tz: tz.clone(),
+                rx: rx.clone(),
+                ry: ry.clone(),
+                rz: rz.clone(),
                 start_point_a: *start_point_a,
                 end_point_a: *end_point_a,
                 start_point_b: *start_point_b,
@@ -3098,6 +3115,9 @@ fn move_op_lua(
     tx: &str,
     ty: &str,
     tz: &str,
+    rx: &str,
+    ry: &str,
+    rz: &str,
     start_point_a: &Option<crate::model::MovePointRef>,
     end_point_a: &Option<crate::model::MovePointRef>,
     start_point_b: &Option<crate::model::MovePointRef>,
@@ -3129,7 +3149,7 @@ fn move_op_lua(
         parts.push(format!("from_c = {}", move_point_lua(start)));
         parts.push(format!("to_c = {}", move_point_lua(end)));
     }
-    for (name, value) in [("x", tx), ("y", ty), ("z", tz)] {
+    for (name, value) in [("x", tx), ("y", ty), ("z", tz), ("rx", rx), ("ry", ry), ("rz", rz)] {
         if !value.trim().is_empty() {
             parts.push(format!("{name} = \"{value}\""));
         }
@@ -3802,7 +3822,7 @@ pub fn move_translate_mode(
     target: &Option<crate::model::MovePointRef>,
 ) -> crate::model::MoveTranslateMode {
     if source.is_some() && target.is_some() {
-        crate::model::MoveTranslateMode::Snap
+        crate::model::MoveTranslateMode::PointSnap
     } else {
         crate::model::MoveTranslateMode::Free
     }
@@ -5553,7 +5573,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a),
@@ -5570,11 +5590,14 @@ impl ScriptRunner {
                     tx,
                     ty,
                     tz,
+                    rx,
+                    ry,
+                    rz,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
                 let Some(op) = move_op_key(&state.doc, op) else {
                     self.last_action_error = Some(format!("Move operation {op} not found"));
@@ -5596,11 +5619,14 @@ impl ScriptRunner {
                     tx,
                     ty,
                     tz,
+                    rx,
+                    ry,
+                    rz,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::BeginMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Move));
                 state.creating_move = Some(crate::actions::CreatingMove {
@@ -5618,6 +5644,9 @@ impl ScriptRunner {
                     tx,
                     ty,
                     tz,
+                    rx,
+                    ry,
+                    rz,
                     editing: None,
                 });
                 StepResult::Continue
