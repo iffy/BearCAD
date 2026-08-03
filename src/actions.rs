@@ -1175,6 +1175,8 @@ pub struct CreatingMove {
     pub rx: String,
     pub ry: String,
     pub rz: String,
+    /// Point Snap's third pair set as an angle instead of a target point (#1078).
+    pub roll_angle: String,
     /// Face Snap (#1077): which side of the target face to land on, and the turn about its
     /// normal through the mate point.
     pub face_flip: bool,
@@ -2296,6 +2298,8 @@ pub enum Action {
         rx: String,
         ry: String,
         rz: String,
+        /// Point Snap's third pair set as an angle instead of a target point (#1078).
+        roll_angle: String,
         /// Face Snap's side flip and its turn about the target normal (#1077).
         face_flip: bool,
         face_spin: String,
@@ -2326,6 +2330,8 @@ pub enum Action {
         rx: String,
         ry: String,
         rz: String,
+        /// Point Snap's third pair set as an angle instead of a target point (#1078).
+        roll_angle: String,
         /// Face Snap's side flip and its turn about the target normal (#1077).
         face_flip: bool,
         face_spin: String,
@@ -11440,6 +11446,7 @@ label_hidden: false,
                         &mut cm.rx,
                         &mut cm.ry,
                         &mut cm.rz,
+                        &mut cm.roll_angle,
                         &mut cm.face_spin,
                     ],
                 ) {
@@ -11467,6 +11474,7 @@ label_hidden: false,
                         rx: cm.rx.clone(),
                         ry: cm.ry.clone(),
                         rz: cm.rz.clone(),
+                        roll_angle: cm.roll_angle.clone(),
                         face_flip: cm.face_flip,
                         face_spin: cm.face_spin.clone(),
                     }),
@@ -11501,6 +11509,7 @@ label_hidden: false,
                                     rx: String::new(),
                                     ry: String::new(),
                                     rz: String::new(),
+                                    roll_angle: String::new(),
                                     face_flip: false,
                                     face_spin: String::new(),
                                 })
@@ -11523,6 +11532,7 @@ label_hidden: false,
                                 rx: cm.rx.clone(),
                                 ry: cm.ry.clone(),
                                 rz: cm.rz.clone(),
+                                roll_angle: cm.roll_angle.clone(),
                                 face_flip: cm.face_flip,
                                 face_spin: cm.face_spin.clone(),
                             }),
@@ -11536,7 +11546,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin } => {
                 if targets.is_empty()
                     && plane_targets.is_empty()
                     && image_targets.is_empty()
@@ -11570,6 +11580,7 @@ label_hidden: false,
                     rx,
                     ry,
                     rz,
+                    roll_angle,
                     face_flip,
                     face_spin,
                     outputs: Vec::new(),
@@ -11610,7 +11621,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin } => {
                 if self.doc.move_ops.get(op).is_none() {
                     let e = format!("Move operation {op:?} not found");
                     self.status = e.clone();
@@ -11647,6 +11658,7 @@ label_hidden: false,
                     entry.rx = rx;
                     entry.ry = ry;
                     entry.rz = rz;
+                    entry.roll_angle = roll_angle;
                     entry.face_flip = face_flip;
                     entry.face_spin = face_spin;
                 }
@@ -16706,6 +16718,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let moved = state.doc.construction_planes[pkey(0)].origin;
@@ -16738,6 +16751,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!((state.doc.construction_planes[pkey(0)].origin.z - base.z).abs() < 1e-3);
     }
@@ -16820,6 +16834,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let img = &state.doc.tracing_images[image];
@@ -16853,6 +16868,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(state.doc.tracing_images[image].origin.0.abs() < 1e-3);
 
@@ -16878,6 +16894,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         let img = &state.doc.tracing_images[image];
         assert_eq!(img.origin, (0.0, 0.0), "image snaps back to authored base");
@@ -17214,6 +17231,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));
@@ -18355,6 +18373,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
         assert!(state.doc.move_ops.values().nth(0).unwrap().outputs.is_empty(), "the instance itself moves");
@@ -21082,6 +21101,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.len(), 1);
@@ -21131,6 +21151,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
@@ -21154,6 +21175,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 2);
@@ -21188,6 +21210,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.move_ops.values().nth(0).unwrap().clone();
@@ -22237,6 +22260,7 @@ mod tests {
             rz: String::new(),
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!((state.doc.construction_planes[pkey(0)].origin.x - 5.0).abs() < 1e-3);

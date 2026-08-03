@@ -2329,6 +2329,15 @@ impl MoveOperation {
             && self.start_point_c.is_some()
             && self.end_point_c.is_some()
     }
+
+    /// Whether the third pair is set as an **angle** instead (#1078). The point form wins
+    /// when both are set: a picked point says where the part should face, a number only says
+    /// how far to turn it, so the more specific answer is the one to honour.
+    pub fn has_snap_roll_angle(&self) -> bool {
+        self.has_snap_rotation()
+            && self.end_point_c.is_none()
+            && !self.roll_angle.trim().is_empty()
+    }
 }
 
 impl MovePointRef {
@@ -2399,6 +2408,12 @@ pub struct MoveOperation {
     pub ty: String,
     #[serde(default)]
     pub tz: String,
+    /// Point Snap's third pair set as an **angle** instead of a target point (#1078): the
+    /// spin about the `endA → endB` axis, a degree expression. Used when no end point C is
+    /// picked — the point form wins when both are set, since a picked point says exactly
+    /// where the part should face and a number only says how far to turn it.
+    #[serde(default)]
+    pub roll_angle: String,
     /// Face Snap (#1077): which side of the target face to land on. The default puts the two
     /// normals **opposed**, so the surfaces touch — outsides of objects go together; flipped,
     /// they point the same way and the part sits behind the face.

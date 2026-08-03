@@ -52,6 +52,9 @@ Move slides whole bodies to a new place, producing moved copies.
      the other two pairs. Because of that it can only ride a circle, so four spots a quarter
      turn apart on it are marked in blue: as it sits now, a quarter turn either way, and
      upside down.
+     Or type a **Roll** angle instead of picking end point C: the part turns that far about
+     the line from end point A to end point B, which is often quicker than finding a point
+     that says the same thing.
    - **Face Snap** — pick a **Moving face** on a body being moved and a **Fixed face** on one
      that isn't; each click takes both the face and the exact spot on it you clicked. The part
      lands with that spot on that spot and the two surfaces together. **Flip** puts it on the
@@ -135,6 +138,12 @@ bearcad.move_bodies{ bodies = {0},
   from = { body = 0, on_face = {5, 5, 5}, normal = {0, 0, 1} },
   to   = { body = 1, on_face = {40, 5, 2.5}, normal = {-1, 0, 0} },
   spin = 45 }
+
+-- The third pair as an angle: turn 90 degrees about the end A -> end B line.
+bearcad.move_bodies{ bodies = {0},
+  from = { body = 0, vertex = {0, 0, 0} }, to = { body = 1, vertex = {40, 0, 0} },
+  from_b = { body = 0, vertex = {10, 0, 0} }, to_b = { body = 1, vertex = {50, 0, 0} },
+  roll = 90 }
 
 -- Point Snap: land one point on another. `vertex` is a corner; `edge` takes a midpoint.
 bearcad.move_bodies{ bodies = {0},

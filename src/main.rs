@@ -8371,6 +8371,7 @@ impl App {
                         rz: String::new(),
                         face_flip: false,
                         face_spin: String::new(),
+                        roll_angle: String::new(),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
@@ -12517,6 +12518,7 @@ impl eframe::App for App {
                     rx: cm.map(|c| c.rx.clone()).unwrap_or_default(),
                     ry: cm.map(|c| c.ry.clone()).unwrap_or_default(),
                     rz: cm.map(|c| c.rz.clone()).unwrap_or_default(),
+                    roll_angle: cm.map(|c| c.roll_angle.clone()).unwrap_or_default(),
                     face_flip: cm.map(|c| c.face_flip).unwrap_or(false),
                     face_spin: cm.map(|c| c.face_spin.clone()).unwrap_or_default(),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
@@ -13526,6 +13528,7 @@ impl eframe::App for App {
                             context::MoveEdit::Rx(v) => cm.rx = v,
                             context::MoveEdit::Ry(v) => cm.ry = v,
                             context::MoveEdit::Rz(v) => cm.rz = v,
+                            context::MoveEdit::RollAngle(v) => cm.roll_angle = v,
                             context::MoveEdit::FaceFlip(v) => cm.face_flip = v,
                             context::MoveEdit::FaceSpin(v) => cm.face_spin = v,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
@@ -15446,6 +15449,7 @@ fn move_ghost_target_transform(
         face_spin: cm.face_spin.clone(),
         outputs: Vec::new(),
         name: None,
+        roll_angle: String::new(),
     };
     extrude::move_op_transform(doc, &probe).filter(|m| *m != glam::Mat4::IDENTITY)
 }
@@ -15720,6 +15724,7 @@ impl SnapPreviewPoints {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         }
     }
 

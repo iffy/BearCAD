@@ -1033,6 +1033,7 @@ mod tests {
             end_point_b: None,
             start_point_c: None,
             end_point_c: None,
+            roll_angle: "30 deg".to_string(),
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
@@ -1040,8 +1041,8 @@ mod tests {
             ry: String::new(),
             rz: String::new(),
             name: None,
-            face_flip: false,
-            face_spin: String::new(),
+            face_flip: true,
+            face_spin: "45 deg".to_string(),
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -1054,6 +1055,12 @@ mod tests {
                 loaded.move_ops.get(op).and_then(|o| o.start_point_a),
                 Some(point),
                 "{suffix}: the face key and the offset across it both came back"
+            );
+            // #1077/#1078: the mate's side, its turn, and a third pair set as an angle.
+            assert_eq!(
+                loaded.move_ops.get(op).map(|o| (o.face_flip, o.face_spin.clone(), o.roll_angle.clone())),
+                Some((true, "45 deg".to_string(), "30 deg".to_string())),
+                "{suffix}"
             );
             let _ = std::fs::remove_file(&path);
         }
@@ -1668,6 +1675,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         doc.joints.insert(crate::model::Joint {
             members: vec![

@@ -902,6 +902,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   centre**, X then Y then Z, before the translation carries it away: typing "45° about Z"
   means "turn it where it stands", not "swing it around the world origin".
 
+  **The third pair can be an angle (#1078).** Point Snap's C pair pins the spin the B pair
+  leaves free. It can be set by picking an end point C, or — the same thing said differently —
+  by typing a `roll` **angle**: the spin about the `endA → endB` axis is simply that many
+  degrees, and no third point is needed at all. The pane offers whichever the user reaches for
+  first, showing the Roll field while no end point C is picked. A picked end point C wins if
+  both somehow end up set: it says where the part should *face*, where a number only says how
+  far to turn it, so the more specific answer is the one honoured.
+
   **Face Snap (#1077).** Two staged pickers (#1075) — a face on the moving part and a point
   within it, then a face on something fixed and a point within that. The picked points *are*
   the mate points: a `MovePointRef::OnFace` already carries the face it lies on, so nothing

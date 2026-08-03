@@ -1353,7 +1353,7 @@ pub fn move_snap_roll_axis_angle(
     doc: &Document,
     op: &crate::model::MoveOperation,
 ) -> Option<(Vec3, f32)> {
-    if !op.has_snap_roll() {
+    if !op.has_snap_roll() && !op.has_snap_roll_angle() {
         return None;
     }
     let translation = move_op_translation(doc, op)?;
@@ -1362,6 +1362,11 @@ pub fn move_snap_roll_axis_angle(
     let axis = (target_b - pivot).normalize_or_zero();
     if axis.length_squared() < 0.5 {
         return None;
+    }
+    // The third pair set as an angle (#1078): the spin is simply that many degrees about the
+    // axis, with no third point to measure from — which is the whole point of offering it.
+    if op.has_snap_roll_angle() {
+        return Some((axis, crate::value::eval_angle_rad_in_doc(&op.roll_angle, doc)?));
     }
     // Start C rides the translation and then B's turn before it spins.
     let rot_b = move_snap_rotation(doc, op)?;
@@ -6994,6 +6999,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         };
         assert!(op.has_snap_rotation());
         let m = move_op_transform(&doc, &op).expect("transform");
@@ -7086,6 +7092,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         };
         assert!(base.has_snap_rotation() && !base.has_snap_roll());
         // With B alone, +10Z stays put — the spin is undecided, so nothing turns.
@@ -7130,6 +7137,24 @@ mod tests {
         assert!(move_snap_roll_axis_angle(&doc, &on_axis).is_none());
         let m = move_op_transform(&doc, &on_axis).expect("transform");
         assert!((m.transform_point3(z) - z).length() < 1e-3, "no spin derived, none applied");
+
+        // #1078: the same turn asked for as an **angle** instead of a target point. It needs
+        // no third point at all — the spin is simply that many degrees about the axis, which
+        // is the whole reason to offer it.
+        let by_angle = MoveOperation { roll_angle: "-90".to_string(), ..base.clone() };
+        assert!(by_angle.has_snap_roll_angle() && !by_angle.has_snap_roll());
+        let (axis, a) = move_snap_roll_axis_angle(&doc, &by_angle).expect("roll");
+        assert!((axis - Vec3::X).length() < 1e-4, "{axis:?}");
+        assert!((a + std::f32::consts::FRAC_PI_2).abs() < 1e-4, "{a}");
+        let landed = move_op_transform(&doc, &by_angle).expect("transform").transform_point3(z);
+        assert!((landed - y).length() < 1e-3, "an angle places it exactly as the point did");
+
+        // A picked end point C wins over a typed angle: it says where the part should face,
+        // where a number only says how far to turn it.
+        let both = MoveOperation { roll_angle: "17".to_string(), ..op.clone() };
+        assert!(!both.has_snap_roll_angle(), "the point form answers");
+        let landed = move_op_transform(&doc, &both).expect("transform").transform_point3(z);
+        assert!((landed - y).length() < 1e-3, "still C's quarter turn, not 17°");
     }
 
     /// #670: the reachable end-point-B spots are where body edges cross the constraint
@@ -7225,6 +7250,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         };
         let (axis, angle) = move_snap_rotation_axis_angle(&doc, &op).unwrap();
         assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "quarter turn, got {angle}");
@@ -7307,6 +7333,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         };
         assert!(!base.has_snap_translation());
         assert_eq!(
@@ -7425,6 +7452,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         };
         assert!(op.has_snap_translation());
         assert_eq!(
@@ -7545,6 +7573,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
 
         let d = descendant_bodies(&doc, &[bkey(0)]);
@@ -7905,6 +7934,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Moved { op: mopkey(0), target: 0 },
@@ -8497,6 +8527,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         });
         doc.bodies.insert(Body {
             source: BodySource::Moved { op: mopkey(0), target: 0 },
@@ -10027,6 +10058,7 @@ mod tests {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            roll_angle: String::new(),
         };
 
         // A's top cap centre (5, 5, 5) lands on B's left wall centre (40, 5, 2.5).
@@ -10089,6 +10121,7 @@ mod tests {
             name: None,
             face_flip: false,
             face_spin: String::new(),
+            roll_angle: String::new(),
         };
 
         // No turn typed: a plain translation, exactly as before (#648).

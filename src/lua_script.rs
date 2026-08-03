@@ -1036,6 +1036,7 @@ fn parse_move_op_args(
     String,
     String,
     String,
+    String,
     bool,
     String,
     Option<crate::model::MovePointRef>,
@@ -1062,6 +1063,8 @@ fn parse_move_op_args(
     let (tx, ty, tz) = (expr("x")?, expr("y")?, expr("z")?);
     // Free-mode turns about the world axes (#1076), in degrees.
     let (rx, ry, rz) = (expr("rx")?, expr("ry")?, expr("rz")?);
+    // The third pair as an angle (#1078).
+    let roll_angle = expr("roll")?;
     // Face Snap's side flip and its turn about the target normal (#1077).
     let face_flip = opts.get::<Option<bool>>("flip")?.unwrap_or(false);
     let face_spin = expr("spin")?;
@@ -1083,6 +1086,7 @@ fn parse_move_op_args(
         rx,
         ry,
         rz,
+        roll_angle,
         face_flip,
         face_spin,
         start_point_a,
@@ -4979,13 +4983,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin, start_point_a,
-                 end_point_a, start_point_b, end_point_b, start_point_c, end_point_c) =
+            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
+                 end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin, start_point_a,
-                    end_point_a, start_point_b, end_point_b, start_point_c, end_point_c,
+                    targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                    start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
+                    end_point_c,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -5007,13 +5013,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "begin_move",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin, start_point_a,
-                 end_point_a, start_point_b, end_point_b, start_point_c, end_point_c) =
+            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
+                 end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::BeginMoveOp {
-                    targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin, start_point_a,
-                    end_point_a, start_point_b, end_point_b, start_point_c, end_point_c,
+                    targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                    start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
+                    end_point_c,
                 })?;
             }
             Ok(())
@@ -5025,13 +5033,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin, start_point_a,
-                 end_point_a, start_point_b, end_point_b, start_point_c, end_point_c) =
+            let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
+                 end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin, start_point_a,
-                    end_point_a, start_point_b, end_point_b, start_point_c, end_point_c,
+                    op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
+                    start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
+                    end_point_c,
                 })?;
             }
             Ok(())
@@ -8851,6 +8861,33 @@ mod tests {
             (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,
             "midpoint-to-midpoint offset should be +40 X, got {t:?}"
         );
+    }
+
+    /// #1078: the third pair can be set as a `roll` **angle** instead of a target point —
+    /// no third point needed, since the spin about the `endA → endB` axis is simply that many
+    /// degrees. It round-trips through an exported session script.
+    #[test]
+    fn lua_move_third_pair_can_be_an_angle() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.move_bodies{ bodies = {0},
+              from = { body = 0, vertex = {0, 0, 0} },
+              to   = { body = 1, vertex = {40, 0, 0} },
+              from_b = { body = 0, vertex = {10, 0, 0} },
+              to_b = { body = 1, vertex = {50, 0, 0} },
+              roll = 90 }
+            "#,
+        );
+        let op = state.doc.move_ops.values().next().unwrap();
+        assert_eq!(op.roll_angle, "90");
+        assert!(op.has_snap_roll_angle(), "no third point, and none needed");
+        let (_, angle) =
+            crate::extrude::move_snap_roll_axis_angle(&state.doc, op).expect("a spin");
+        assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "{angle}");
     }
 
     /// #1077: naming two faces and nothing else is asking for one to be put on the other, so

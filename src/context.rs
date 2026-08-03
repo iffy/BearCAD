@@ -286,6 +286,8 @@ pub struct MoveControl {
     pub rx: String,
     pub ry: String,
     pub rz: String,
+    /// Point Snap's third pair set as an angle instead of a target point (#1078).
+    pub roll_angle: String,
     /// Face Snap (#1077): which side of the target face to land on, and the turn about its
     /// normal through the mate point.
     pub face_flip: bool,
@@ -333,6 +335,8 @@ pub enum MoveEdit {
     Rx(String),
     Ry(String),
     Rz(String),
+    /// Point Snap's third pair set as an angle instead of a target point (#1078).
+    RollAngle(String),
     /// Face Snap's side flip and its turn about the target normal (#1077).
     FaceFlip(bool),
     FaceSpin(String),
@@ -5340,6 +5344,15 @@ pub fn show_pane(
                 });
             };
             use crate::expression_input::ValueKind;
+            // The third pair can be set as an **angle** instead of a target point (#1078).
+            // Both rows are offered; whichever is filled first is the one that answers, and a
+            // picked end point C wins if somehow both are — it says where the part faces,
+            // where a number only says how far to turn it.
+            if control.translate_mode == crate::model::MoveTranslateMode::PointSnap
+                && control.end_c.is_none()
+            {
+                field(ui, "Roll", &control.roll_angle, ValueKind::Angle, &MoveEdit::RollAngle);
+            }
             if control.translate_mode == crate::model::MoveTranslateMode::Free {
                 field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
                 field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
@@ -8279,6 +8292,7 @@ mod tests {
                 rx: String::new(),
                 ry: String::new(),
                 rz: String::new(),
+                roll_angle: String::new(),
                 face_flip: false,
                 face_spin: String::new(),
                 editing: false,
