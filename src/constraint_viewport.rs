@@ -356,6 +356,7 @@ pub fn draw_constraint_icons(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::model::{
@@ -364,7 +365,7 @@ mod tests {
 
     fn doc_with_parallel_lines() -> (Document, crate::model::ConstraintKey) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -395,7 +396,7 @@ mod tests {
     #[test]
     fn coincident_constraint_places_single_icon() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 5.0));

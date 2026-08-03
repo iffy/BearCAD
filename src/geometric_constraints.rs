@@ -962,6 +962,7 @@ pub fn set_point_uv(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
@@ -972,7 +973,7 @@ mod tests {
 
     fn sketch_doc() -> (Document, SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 
@@ -1516,7 +1517,7 @@ mod tests {
         // `FaceVertex`/`FaceEdge` are scoped to extrusion-backed faces (#26/#27) — a
         // construction-plane `FaceId` never has a boundary loop to draw from.
         let (doc, sketch) = sketch_doc();
-        let plane = FaceId::ConstructionPlane(0);
+        let plane = FaceId::ConstructionPlane(pkey(0));
         assert!(point_uv(
             &doc,
             sketch,

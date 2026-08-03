@@ -997,6 +997,7 @@ fn project_endpoint_with_length(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use super::*;
     use crate::constraints::{add_distance_constraint, solve_document_constraints};
@@ -1011,7 +1012,7 @@ mod tests {
 
     fn sketch_doc() -> (Document, SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 

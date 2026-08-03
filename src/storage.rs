@@ -9,7 +9,7 @@
 
 
 use crate::face::default_xy_plane;
-use crate::model::{Document, FaceId};
+use crate::model::Document;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -34,7 +34,7 @@ pub(crate) fn fixup_loaded_document(doc: &mut Document) -> Result<()> {
     // this with the file's real path, which also catches cycles across relative sources.
     crate::model::validate_units(doc, None)?;
     crate::units::sync_unit_bodies(doc);
-    ensure_construction_plane_indices(doc);
+    ensure_a_ground_plane(doc);
     crate::constraints::migrate_legacy_dimensions(doc);
     migrate_text_pins(doc);
     crate::constraints::solve_document_constraints(doc).map_err(|e| e.to_string())?;
@@ -66,21 +66,12 @@ fn migrate_text_pins(doc: &mut Document) {
 }
 
 
-fn ensure_construction_plane_indices(doc: &mut Document) {
+/// Every document has at least the XY ground plane. This used to also pad the list until
+/// every sketch's plane *index* existed; with keys there is nothing to pad — a sketch whose
+/// host key does not resolve is an unhealthy sketch, and document health says so (#1055).
+fn ensure_a_ground_plane(doc: &mut Document) {
     if doc.construction_planes.is_empty() {
-        doc.construction_planes.push(default_xy_plane());
-    }
-    let max_index = doc
-        .sketches
-        .values()
-        .filter_map(|sketch| match sketch.face {
-            FaceId::ConstructionPlane(index) => Some(index),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
-    while doc.construction_planes.len() <= max_index {
-        doc.construction_planes.push(default_xy_plane());
+        doc.construction_planes.insert(default_xy_plane());
     }
 }
 
@@ -265,14 +256,6 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
     save_arena_nodes(&tx, &mut row_id, "unit", &doc.units)?;
     save_arena_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
-    if doc.construction_planes.len() > 1 {
-        save_indexed_nodes(
-            &tx,
-            &mut row_id,
-            "construction_plane",
-            &doc.construction_planes[1..],
-        )?;
-    }
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -432,20 +415,27 @@ fn load_indexed_entities<T: serde::de::DeserializeOwned>(
 fn load_construction_planes(
     conn: &Connection,
     dag_planes: Vec<ConstructionPlane>,
-) -> Result<Vec<ConstructionPlane>> {
+) -> Result<crate::arena::Arena<ConstructionPlane>> {
     if let Ok(payload) = conn.query_row(
         "SELECT value FROM meta WHERE key = ?1",
         rusqlite::params![CONSTRUCTION_PLANES_META_KEY],
         |row| row.get::<_, String>(0),
     ) {
-        if let Ok(planes) = serde_json::from_str::<Vec<ConstructionPlane>>(&payload) {
+        // The planes ride as one whole-collection blob, so the arena's own serde carries the
+        // keys (#1055).
+        if let Ok(planes) =
+            serde_json::from_str::<crate::arena::Arena<ConstructionPlane>>(&payload)
+        {
             if !planes.is_empty() {
                 return Ok(planes);
             }
         }
     }
-    let mut planes = vec![default_xy_plane()];
-    planes.extend(dag_planes);
+    let mut planes = crate::arena::Arena::new();
+    planes.insert(default_xy_plane());
+    for plane in dag_planes {
+        planes.insert(plane);
+    }
     Ok(planes)
 }
 
@@ -655,6 +645,8 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
@@ -668,7 +660,7 @@ mod tests {
     use crate::model::{Circle, FaceId};
 
     fn plane_sketch(doc: &mut Document) -> crate::model::SketchId {
-        doc.add_sketch(FaceId::ConstructionPlane(0))
+        doc.add_sketch(FaceId::ConstructionPlane(pkey(0)))
     }
 
     /// #408: a legacy text pin loads as a `Coincident` constraint on the text's anchor point,
@@ -747,13 +739,13 @@ mod tests {
 
     fn element_world_anchors(doc: &Document) -> Vec<glam::Vec3> {
         let mut anchors = Vec::new();
-        for plane in &doc.construction_planes {
+        for plane in doc.construction_planes.values() {
             anchors.push(plane.origin);
         }
         for circle in doc.circles.values() {
             anchors.push(crate::face::circle_world_center(doc, circle).unwrap());
         }
-        for line in &doc.lines {
+        for line in doc.lines.iter() {
             let (a, b) = crate::face::line_world_endpoints(doc, line).unwrap();
             anchors.push(a);
             anchors.push(b);
@@ -808,7 +800,7 @@ mod tests {
             length_unit: None,
             angle_unit: None,
         });
-        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(0), Some(ckey(1)));
+        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(pkey(0)), Some(ckey(1)));
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
@@ -916,12 +908,63 @@ mod tests {
         }
     }
 
+    /// #1055: construction planes keep their keys across a save, and so does everything that
+    /// names one — a sketch's host face, a tracing image's plane, a plane's own parent chain.
+    #[test]
+    fn construction_plane_keys_survive_a_save_and_reload() {
+        let mut doc = Document::default();
+        let doomed = doc.construction_planes.insert(crate::face::default_xy_plane());
+        let kept = doc.construction_planes.insert(crate::model::ConstructionPlane {
+            origin: glam::Vec3::new(0.0, 0.0, 17.0),
+            ..crate::face::default_xy_plane()
+        });
+        assert!(doc.construction_planes.remove(doomed).is_some());
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(kept));
+        let image = doc.tracing_images.insert(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: kept,
+            origin: (0.0, 0.0),
+            width_mm: 10.0,
+            height_mm: 10.0,
+            name: None,
+            base_origin: None,
+            calibration: None,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_plane_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(
+                loaded.construction_planes.get(kept).map(|p| p.origin.z),
+                Some(17.0),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert!(loaded.construction_planes.get(doomed).is_none(), "{suffix}");
+            assert_eq!(
+                loaded.sketches.get(sketch).map(|s| s.face.clone()),
+                Some(crate::model::FaceId::ConstructionPlane(kept)),
+                "{suffix}: the sketch still sits on its host plane"
+            );
+            assert_eq!(
+                loaded.tracing_images.get(image).map(|i| i.plane),
+                Some(kept),
+                "{suffix}: the tracing image still names its plane"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: circles keep their keys across a save, and so does everything that names one
     /// — a diameter constraint, an extruded profile face, a sketch hosted on the circle.
     #[test]
     fn circle_keys_survive_a_save_and_reload() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let circle = |r: f32| crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, r, 0.0);
         let doomed = doc.circles.insert(circle(1.0));
         let kept = doc.circles.insert(circle(7.0));
@@ -982,7 +1025,7 @@ mod tests {
     #[test]
     fn sketch_keys_survive_a_save_and_reload() {
         let mut doc = Document::default();
-        let doomed = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let doomed = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let kept = doc.add_sketch(crate::model::FaceId::Circle(rkey(3)));
         assert!(doc.sketches.remove(doomed).is_some());
         doc.lines
@@ -1274,7 +1317,7 @@ mod tests {
             parent: Some(kept),
             ..component("nested")
         });
-        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(0), Some(kept));
+        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(pkey(0)), Some(kept));
 
         for suffix in [".bearcad", ".bearcad.json"] {
             let path = std::env::temp_dir().join(format!("bearcad_component_keys_test{suffix}"));
@@ -1295,7 +1338,7 @@ mod tests {
                 "{suffix}: the child still names its parent"
             );
             assert_eq!(
-                loaded.component_of(crate::model::ComponentMember::ConstructionPlane(0)),
+                loaded.component_of(crate::model::ComponentMember::ConstructionPlane(pkey(0))),
                 Some(kept),
                 "{suffix}: the membership entry still names it"
             );
@@ -1675,7 +1718,7 @@ mod tests {
         let image = |name: &str| crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: name.to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (0.0, 0.0),
             base_origin: None,
             width_mm: 10.0,
@@ -1718,13 +1761,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.construction_planes[0].name = Some("Ground".to_string());
+        doc.construction_planes[pkey(0)].name = Some("Ground".to_string());
         save(&path, &doc).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes.first(), Some(&b'{'), "JSON, not SQLite");
         let loaded = open(&path).unwrap();
         assert_eq!(
-            loaded.construction_planes[0].name.as_deref(),
+            loaded.construction_planes[pkey(0)].name.as_deref(),
             Some("Ground")
         );
 
@@ -1766,7 +1809,7 @@ mod tests {
                     centroid: [500, 0, 0],
                     normal: [0, 0, 100],
                 }),
-                fixed_face: Some(crate::model::MateRef::Plane(0)),
+                fixed_face: Some(crate::model::MateRef::Plane(pkey(0))),
                 flip: true,
                 offset: "1.5".to_string(),
                 line_up: vec![crate::model::MateLineUp {
@@ -1922,7 +1965,7 @@ mod tests {
         });
         doc.slice_ops.insert(crate::model::SliceOperation {
             targets: vec![bkey(0)],
-            cutters: vec![crate::model::FaceId::ConstructionPlane(3)],
+            cutters: vec![crate::model::FaceId::ConstructionPlane(pkey(3))],
             extend_infinite: true,
             outputs: vec![bkey(1), bkey(2)],
             name: Some("Halved".to_string()),
@@ -1960,15 +2003,15 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         );
         let mut doc = Document::default();
-        doc.construction_planes.truncate(1);
-        doc.construction_planes.push(offset_plane);
+        retain_ground_plane_only(&mut doc);
+        doc.construction_planes.insert(offset_plane);
 
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(Circle::from_local_center_radius(s0, 12.0, -8.0, 15.0, 0.4));
         doc.shape_order.push(ShapeKind::Circle);
 
-        let s1 = doc.add_sketch(FaceId::ConstructionPlane(1));
+        let s1 = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         crate::construction::add_line_rectangle(&mut doc, s1, 3.0, 4.0, 10.0, 10.0, [false; 4]);
         doc.lines
             .push(Line::from_local_endpoints(s1, -2.0, 1.0, 8.0, 6.0));
@@ -2054,19 +2097,19 @@ mod tests {
             crate::model::ConstructionPlaneParent::Root,
         );
         let mut doc = Document::default();
-        doc.construction_planes.truncate(1);
-        doc.construction_planes.push(offset_plane.clone());
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
+        retain_ground_plane_only(&mut doc);
+        doc.construction_planes.insert(offset_plane.clone());
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.shape_order.push(ShapeKind::ConstructionPlane);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.construction_planes.len(), 2);
-        assert_eq!(loaded.construction_planes[1], offset_plane);
+        assert_eq!(loaded.construction_planes[pkey(1)], offset_plane);
         assert_eq!(
             loaded.sketches[skey(0)].face,
-            FaceId::ConstructionPlane(1),
+            FaceId::ConstructionPlane(pkey(1)),
             "sketch should stay on the offset plane"
         );
         let (a, _) = crate::face::line_world_endpoints(&loaded, &loaded.lines[0]).unwrap();
@@ -2086,15 +2129,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.construction_planes[0].origin.z = 30.0;
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.construction_planes[pkey(0)].origin.z = 30.0;
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
 
-        let before_origin = doc.construction_planes[0].origin;
+        let before_origin = doc.construction_planes[pkey(0)].origin;
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert!(
-            (loaded.construction_planes[0].origin - before_origin).length() < 1e-3,
+            (loaded.construction_planes[pkey(0)].origin - before_origin).length() < 1e-3,
             "edited default plane origin should round-trip"
         );
 
@@ -2109,7 +2152,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
         doc.shape_order.push(ShapeKind::Line);
@@ -2133,15 +2176,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
-        let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let s1 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, s0, 0.0, 0.0, 1.0, 1.0, [false; 4]);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.sketches.len(), 2);
-        assert_eq!(loaded.sketches[skey(0)].face, FaceId::ConstructionPlane(0));
-        assert_eq!(loaded.sketches[skey(1)].face, FaceId::ConstructionPlane(0));
+        assert_eq!(loaded.sketches[skey(0)].face, FaceId::ConstructionPlane(pkey(0)));
+        assert_eq!(loaded.sketches[skey(1)].face, FaceId::ConstructionPlane(pkey(0)));
         assert_eq!(loaded.lines[0].sketch, s0);
         let _ = s1;
 
@@ -2157,7 +2200,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let rect_lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         doc.extrusions.insert(Extrusion {
@@ -2206,7 +2249,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let outer =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         let inner =
@@ -2261,7 +2304,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut circle = Circle::from_local_center_radius(sketch, 5.0, 5.0, 10.0, 0.5);
         circle.diameter_dim_offset = Some(18.0);
         circle.diameter_dim_angle = 1.2;
@@ -2344,7 +2387,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines[0].deleted = true;
@@ -2392,7 +2435,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
@@ -2424,7 +2467,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -2536,7 +2579,7 @@ mod tests {
             source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);

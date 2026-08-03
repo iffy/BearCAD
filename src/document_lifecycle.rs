@@ -24,10 +24,11 @@ pub fn constraint_alive(doc: &Document, index: crate::model::ConstraintKey) -> b
     doc.constraints.contains(index)
 }
 
-pub fn construction_plane_alive(doc: &Document, index: usize) -> bool {
-    doc.construction_planes
-        .get(index)
-        .is_some_and(|p| !p.deleted)
+pub fn construction_plane_alive(
+    doc: &Document,
+    index: crate::model::ConstructionPlaneKey,
+) -> bool {
+    doc.construction_planes.contains(index)
 }
 
 /// Whether a scene element is present and not tombstoned.
@@ -280,16 +281,12 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     // Generated plane instances go with the op (#221).
                     let plane_outputs = removed.plane_outputs.clone();
                     for out in plane_outputs {
-                        if let Some(plane) = doc.construction_planes.get_mut(out) {
-                            plane.deleted = true;
-                        }
+                        doc.construction_planes.remove(out);
                     }
                     // Repeated-sketch copies: their planes, sketches, and copied entities (#226).
                     let op = removed;
                     for out in &op.sketch_plane_outputs {
-                        if let Some(plane) = doc.construction_planes.get_mut(*out) {
-                            plane.deleted = true;
-                        }
+                        doc.construction_planes.remove(*out);
                     }
                     for &si in &op.sketch_outputs {
                         for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
@@ -622,15 +619,17 @@ pub fn tombstone_elements(doc: &mut Document, elements: &[SceneElement]) -> usiz
     count
 }
 
-fn tombstone_construction_plane(doc: &mut Document, index: usize) -> bool {
-    let Some(plane) = doc.construction_planes.get_mut(index) else {
+fn tombstone_construction_plane(
+    doc: &mut Document,
+    index: crate::model::ConstructionPlaneKey,
+) -> bool {
+    // The history-tape marker to drop is the one for this plane's place among the live
+    // ones, read before the removal (#1055).
+    let Some(ordinal) = doc.construction_planes.keys().position(|k| k == index) else {
         return false;
     };
-    if plane.deleted {
-        return false;
-    }
-    plane.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::ConstructionPlane, index);
+    doc.construction_planes.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::ConstructionPlane, ordinal);
     let face = FaceId::ConstructionPlane(index);
     for sketch in doc.sketches_on_face(face).collect::<Vec<_>>() {
         tombstone_sketch(doc, sketch);
@@ -675,13 +674,11 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
     for ci in constraints {
         tombstone_constraint(doc, ci);
     }
-    let planes: Vec<usize> = doc
+    let planes: Vec<crate::model::ConstructionPlaneKey> = doc
         .construction_planes
         .iter()
-        .enumerate()
         .filter(|(_, plane)| {
             matches!(plane.parent, crate::model::ConstructionPlaneParent::Sketch(s) if s == sketch)
-                && !plane.deleted
         })
         .map(|(i, _)| i)
         .collect();
@@ -899,6 +896,7 @@ pub fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: us
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
@@ -913,7 +911,7 @@ mod tests {
         let image = |name: &str| crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: name.to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (0.0, 0.0),
             base_origin: None,
             width_mm: 10.0,
@@ -1040,7 +1038,7 @@ mod tests {
 
     fn sketch_with_two_lines() -> (Document, SketchId, usize, usize) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         let line_a = 0;

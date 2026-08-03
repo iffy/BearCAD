@@ -1324,6 +1324,7 @@ pub fn orbit_pivot_has_ground_drop(target: Vec3) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use super::*;
 
     /// #438: the animated frame lands on the same pose the instant frame computes, and
@@ -2169,7 +2170,7 @@ mod tests {
         let viewport = test_viewport();
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}

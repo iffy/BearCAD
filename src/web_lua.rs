@@ -258,7 +258,7 @@ fn run_command(
     if script_json::opens_sketch_when_none_active(name) && state.sketch_session.is_none() {
         exec(
             runner,
-            Instruction::BeginSketch { face: FaceId::ConstructionPlane(0) },
+            Instruction::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)) },
             state,
             synthetic,
             viewport,

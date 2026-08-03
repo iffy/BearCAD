@@ -1082,12 +1082,11 @@ impl ViewportScene {
         }
         mesh.set_index_layer(MeshIndexLayer::Base);
 
-        let mut plane_draws: Vec<(usize, ConstructionPlane, Color32, f32)> = Vec::new();
-        for (i, plane) in input.doc.construction_planes.iter().enumerate() {
-            if plane.deleted
-                || !input
-                    .element_visibility
-                    .effective_visible(input.doc, SceneElement::ConstructionPlane(i))
+        let mut plane_draws: Vec<(crate::model::ConstructionPlaneKey, ConstructionPlane, Color32, f32)> = Vec::new();
+        for (i, plane) in input.doc.construction_planes.iter() {
+            if !input
+                .element_visibility
+                .effective_visible(input.doc, SceneElement::ConstructionPlane(i))
             {
                 continue;
             }
@@ -2522,7 +2521,7 @@ impl<'a> SceneMesh<'a> {
     fn push_plane(
         &mut self,
         plane: &ConstructionPlane,
-        index: usize,
+        index: crate::model::ConstructionPlaneKey,
         color: Color32,
         opacity: f32,
         cam: &Camera,
@@ -2787,7 +2786,7 @@ impl<'a> SceneMesh<'a> {
     fn push_construction_plane_hover_fill(
         &mut self,
         plane: &ConstructionPlane,
-        index: usize,
+        index: crate::model::ConstructionPlaneKey,
         color: Color32,
         fill_multiplier: f32,
         cam: &Camera,
@@ -3787,8 +3786,8 @@ pub fn shape_fill_depth_bias_laned(index: usize, lane: usize) -> f32 {
         + lane as f32 * SHAPE_FILL_DEPTH_BIAS_STEP * 0.5
 }
 
-pub fn plane_fill_depth_bias(index: usize) -> f32 {
-    PLANE_FILL_DEPTH_BIAS - index as f32 * SHAPE_FILL_DEPTH_BIAS_STEP * 0.25
+pub fn plane_fill_depth_bias(index: crate::model::ConstructionPlaneKey) -> f32 {
+    PLANE_FILL_DEPTH_BIAS - index.index() as f32 * SHAPE_FILL_DEPTH_BIAS_STEP * 0.25
 }
 
 fn plane_camera_depth(plane: &ConstructionPlane, cam: &Camera) -> f32 {
@@ -4984,6 +4983,8 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::joint_key_for_slot as jkey;
@@ -5066,7 +5067,7 @@ mod tests {
 
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -5681,7 +5682,7 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-        let preview_plane = state.doc.construction_planes[0].clone();
+        let preview_plane = state.doc.construction_planes[pkey(0)].clone();
         let with_preview = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             cam: &cam,
@@ -5846,7 +5847,7 @@ mod tests {
         assert_eq!(
             hover_overlay_indices(
                 &state,
-                ViewportHoverHighlight::SketchFace(FaceId::ConstructionPlane(0))
+                ViewportHoverHighlight::SketchFace(FaceId::ConstructionPlane(pkey(0)))
             ),
             30,
             "construction-plane hover should add a biased fill quad and its border"
@@ -5862,7 +5863,7 @@ mod tests {
         use crate::model::{ExtrudeFace, JointKind, JointRef};
         let mut state = state_with_one_body();
         // A second body, so the ops below have two things to work on.
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let rect = crate::construction::add_line_rectangle(
             &mut state.doc,
             sketch,
@@ -5912,7 +5913,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "trace".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (0.0, 0.0),
             base_origin: None,
             width_mm: 40.0,
@@ -5932,7 +5933,7 @@ mod tests {
             SceneElement::Image(image),
             SceneElement::Line(0),
             SceneElement::Sketch(sketch),
-            SceneElement::ConstructionPlane(0),
+            SceneElement::ConstructionPlane(pkey(0)),
         ] {
             // `Body` recolours in the main pass rather than as an overlay (#455), so it is the
             // one that legitimately adds nothing here.
@@ -5988,8 +5989,8 @@ mod tests {
                 position: tri[0],
             },
             PickTargetKind::GlobalAxis(GlobalAxis::X),
-            PickTargetKind::ConstructionPlane(0),
-            PickTargetKind::SketchFace(FaceId::ConstructionPlane(0)),
+            PickTargetKind::ConstructionPlane(pkey(0)),
+            PickTargetKind::SketchFace(FaceId::ConstructionPlane(pkey(0))),
             PickTargetKind::Ground(Vec3::ZERO),
         ] {
             assert!(
@@ -6013,22 +6014,22 @@ mod tests {
         let state = AppState::default();
         let as_plane = hover_overlay_indices(
             &state,
-            ViewportHoverHighlight::PickTarget(PickTargetKind::ConstructionPlane(0)),
+            ViewportHoverHighlight::PickTarget(PickTargetKind::ConstructionPlane(pkey(0))),
         );
         let as_face = hover_overlay_indices(
             &state,
             ViewportHoverHighlight::PickTarget(PickTargetKind::SketchFace(
-                FaceId::ConstructionPlane(0),
+                FaceId::ConstructionPlane(pkey(0)),
             )),
         );
         let as_element = hover_overlay_indices(
             &state,
-            ViewportHoverHighlight::Element(SceneElement::ConstructionPlane(0)),
+            ViewportHoverHighlight::Element(SceneElement::ConstructionPlane(pkey(0))),
         );
         let as_face_element = hover_overlay_indices(
             &state,
             ViewportHoverHighlight::Element(SceneElement::SketchFace(
-                FaceId::ConstructionPlane(0),
+                FaceId::ConstructionPlane(pkey(0)),
             )),
         );
         assert!(as_plane > 0, "a plane pick target must draw something");
@@ -6457,7 +6458,7 @@ mod tests {
 
     fn commit_test_rectangle(state: &mut AppState) {
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_rect = Some(crate::actions::CreatingRect {
@@ -6475,7 +6476,7 @@ mod tests {
 
     fn commit_test_line(state: &mut AppState) {
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.apply(crate::actions::Action::CreateLineSegment {
@@ -6493,7 +6494,7 @@ mod tests {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
 
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.apply(crate::actions::Action::CreateLineSegment {
@@ -6540,7 +6541,7 @@ mod tests {
     /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
     fn commit_overlapping_rect_and_circle(state: &mut AppState) {
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_rect = Some(crate::actions::CreatingRect {
@@ -6671,7 +6672,7 @@ mod tests {
     #[test]
     fn extruded_top_cap_on_slanted_target_plane_is_biased_toward_camera() {
         let mut state = AppState::default();
-        state.doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut state.doc);
         commit_test_rectangle(&mut state);
         let sketch = state.doc.lines[0].sketch;
 
@@ -6680,7 +6681,7 @@ mod tests {
         let mut slanted = crate::face::default_xy_plane();
         slanted.origin = plane_origin;
         slanted.normal = plane_normal;
-        state.doc.construction_planes.push(slanted);
+        state.doc.construction_planes.insert(slanted);
 
         state.apply(crate::actions::Action::CreateExtrusion {
             expression: None,
@@ -6691,7 +6692,7 @@ mod tests {
             target: None,
             symmetric: false,
         });
-        state.doc.extrusions[xkey(0)].target = Some(crate::model::ExtrudeTarget::Plane(1));
+        state.doc.extrusions[xkey(0)].target = Some(crate::model::ExtrudeTarget::Plane(pkey(1)));
 
         let raw = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[xkey(0)]).unwrap();
         let cap_vertex = *raw
@@ -6749,7 +6750,7 @@ mod tests {
         // The in-progress (uncommitted) ghost preview should show the actual slanted shape
         // once the gizmo has snapped to a slanted target plane (#63).
         let mut state = AppState::default();
-        state.doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut state.doc);
         commit_test_rectangle(&mut state);
         let sketch = state.doc.lines[0].sketch;
 
@@ -6758,13 +6759,13 @@ mod tests {
         let mut slanted = crate::face::default_xy_plane();
         slanted.origin = plane_origin;
         slanted.normal = plane_normal;
-        state.doc.construction_planes.push(slanted);
+        state.doc.construction_planes.insert(slanted);
 
         let preview = crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 6.0,
-            target: Some(crate::model::ExtrudeTarget::Plane(1)),
+            target: Some(crate::model::ExtrudeTarget::Plane(pkey(1))),
             expression: String::new(),
             name: None,
             symmetric: false,
@@ -6977,7 +6978,7 @@ mod tests {
         let mut hidden = AppState::default();
         hidden
             .element_visibility
-            .set_visible(SceneElement::ConstructionPlane(0), false);
+            .set_visible(SceneElement::ConstructionPlane(pkey(0)), false);
 
         let with_plane = build_scene_for_doc(&AppState::default());
         let without_plane = build_scene_for_doc(&hidden);
@@ -7017,7 +7018,7 @@ mod tests {
     fn rectangle_adds_fill_and_edge_triangles() {
         let mut state = AppState::default();
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_rect = Some(crate::actions::CreatingRect {
@@ -7086,7 +7087,7 @@ mod tests {
     fn circle_uses_more_segments_than_old_cpu_path() {
         let mut state = AppState::default();
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_circle = Some(crate::actions::CreatingCircle {
@@ -7177,13 +7178,13 @@ mod tests {
     fn shape_fill_depth_bias_increases_with_index() {
         assert!(shape_fill_depth_bias(2) > shape_fill_depth_bias(1));
         assert!(shape_fill_depth_bias(1) > shape_fill_depth_bias(0));
-        assert!(shape_fill_depth_bias(0) > plane_fill_depth_bias(0));
+        assert!(shape_fill_depth_bias(0) > plane_fill_depth_bias(pkey(0)));
     }
 
     #[test]
     fn stroke_depth_bias_beats_shape_fill_bias() {
         assert!(STROKE_DEPTH_BIAS > shape_fill_depth_bias(0));
-        assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(0));
+        assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(pkey(0)));
     }
 
     /// #143: the committed shape-fill band must stay strictly below both the hover fill and the
@@ -7262,7 +7263,7 @@ mod tests {
         use crate::selection::SceneSelection;
 
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
 
@@ -7940,7 +7941,7 @@ mod tests {
         use crate::selection::SceneSelection;
 
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -8117,7 +8118,7 @@ mod tests {
         let cam = Camera::default();
         let eye = cam.eye();
         let on_plane = Vec3::new(10.0, 10.0, 0.0);
-        let plane = offset_toward_camera(on_plane, Vec3::Z, eye, plane_fill_depth_bias(0));
+        let plane = offset_toward_camera(on_plane, Vec3::Z, eye, plane_fill_depth_bias(pkey(0)));
         let shape = offset_toward_camera(on_plane, Vec3::Z, eye, shape_fill_depth_bias(0));
         assert!(shape.z > plane.z);
     }
@@ -8149,7 +8150,7 @@ mod tests {
     fn committed_dimension_labels_add_text_and_line_geometry() {
         let mut state = AppState::default();
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_rect = Some(crate::actions::CreatingRect {
@@ -8344,7 +8345,7 @@ mod tests {
     fn construction_line_produces_more_gpu_segments_than_solid_line() {
         let mut state = AppState::default();
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let session = state.sketch_session.unwrap();
@@ -8541,6 +8542,7 @@ mod tests {
 /// default (timing-based, machine-dependent) — for eyeballing regressions, not CI.
 #[cfg(test)]
 mod perf_probe {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::circle_key_for_slot as rkey;
     use super::*;
@@ -8553,7 +8555,7 @@ mod perf_probe {
     fn aura_perf_probe() {
         // A round body (many triangles) plus a second body, big viewport.
         let mut state = AppState::default();
-        state.apply(Action::BeginSketch { face: crate::model::FaceId::ConstructionPlane(0), viewport: None });
+        state.apply(Action::BeginSketch { face: crate::model::FaceId::ConstructionPlane(pkey(0)), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
         state.doc.circles.insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
         state.doc.shape_order.push(crate::model::ShapeKind::Circle);
@@ -8632,6 +8634,7 @@ mod perf_probe {
 
 #[cfg(test)]
 mod cut_preview_tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
@@ -8642,7 +8645,7 @@ mod cut_preview_tests {
     fn one_body_state() -> AppState {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;

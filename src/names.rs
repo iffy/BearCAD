@@ -72,7 +72,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
     if query.is_empty() {
         return None;
     }
-    for (index, plane) in doc.construction_planes.iter().enumerate() {
+    for (index, plane) in doc.construction_planes.iter() {
         if name_matches(plane.name.as_deref(), query) {
             return Some(SceneElement::ConstructionPlane(index));
         }
@@ -208,7 +208,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let plane = doc
                 .construction_planes
                 .get_mut(index)
-                .ok_or_else(|| format!("construction plane {index} not found"))?;
+                .ok_or_else(|| format!("construction plane {} not found", index.index()))?;
             plane.name = stored;
         }
         SceneElement::Sketch(index) => {
@@ -461,10 +461,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 .unwrap_or_else(|| format!("Unit content {ordinal}"))
         }
         HierarchyNode::ConstructionPlane(i) => {
-            if i == 0 {
+            // The first datum plane is the XY ground, and every document opens with it (#833).
+            if doc.construction_planes.keys().next() == Some(i) {
                 "Construction plane (XY)".to_string()
             } else {
-                format!("Construction plane {i}")
+                format!("Construction plane {}", i.index())
             }
         }
         HierarchyNode::Sketch(i) => format!("Sketch {}", i.index()),
@@ -692,10 +693,11 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
     }
     match element {
         SceneElement::ConstructionPlane(i) => {
-            if *i == 0 {
+            // The first datum plane is the XY ground (#833).
+            if doc.construction_planes.keys().next() == Some(*i) {
                 "Construction plane (XY)".to_string()
             } else {
-                format!("Construction plane {i}")
+                format!("Construction plane {}", i.index())
             }
         }
         SceneElement::Component(i) => format!("Component {}", i.index()),
@@ -822,6 +824,7 @@ pub fn node_label(doc: &Document, node: HierarchyNode) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::constraints::add_distance_constraint;
@@ -830,7 +833,7 @@ mod tests {
     #[test]
     fn chamfer_fillet_bridge_line_gets_a_recognizable_default_label() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         // A straight bridge (chamfer): default label says "Chamfer", not "Line".
         let mut chamfer_bridge = Line::from_local_endpoints(sketch, 10.0, 0.0, 15.0, 5.0);
@@ -850,7 +853,7 @@ mod tests {
     #[test]
     fn custom_name_replaces_default_label() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         set_element_name(&mut doc, SceneElement::Line(0), "Guide".to_string()).unwrap();
         assert_eq!(node_label(&doc, HierarchyNode::Line(0)), "Guide");
@@ -863,7 +866,7 @@ mod tests {
     #[test]
     fn constraint_custom_name_shown_in_elements_pane() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,

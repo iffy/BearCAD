@@ -648,6 +648,7 @@ pub fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::sketch_key_for_slot as skey;
     use super::*;
     use crate::model::{Constraint, ConstraintEntity, ConstraintKind, Line};
@@ -772,7 +773,7 @@ mod tests {
     #[test]
     fn three_lines_closed_into_a_triangle_form_one_loop() {
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Three lines, each one's end coincident with the next one's start, closing back.
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
@@ -807,7 +808,7 @@ mod tests {
     #[test]
     fn two_triangles_sharing_a_vertex_are_two_faces_not_three() {
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Triangle 1: P0(0,0) P1(10,0) V(5,5).
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // 0
         doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 5.0)); // 1
@@ -837,7 +838,7 @@ mod tests {
     #[test]
     fn open_chain_of_lines_has_no_loop() {
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
         doc.constraints.insert(coincident(
@@ -852,7 +853,7 @@ mod tests {
     #[test]
     fn unconnected_lines_form_no_loop() {
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(skey(0), 100.0, 0.0, 110.0, 0.0));
         doc.lines.push(line(skey(0), 200.0, 0.0, 210.0, 0.0));
@@ -863,7 +864,7 @@ mod tests {
     #[test]
     fn deleted_line_does_not_participate_in_a_loop() {
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
         doc.lines.push(line(skey(0), 5.0, 8.0, 0.0, 0.0));
@@ -890,7 +891,7 @@ mod tests {
     #[test]
     fn four_lines_closed_into_a_quad_form_one_loop() {
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(skey(0), 10.0, 0.0, 10.0, 10.0));
         doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0));
@@ -944,7 +945,7 @@ mod tests {
     fn concave_loop_inside_a_split_quad_is_detected_and_triangulated() {
         // Outer quad A-B-C-D with a concave inner loop A-P-E-F-A where P lies on edge B-C.
         let mut doc = Document::default();
-        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Outer quad edges 0..3
         doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // A-B
         doc.lines.push(line(skey(0), 10.0, 0.0, 10.0, 10.0)); // B-C

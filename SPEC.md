@@ -182,6 +182,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.1 Sketching (2D)
 - Sketches are created on a datum plane or a planar face.
+- **Construction plane identity (#1055):** `Document::construction_planes` is an
+  `arena::Arena`, and a plane is named by a `ConstructionPlaneKey` — `FaceId::ConstructionPlane`
+  (so every sketch hosted on a datum plane names it by key), `SceneElement`/
+  `HierarchyNode::ConstructionPlane`, `ComponentMember::ConstructionPlane`,
+  `ExtrudeTarget::Plane`, `MateRef::Plane`, `ProjectionSource::Plane`, a tracing image's host
+  plane, a plane's own `ConstructionPlaneParent`, and the repeat ops' plane targets and
+  outputs. `Document::ground_plane()` is the XY datum every document opens with — what "plane
+  0" used to mean. A script names a plane by its **ordinal** among the live ones, resolved to
+  a key at the boundary. Load used to pad the plane list until every sketch's plane index
+  existed; a key cannot be conjured that way, so a sketch whose host no longer resolves is
+  simply reported unhealthy.
 - **Circle identity (#1055):** `Document::circles` is an `arena::Arena`, and a circle is
   named by a `CircleKey` — `SceneElement`/`HierarchyNode::Circle`, `FaceId::Circle`,
   `ExtrudeFace::Circle`, `ConstraintEntity::Circle`, `ConstraintPoint::CircleCenter`,

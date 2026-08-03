@@ -916,6 +916,7 @@ fn solve_one_sketch(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use super::*;
     use crate::constraints::add_distance_constraint;
     use crate::geometric_constraints::{
@@ -929,7 +930,7 @@ mod tests {
 
     fn sketch_doc() -> (Document, SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 

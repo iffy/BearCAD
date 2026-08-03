@@ -145,7 +145,8 @@ fn pane_element_for_constraint_line(line: crate::model::ConstraintLine) -> crate
         ConstraintLine::FaceEdge { face, .. } => {
             crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
         }
-        ConstraintLine::OriginAxis(_) => SceneElement::ConstructionPlane(0),
+        // A sketch axis belongs to no plane of its own; the origin stands in (#1055).
+        ConstraintLine::OriginAxis(_) => SceneElement::Origin,
     }
 }
 
@@ -1818,6 +1819,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::actions::AppState;
@@ -2311,7 +2313,7 @@ mod tests {
         use crate::model::{ConstraintLine, Line, ShapeKind};
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         add_parameter(&mut doc, "corner".to_string(), "16.7deg".to_string()).unwrap();
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
@@ -2360,7 +2362,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
         use crate::model::{FaceId, Line, ParameterSource, ShapeKind};
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.scene_selection.insert(SceneElement::Line(0));
@@ -2384,7 +2386,7 @@ mod tests {
 
     fn doc_with_unconstrained_line(length: f32) -> (Document, usize) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, length, 0.0));
         doc.shape_order.push(ShapeKind::Line);
@@ -2398,7 +2400,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
         use crate::model::{ConstraintPoint, FaceId, Line, LineEnd, ParameterSource};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0)); // 0
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 10.0, 40.0, 10.0)); // 1 ∥ 0
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 30.0, 30.0)); // 2 diagonal

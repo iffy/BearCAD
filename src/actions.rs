@@ -783,7 +783,7 @@ impl CreatingBoolean {
 pub struct CreatingRepeat {
     pub targets: Vec<crate::model::BodyKey>,
     /// Picked source construction planes to repeat as offset copies (#221).
-    pub plane_targets: Vec<usize>,
+    pub plane_targets: Vec<crate::model::ConstructionPlaneKey>,
     /// Picked cut extrusions whose effect is replayed at each offset (#220).
     pub extrusion_targets: Vec<crate::model::ExtrusionKey>,
     /// Picked source sketches to repeat as offset copies (#226).
@@ -1163,7 +1163,7 @@ pub struct CreatingMove {
     pub start_point_c: Option<crate::model::MovePointRef>,
     pub end_point_c: Option<crate::model::MovePointRef>,
     /// Construction planes being moved (#217).
-    pub plane_targets: Vec<usize>,
+    pub plane_targets: Vec<crate::model::ConstructionPlaneKey>,
     /// Tracing images being moved (#217).
     pub image_targets: Vec<crate::model::TracingImageKey>,
     /// Unit instances being moved (#735): the placement itself moves.
@@ -1480,7 +1480,7 @@ impl CreatingLine {
 #[derive(Clone, Debug)]
 pub struct CreatingConstructionPlane {
     /// When set, commit updates this plane instead of adding a new one.
-    pub edit_index: Option<usize>,
+    pub edit_index: Option<crate::model::ConstructionPlaneKey>,
     pub reference: PlaneReference,
     pub parent: ConstructionPlaneParent,
     pub offset_text: String,
@@ -1600,7 +1600,7 @@ pub enum Action {
     ImportStl { path: String },
     /// Import a PNG/JPEG as a tracing image (#163/#169) on a construction plane (defaults
     /// to plane 0). Seeds 1 px = 1 mm, centered on the plane origin.
-    ImportImage { path: String, plane: Option<usize> },
+    ImportImage { path: String, plane: Option<crate::model::ConstructionPlaneKey> },
     /// Calibrate a tracing image's scale (#171): the plane-local segment `a`-`b` (drawn over
     /// a known feature) is assigned the real `length`; the image rescales uniformly about
     /// the segment midpoint so that span measures `length`.
@@ -1670,20 +1670,20 @@ pub enum Action {
         parent: ConstructionPlaneParent,
     },
     BeginEditConstructionPlane {
-        index: usize,
+        index: crate::model::ConstructionPlaneKey,
     },
     CommitConstructionPlane,
     /// Declaratively add a new construction plane offset from an existing one, without the
     /// interactive begin/set-dim/commit flow (#116): the scripted equivalent of picking
     /// plane `from` in the viewport and typing `offset_mm`.
     AddConstructionPlane {
-        from: usize,
+        from: crate::model::ConstructionPlaneKey,
         offset_mm: f32,
     },
     /// Resize a construction plane's drawn rectangle (#833) — what dragging one of its two
     /// corner grips under the Select tool commits.
     SetPlaneExtent {
-        index: usize,
+        index: crate::model::ConstructionPlaneKey,
         extent: crate::model::PlaneExtent,
     },
     SetPlaneOffset { value: String },
@@ -2276,7 +2276,7 @@ pub enum Action {
         end_point_c: Option<crate::model::MovePointRef>,
         targets: Vec<crate::model::BodyKey>,
         #[allow(dead_code)]
-        plane_targets: Vec<usize>,
+        plane_targets: Vec<crate::model::ConstructionPlaneKey>,
         #[allow(dead_code)]
         image_targets: Vec<crate::model::TracingImageKey>,
         /// Unit instances whose placement this op moves (#735).
@@ -2299,7 +2299,7 @@ pub enum Action {
         end_point_c: Option<crate::model::MovePointRef>,
         targets: Vec<crate::model::BodyKey>,
         #[allow(dead_code)]
-        plane_targets: Vec<usize>,
+        plane_targets: Vec<crate::model::ConstructionPlaneKey>,
         #[allow(dead_code)]
         image_targets: Vec<crate::model::TracingImageKey>,
         /// Unit instances whose placement this op moves (#735).
@@ -2376,7 +2376,7 @@ pub enum Action {
     /// Scripted/replayed linear repeat with an explicit payload.
     CreateRepeatOperation {
         targets: Vec<crate::model::BodyKey>,
-        plane_targets: Vec<usize>,
+        plane_targets: Vec<crate::model::ConstructionPlaneKey>,
         extrusion_targets: Vec<crate::model::ExtrusionKey>,
         sketch_targets: Vec<crate::model::SketchId>,
         axis: crate::model::RevolveAxis,
@@ -2397,7 +2397,7 @@ pub enum Action {
     EditRepeatOperation {
         op: crate::model::RepeatOpKey,
         targets: Vec<crate::model::BodyKey>,
-        plane_targets: Vec<usize>,
+        plane_targets: Vec<crate::model::ConstructionPlaneKey>,
         extrusion_targets: Vec<crate::model::ExtrusionKey>,
         sketch_targets: Vec<crate::model::SketchId>,
         axis: crate::model::RevolveAxis,
@@ -3319,7 +3319,7 @@ pub struct AppState {
     /// Snapshots of `construction_planes` taken before each in-place plane edit, so that
     /// `UndoLast` can revert the edit. Kept in lockstep with `ShapeKind::ConstructionPlaneEdit`
     /// markers in `shape_order` (one payload per marker, same LIFO order).
-    pub construction_plane_edit_undo: Vec<Vec<ConstructionPlane>>,
+    pub construction_plane_edit_undo: Vec<crate::arena::Arena<ConstructionPlane>>,
     /// Elements-pane layout (List/Tree/Graph, #34). Ephemeral UI view state like
     /// `extension_anchors` — never persisted; lives here (not on `App`) so scripts can
     /// drive it via `bearcad.ui.elements_view` (#108).
@@ -4276,7 +4276,7 @@ impl AppState {
         &mut self,
         name: &str,
         bytes: Vec<u8>,
-        plane: Option<usize>,
+        plane: Option<crate::model::ConstructionPlaneKey>,
     ) -> ActionResult {
         let dims = match image::load_from_memory(&bytes) {
             Ok(img) => (img.width() as f32, img.height() as f32),
@@ -4285,14 +4285,13 @@ impl AppState {
                 return ActionResult::Err(self.status.clone());
             }
         };
-        let plane = plane.unwrap_or(0);
-        if !self
-            .doc
-            .construction_planes
-            .get(plane)
-            .is_some_and(|p| !p.deleted)
-        {
-            self.status = format!("Import failed: construction plane {plane} not found");
+        // With no plane named, the image lands on the first datum plane (#1055).
+        let Some(plane) = plane.or_else(|| self.doc.construction_planes.keys().next()) else {
+            self.status = "Import failed: no construction plane".to_string();
+            return ActionResult::Err(self.status.clone());
+        };
+        if !self.doc.construction_planes.contains(plane) {
+            self.status = format!("Import failed: construction plane {} not found", plane.index());
             return ActionResult::Err(self.status.clone());
         }
         let source_name = std::path::Path::new(name)
@@ -5303,9 +5302,8 @@ fn validate_extrude_target(
         ExtrudeTarget::Plane(i) => doc
             .construction_planes
             .get(*i)
-            .filter(|p| !p.deleted)
             .map(|_| ())
-            .ok_or_else(|| format!("Extrude target: no construction plane {i}")),
+            .ok_or_else(|| format!("Extrude target: no construction plane {}", i.index())),
         ExtrudeTarget::Face(face) => crate::extrude::face_profile_world(doc, face)
             .map(|_| ())
             .ok_or_else(|| "Extrude target face does not exist".to_string()),
@@ -5846,7 +5844,7 @@ fn validate_sketch_slice_inputs(
 fn validate_repeat_inputs(
     doc: &Document,
     targets: &[crate::model::BodyKey],
-    plane_targets: &[usize],
+    plane_targets: &[crate::model::ConstructionPlaneKey],
     extrusion_targets: &[crate::model::ExtrusionKey],
     sketch_targets: &[crate::model::SketchId],
 ) -> Result<(), String> {
@@ -5884,14 +5882,14 @@ fn validate_repeat_inputs(
     }
     let mut seen_planes = std::collections::HashSet::new();
     for &pi in plane_targets {
-        let Some(plane) = doc.construction_planes.get(pi).filter(|p| !p.deleted) else {
-            return Err(format!("Plane {pi} not found"));
+        let Some(plane) = doc.construction_planes.get(pi) else {
+            return Err(format!("Plane {} not found", pi.index()));
         };
         if plane.repeat_instance.is_some() {
             return Err("Cannot repeat a repeat instance; edit the repeat instead".to_string());
         }
         if !seen_planes.insert(pi) {
-            return Err(format!("Plane {pi} is picked twice"));
+            return Err(format!("Plane {} is picked twice", pi.index()));
         }
     }
     Ok(())
@@ -5965,7 +5963,7 @@ fn element_label(element: SceneElement) -> String {
         }
         SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
-        SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
+        SceneElement::ConstructionPlane(i) => format!("Construction plane {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {}", i.index()),
@@ -6787,14 +6785,14 @@ impl AppState {
                         return ActionResult::Err(self.status.clone());
                     }
                 };
-                let plane = plane.unwrap_or(0);
-                if !self
-                    .doc
-                    .construction_planes
-                    .get(plane)
-                    .is_some_and(|p| !p.deleted)
-                {
-                    self.status = format!("Import failed: construction plane {plane} not found");
+                // With no plane named, the image lands on the first datum plane (#1055).
+                let Some(plane) = plane.or_else(|| self.doc.construction_planes.keys().next())
+                else {
+                    self.status = "Import failed: no construction plane".to_string();
+                    return ActionResult::Err(self.status.clone());
+                };
+                if !self.doc.construction_planes.contains(plane) {
+                    self.status = format!("Import failed: construction plane {} not found", plane.index());
                     return ActionResult::Err(self.status.clone());
                 }
                 let source_name = std::path::Path::new(&path)
@@ -7143,8 +7141,7 @@ impl AppState {
                                 if self
                                     .doc
                                     .construction_planes
-                                    .get(pi)
-                                    .is_some_and(|p| !p.deleted) =>
+                                    .contains(pi) =>
                             {
                                 cr.plane_targets.push(pi);
                             }
@@ -8192,7 +8189,10 @@ impl AppState {
             }
             Action::BeginEditConstructionPlane { index } => {
                 let Some(plane) = self.doc.construction_planes.get(index) else {
-                    return ActionResult::Err(format!("Unknown construction plane {index}"));
+                    return ActionResult::Err(format!(
+                        "Unknown construction plane {}",
+                        index.index()
+                    ));
                 };
                 let reference = reference_from_definition(&plane.definition);
                 let (offset_live, axis_angle_deg) = match &reference {
@@ -8232,7 +8232,8 @@ impl AppState {
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = format!(
-                    "Edit construction plane {index} • type to lock offset{} • Tab cycle dims • click/Enter commit • Esc cancel",
+                    "Edit construction plane {} • type to lock offset{} • Tab cycle dims • click/Enter commit • Esc cancel",
+                    index.index(),
                     if plane.definition.is_axis() { "/angle" } else { "" }
                 );
                 ActionResult::Ok
@@ -8275,7 +8276,8 @@ impl AppState {
                             self.construction_plane_edit_undo.push(previous_planes);
                             self.doc.shape_order.push(ShapeKind::ConstructionPlaneEdit);
                             self.status = format!(
-                                "Updated construction plane {index} ({} from {})",
+                                "Updated construction plane {} ({} from {})",
+                                index.index(),
                                 crate::value::format_length_display_in(
                                     live_offset,
                                     self.doc.default_length_unit
@@ -8296,7 +8298,10 @@ impl AppState {
             }
             Action::AddConstructionPlane { from, offset_mm } => {
                 let Some(reference_plane) = self.doc.construction_planes.get(from) else {
-                    return ActionResult::Err(format!("Unknown construction plane {from}"));
+                    return ActionResult::Err(format!(
+                        "Unknown construction plane {}",
+                        from.index()
+                    ));
                 };
                 let anchor = crate::model::PlaneAnchor::Face {
                     origin: reference_plane.origin,
@@ -8312,7 +8317,10 @@ impl AppState {
             }
             Action::SetPlaneExtent { index, extent } => {
                 let Some(plane) = self.doc.construction_planes.get_mut(index) else {
-                    return ActionResult::Err(format!("Unknown construction plane {index}"));
+                    return ActionResult::Err(format!(
+                        "Unknown construction plane {}",
+                        index.index()
+                    ));
                 };
                 plane.extent = extent.normalized();
                 let (w, h) = (extent.u_max - extent.u_min, extent.v_max - extent.v_min);
@@ -10678,8 +10686,7 @@ label_hidden: false,
                         // Instances group under the repeat op, not under the source's parent.
                         plane.parent = crate::model::ConstructionPlaneParent::Root;
                         plane.name = None;
-                        plane_outputs.push(self.doc.construction_planes.len());
-                        self.doc.construction_planes.push(plane);
+                        plane_outputs.push(self.doc.construction_planes.insert(plane));
                         self.doc.shape_order.push(ShapeKind::ConstructionPlane);
                     }
                 }
@@ -10789,8 +10796,7 @@ label_hidden: false,
                         });
                         plane.parent = crate::model::ConstructionPlaneParent::Root;
                         plane.name = None;
-                        plane_outputs.push(self.doc.construction_planes.len());
-                        self.doc.construction_planes.push(plane);
+                        plane_outputs.push(self.doc.construction_planes.insert(plane));
                         self.doc.shape_order.push(ShapeKind::ConstructionPlane);
                         self.doc.undo_groups.push(1);
                     }
@@ -10798,9 +10804,7 @@ label_hidden: false,
                 } else if want_p < have_p {
                     let extras = self.doc.repeat_ops[op].plane_outputs.split_off(want_p);
                     for out in extras {
-                        if let Some(plane) = self.doc.construction_planes.get_mut(out) {
-                            plane.deleted = true;
-                        }
+                        self.doc.construction_planes.remove(out);
                     }
                 }
                 let plane_outputs = self.doc.repeat_ops[op].plane_outputs.clone();
@@ -13550,15 +13554,16 @@ label_hidden: false,
         let live_offset = definition.offset_mm;
         let label = reference_from_definition(&definition).label().to_string();
         let plane = plane_from_definition(&definition, parent);
-        self.doc.construction_planes.push(plane);
+        self.doc.construction_planes.insert(plane);
         self.doc.shape_order.push(ShapeKind::ConstructionPlane);
-        let index = self.doc.construction_planes.len() - 1;
-        self.scene_selection.clear();
-        click_scene_selection(
-            &mut self.scene_selection,
-            SceneElement::ConstructionPlane(index),
-            false,
-        );
+        if let Some(index) = self.doc.construction_planes.keys().last() {
+            self.scene_selection.clear();
+            click_scene_selection(
+                &mut self.scene_selection,
+                SceneElement::ConstructionPlane(index),
+                false,
+            );
+        }
         self.status = format!(
             "Added construction plane ({} from {})",
             crate::value::format_length_display_in(live_offset, self.doc.default_length_unit),
@@ -13731,7 +13736,7 @@ fn compose_move_values(
 /// that are actually a move target are touched, so untargeted planes are never disturbed.
 pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
     use std::collections::BTreeSet;
-    let targeted: BTreeSet<usize> = doc
+    let targeted: BTreeSet<crate::model::ConstructionPlaneKey> = doc
         .move_ops
         .values()
         .flat_map(|o| o.plane_targets.iter().copied())
@@ -13750,9 +13755,15 @@ pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
             (key, m)
         })
         .collect();
-    let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
+    let mut updates: Vec<(
+        crate::model::ConstructionPlaneKey,
+        glam::Vec3,
+        glam::Vec3,
+        glam::Vec3,
+        glam::Vec3,
+    )> = Vec::new();
     for &i in &targeted {
-        let Some(plane) = doc.construction_planes.get(i).filter(|p| !p.deleted) else {
+        let Some(plane) = doc.construction_planes.get(i) else {
             continue;
         };
         let base = plane_from_definition(&plane.definition, plane.parent);
@@ -13868,11 +13879,14 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
             Some((key, transforms))
         })
         .collect();
-    let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
-    for (pi, plane) in doc.construction_planes.iter().enumerate() {
-        if plane.deleted {
-            continue;
-        }
+    let mut updates: Vec<(
+        crate::model::ConstructionPlaneKey,
+        glam::Vec3,
+        glam::Vec3,
+        glam::Vec3,
+        glam::Vec3,
+    )> = Vec::new();
+    for (pi, plane) in doc.construction_planes.iter() {
         let Some(inst) = plane.repeat_instance else {
             continue;
         };
@@ -13893,7 +13907,7 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
         else {
             continue;
         };
-        let Some(source) = doc.construction_planes.get(src).filter(|p| !p.deleted) else {
+        let Some(source) = doc.construction_planes.get(src) else {
             continue;
         };
         // A rotational repeat turns the plane about the axis instead of sliding it (#839);
@@ -15035,9 +15049,7 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
         doc.sketches.remove(si);
     }
     for &pi in &op.sketch_plane_outputs {
-        if let Some(p) = doc.construction_planes.get_mut(pi) {
-            p.deleted = true;
-        }
+        doc.construction_planes.remove(pi);
     }
     doc.repeat_ops[op_index].sketch_plane_outputs.clear();
     doc.repeat_ops[op_index].sketch_outputs.clear();
@@ -15077,8 +15089,7 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
             plane.parent = crate::model::ConstructionPlaneParent::Root;
             plane.repeat_instance = None;
             plane.name = None;
-            let plane_idx = doc.construction_planes.len();
-            doc.construction_planes.push(plane);
+            let plane_idx = doc.construction_planes.insert(plane);
             doc.shape_order.push(ShapeKind::ConstructionPlane);
             plane_outputs.push(plane_idx);
             // The copy sketch on that plane.
@@ -15704,7 +15715,7 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<crate::model::Ske
 fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     use crate::model::ComponentMember as CM;
     let mut members = Vec::new();
-    members.extend((0..doc.construction_planes.len()).map(CM::ConstructionPlane));
+    members.extend(doc.construction_planes.keys().map(CM::ConstructionPlane));
     members.extend(doc.extrusions.keys().map(CM::Extrusion));
     members.extend(doc.lofts.keys().map(CM::Loft));
     members.extend(doc.boolean_ops.keys().map(CM::BooleanOp));
@@ -15918,6 +15929,8 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
@@ -16062,14 +16075,14 @@ mod tests {
         assert!(state.scene_selection.is_selected(SceneElement::Component(ckey(0))));
 
         // A plane created now lands in the component.
-        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 20.0 });
-        let plane = state.doc.construction_planes.len() - 1;
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 20.0 });
+        let plane = state.doc.construction_planes.keys().last().unwrap();
         assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(ckey(0)));
 
         // Deactivating (the Document row) stops the filing.
         state.active_component = None;
-        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 40.0 });
-        let plane2 = state.doc.construction_planes.len() - 1;
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 40.0 });
+        let plane2 = state.doc.construction_planes.keys().last().unwrap();
         assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane2)), None);
     }
 
@@ -16082,7 +16095,7 @@ mod tests {
         assert!(!state.dirty, "a fresh empty document is clean");
 
         // A mutation dirties it.
-        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 20.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 20.0 });
         assert!(state.dirty, "adding geometry marks the document dirty");
 
         // Saving clears it.
@@ -16095,7 +16108,7 @@ mod tests {
         assert!(!state.dirty, "saving clears the dirty flag");
 
         // A further edit dirties it again; undoing back to the saved state clears it.
-        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 40.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 40.0 });
         assert!(state.dirty, "the new edit is unsaved");
         state.apply(Action::UndoLast);
         assert!(
@@ -16104,7 +16117,7 @@ mod tests {
         );
 
         // A new document is clean.
-        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 60.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 60.0 });
         assert!(state.dirty);
         state.apply(Action::NewDocument);
         assert!(!state.dirty, "New document starts clean");
@@ -16120,7 +16133,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let mut state = AppState::default();
         // A construction plane = the ground XY (z = 0) plane, normal +Z.
-        state.doc.construction_planes.push(crate::face::default_xy_plane());
+        state.doc.construction_planes.insert(crate::face::default_xy_plane());
         // An imported-mesh tetra sitting entirely above the plane (z in [1, 2]).
         let tetra = vec![
             [Vec3::new(0.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 1.0), Vec3::new(0.0, 2.0, 1.0)],
@@ -16132,7 +16145,7 @@ mod tests {
         let body = state.doc.bodies.keys().last().unwrap();
 
         let r = state.apply(Action::CreateMirrorOperation {
-            plane: FaceId::ConstructionPlane(0),
+            plane: FaceId::ConstructionPlane(pkey(0)),
             targets: vec![body],
             mode: crate::model::MirrorMode::NewBody,
         });
@@ -16155,7 +16168,7 @@ mod tests {
         // Editing to an empty target set removes the reflected body; back to one restores it.
         state.apply(Action::EditMirrorOperation {
             op: mirkey(0),
-            plane: FaceId::ConstructionPlane(0),
+            plane: FaceId::ConstructionPlane(pkey(0)),
             targets: vec![body],
             mode: crate::model::MirrorMode::NewBody,
         });
@@ -16181,7 +16194,7 @@ mod tests {
         let body = bkey(0);
 
         let r = state.apply(Action::CreateMirrorOperation {
-            plane: FaceId::ConstructionPlane(0),
+            plane: FaceId::ConstructionPlane(pkey(0)),
             targets: vec![body],
             mode: MirrorMode::Join,
         });
@@ -16201,7 +16214,7 @@ mod tests {
         // Re-editing back to NewBody releases the source and restores a lone reflection.
         let r = state.apply(Action::EditMirrorOperation {
             op: mirkey(0),
-            plane: FaceId::ConstructionPlane(0),
+            plane: FaceId::ConstructionPlane(pkey(0)),
             targets: vec![body],
             mode: MirrorMode::NewBody,
         });
@@ -16217,7 +16230,7 @@ mod tests {
         // Cut consumes the source too.
         state.apply(Action::EditMirrorOperation {
             op: mirkey(0),
-            plane: FaceId::ConstructionPlane(0),
+            plane: FaceId::ConstructionPlane(pkey(0)),
             targets: vec![body],
             mode: MirrorMode::Cut,
         });
@@ -16463,8 +16476,7 @@ mod tests {
         assert!(matches!(r, ActionResult::Err(_)), "cycle must be refused");
 
         // File a plane (and thus its sketch) into the nested component.
-        let plane = state.doc.construction_planes.len();
-        state.doc.construction_planes.push(crate::face::default_xy_plane());
+        let plane = state.doc.construction_planes.insert(crate::face::default_xy_plane());
         let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(plane));
         state.apply(Action::MoveToComponent {
             element: SceneElement::ConstructionPlane(plane),
@@ -16523,7 +16535,7 @@ mod tests {
     fn begin_sketch_keeps_the_text_tool() {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::Text));
-        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)), viewport: None });
         assert!(state.sketch_session.is_some());
         assert_eq!(state.tool, Tool::Text, "the Text tool survives into the sketch");
     }
@@ -16534,7 +16546,7 @@ mod tests {
     fn target_snapped_extrusion_status_reports_resolved_depth() {
         use crate::model::{ExtrudeFace, ExtrudeTarget, FaceId};
         let mut state = ground_plane_only_state();
-        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
         let lines = crate::construction::add_line_rectangle(
             &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
@@ -16542,14 +16554,14 @@ mod tests {
         state
             .doc
             .construction_planes
-            .push(crate::construction::plane_from_face(7.0, Vec3::ZERO, glam::Vec3::Z));
+            .insert(crate::construction::plane_from_face(7.0, Vec3::ZERO, glam::Vec3::Z));
         state.apply(Action::CreateExtrusion {
             expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
             distance: 0.0,
             body: ExtrudeBodyChoice::New,
-            target: Some(ExtrudeTarget::Plane(1)),
+            target: Some(ExtrudeTarget::Plane(pkey(1))),
             symmetric: false,
         });
         assert_eq!(state.doc.extrusions.len(), 1, "extrude failed: {}", state.status);
@@ -16569,7 +16581,7 @@ mod tests {
     fn body_click_feeds_the_active_tool_set() {
         use crate::model::{ExtrudeFace, FaceId};
         let mut state = AppState::default();
-        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
         let lines =
             crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
@@ -16604,7 +16616,7 @@ mod tests {
     #[test]
     fn moving_a_construction_plane_shifts_its_frame() {
         let mut state = AppState::default();
-        let base = state.doc.construction_planes[0].origin;
+        let base = state.doc.construction_planes[pkey(0)].origin;
         let result = state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
@@ -16614,7 +16626,7 @@ mod tests {
             start_point_c: None,
             end_point_c: None,
             targets: vec![],
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             image_targets: vec![],
             instance_targets: Vec::new(),
             tx: String::new(),
@@ -16622,7 +16634,7 @@ mod tests {
             tz: "40mm".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
-        let moved = state.doc.construction_planes[0].origin;
+        let moved = state.doc.construction_planes[pkey(0)].origin;
         assert!(
             (moved.z - base.z - 40.0).abs() < 1e-3,
             "plane should move +40 in z (base {} -> {})",
@@ -16641,14 +16653,14 @@ mod tests {
             end_point_c: None,
             op,
             targets: vec![],
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             image_targets: vec![],
             instance_targets: Vec::new(),
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
         });
-        assert!((state.doc.construction_planes[0].origin.z - base.z).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(0)].origin.z - base.z).abs() < 1e-3);
     }
 
     /// #217: consecutive moves on the same plane coalesce into one op (translations add) instead
@@ -16656,7 +16668,7 @@ mod tests {
     #[test]
     fn consecutive_plane_moves_coalesce() {
         let mut state = AppState::default();
-        let base = state.doc.construction_planes[0].origin.z;
+        let base = state.doc.construction_planes[pkey(0)].origin.z;
         let move_plane = |state: &mut AppState, tz: &str| {
             state.creating_move = Some(CreatingMove {
                 translate_mode: Default::default(),
@@ -16666,7 +16678,7 @@ mod tests {
                 end_point_b: None,
                 start_point_c: None,
                 end_point_c: None,
-                plane_targets: vec![0],
+                plane_targets: vec![pkey(0)],
                 tz: tz.to_string(),
                 ..Default::default()
             });
@@ -16685,7 +16697,7 @@ mod tests {
             "second move on the same plane coalesces into the first op"
         );
         assert!(
-            (state.doc.construction_planes[0].origin.z - base - 50.0).abs() < 1e-3,
+            (state.doc.construction_planes[pkey(0)].origin.z - base - 50.0).abs() < 1e-3,
             "translations add up to +50"
         );
     }
@@ -16699,7 +16711,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "trace".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (0.0, 0.0),
             width_mm: 100.0,
             height_mm: 60.0,
@@ -16766,7 +16778,7 @@ mod tests {
             end_point_c: None,
             op,
             targets: vec![],
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             image_targets: vec![],
             instance_targets: Vec::new(),
             tx: "25mm".to_string(),
@@ -16785,7 +16797,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "trace".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (0.0, 0.0),
             width_mm: 100.0,
             height_mm: 60.0,
@@ -16835,7 +16847,7 @@ mod tests {
             return;
         };
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         state.apply(Action::CreateSketchText {
             sketch,
             text: "several words that wrap".to_string(),
@@ -16889,7 +16901,7 @@ mod tests {
         use crate::model::{ExtrudeFace, FaceId};
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -17125,7 +17137,7 @@ mod tests {
 
     fn begin_default_sketch(state: &mut AppState) -> SketchId {
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.sketch_session.unwrap().sketch
@@ -17477,7 +17489,7 @@ mod tests {
             primary: false,
             source: None,
         });
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,
@@ -17770,7 +17782,7 @@ mod tests {
         // other body.
         let plate_lines = {
             state.apply(Action::BeginSketch {
-                face: crate::model::FaceId::ConstructionPlane(0),
+                face: crate::model::FaceId::ConstructionPlane(pkey(0)),
                 viewport: None,
             });
             let s2 = state.sketch_session.unwrap().sketch;
@@ -18735,7 +18747,7 @@ mod tests {
     #[test]
     fn set_sketch_units_overrides_and_clears() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let result = state.apply(Action::SetSketchUnits {
             sketch,
             length: Some(LengthUnit::Cm),
@@ -18783,7 +18795,7 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::Rectangle));
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         assert_eq!(state.tool, Tool::Rectangle);
@@ -18797,7 +18809,7 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::Offset));
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         assert_eq!(state.tool, Tool::Offset);
@@ -18809,7 +18821,7 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::Sketch));
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         assert_eq!(state.tool, Tool::Select);
@@ -18828,7 +18840,7 @@ mod tests {
     fn set_tool_offset_in_sketch_starts_empty_draft() {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.apply(Action::SetTool(Tool::Offset));
@@ -18880,7 +18892,7 @@ mod tests {
     fn escape_to_select_in_sketch_drops_the_offset_draft() {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.apply(Action::SetTool(Tool::Offset));
@@ -18899,7 +18911,7 @@ mod tests {
     fn set_tool_offset_seeds_from_selection() {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -18922,7 +18934,7 @@ mod tests {
     #[test]
     fn commit_revolve_creates_body_and_undo_removes_both() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines = crate::construction::add_line_rectangle(
             &mut state.doc,
             sketch,
@@ -18960,7 +18972,7 @@ mod tests {
     #[test]
     fn commit_sweep_creates_body_and_undo_removes_both() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines = crate::construction::add_line_rectangle(
             &mut state.doc,
             sketch,
@@ -18971,7 +18983,7 @@ mod tests {
             [false; 4],
         );
         // A vertical plane (normal Y, u→X, v→Z) so the path line leaves the ground plane.
-        state.doc.construction_planes.push(crate::model::ConstructionPlane {
+        state.doc.construction_planes.insert(crate::model::ConstructionPlane {
             origin: glam::Vec3::ZERO,
             normal: glam::Vec3::Y,
             u_axis: glam::Vec3::X,
@@ -18981,11 +18993,12 @@ mod tests {
             repeat_instance: None,
             name: None,
             extent: crate::model::PlaneExtent::default(),
-            deleted: false,
         });
         let path_sketch = state
             .doc
-            .add_sketch(FaceId::ConstructionPlane(state.doc.construction_planes.len() - 1));
+            .add_sketch(FaceId::ConstructionPlane(
+                state.doc.construction_planes.keys().last().unwrap(),
+            ));
         state
             .doc
             .lines
@@ -19019,7 +19032,7 @@ mod tests {
     #[test]
     fn edit_revolve_updates_params_in_place() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines = crate::construction::add_line_rectangle(
             &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
         );
@@ -19057,7 +19070,7 @@ mod tests {
     #[test]
     fn commit_revolve_cut_requires_bodies() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines = crate::construction::add_line_rectangle(
             &mut state.doc,
             sketch,
@@ -19221,12 +19234,12 @@ mod tests {
     #[test]
     fn commit_loft_creates_body_and_undo_removes_both() {
         let mut state = AppState::default();
-        let bottom = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let bottom = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state
             .doc
             .circles
             .insert(crate::model::Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
-        state.doc.construction_planes.push(plane_from_definition(
+        state.doc.construction_planes.insert(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
                     origin: Vec3::ZERO,
@@ -19238,7 +19251,7 @@ mod tests {
             ),
             ConstructionPlaneParent::Root,
         ));
-        let top = state.doc.add_sketch(FaceId::ConstructionPlane(1));
+        let top = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         state
             .doc
             .circles
@@ -19276,7 +19289,7 @@ mod tests {
     #[test]
     fn commit_loft_rejects_fewer_than_two_sections() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state
             .doc
             .circles
@@ -19295,9 +19308,9 @@ mod tests {
     #[test]
     fn edit_construction_plane_updates_offset_and_descendants() {
         let mut state = ground_plane_only_state();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.construction_planes.push(plane_from_definition(
+        state.doc.construction_planes.insert(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
                     origin: Vec3::ZERO,
@@ -19309,16 +19322,16 @@ mod tests {
             ),
             ConstructionPlaneParent::Sketch(sketch),
         ));
-        let child_before = state.doc.construction_planes[1].origin.z;
+        let child_before = state.doc.construction_planes[pkey(1)].origin.z;
 
-        state.apply(Action::BeginEditConstructionPlane { index: 0 });
+        state.apply(Action::BeginEditConstructionPlane { index: pkey(0) });
         state.apply(Action::SetPlaneOffset {
             value: "30".to_string(),
         });
         state.apply(Action::CommitConstructionPlane);
 
-        assert!((state.doc.construction_planes[0].origin.z - 30.0).abs() < 1e-3);
-        assert!((state.doc.construction_planes[1].origin.z - child_before - 30.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(0)].origin.z - 30.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(1)].origin.z - child_before - 30.0).abs() < 1e-3);
         assert!(state.creating_plane.is_none());
     }
 
@@ -19339,10 +19352,10 @@ mod tests {
         state.creating_plane = Some(cp);
         state.apply(Action::CommitConstructionPlane);
         assert_eq!(state.doc.construction_planes.len(), 2);
-        assert!((state.doc.construction_planes[1].origin.z - 20.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(1)].origin.z - 20.0).abs() < 1e-3);
         assert!(state
             .scene_selection
-            .is_selected(SceneElement::ConstructionPlane(1)));
+            .is_selected(SceneElement::ConstructionPlane(pkey(1))));
     }
 
     #[test]
@@ -19359,7 +19372,7 @@ mod tests {
         state.scene_selection.clear();
         click_scene_selection(
             &mut state.scene_selection,
-            SceneElement::ConstructionPlane(0),
+            SceneElement::ConstructionPlane(pkey(0)),
             false,
         );
         let mut cp = state.creating_plane.take().unwrap();
@@ -19368,10 +19381,10 @@ mod tests {
         state.apply(Action::CommitConstructionPlane);
         assert!(!state
             .scene_selection
-            .is_selected(SceneElement::ConstructionPlane(0)));
+            .is_selected(SceneElement::ConstructionPlane(pkey(0))));
         assert!(state
             .scene_selection
-            .is_selected(SceneElement::ConstructionPlane(1)));
+            .is_selected(SceneElement::ConstructionPlane(pkey(1))));
     }
 
     #[test]
@@ -19486,13 +19499,13 @@ mod tests {
     #[test]
     fn set_plane_extent_resizes_and_undoes() {
         let mut state = AppState::default();
-        let before = state.doc.construction_planes[0].extent;
+        let before = state.doc.construction_planes[pkey(0)].extent;
         let resized = crate::model::PlaneExtent { u_min: 0.0, u_max: 140.0, v_min: 0.0, v_max: 60.0 };
-        state.apply(Action::SetPlaneExtent { index: 0, extent: resized });
-        assert_eq!(state.doc.construction_planes[0].extent, resized);
+        state.apply(Action::SetPlaneExtent { index: pkey(0), extent: resized });
+        assert_eq!(state.doc.construction_planes[pkey(0)].extent, resized);
 
         state.apply(Action::UndoLast);
-        assert_eq!(state.doc.construction_planes[0].extent, before);
+        assert_eq!(state.doc.construction_planes[pkey(0)].extent, before);
     }
 
     /// An extent dragged inside out is stored the right way round, never negative (#833).
@@ -19500,10 +19513,10 @@ mod tests {
     fn set_plane_extent_normalizes_an_inside_out_rectangle() {
         let mut state = AppState::default();
         state.apply(Action::SetPlaneExtent {
-            index: 0,
+            index: pkey(0),
             extent: crate::model::PlaneExtent { u_min: 40.0, u_max: -10.0, v_min: 0.0, v_max: 30.0 },
         });
-        let extent = state.doc.construction_planes[0].extent;
+        let extent = state.doc.construction_planes[pkey(0)].extent;
         assert!(extent.u_min < extent.u_max, "got {extent:?}");
         assert_eq!((extent.u_min, extent.u_max), (-10.0, 40.0));
     }
@@ -19513,7 +19526,7 @@ mod tests {
         let mut state = AppState::default();
         assert!(matches!(
             state.apply(Action::SetPlaneExtent {
-                index: 99,
+                index: pkey(99),
                 extent: crate::model::PlaneExtent::default(),
             }),
             ActionResult::Err(_)
@@ -19584,7 +19597,7 @@ mod tests {
         }
         state.apply(Action::CommitConstructionPlane);
         assert_eq!(state.doc.construction_planes.len(), 2);
-        let plane = &state.doc.construction_planes[1];
+        let plane = &state.doc.construction_planes[pkey(1)];
         assert!(
             (plane.normal - Vec3::X).length() < 1e-3 || (plane.normal + Vec3::X).length() < 1e-3,
             "normal {:?}",
@@ -19608,7 +19621,7 @@ mod tests {
         let mut state = ground_plane_only_state();
         let sketch = state
             .doc
-            .add_sketch(crate::model::FaceId::ConstructionPlane(0));
+            .add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let mut curve = Line::from_local_endpoints(sketch, 6.0, 4.0, 26.0, 14.0);
         curve.bezier = Some([(6.0, 12.0), (18.0, 14.0)]);
         state.doc.lines.push(curve);
@@ -19641,7 +19654,7 @@ mod tests {
             cp.offset_live = 0.0;
         }
         state.apply(Action::CommitConstructionPlane);
-        let plane = &state.doc.construction_planes[1];
+        let plane = &state.doc.construction_planes[pkey(1)];
         assert!(
             (plane.normal - glam::Vec3::new(0.0, -1.0, 0.0)).length() < 1e-3,
             "expected -Y end tangent, got {:?}",
@@ -19667,23 +19680,23 @@ mod tests {
         state.creating_plane = Some(cp);
         state.apply(Action::CommitConstructionPlane);
         assert_eq!(state.doc.construction_planes.len(), 2);
-        assert!((state.doc.construction_planes[1].origin.z - 5.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(1)].origin.z - 5.0).abs() < 1e-3);
 
         // Edit the plane to a new offset.
-        state.apply(Action::BeginEditConstructionPlane { index: 1 });
+        state.apply(Action::BeginEditConstructionPlane { index: pkey(1) });
         state.apply(Action::SetPlaneOffset {
             value: "30".to_string(),
         });
         state.apply(Action::CommitConstructionPlane);
-        assert!((state.doc.construction_planes[1].origin.z - 30.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(1)].origin.z - 30.0).abs() < 1e-3);
 
         // Undo should revert the edit, not delete the plane.
         state.apply(Action::UndoLast);
         assert_eq!(state.doc.construction_planes.len(), 2);
         assert!(
-            (state.doc.construction_planes[1].origin.z - 5.0).abs() < 1e-3,
+            (state.doc.construction_planes[pkey(1)].origin.z - 5.0).abs() < 1e-3,
             "expected undo to restore offset 5, got {}",
-            state.doc.construction_planes[1].origin.z
+            state.doc.construction_planes[pkey(1)].origin.z
         );
     }
 
@@ -19692,8 +19705,8 @@ mod tests {
         let mut state = ground_plane_only_state();
         // A sketch on the default plane (0) and a child plane defined relative to it,
         // so editing plane 0 moves the child (index 1).
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
-        state.doc.construction_planes.push(plane_from_definition(
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        state.doc.construction_planes.insert(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
                     origin: Vec3::ZERO,
@@ -19706,20 +19719,20 @@ mod tests {
             ConstructionPlaneParent::Sketch(sketch),
         ));
         state.doc.shape_order.push(ShapeKind::ConstructionPlane);
-        let child_before = state.doc.construction_planes[1].origin.z;
+        let child_before = state.doc.construction_planes[pkey(1)].origin.z;
 
-        state.apply(Action::BeginEditConstructionPlane { index: 0 });
+        state.apply(Action::BeginEditConstructionPlane { index: pkey(0) });
         state.apply(Action::SetPlaneOffset {
             value: "30".to_string(),
         });
         state.apply(Action::CommitConstructionPlane);
-        assert!((state.doc.construction_planes[1].origin.z - child_before).abs() > 1e-3);
+        assert!((state.doc.construction_planes[pkey(1)].origin.z - child_before).abs() > 1e-3);
 
         state.apply(Action::UndoLast);
         assert!(
-            (state.doc.construction_planes[1].origin.z - child_before).abs() < 1e-3,
+            (state.doc.construction_planes[pkey(1)].origin.z - child_before).abs() < 1e-3,
             "expected descendant restored to {child_before}, got {}",
-            state.doc.construction_planes[1].origin.z
+            state.doc.construction_planes[pkey(1)].origin.z
         );
     }
 
@@ -19728,7 +19741,7 @@ mod tests {
     /// care that plane 0 is the ground.
     fn ground_plane_only_state() -> AppState {
         let mut state = AppState::default();
-        state.doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut state.doc);
         state
     }
 
@@ -21206,7 +21219,7 @@ mod tests {
     #[test]
     fn sketch_slice_splits_a_curved_line() {
         let mut state = AppState::default();
-        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A symmetric arch from (0,0) to (10,0), handles pulling it up.
         let mut target = crate::model::Line::from_local_endpoints(si, 0.0, 0.0, 10.0, 0.0);
         target.bezier = Some([(3.0, 5.0), (7.0, 5.0)]);
@@ -21244,7 +21257,7 @@ mod tests {
     #[test]
     fn sketch_slice_splits_a_circle_into_arcs() {
         let mut state = AppState::default();
-        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A circle of radius 5 at the origin.
         state
             .doc
@@ -21284,7 +21297,7 @@ mod tests {
     #[test]
     fn sketch_slice_bisects_a_square_face_into_two() {
         let mut state = AppState::default();
-        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let square = crate::construction::add_line_rectangle(&mut state.doc, si, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         // Initially one face.
         assert_eq!(crate::polygon::closed_line_loops(&state.doc, si).len(), 1);
@@ -21334,7 +21347,7 @@ mod tests {
             return;
         };
         let mut state = AppState::default();
-        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let result = state.apply(Action::CreateSketchText {
             sketch: si,
             text: "Ab".to_string(),
@@ -21388,7 +21401,7 @@ mod tests {
         let mut state = AppState::default();
         crate::parameters::add_parameter(&mut state.doc, "foo".to_string(), "20mm".to_string())
             .unwrap();
-        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let result = state.apply(Action::CreateSketchText {
             sketch: si,
             text: "W={foo}".to_string(),
@@ -21431,7 +21444,7 @@ mod tests {
             return;
         };
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A line whose start endpoint (30, 40) is the pin target.
         state
             .doc
@@ -21931,7 +21944,7 @@ mod tests {
     fn origin_axis_is_selectable_and_not_draggable() {
         use crate::model::{ConstraintLine, SketchAxis};
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let axis = SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X));
         state.apply(Action::ClickSceneElement { element: axis.clone(), additive: false });
         assert!(state.scene_selection.is_selected(axis), "origin axis selects");
@@ -21970,7 +21983,7 @@ mod tests {
     #[test]
     fn repeat_tool_click_toggles_sketch_target() {
         let mut state = two_box_state(false);
-        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         state.apply(Action::SetTool(Tool::Repeat));
         arm_repeat_targets(&mut state);
         state.apply(Action::ClickSceneElement {
@@ -22018,12 +22031,12 @@ mod tests {
     fn repeat_copies_a_construction_plane_along_the_axis() {
         let mut state = two_box_state(false);
         // Only the XY ground plane, so the copies this makes are the only other planes.
-        state.doc.construction_planes.truncate(1);
-        let base = state.doc.construction_planes[0].origin;
-        let normal = state.doc.construction_planes[0].normal;
+        retain_ground_plane_only(&mut state.doc);
+        let base = state.doc.construction_planes[pkey(0)].origin;
+        let normal = state.doc.construction_planes[pkey(0)].normal;
         let result = state.apply(Action::CreateRepeatOperation {
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
@@ -22065,7 +22078,7 @@ mod tests {
         let mut state = two_box_state(false);
         state.apply(Action::CreateRepeatOperation {
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
@@ -22090,7 +22103,7 @@ mod tests {
             start_point_c: None,
             end_point_c: None,
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             image_targets: Vec::new(),
             instance_targets: Vec::new(),
             tx: "5".to_string(),
@@ -22098,7 +22111,7 @@ mod tests {
             tz: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert!((state.doc.construction_planes[0].origin.x - 5.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[pkey(0)].origin.x - 5.0).abs() < 1e-3);
         assert!(
             (state.doc.construction_planes[inst_idx].origin.x - 15.0).abs() < 1e-3,
             "instance follows the moved source and keeps its own offset on top"
@@ -22111,7 +22124,7 @@ mod tests {
         let mut state = two_box_state(false);
         state.apply(Action::CreateRepeatOperation {
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
@@ -22128,7 +22141,7 @@ mod tests {
         let result = state.apply(Action::EditRepeatOperation {
             op: repkey(0),
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
@@ -22360,8 +22373,8 @@ mod tests {
             ),
             ConstructionPlaneParent::Root,
         );
-        state.doc.construction_planes.push(plane);
-        FaceId::ConstructionPlane(state.doc.construction_planes.len() - 1)
+        state.doc.construction_planes.insert(plane);
+        FaceId::ConstructionPlane(state.doc.construction_planes.keys().last().unwrap())
     }
 
     /// Slice: a plane through the middle of a box splits it into two fragment bodies, the
@@ -22832,7 +22845,7 @@ mod tests {
     fn extrude_body_face_rejects_a_construction_plane() {
         let mut state = AppState::default();
         let result = state.apply(Action::ExtrudeBodyFace {
-            face_id: FaceId::ConstructionPlane(0),
+            face_id: FaceId::ConstructionPlane(pkey(0)),
         });
         assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
     }
@@ -22848,7 +22861,7 @@ mod tests {
 
         // A second sketch on the ground plane; project the whole body with one click.
         state.apply(Action::BeginSketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let before = state.doc.lines.len();
@@ -22873,20 +22886,20 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
 
         let before = state.doc.lines.len();
         let result =
-            state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(2) });
+            state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(pkey(2)) });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.lines.len(), before + 1);
         let li = state.doc.lines.len() - 1;
         let line = &state.doc.lines[li];
         assert!(matches!(
             line.projection,
-            Some(crate::model::ProjectionSource::Plane { plane: 2 })
+            Some(crate::model::ProjectionSource::Plane { plane: _ })
         ));
         assert!(line.construction);
         // YZ (normal X) meets the ground sketch along the world Y axis: local u stays 0.
@@ -22895,7 +22908,7 @@ mod tests {
 
         // The sketch's own plane is parallel — nothing to project.
         let result =
-            state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(0) });
+            state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(pkey(0)) });
         assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
 
         // Un-project: deleting the projected line removes the reference.
@@ -22929,7 +22942,7 @@ mod tests {
 
         // Open a sketch on the ground plane and project.
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let lines_before = state.doc.lines.len();
@@ -22973,7 +22986,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
@@ -23038,7 +23051,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
@@ -23097,7 +23110,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
@@ -23111,7 +23124,7 @@ mod tests {
             }),
             base_origin: None,
         });
-        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         state
             .doc
             .lines
@@ -23162,7 +23175,7 @@ mod tests {
         let image = state.doc.tracing_images.insert(crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: "grid".to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (-50.0, -30.0),
             width_mm: 100.0,
             height_mm: 60.0,
@@ -23229,7 +23242,7 @@ mod tests {
         let key = state.doc.tracing_images.keys().next().expect("the imported image");
         let img = &state.doc.tracing_images[key];
         assert_eq!(img.source_name, "swatch");
-        assert_eq!(img.plane, 0);
+        assert_eq!(img.plane, state.doc.ground_plane().unwrap());
         assert_eq!((img.width_mm, img.height_mm), (4.0, 2.0));
         assert_eq!(img.origin, (-2.0, -1.0), "centered on the plane origin");
 
@@ -24548,7 +24561,7 @@ mod tests {
     fn exit_sketch_restores_world_orbit_mode() {
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}
@@ -24590,7 +24603,7 @@ mod tests {
             .collect();
 
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}
@@ -24680,7 +24693,7 @@ mod tests {
         let mut state = AppState::default();
         let yaw_before = state.cam.yaw;
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}
@@ -24701,7 +24714,7 @@ mod tests {
         state.cam.pitch = pitch;
         state.cam.set_view_up(Some(Vec3::Y));
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}
@@ -24719,12 +24732,12 @@ mod tests {
         let mut state = AppState::default();
 
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}
 
-        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(pkey(0))).unwrap();
         let vp = state.cam.view_proj(viewport);
         let base = state.cam.project(frame.origin, viewport, &vp).unwrap();
         let u = state
@@ -24760,10 +24773,10 @@ mod tests {
         state.cam.pitch = pitch;
         state.cam.set_view_up(Some(Vec3::Y));
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
-        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(pkey(0))).unwrap();
         while state.cam.tick_transition(0.05) {}
         let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let vp = state.cam.view_proj(viewport);
@@ -24784,7 +24797,7 @@ mod tests {
         let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 600.0));
         let distance_before = state.cam.distance;
         state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: Some(viewport),
         });
         assert!(state.cam.is_transitioning());
@@ -24804,18 +24817,18 @@ mod tests {
         assert_eq!(state.doc.sketches.len(), 2);
         assert_eq!(
             state.doc.sketches[skey(0)].face,
-            FaceId::ConstructionPlane(0)
+            FaceId::ConstructionPlane(pkey(0))
         );
         assert_eq!(
             state.doc.sketches[skey(1)].face,
-            FaceId::ConstructionPlane(0)
+            FaceId::ConstructionPlane(pkey(0))
         );
     }
 
     #[test]
     fn begin_sketch_on_circle_face_hosts_child_sketch() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.circles.insert(Circle::from_local_center_radius(
             sketch, 0.0, 0.0, 20.0, 0.0,
         ));
@@ -24924,7 +24937,7 @@ mod tests {
         use crate::model::{Constraint, ConstraintKind, ConstraintLine};
 
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -24954,7 +24967,7 @@ mod tests {
         use crate::model::{Constraint, ConstraintKind, ConstraintLine, LineEnd};
 
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -25032,7 +25045,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -25242,7 +25255,7 @@ mod tests {
     #[test]
     fn commit_element_name_updates_document() {
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         assert_eq!(
             state.apply(Action::CommitElementName {
@@ -25279,7 +25292,7 @@ mod tests {
             state.apply(Action::FocusElementName),
             ActionResult::Err("Select a single element to rename".to_string())
         );
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Line(0),

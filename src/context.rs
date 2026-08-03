@@ -275,7 +275,7 @@ pub struct MoveControl {
     /// Construction planes (#217) and tracing images (#217) moving with them. They share the
     /// **one** Bodies picker rather than getting rows of their own — a Move takes "the things
     /// that move", and splitting them by kind would be three near-empty inputs (#963).
-    pub plane_targets: Vec<usize>,
+    pub plane_targets: Vec<crate::model::ConstructionPlaneKey>,
     pub image_targets: Vec<crate::model::TracingImageKey>,
     /// Snap (default) or free translation (#648) — the Translate dropdown.
     pub translate_mode: crate::model::MoveTranslateMode,
@@ -516,7 +516,7 @@ pub struct RepeatControl {
     /// Picked bodies to repeat (rendered through the unified element picker, #213).
     pub targets: Vec<crate::model::BodyKey>,
     /// Picked construction planes to repeat as offset copies (#221).
-    pub plane_targets: Vec<usize>,
+    pub plane_targets: Vec<crate::model::ConstructionPlaneKey>,
     /// Picked sketches to repeat as offset copies (#231/#234).
     pub sketch_targets: Vec<crate::model::SketchId>,
     /// Picked cut/add extrusions whose effect is replayed at each offset (#220/#235).
@@ -7387,6 +7387,7 @@ fn orientation_pick_to_drawing(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -7401,7 +7402,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let selection = crate::selection::SceneSelection::default();
@@ -7409,13 +7410,13 @@ mod tests {
         let open = selection_picker_for(&doc, Tool::Select, Some(sketch), &selection)
             .expect("Select always has its picker");
         assert!(open.accepts(&doc, &SceneElement::Line(0)));
-        assert!(!open.accepts(&doc, &SceneElement::ConstructionPlane(1)));
+        assert!(!open.accepts(&doc, &SceneElement::ConstructionPlane(pkey(1))));
         assert!(!open.accepts(&doc, &SceneElement::Body(bkey(0))));
 
         // Outside a sketch it takes everything again.
         let closed = selection_picker_for(&doc, Tool::Select, None, &selection)
             .expect("Select always has its picker");
-        assert!(closed.accepts(&doc, &SceneElement::ConstructionPlane(1)));
+        assert!(closed.accepts(&doc, &SceneElement::ConstructionPlane(pkey(1))));
     }
 
     /// #392: registering system fonts for the chooser preview must never crash — every face
@@ -7511,7 +7512,7 @@ mod tests {
     /// test that picks line 0 needs line 0 to be in sketch 0.
     fn doc_with_a_sketch() -> Document {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc
     }
@@ -7728,7 +7729,7 @@ mod tests {
     #[test]
     fn dimension_tool_shows_selection_picker() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
@@ -7811,7 +7812,7 @@ mod tests {
             tool: Tool::Extrude,
             extrude: Some(ExtrudeControl {
                 distance: String::new(),
-                target: Some(crate::hierarchy::SceneElement::ConstructionPlane(2)),
+                target: Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(2))),
                 target_focused: false,
                 can_commit: true,
                 has_extrusion: true,
@@ -7822,7 +7823,7 @@ mod tests {
         assert!(control.distance.is_empty(), "distance is null while a target drives the depth");
         assert_eq!(
             control.target,
-            Some(crate::hierarchy::SceneElement::ConstructionPlane(2))
+            Some(crate::hierarchy::SceneElement::ConstructionPlane(pkey(2)))
         );
     }
 
@@ -8409,7 +8410,7 @@ mod tests {
                     open_sketch: in_sketch.then_some(skey(0)),
                     slice_op: (tool == Tool::Slice).then_some(SliceControl {
                         targets: vec![bkey(1)],
-                        cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
+                        cutters: vec![crate::model::FaceId::ConstructionPlane(pkey(0))],
                         picking_cutter: false,
                         extend_infinite: true,
                         editing: false,
@@ -8628,7 +8629,7 @@ mod tests {
             tool: Tool::Slice,
             slice_op: Some(SliceControl {
                 targets: vec![bkey(1)],
-                cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
+                cutters: vec![crate::model::FaceId::ConstructionPlane(pkey(0))],
                 picking_cutter: true,
                 extend_infinite: true,
                 editing: false,
@@ -8649,7 +8650,7 @@ mod tests {
         assert_eq!(cutters.target, PickerTarget::SliceCutters);
         assert_eq!(
             cutters.picker.picked(),
-            &[SceneElement::ConstructionPlane(0)],
+            &[SceneElement::ConstructionPlane(pkey(0))],
             "a plane cutter keeps its plane identity"
         );
         assert!(cutters.picker.is_focused());
@@ -9072,7 +9073,7 @@ mod tests {
     #[test]
     fn shows_name_when_single_element_selected() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
@@ -9162,7 +9163,7 @@ mod tests {
         let mut doc = Document::default();
         doc.default_length_unit = LengthUnit::In;
         doc.default_angle_unit = AngleUnit::Rad;
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Sketch(sketch), false);
         let content = context_pane_content(&input(&doc, &sel));
@@ -9184,7 +9185,7 @@ mod tests {
     #[test]
     fn shows_overridden_units_when_sketch_selected() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.sketches[sketch].length_unit = Some(LengthUnit::Cm);
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Sketch(sketch), false);
@@ -9207,7 +9208,7 @@ mod tests {
     #[test]
     fn hides_units_control_when_non_sketch_element_selected() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
@@ -9290,7 +9291,7 @@ mod tests {
     #[test]
     fn draw_mode_takes_precedence_over_selection() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);

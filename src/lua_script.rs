@@ -202,9 +202,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::EdgeTreatmentOp(key) => {
             doc.edge_treatment_ops.keys().position(|k| k == key).unwrap_or(0)
         }
-        SceneElement::ConstructionPlane(i)
-        | SceneElement::Line(i)
-        => i,
+        SceneElement::Line(i) => i,
+        SceneElement::ConstructionPlane(key) => {
+            doc.construction_planes.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::Circle(key) => doc.circles.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Constraint(key) => {
@@ -262,9 +263,9 @@ pub fn scene_element_from_kind(
     index: usize,
 ) -> Option<SceneElement> {
     match kind.to_ascii_lowercase().as_str() {
-        "plane" | "construction_plane" | "constructionplane" => {
-            Some(SceneElement::ConstructionPlane(index))
-        }
+        "plane" | "construction_plane" | "constructionplane" => Some(
+            SceneElement::ConstructionPlane(doc.construction_planes.keys().nth(index)?),
+        ),
         "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
@@ -363,6 +364,18 @@ fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.body_at(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
+}
+
+/// The construction plane a script ordinal names (#1055) — planes are keyed, scripts count.
+fn plane_key_from_ordinal(
+    lua: &Lua,
+    ordinal: usize,
+) -> mlua::Result<crate::model::ConstructionPlaneKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.construction_planes.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no construction plane {ordinal}")))
 }
 
 /// The circle a script ordinal names (#1055) — circles are keyed, scripts count.
@@ -718,7 +731,7 @@ fn parse_extrude_target_table(
     table: &Table,
 ) -> mlua::Result<crate::model::ExtrudeTarget> {
     if let Some(i) = table.get::<Option<usize>>("plane")? {
-        return Ok(crate::model::ExtrudeTarget::Plane(i));
+        return Ok(crate::model::ExtrudeTarget::Plane(plane_key_from_ordinal(lua, i)?));
     }
     if let Some(face) = table.get::<Option<Table>>("face")? {
         let is_face_id_ref = face.get::<Option<String>>("kind")?.is_some()
@@ -1136,7 +1149,7 @@ fn parse_mate_ref(
         )))
     };
     if let Some(i) = t.get::<Option<usize>>("plane")? {
-        return Ok(Some(crate::model::MateRef::Plane(i)));
+        return Ok(Some(crate::model::MateRef::Plane(plane_key_from_ordinal(lua, i)?)));
     }
     // A hole's or a shaft's centre line (#1013).
     if let Some(v) = t.get::<Option<Vec<f32>>>("hole_axis")? {
@@ -2569,7 +2582,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
-                    doc.construction_planes.iter().filter(|e| !e.deleted).count()
+                    doc.construction_planes.len()
                 }
                 "extrusion" => doc.extrusions.len(),
                 "body" => doc.bodies.len(),
@@ -2675,8 +2688,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     )?;
                 }
                 "construction_plane" | "plane" => {
-                    let Some(plane) =
-                        doc.construction_planes.get(index).filter(|e| !e.deleted)
+                    // The script's `index` is the plane's ordinal (#1055).
+                    let Some(plane) = doc
+                        .construction_planes
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.construction_planes[k])
                     else {
                         return Ok(Value::Nil);
                     };
@@ -4016,8 +4033,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe {
                 // Make sure we're sketching; default to the ground (XY) construction plane.
                 if tick.state().sketch_session.is_none() {
+                    let ground = tick.state().doc.ground_plane().ok_or_else(|| {
+                        mlua::Error::external("document has no construction plane")
+                    })?;
                     tick.exec(Instruction::BeginSketch {
-                        face: FaceId::ConstructionPlane(0),
+                        face: FaceId::ConstructionPlane(ground),
                     })?;
                 }
                 tick.exec(Instruction::CreateRect {
@@ -4090,8 +4110,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             unsafe {
                 if tick.state().sketch_session.is_none() {
+                    let ground = tick.state().doc.ground_plane().ok_or_else(|| {
+                        mlua::Error::external("document has no construction plane")
+                    })?;
                     tick.exec(Instruction::BeginSketch {
-                        face: FaceId::ConstructionPlane(0),
+                        face: FaceId::ConstructionPlane(ground),
                     })?;
                 }
                 tick.exec(Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension })?;
@@ -4126,8 +4149,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             unsafe {
                 if tick.state().sketch_session.is_none() {
+                    let ground = tick.state().doc.ground_plane().ok_or_else(|| {
+                        mlua::Error::external("document has no construction plane")
+                    })?;
                     tick.exec(Instruction::BeginSketch {
-                        face: FaceId::ConstructionPlane(0),
+                        face: FaceId::ConstructionPlane(ground),
                     })?;
                 }
                 tick.exec(Instruction::CreateCircle { cx, cy, r, diameter_expr })?;
@@ -4169,8 +4195,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let wrap: Option<f32> = opts.get("wrap")?;
             unsafe {
                 if tick.state().sketch_session.is_none() {
+                    let ground = tick.state().doc.ground_plane().ok_or_else(|| {
+                        mlua::Error::external("document has no construction plane")
+                    })?;
                     tick.exec(Instruction::BeginSketch {
-                        face: FaceId::ConstructionPlane(0),
+                        face: FaceId::ConstructionPlane(ground),
                     })?;
                 }
                 tick.exec(Instruction::CreateSketchText {
@@ -4228,10 +4257,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                 }
             }
-            let element = SceneElement::ConstructionPlane(unsafe {
-                tick.state().doc.construction_planes.len().saturating_sub(1)
-            });
-            apply_optional_name(lua, element, Some(opts))
+            // The plane just committed (#1055): the newest live one.
+            let Some(key) = (unsafe { tick.state().doc.construction_planes.keys().last() }) else {
+                return Ok(());
+            };
+            apply_optional_name(lua, SceneElement::ConstructionPlane(key), Some(opts))
         })?,
     )?;
 
@@ -5807,6 +5837,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
@@ -5828,7 +5859,7 @@ mod tests {
         let image = |name: &str| crate::model::TracingImage {
             bytes: Vec::new(),
             source_name: name.to_string(),
-            plane: 0,
+            plane: pkey(0),
             origin: (0.0, 0.0),
             base_origin: None,
             width_mm: 10.0,
@@ -6288,7 +6319,7 @@ mod tests {
                     .children
                     .iter()
                     .any(|e| e.node == HierarchyNode::ConstructionPlane(pi)),
-                "host plane {pi} should not be a top-level node"
+                "host plane {pi:?} should not be a top-level node"
             );
         }
         // The repeat-op node carries the host planes as children.
@@ -6303,7 +6334,7 @@ mod tests {
                     .children
                     .iter()
                     .any(|e| e.node == HierarchyNode::ConstructionPlane(pi)),
-                "host plane {pi} nests under the op"
+                "host plane {pi:?} nests under the op"
             );
         }
     }
@@ -6399,7 +6430,7 @@ mod tests {
     fn sketch_slice_shadow_line_is_excluded_from_faces() {
         let mut doc = crate::model::Document::default();
         doc.sketches.insert(crate::model::Sketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             name: None,
             length_unit: None,
             angle_unit: None,
@@ -6917,7 +6948,7 @@ mod tests {
         let mut runner = ScriptRunner::from_lua_source(source).unwrap();
         runner.verbose = false;
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state
             .doc
@@ -7774,7 +7805,7 @@ mod tests {
         .unwrap();
         runner.verbose = false;
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 0.0, 10.0, 0.0,
         ));
@@ -9232,7 +9263,7 @@ mod tests {
         );
 
         let ext = &state.doc.extrusions[xkey(0)];
-        assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(3)));
+        assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(pkey(3))));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
     }
@@ -9249,6 +9280,7 @@ mod tests {
         let plane = state
             .doc
             .construction_planes
+            .values()
             .last()
             .expect("plane should be created");
         assert!((plane.origin.z - 15.0).abs() < 1e-3, "origin {:?}", plane.origin);
@@ -9975,7 +10007,7 @@ mod tests {
         let state = run_lua("bearcad.plane{ offset = 5 }");
         // Three datum planes (#833) plus the one the script added.
         assert_eq!(state.doc.construction_planes.len(), 4);
-        let plane = &state.doc.construction_planes[3];
+        let plane = &state.doc.construction_planes[pkey(3)];
         assert!(
             (plane.origin.z - 5.0).abs() < 1e-3,
             "origin should sit 5mm above Ground along its normal, got {:?}",
@@ -9994,9 +10026,9 @@ mod tests {
         );
         assert_eq!(state.doc.construction_planes.len(), 5);
         assert!(
-            (state.doc.construction_planes[4].origin.z - 8.0).abs() < 1e-3,
+            (state.doc.construction_planes[pkey(4)].origin.z - 8.0).abs() < 1e-3,
             "plane 4 should stack a further 3mm on top of plane 3's 5mm, got {:?}",
-            state.doc.construction_planes[4].origin
+            state.doc.construction_planes[pkey(4)].origin
         );
     }
 

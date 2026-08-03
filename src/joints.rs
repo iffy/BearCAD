@@ -629,6 +629,7 @@ pub fn posed_mesh(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::joint_key_for_slot as jkey;
     use super::*;
     use crate::mate::tests::{cube_body, face_ref, joint};
@@ -813,15 +814,15 @@ mod tests {
         let (a, b) = two_cubes(&mut doc);
         // Park the XY datum plane 18 mm up: the part lands at z = 10 and its slide along the
         // mating normal must stop 8 mm later.
-        doc.construction_planes[0].origin = Vec3::new(0.0, 0.0, 18.0);
-        doc.construction_planes[0].normal = Vec3::Z;
+        doc.construction_planes[pkey(0)].origin = Vec3::new(0.0, 0.0, 18.0);
+        doc.construction_planes[pkey(0)].normal = Vec3::Z;
         let mut j = joint(
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Cylindrical,
         );
         j.mate = stack_mate(&doc, a, b);
         j.position = "20".to_string();
-        j.limits.slide_max_target = Some(crate::model::ExtrudeTarget::Plane(0));
+        j.limits.slide_max_target = Some(crate::model::ExtrudeTarget::Plane(pkey(0)));
         doc.joints.insert(j);
         let limits = resolve_limits(&doc, &doc.joints.values().nth(0).unwrap());
         assert!(

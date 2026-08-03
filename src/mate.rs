@@ -60,7 +60,7 @@ pub fn resolve(doc: &Document, r: &MateRef) -> Option<MateGeom> {
             (n.length_squared() > 0.5).then_some(MateGeom::Plane { origin, normal: n })
         }
         MateRef::Plane(i) => {
-            let p = doc.construction_planes.get(*i).filter(|p| !p.deleted)?;
+            let p = doc.construction_planes.get(*i)?;
             Some(MateGeom::Plane {
                 origin: p.origin,
                 normal: p.normal.normalize_or_zero(),
@@ -521,6 +521,7 @@ pub fn settled_mate(mate: &JointMate) -> JointMate {
 
 #[cfg(test)]
 pub mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use super::*;
     use crate::model::{Body, BodySource, ImportedMesh, JointKind, JointLimits, JointRef};
 
@@ -796,11 +797,11 @@ pub mod tests {
         let mut doc = Document::default();
         let moving = cube_body(&mut doc, Vec3::new(0.0, 0.0, 20.0), Vec3::splat(4.0));
         // The XY datum plane at the origin, normal +Z.
-        doc.construction_planes[0].origin = Vec3::ZERO;
-        doc.construction_planes[0].normal = Vec3::Z;
+        doc.construction_planes[pkey(0)].origin = Vec3::ZERO;
+        doc.construction_planes[pkey(0)].normal = Vec3::Z;
         let mate = JointMate {
             moving_face: Some(face_ref(&doc, moving, Vec3::new(2.0, 2.0, 20.0))),
-            fixed_face: Some(MateRef::Plane(0)),
+            fixed_face: Some(MateRef::Plane(pkey(0))),
             ..Default::default()
         };
         let p = placement(&doc, &mate, Mat4::IDENTITY).unwrap();

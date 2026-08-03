@@ -408,8 +408,10 @@ fn next_profile_point(app: &AppState) -> Option<glam::Vec3> {
     // profile vertex *on that plane* — not the world origin, which isn't even on it (#850).
     let Some(session) = app.sketch_session else {
         let (u, v) = PROFILE_POINTS[0];
-        let frame =
-            crate::face::sketch_frame(&app.doc, crate::model::FaceId::ConstructionPlane(0))?;
+        let frame = crate::face::sketch_frame(
+            &app.doc,
+            crate::model::FaceId::ConstructionPlane(app.doc.ground_plane()?),
+        )?;
         return Some(crate::face::local_to_world(&frame, u, v));
     };
     let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
@@ -1550,7 +1552,11 @@ fn select_pair(
 fn draw_profile_for_me(app: &mut AppState) {
     use crate::model::{ConstraintPoint, FaceId, LineEnd};
     if app.sketch_session.is_none() {
-        app.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        let Some(ground) = app.doc.ground_plane() else { return };
+        app.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(ground),
+            viewport: None,
+        });
     }
     if profile_lines(app).len() >= PROFILE_POINTS.len() {
         return;
@@ -2592,6 +2598,7 @@ static BRACKET_STEPS: &[Step] = &[
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use super::*;
     use crate::actions::Action;
 
@@ -2869,7 +2876,7 @@ mod tests {
 
         let mut app = AppState::default();
         app.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         for (x0, y0, x1, y1) in [
@@ -2940,7 +2947,7 @@ mod tests {
 
         let mut app = AppState::default();
         app.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         app.apply(Action::CreateLineSegment {

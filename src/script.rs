@@ -1865,9 +1865,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
                 point: None,
             }
         }
+        // The plane's arena slot, not its ordinal (#1070).
         SceneElement::ConstructionPlane(i) => ElementScriptTokens {
             kind: "construction_plane",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The sketch's arena slot, not its ordinal (#1070).
@@ -2138,6 +2139,22 @@ fn extrusion_key(
     ordinal: usize,
 ) -> Option<crate::model::ExtrusionKey> {
     doc.extrusions.keys().nth(ordinal)
+}
+
+/// A construction plane's ordinal among the live ones — what a script writes (#1055).
+fn plane_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::ConstructionPlaneKey,
+) -> Option<usize> {
+    doc.construction_planes.keys().position(|k| k == key)
+}
+
+/// The plane an ordinal names — the inverse of [`plane_ordinal`].
+fn plane_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::ConstructionPlaneKey> {
+    doc.construction_planes.keys().nth(ordinal)
 }
 
 /// A sketch's ordinal among the live ones — what a script writes (#1055).
@@ -2475,7 +2492,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         Action::ImportImage { path, plane } => Some(Instruction::ImportImage {
             path: path.clone(),
-            plane: *plane,
+            plane: match plane {
+                Some(p) => Some(plane_ordinal(doc, *p)?),
+                None => None,
+            },
         }),
         Action::SetCalibrationPoint { image, index, x, y } => {
             Some(Instruction::SetCalibrationPoint {
@@ -2617,7 +2637,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::CommitCommittedDim => Some(Instruction::CommitCommittedDim),
         Action::BeginEditConstructionPlane { index } => {
-            Some(Instruction::BeginEditConstructionPlane { index: *index })
+            Some(Instruction::BeginEditConstructionPlane { index: plane_ordinal(doc, *index)? })
         }
         Action::CommitConstructionPlane => Some(Instruction::CommitConstructionPlane),
         Action::SetPlaneOffset { value } => Some(Instruction::SetPlaneOffset {
@@ -3132,7 +3152,7 @@ pub fn mate_ref_lua(r: &crate::model::MateRef) -> String {
             mm_point_lua(*centroid),
             mm_point_lua(*normal)
         ),
-        crate::model::MateRef::Plane(i) => format!("{{ plane = {i} }}"),
+        crate::model::MateRef::Plane(i) => format!("{{ plane = {} }}", i.index()),
         crate::model::MateRef::Edge { body, a, b } => format!(
             "{{ body = {}, edge = {{ {}, {} }} }}",
             body.index(),
@@ -3452,7 +3472,7 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
 fn extrude_target_lua_table(target: &crate::model::ExtrudeTarget) -> String {
     use crate::model::ExtrudeTarget;
     match target {
-        ExtrudeTarget::Plane(i) => format!("{{ plane = {i} }}"),
+        ExtrudeTarget::Plane(i) => format!("{{ plane = {} }}", i.index()),
         ExtrudeTarget::Face(face) => format!("{{ face = {} }}", extrude_face_spec_table(face)),
         ExtrudeTarget::BodyFace(face_id) => format!("{{ face = {} }}", face_id_lua_ref(face_id)),
         ExtrudeTarget::RepeatedFace { face, op, instance } => format!(
@@ -3601,7 +3621,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
 fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
     match face {
         FaceId::Circle(i) => ("circle", i.index() as usize),
-        FaceId::ConstructionPlane(i) => ("construction_plane", *i),
+        FaceId::ConstructionPlane(i) => ("construction_plane", i.index() as usize),
         // Cap/side faces aren't yet addressable from the two-argument script form.
         FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", extrusion.index() as usize),
         FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", extrusion.index() as usize),
@@ -3804,7 +3824,9 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
 fn face_id_lua_ref(face: &FaceId) -> String {
     match face {
         FaceId::Circle(i) => format!("{{ kind = \"circle\", index = {} }}", i.index()),
-        FaceId::ConstructionPlane(i) => format!("{{ kind = \"construction_plane\", index = {i} }}"),
+        FaceId::ConstructionPlane(i) => {
+            format!("{{ kind = \"construction_plane\", index = {} }}", i.index())
+        }
         FaceId::Polygon(lines) => format!(
             "{{ kind = \"polygon\", index = {} }}",
             lines.first().copied().unwrap_or(0)
@@ -4866,6 +4888,13 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::ImportImage { path, plane } => {
+                let plane = match plane.map(|p| plane_key(&state.doc, p)) {
+                    Some(None) => {
+                        self.last_action_error = Some("No such construction plane".to_string());
+                        return StepResult::Continue;
+                    }
+                    other => other.flatten(),
+                };
                 let r = state.apply(Action::ImportImage { path, plane });
                 self.record_action_error(r);
                 StepResult::Continue
@@ -5987,6 +6016,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::BeginEditConstructionPlane { index } => {
+                let Some(index) = plane_key(&state.doc, index) else {
+                    self.last_action_error = Some(format!("Unknown construction plane {index}"));
+                    return StepResult::Continue;
+                };
                 state.apply(Action::BeginEditConstructionPlane { index });
                 StepResult::Continue
             }
@@ -6003,6 +6036,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreatePlane { offset, from } => {
+                let Some(from) = plane_key(&state.doc, from) else {
+                    self.last_action_error = Some(format!("Unknown construction plane {from}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::AddConstructionPlane { from, offset_mm: offset });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -6758,6 +6795,7 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
@@ -6886,7 +6924,7 @@ mod tests {
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
 
-        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let lines = crate::construction::add_line_rectangle(
             &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
         );
@@ -7159,7 +7197,7 @@ mod tests {
     #[test]
     fn instruction_from_action_preserves_a_curved_committed_line() {
         let mut doc = crate::model::Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let mut line = crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
         doc.lines.push(line);
@@ -7399,7 +7437,7 @@ mod tests {
         let mut state = AppState::default();
         let mut synthetic = SyntheticInput::default();
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_line = Some(crate::actions::CreatingLine {
@@ -7544,7 +7582,7 @@ mod tests {
         let mut state = AppState::default();
         let mut synthetic = SyntheticInput::default();
         state.apply(crate::actions::Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         state.creating_line = Some(crate::actions::CreatingLine {

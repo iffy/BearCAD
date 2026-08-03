@@ -40,7 +40,6 @@ pub fn default_xy_plane() -> ConstructionPlane {
         repeat_instance: None,
         name: None,
         extent: crate::model::PlaneExtent::default(),
-        deleted: false,
     }
 }
 
@@ -54,7 +53,7 @@ pub const DATUM_PLANE_GAP_MM: f32 = 5.0;
 /// The three datum planes a new document opens with (#833): XY, XZ and YZ, each occupying
 /// the positive quadrant of its own plane so the origin corner is shared and none of them
 /// hides the others' geometry.
-pub fn default_datum_planes() -> Vec<ConstructionPlane> {
+pub fn default_datum_planes() -> crate::arena::Arena<ConstructionPlane> {
     let extent = crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM, DATUM_PLANE_GAP_MM);
     let plane = |normal: Vec3, u: Vec3, v: Vec3, label: &str| ConstructionPlane {
         origin: Vec3::ZERO,
@@ -74,18 +73,17 @@ pub fn default_datum_planes() -> Vec<ConstructionPlane> {
         repeat_instance: None,
         name: Some(label.to_string()),
         extent,
-        deleted: false,
     };
-    vec![
-        // XY keeps index 0 and the "Ground" anchor label every existing document uses.
-        ConstructionPlane {
-            name: Some("XY".to_string()),
-            extent,
-            ..default_xy_plane()
-        },
-        plane(Vec3::Y, Vec3::X, Vec3::Z, "XZ"),
-        plane(Vec3::X, Vec3::Y, Vec3::Z, "YZ"),
-    ]
+    let mut planes = crate::arena::Arena::new();
+    // XY goes in first and the "Ground" anchor label every existing document uses is its.
+    planes.insert(ConstructionPlane {
+        name: Some("XY".to_string()),
+        extent,
+        ..default_xy_plane()
+    });
+    planes.insert(plane(Vec3::Y, Vec3::X, Vec3::Z, "XZ"));
+    planes.insert(plane(Vec3::X, Vec3::Y, Vec3::Z, "YZ"));
+    planes
 }
 
 /// Resolve the world-space sketch frame for a face.
@@ -744,7 +742,7 @@ pub fn sketch_label(doc: &Document, sketch: SketchId) -> String {
 
 pub fn face_label(_doc: &Document, face: FaceId) -> String {
     match face {
-        FaceId::ConstructionPlane(i) => format!("Construction plane {i}"),
+        FaceId::ConstructionPlane(i) => format!("Construction plane {}", i.index()),
         FaceId::Circle(i) => format!("Circle face {}", i.index()),
         FaceId::Polygon(lines) => format!("Polygon face ({} lines)", lines.len()),
         FaceId::ExtrudeCap {
@@ -1101,14 +1099,11 @@ pub fn pick_sketch_face(
         }
     }
 
-    for (i, plane) in doc.construction_planes.iter().enumerate().rev() {
+    for (i, plane) in doc.construction_planes.iter().collect::<Vec<_>>().into_iter().rev() {
         // A tombstoned plane is not there to be picked (#1051). Every other candidate in this
         // function already filters its own deleted flag; planes did not, so a deleted one went
         // on hovering, selecting, and — because the Shape tool anchors through here — catching
         // shapes meant for the face behind it.
-        if plane.deleted {
-            continue;
-        }
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             let candidate = FaceId::ConstructionPlane(i);
@@ -1232,10 +1227,7 @@ pub fn sketch_faces_near(
             }
         }
     }
-    for (i, plane) in doc.construction_planes.iter().enumerate() {
-        if plane.deleted {
-            continue;
-        }
+    for (i, plane) in doc.construction_planes.iter() {
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             push(FaceId::ConstructionPlane(i), c, dist);
@@ -1492,6 +1484,7 @@ fn dist_point_to_segment_px(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: efr
 
 #[cfg(test)]
 mod pick_tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use super::*;
 
@@ -1501,7 +1494,7 @@ mod pick_tests {
     #[test]
     fn a_smaller_coplanar_profile_wins_the_face_pick() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         // A 40×30 rectangle as four lines, with a small circle inside it.
         for (x0, y0, x1, y1) in [
             (0.0, 0.0, 40.0, 0.0),
@@ -1533,6 +1526,8 @@ mod pick_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
@@ -1544,10 +1539,10 @@ mod tests {
     fn default_document_has_the_three_datum_planes() {
         let doc = Document::default();
         assert_eq!(doc.construction_planes.len(), 3);
-        assert!((doc.construction_planes[0].normal.z - 1.0).abs() < 1e-4);
-        assert!((doc.construction_planes[1].normal.y - 1.0).abs() < 1e-4);
-        assert!((doc.construction_planes[2].normal.x - 1.0).abs() < 1e-4);
-        for plane in &doc.construction_planes {
+        assert!((doc.construction_planes[pkey(0)].normal.z - 1.0).abs() < 1e-4);
+        assert!((doc.construction_planes[pkey(1)].normal.y - 1.0).abs() < 1e-4);
+        assert!((doc.construction_planes[pkey(2)].normal.x - 1.0).abs() < 1e-4);
+        for plane in doc.construction_planes.values() {
             assert_eq!(
                 plane.extent,
                 crate::model::PlaneExtent::quadrant(DATUM_PLANE_SIZE_MM, DATUM_PLANE_GAP_MM)
@@ -1562,7 +1557,7 @@ mod tests {
     #[test]
     fn sketch_on_plane_stores_local_coordinates() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let frame = sketch_geometry_frame(&doc, sketch).unwrap();
         let p = local_to_world(&frame, 10.0, 20.0);
         let (u, v) = world_to_local(&frame, p);
@@ -1573,7 +1568,7 @@ mod tests {
     #[test]
     fn circle_face_frame_origin_is_center() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(Circle::from_local_center_radius(sketch, 5.0, 7.0, 10.0, 0.0));
         let frame = sketch_frame(&doc, FaceId::Circle(rkey(0))).unwrap();
@@ -1584,7 +1579,7 @@ mod tests {
     #[test]
     fn child_sketch_on_circle_face_uses_center_origin() {
         let mut doc = Document::default();
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(Circle::from_local_center_radius(s0, 10.0, 10.0, 5.0, 0.0));
         let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
@@ -1602,8 +1597,8 @@ mod tests {
         // A plane parked *nearer the camera* than the box, covering it on screen.
         let mut plane = crate::construction::plane_from_face(0.0, Vec3::ZERO, Vec3::Z);
         plane.origin = Vec3::new(0.0, 0.0, 40.0);
-        doc.construction_planes.truncate(1);
-        doc.construction_planes.push(plane);
+        retain_ground_plane_only(&mut doc);
+        doc.construction_planes.insert(plane);
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
         let eye = Vec3::new(5.0, 5.0, 500.0);
 
@@ -1615,7 +1610,7 @@ mod tests {
 
         // Away from the body, the plane is still perfectly pickable.
         let off = pick_sketch_face(eframe::egui::pos2(-40.0, -40.0), &project, &doc, eye);
-        assert_eq!(off, Some(FaceId::ConstructionPlane(1)), "got {off:?}");
+        assert_eq!(off, Some(FaceId::ConstructionPlane(pkey(1))), "got {off:?}");
     }
 
     /// #1051: a deleted construction plane is gone — it must not go on being hovered,
@@ -1624,33 +1619,34 @@ mod tests {
     #[test]
     fn a_deleted_construction_plane_is_not_pickable() {
         let mut doc = Document::default();
-        doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut doc);
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
         let eye = Vec3::new(0.0, 0.0, 100.0);
         let at = eframe::egui::pos2(20.0, 20.0);
 
         assert_eq!(
             pick_sketch_face(at, &project, &doc, eye),
-            Some(FaceId::ConstructionPlane(0)),
+            Some(FaceId::ConstructionPlane(pkey(0))),
             "the live plane is pickable to begin with"
         );
         assert!(
             sketch_faces_near(at, &project, &doc, 40.0)
                 .iter()
-                .any(|(face, ..)| *face == FaceId::ConstructionPlane(0)),
+                .any(|(face, ..)| *face == FaceId::ConstructionPlane(pkey(0))),
             "and reaches the crowd"
         );
 
-        doc.construction_planes[0].deleted = true;
+        let ground = doc.ground_plane().unwrap();
+        doc.construction_planes.remove(ground);
         assert_eq!(
             pick_sketch_face(at, &project, &doc, eye),
             None,
-            "a deleted plane is not pickable"
+            "a removed plane is not pickable"
         );
         assert!(
             !sketch_faces_near(at, &project, &doc, 40.0)
                 .iter()
-                .any(|(face, ..)| *face == FaceId::ConstructionPlane(0)),
+                .any(|(face, ..)| *face == FaceId::ConstructionPlane(pkey(0))),
             "nor does it reach the crowd"
         );
     }
@@ -1660,8 +1656,8 @@ mod tests {
         let mut doc = Document::default();
         // Only the ground plane matters here; the other two datum planes (#833) project
         // edge-on under this flattening test projection and would tie for the click.
-        doc.construction_planes.truncate(1);
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        retain_ground_plane_only(&mut doc);
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
@@ -1672,7 +1668,7 @@ mod tests {
     #[test]
     fn sketch_camera_circle_face_includes_face_and_children() {
         let mut doc = Document::default();
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
         let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
@@ -1686,7 +1682,7 @@ mod tests {
 
     fn doc_with_extruded_box() -> Document {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let rect_lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 20.0, 20.0, [false; 4]);
         doc.extrusions.insert(crate::model::Extrusion {
@@ -1860,7 +1856,7 @@ mod tests {
     #[test]
     fn pick_sketch_face_finds_extrusion_cap() {
         let mut doc = doc_with_extruded_box();
-        doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut doc);
         // Offset screen x by height so the top cap (z=10) separates from the base
         // rect; click where only the lifted top cap projects.
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x + p.z, p.y));
@@ -1899,7 +1895,7 @@ mod tests {
     #[test]
     fn circular_profiles_have_no_flat_side_walls() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.extrusions.insert(crate::model::Extrusion {
@@ -1920,7 +1916,7 @@ mod tests {
     #[test]
     fn pick_sketch_face_finds_extrusion_side_wall() {
         let mut doc = doc_with_extruded_box();
-        doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut doc);
         // Project to the XZ plane so the y=0 side wall shows as a 20x10 rectangle.
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.z));
         let face = pick_sketch_face(eframe::egui::pos2(10.0, 5.0), &project, &doc, Vec3::new(0.0, 0.0, 100.0));
@@ -2053,7 +2049,7 @@ mod tests {
             let (u0, v0) = vertices[edge];
             let (u1, v1) = vertices[(edge + 1) % vertices.len()];
             let mid = glam::Vec2::new((u0 + u1) * 0.5, (v0 + v1) * 0.5);
-            let plane = sketch_frame(doc, FaceId::ConstructionPlane(0)).unwrap();
+            let plane = sketch_frame(doc, FaceId::ConstructionPlane(pkey(0))).unwrap();
             let world_mid = local_to_world(&plane, mid.x, mid.y) + frame.normal * 0.1;
             let (pu, pv) = world_to_local(&plane, world_mid);
             assert!(
@@ -2085,7 +2081,7 @@ mod tests {
     #[test]
     fn concave_side_walls_get_outward_right_handed_frames() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         // CCW L-profile; the concave corner is at (10, 10).
         let vertices = [
             (0.0, 0.0),
@@ -2121,7 +2117,7 @@ mod tests {
     #[test]
     fn clockwise_profiles_still_get_outward_side_frames() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let vertices = [(0.0, 0.0), (0.0, 20.0), (20.0, 20.0), (20.0, 0.0)];
         let lines = add_line_loop(&mut doc, sketch, &vertices);
         extrude_loop(&mut doc, sketch, lines.clone());
@@ -2162,20 +2158,20 @@ mod tests {
     #[test]
     fn has_children_detects_dependents() {
         let mut doc = Document::default();
-        assert!(!doc.has_children(&FaceId::ConstructionPlane(0)));
+        assert!(!doc.has_children(&FaceId::ConstructionPlane(pkey(0))));
         doc.sketches.insert(Sketch {
-            face: FaceId::ConstructionPlane(0),
+            face: FaceId::ConstructionPlane(pkey(0)),
             name: None,
             length_unit: None,
             angle_unit: None,
         });
-        assert!(doc.has_children(&FaceId::ConstructionPlane(0)));
+        assert!(doc.has_children(&FaceId::ConstructionPlane(pkey(0))));
     }
 
     #[test]
     fn sketch_camera_empty_plane_orients_without_zoom() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let target = sketch_camera_target(&doc, sketch).unwrap();
         assert!(target.zoom.is_none());
         assert!(target.target.length_squared() < 1e-8);
@@ -2276,7 +2272,7 @@ mod tests {
         use eframe::egui::{Pos2, Rect};
 
         let mut doc = Document::default();
-        doc.construction_planes.push(plane_from_definition(
+        doc.construction_planes.insert(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Axis {
                     origin: Vec3::ZERO,
@@ -2288,8 +2284,8 @@ mod tests {
             ),
             ConstructionPlaneParent::Root,
         ));
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
-        let frame = sketch_frame(&doc, FaceId::ConstructionPlane(1)).unwrap();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
+        let frame = sketch_frame(&doc, FaceId::ConstructionPlane(pkey(1))).unwrap();
         let mut cam = Camera::default();
         cam.target = frame.origin;
         cam.distance = 200.0;

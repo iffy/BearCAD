@@ -1444,6 +1444,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
@@ -1452,7 +1453,7 @@ mod tests {
 
     fn sketch_doc() -> (Document, SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 

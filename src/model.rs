@@ -15,7 +15,7 @@ pub enum FaceId {
     Circle(CircleKey),
     /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
     Polygon(Vec<usize>),
-    ConstructionPlane(usize),
+    ConstructionPlane(ConstructionPlaneKey),
     /// A planar cap face of an extruded body: one profile face of an extrusion,
     /// at either the base (`top = false`) or offset (`top = true`) end.
     ExtrudeCap {
@@ -56,8 +56,11 @@ pub enum FaceId {
 }
 
 impl Default for FaceId {
+    /// A face naming nothing. There is no "plane 0" to fall back on now that planes are
+    /// keyed (#1055), and an empty polygon is already the crate's stand-in for a face with
+    /// no geometry.
     fn default() -> Self {
-        FaceId::ConstructionPlane(0)
+        FaceId::Polygon(Vec::new())
     }
 }
 
@@ -74,7 +77,7 @@ impl FaceId {
         match kind.to_ascii_lowercase().as_str() {
             "circle" => Some(FaceId::Circle(doc.circles.keys().nth(index)?)),
             "plane" | "construction_plane" | "constructionplane" => {
-                Some(FaceId::ConstructionPlane(index))
+                Some(FaceId::ConstructionPlane(doc.construction_planes.keys().nth(index)?))
             }
             _ => None,
         }
@@ -261,7 +264,7 @@ pub enum ProjectionSource {
     /// A construction plane (#983): the projected line runs along the two planes'
     /// intersection, spanning the source plane's drawn extent. Identified by index — stable,
     /// unlike a mesh edge — so the reference follows the plane through moves and resizes.
-    Plane { plane: usize },
+    Plane { plane: ConstructionPlaneKey },
 }
 
 /// Number of straight sub-segments used to approximate a curved [`Line`] for rendering,
@@ -735,9 +738,10 @@ pub struct ConstructionPlane {
     /// quadrant, and any plane can be resized by dragging its corner handles.
     #[serde(default)]
     pub extent: PlaneExtent,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// A construction plane's identity (#1055): stable across deletions of other planes.
+pub type ConstructionPlaneKey = crate::arena::Key<ConstructionPlane>;
 
 /// A construction plane's drawn rectangle, in its own u/v millimetres relative to its origin
 /// (#833). `u_min`/`v_min` are the low corner, `u_max`/`v_max` the high one — the two the
@@ -1186,7 +1190,7 @@ pub enum ExtrudeTarget {
     /// Up to the extended plane of a face.
     Face(ExtrudeFace),
     /// Up to a construction plane.
-    Plane(usize),
+    Plane(ConstructionPlaneKey),
     /// Up to the extended plane of a 3D body face — another (or the same) extrusion's cap
     /// or side wall (#126), not a flat sketch profile. Always `FaceId::ExtrudeCap` or
     /// `FaceId::ExtrudeSide`; other `FaceId` kinds don't reach this variant (they already
@@ -1707,6 +1711,26 @@ pub fn joint_key_for_slot(n: usize) -> JointKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// Drop every datum plane but the XY ground (#1055) — tests only. Several tests index
+/// planes by hand and only ever want the one they sketch on.
+#[cfg(test)]
+pub fn retain_ground_plane_only(doc: &mut Document) {
+    // Built fresh rather than removed one by one, so the freed slots keep generation 0 and
+    // the next plane a test adds lands at the slot its assertions expect.
+    let Some(ground) = doc.ground_plane().and_then(|k| doc.construction_planes.get(k).cloned())
+    else {
+        return;
+    };
+    doc.construction_planes = crate::arena::Arena::new();
+    doc.construction_planes.insert(ground);
+}
+
+/// The same for a construction plane (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn plane_key_for_slot(n: usize) -> ConstructionPlaneKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a circle (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn circle_key_for_slot(n: usize) -> CircleKey {
@@ -1769,6 +1793,12 @@ pub fn sketch_op_key_for_slot<T>(n: usize) -> crate::arena::Key<T> {
 }
 
 impl Document {
+    /// The XY ground plane (#1055): every document opens with it as its first datum plane,
+    /// and it is what a script or a default means by "plane 0".
+    pub fn ground_plane(&self) -> Option<ConstructionPlaneKey> {
+        self.construction_planes.keys().next()
+    }
+
     /// The body at ordinal `n` among the live ones (#1055) — what a script names, and how
     /// to say "the first body" now that a position is not an identity.
     pub fn body_at(&self, n: usize) -> Option<BodyKey> {
@@ -2266,7 +2296,7 @@ pub struct MoveOperation {
     /// Construction planes moved by this op (#217): transformed in place at recompute, so
     /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
     #[serde(default)]
-    pub plane_targets: Vec<usize>,
+    pub plane_targets: Vec<ConstructionPlaneKey>,
     /// Tracing images moved by this op (#217): their plane-local origin is transformed in
     /// place at recompute (projected onto the host plane), like a plane. No output bodies.
     #[serde(default)]
@@ -2344,7 +2374,7 @@ pub enum MateRef {
         normal: [i32; 3],
     },
     /// A datum plane (#1018) — what the first part of an assembly is grounded against.
-    Plane(usize),
+    Plane(ConstructionPlaneKey),
     /// A straight edge of a body's mesh, keyed like [`crate::hierarchy::SceneElement::BodyEdge`].
     Edge {
         body: BodyKey,
@@ -2781,7 +2811,7 @@ pub struct RepeatOperation {
     /// `targets` (bodies) because a plane instance is a generated [`ConstructionPlane`] carrying
     /// a [`RepeatPlaneInstance`], not a [`BodySource::Repeated`] body.
     #[serde(default)]
-    pub plane_targets: Vec<usize>,
+    pub plane_targets: Vec<ConstructionPlaneKey>,
     /// Cut **extrusion** indices whose *effect* is replayed at each offset (#220): the cutting
     /// tool is subtracted from its body again at every instance position (punching N holes),
     /// rather than copying a solid. No output bodies — the extra cuts fold into the target body's
@@ -2796,7 +2826,7 @@ pub struct RepeatOperation {
     pub sketch_targets: Vec<SketchId>,
     /// Generated host-plane indices for the sketch copies (#226), instance-major then target.
     #[serde(default)]
-    pub sketch_plane_outputs: Vec<usize>,
+    pub sketch_plane_outputs: Vec<ConstructionPlaneKey>,
     /// Generated copy-sketch indices (#226), instance-major then target. Each copy's lines and
     /// circles are found by sketch membership (not tracked separately).
     #[serde(default)]
@@ -2841,7 +2871,7 @@ pub struct RepeatOperation {
     /// instance-major then target, exactly like [`outputs`]. Each entry is a
     /// [`ConstructionPlane`] whose `repeat_instance` points back here.
     #[serde(default)]
-    pub plane_outputs: Vec<usize>,
+    pub plane_outputs: Vec<ConstructionPlaneKey>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -3213,7 +3243,7 @@ pub struct TracingImage {
     /// Source file name (without extension), used as the default display name.
     pub source_name: String,
     /// Host construction plane index; the image lies in that plane.
-    pub plane: usize,
+    pub plane: ConstructionPlaneKey,
     /// Image lower-left corner in plane-local mm.
     pub origin: (f32, f32),
     /// Authored lower-left before any Move op (#217). `None` = no move applied, so `origin`
@@ -4058,7 +4088,7 @@ pub struct Document {
     pub lines: Vec<Line>,
     pub circles: crate::arena::Arena<Circle>,
     pub constraints: crate::arena::Arena<Constraint>,
-    pub construction_planes: Vec<ConstructionPlane>,
+    pub construction_planes: crate::arena::Arena<ConstructionPlane>,
     #[serde(default)]
     pub extrusions: crate::arena::Arena<Extrusion>,
     #[serde(default)]
@@ -4218,7 +4248,7 @@ pub type ComponentKey = crate::arena::Key<Component>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentMember {
-    ConstructionPlane(usize),
+    ConstructionPlane(ConstructionPlaneKey),
     Extrusion(ExtrusionKey),
     Body(BodyKey),
     Loft(LoftKey),
@@ -4291,7 +4321,7 @@ pub fn effective_component_angle_unit(doc: &Document, component: ComponentKey) -
 /// face — a construction plane's own assignment (or, for a face-anchored plane, the host
 /// sketch's component), or the owning extrusion's assignment for a body-face sketch.
 pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<ComponentKey> {
-    fn plane_component(doc: &Document, plane: usize, depth: u8) -> Option<ComponentKey> {
+    fn plane_component(doc: &Document, plane: ConstructionPlaneKey, depth: u8) -> Option<ComponentKey> {
         if depth > 8 {
             return None;
         }
@@ -4440,6 +4470,7 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
 
     /// #921: repeated J walks the joint kinds in the dropdown's order and comes back round.
     #[test]
@@ -4569,7 +4600,7 @@ mod tests {
     #[test]
     fn line_length_from_endpoints() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 3.0, 4.0);
         assert!((line.length() - 5.0).abs() < 1e-4);
     }
@@ -4577,7 +4608,7 @@ mod tests {
     #[test]
     fn straight_line_samples_to_just_its_two_endpoints() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         assert_eq!(line.sample_local(BEZIER_SEGMENTS), vec![(0.0, 0.0), (10.0, 0.0)]);
         assert!(!line.is_curved());
@@ -4586,7 +4617,7 @@ mod tests {
     #[test]
     fn curved_line_samples_pass_through_both_endpoints() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
         let pts = line.sample_local(BEZIER_SEGMENTS);
@@ -4601,7 +4632,7 @@ mod tests {
     #[test]
     fn straight_line_arc_length_equals_chord_exactly() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 3.0, 4.0);
         assert_eq!(line.length(), line.chord_length());
     }
@@ -4609,7 +4640,7 @@ mod tests {
     #[test]
     fn curved_line_length_is_the_arc_not_the_chord() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         // Extreme handles far off the chord (todoer #111): a 10 mm chord with a huge bulge.
         line.bezier = Some([(200.0, 300.0), (-190.0, 300.0)]);
@@ -4629,7 +4660,7 @@ mod tests {
         const KAPPA: f32 = 0.552_284_7;
         let r = 10.0_f32;
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut line = Line::from_local_endpoints(sketch, r, 0.0, 0.0, r);
         line.bezier = Some([(r, r * KAPPA), (r * KAPPA, r)]);
         let expected = std::f32::consts::FRAC_PI_2 * r;
@@ -4642,7 +4673,7 @@ mod tests {
     #[test]
     fn degenerate_bezier_with_handles_on_endpoints_has_arc_equal_to_chord() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         line.bezier = Some([(0.0, 0.0), (10.0, 0.0)]);
         assert!(line.is_curved());
@@ -4797,7 +4828,7 @@ mod tests {
     #[test]
     fn face_id_from_script_parses_circle() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         for i in 0..3 {
             doc.circles.insert(Circle::from_local_center_radius(
                 sketch, 0.0, 0.0, i as f32 + 1.0, 0.0,
@@ -4810,17 +4841,17 @@ mod tests {
     #[test]
     fn multiple_sketches_on_one_face() {
         let mut doc = Document::default();
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
-        let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let s1 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         assert_ne!(s0, s1);
-        let on_plane: Vec<_> = doc.sketches_on_face(FaceId::ConstructionPlane(0)).collect();
+        let on_plane: Vec<_> = doc.sketches_on_face(FaceId::ConstructionPlane(pkey(0))).collect();
         assert_eq!(on_plane, vec![s0, s1]);
     }
 
     #[test]
     fn sketch_has_geometry_detects_primitives() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         assert!(!doc.sketch_has_geometry(sketch));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 1.0));
@@ -4830,7 +4861,7 @@ mod tests {
     #[test]
     fn circle_diameter_is_twice_radius() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let circle = Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0);
         assert!((circle.diameter() - 10.0).abs() < 1e-4);
     }
@@ -4845,7 +4876,7 @@ mod tests {
     #[test]
     fn new_sketch_inherits_document_units_by_default() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         assert_eq!(doc.sketches[sketch].length_unit, None);
         assert_eq!(doc.sketches[sketch].angle_unit, None);
         assert_eq!(effective_length_unit(&doc, sketch), LengthUnit::Mm);
@@ -4855,7 +4886,7 @@ mod tests {
     #[test]
     fn effective_units_follow_document_default_change() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.default_length_unit = LengthUnit::In;
         doc.default_angle_unit = AngleUnit::Rad;
         assert_eq!(effective_length_unit(&doc, sketch), LengthUnit::In);
@@ -4865,7 +4896,7 @@ mod tests {
     #[test]
     fn sketch_override_takes_precedence_over_document_default() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.sketches[sketch].length_unit = Some(LengthUnit::Cm);
         doc.sketches[sketch].angle_unit = Some(AngleUnit::Rad);
         assert_eq!(effective_length_unit(&doc, sketch), LengthUnit::Cm);

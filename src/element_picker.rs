@@ -1235,6 +1235,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
@@ -1264,7 +1265,7 @@ mod tests {
             ElementKind::Operation
         );
         assert_eq!(
-            ElementKind::of(&SceneElement::ConstructionPlane(0)),
+            ElementKind::of(&SceneElement::ConstructionPlane(pkey(0))),
             ElementKind::Plane
         );
     }
@@ -1290,7 +1291,7 @@ mod tests {
         // The Mirror tool's plane picker (#566): construction planes and flat faces, never a
         // whole body.
         let f = ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]);
-        assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(pkey(0))));
         assert!(f.accepts(&Document::default(), &body_face(0)));
         assert!(!f.accepts(&Document::default(), &SceneElement::Body(bkey(0))));
     }
@@ -1315,7 +1316,7 @@ mod tests {
     #[test]
     fn plane_filter_also_accepts_images() {
         let f = ElementFilter::kind(ElementKind::Plane);
-        assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&Document::default(), &SceneElement::ConstructionPlane(pkey(0))));
         let image = SceneElement::Image(crate::arena::Key::from_bits(0));
         assert!(f.accepts(&Document::default(), &image));
     }
@@ -1327,7 +1328,7 @@ mod tests {
         let f = ElementFilter::kind(ElementKind::Image);
         let image = SceneElement::Image(crate::arena::Key::from_bits(0));
         assert!(f.accepts(&Document::default(), &image));
-        assert!(!f.accepts(&Document::default(), &SceneElement::ConstructionPlane(0)));
+        assert!(!f.accepts(&Document::default(), &SceneElement::ConstructionPlane(pkey(0))));
     }
 
     #[test]
@@ -1404,12 +1405,12 @@ mod tests {
         // One identity per thing: a `FaceId::ConstructionPlane` and the plane's own element are
         // the same plane, so a picker holding both would double-count it.
         assert_eq!(
-            SceneElement::from_face_id(crate::model::FaceId::ConstructionPlane(2)),
-            SceneElement::ConstructionPlane(2)
+            SceneElement::from_face_id(crate::model::FaceId::ConstructionPlane(pkey(2))),
+            SceneElement::ConstructionPlane(pkey(2))
         );
         assert_eq!(
             ElementKind::of(&SceneElement::from_face_id(
-                crate::model::FaceId::ConstructionPlane(2)
+                crate::model::FaceId::ConstructionPlane(pkey(2))
             )),
             ElementKind::Plane
         );
@@ -1490,7 +1491,7 @@ mod tests {
     /// something real to judge.
     fn doc_with_two_bodies() -> Document {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         // A curved line, so `Straight` has something to reject.
         let curved = doc.lines.len();
@@ -1568,11 +1569,13 @@ mod tests {
     #[test]
     fn projectable_into_takes_outside_sources_and_projected_lines_only() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
-        projected.projection = Some(crate::model::ProjectionSource::Plane { plane: 2 });
+        projected.projection = Some(crate::model::ProjectionSource::Plane {
+            plane: doc.ground_plane().unwrap(),
+        });
         doc.lines.push(projected);
 
         let rule = PickRule::ProjectableInto(sketch);
@@ -1584,11 +1587,11 @@ mod tests {
             &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
         assert!(
-            rule.allows(&doc, &SceneElement::ConstructionPlane(2)),
+            rule.allows(&doc, &SceneElement::ConstructionPlane(pkey(2))),
             "YZ crosses the ground sketch"
         );
         assert!(
-            !rule.allows(&doc, &SceneElement::ConstructionPlane(0)),
+            !rule.allows(&doc, &SceneElement::ConstructionPlane(pkey(0))),
             "the sketch's own plane is parallel — no line to project"
         );
         assert!(!rule.allows(&doc, &SceneElement::Origin));
@@ -1734,7 +1737,7 @@ mod tests {
     /// ```
     fn doc_with_a_tangent_run() -> Document {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let mut line = |x0: f32, y0: f32, x1: f32, y1: f32, bezier| {
             doc.lines.push(crate::model::Line {
                 sketch,
@@ -1847,7 +1850,7 @@ mod tests {
         // `ORDER` drives both `kinds()` membership and `summary()`, so a kind missing from it
         // is a kind no picker can accept and no summary can count.
         for element in [
-            SceneElement::ConstructionPlane(0),
+            SceneElement::ConstructionPlane(pkey(0)),
             SceneElement::Image(crate::arena::Key::from_bits(0)),
             SceneElement::Sketch(skey(0)),
             SceneElement::Line(0),

@@ -500,6 +500,7 @@ pub fn save_ping_stamp() -> Option<u128> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -516,7 +517,7 @@ mod tests {
             primary: false,
             source: None,
         });
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,

@@ -487,7 +487,7 @@ pub fn plane_from_definition(def: &PlaneDefinition, parent: ConstructionPlanePar
 }
 
 /// Construction-plane indices nested under sketches hosted on `root_plane`.
-pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize> {
+pub fn descendant_plane_indices(doc: &Document, root_plane: crate::model::ConstructionPlaneKey) -> Vec<crate::model::ConstructionPlaneKey> {
     let mut descendants = Vec::new();
     let mut faces = vec![FaceId::ConstructionPlane(root_plane)];
     let mut seen_faces = std::collections::HashSet::new();
@@ -497,7 +497,7 @@ pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize>
             continue;
         }
         for sketch in doc.sketches_on_face(face) {
-            for (pi, plane) in doc.construction_planes.iter().enumerate() {
+            for (pi, plane) in doc.construction_planes.iter() {
                 if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
                     descendants.push(pi);
                     faces.push(FaceId::ConstructionPlane(pi));
@@ -515,7 +515,7 @@ pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize>
 }
 
 /// Faces hosted on or nested under sketches on `root_plane` (including the root plane).
-pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
+pub fn descendant_faces(doc: &Document, root_plane: crate::model::ConstructionPlaneKey) -> Vec<FaceId> {
     let mut faces = vec![FaceId::ConstructionPlane(root_plane)];
     let mut seen_faces = std::collections::HashSet::new();
     let mut collected = Vec::new();
@@ -526,7 +526,7 @@ pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
         }
         collected.push(face.clone());
         for sketch in doc.sketches_on_face(face) {
-            for (pi, plane) in doc.construction_planes.iter().enumerate() {
+            for (pi, plane) in doc.construction_planes.iter() {
                 if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
                     faces.push(FaceId::ConstructionPlane(pi));
                 }
@@ -545,14 +545,14 @@ pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
 /// World-space preview of geometry that moves when a construction plane is edited.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaneEditDependentPreview {
-    pub planes: Vec<(usize, ConstructionPlane)>,
+    pub planes: Vec<(crate::model::ConstructionPlaneKey, ConstructionPlane)>,
     pub lines: Vec<(Vec3, Vec3)>,
 }
 
 /// Where dependent planes and hosted sketch geometry will land after `preview_plane` is committed.
 pub fn preview_plane_edit_dependents(
     doc: &Document,
-    plane_index: usize,
+    plane_index: crate::model::ConstructionPlaneKey,
     preview_plane: &ConstructionPlane,
 ) -> Option<PlaneEditDependentPreview> {
     let old_frame = sketch_frame(doc, FaceId::ConstructionPlane(plane_index))?;
@@ -579,7 +579,7 @@ pub fn preview_plane_edit_dependents(
 
     let mut lines = Vec::new();
     for sketch in sketches {
-        for line in &doc.lines {
+        for line in doc.lines.iter() {
             if line.sketch != sketch {
                 continue;
             }
@@ -649,23 +649,23 @@ pub fn transform_definition_between_frames(
 /// Rebuild a construction plane from its definition and move descendants with it.
 pub fn apply_construction_plane_edit(
     doc: &mut Document,
-    plane_index: usize,
+    plane_index: crate::model::ConstructionPlaneKey,
     definition: &PlaneDefinition,
     parent: ConstructionPlaneParent,
 ) -> Result<(), String> {
     if doc.construction_planes.get(plane_index).is_none() {
-        return Err(format!("Unknown construction plane {plane_index}"));
+        return Err(format!("Unknown construction plane {}", plane_index.index()));
     }
 
     let old_frame = sketch_frame(doc, FaceId::ConstructionPlane(plane_index))
-        .ok_or_else(|| format!("Construction plane {plane_index} has no sketch frame"))?;
+        .ok_or_else(|| format!("Construction plane {} has no sketch frame", plane_index.index()))?;
     let descendants = descendant_plane_indices(doc, plane_index);
 
     let plane = plane_from_definition(definition, parent);
     doc.construction_planes[plane_index] = plane;
 
     let new_frame = sketch_frame(doc, FaceId::ConstructionPlane(plane_index))
-        .ok_or_else(|| format!("Construction plane {plane_index} has no sketch frame"))?;
+        .ok_or_else(|| format!("Construction plane {} has no sketch frame", plane_index.index()))?;
 
     for index in descendants {
         let Some(child) = doc.construction_planes.get_mut(index) else {
@@ -718,7 +718,6 @@ pub fn plane_from_face(offset: f32, origin: Vec3, normal: Vec3) -> ConstructionP
         repeat_instance: None,
         name: None,
         extent: crate::model::PlaneExtent::default(),
-        deleted: false,
     }
 }
 
@@ -753,7 +752,6 @@ pub fn plane_from_axis(
         repeat_instance: None,
         name: None,
         extent: crate::model::PlaneExtent::default(),
-        deleted: false,
     }
 }
 
@@ -939,6 +937,7 @@ pub fn plane_extent_from_corner_drag(
 /// Live offset for a face reference from a world-space hover point.
 #[cfg(test)]
 mod pick_path_tests {
+    use crate::model::plane_key_for_slot as pkey;
     use super::*;
     use crate::model::{Document, FaceId, Line};
 
@@ -947,7 +946,7 @@ mod pick_path_tests {
     #[test]
     fn endpoint_picks_at_its_projected_position() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, -30.0, -20.0, 30.0, 20.0));
         let cam = crate::camera::Camera::default();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
@@ -1346,7 +1345,7 @@ pub enum PickTargetKind {
     /// Carries only the body key: everything else resolves from the document.
     Body(crate::model::BodyKey),
     GlobalAxis(GlobalAxis),
-    ConstructionPlane(usize),
+    ConstructionPlane(crate::model::ConstructionPlaneKey),
     Ground(Vec3),
     /// A sketch constraint's annotation icon (#568), by its index into `Document::constraints`.
     /// Constraints have no world geometry of their own — the icon is a screen-space glyph placed
@@ -3037,10 +3036,7 @@ pub fn collect_pick_candidates(
     // Every construction plane near the cursor (#975). One reaches the crowd as an analytic
     // face too, and `crowd_key` collapses the pair — but only when `sketch_faces_near` offers
     // that plane, which it does not for one seen edge-on or one the pointer is merely near.
-    for (index, plane) in doc.construction_planes.iter().enumerate() {
-        if plane.deleted {
-            continue;
-        }
+    for (index, plane) in doc.construction_planes.iter() {
         let corners = plane_corners(plane);
         let Some(pts) = corners.iter().map(|&c| project(c)).collect::<Option<Vec<_>>>() else {
             continue;
@@ -3232,10 +3228,10 @@ fn nearest_global_axis(
 fn nearest_construction_plane(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    planes: &[ConstructionPlane],
-) -> Option<(usize, f32)> {
-    let mut best: Option<(usize, f32)> = None;
-    for (index, plane) in planes.iter().enumerate().rev() {
+    planes: &crate::arena::Arena<ConstructionPlane>,
+) -> Option<(crate::model::ConstructionPlaneKey, f32)> {
+    let mut best: Option<(crate::model::ConstructionPlaneKey, f32)> = None;
+    for (index, plane) in planes.iter().collect::<Vec<_>>().into_iter().rev() {
         let corners = plane_corners(plane);
         let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
         let Some(pts) = pts else { continue };
@@ -3377,6 +3373,8 @@ pub fn add_line_rectangle(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -3680,7 +3678,7 @@ mod tests {
 
     fn doc_with_plane_sketch() -> (Document, crate::model::SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 
@@ -3783,7 +3781,7 @@ mod tests {
         // endpoint must use the curve tangent at that end (+Y toward the near handle).
         use crate::model::{ConstraintPoint, Line, LineEnd};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Start (6,4), near handle (6,12) → outward at start is -Y (away from handle).
         // Mid-segment direction along the chord is roughly +X/+Y — not the end tangent.
         let mut curve = Line::from_local_endpoints(sketch, 6.0, 4.0, 26.0, 14.0);
@@ -3832,7 +3830,7 @@ mod tests {
     #[test]
     fn sketch_line_is_curve_detects_bezier() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut curve = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0);
@@ -3920,7 +3918,7 @@ mod tests {
     fn vertex_normal_candidates_follow_line_and_curve_tangents() {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A straight line along +X and a curve leaving the shared vertex along +Y
         // (its near handle sits at (10, 5) above the vertex (10, 0)).
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
@@ -3981,7 +3979,7 @@ mod tests {
         use crate::model::{Circle, ExtrudeFace, ExtrusionEdgeRef, FaceId};
 
         let mut state = AppState::default();
-        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)), viewport: None });
         let sketch = state.sketch_session.unwrap().sketch;
         state.doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         state.doc.shape_order.push(crate::model::ShapeKind::Circle);
@@ -4190,7 +4188,7 @@ mod tests {
     fn box_body_doc() -> Document {
         use crate::model::{Body, BodySource, ExtrudeFace, Extrusion, FaceId};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.extrusions.insert(Extrusion {
             sketch,
@@ -4535,7 +4533,7 @@ mod tests {
         // X/Y axes instead.
         let on_the_border = Pos2::new(30.0, PLANE_DISPLAY_HALF);
         let target = resolve_pick_target(on_the_border, &project, None, &doc, None).unwrap();
-        assert_eq!(target.kind, PickTargetKind::ConstructionPlane(0));
+        assert_eq!(target.kind, PickTargetKind::ConstructionPlane(pkey(0)));
         assert!(matches!(target.reference, PlaneReference::Face { .. }));
     }
 
@@ -4562,7 +4560,7 @@ mod tests {
     #[test]
     fn edit_plane_offset_moves_descendant_planes() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let child = plane_from_definition(
@@ -4577,9 +4575,9 @@ mod tests {
             ),
             ConstructionPlaneParent::Sketch(sketch),
         );
-        doc.construction_planes.truncate(1);
-        doc.construction_planes.push(child);
-        let child_origin_before = doc.construction_planes[1].origin.z;
+        retain_ground_plane_only(&mut doc);
+        doc.construction_planes.insert(child);
+        let child_origin_before = doc.construction_planes[pkey(1)].origin.z;
 
         let definition = definition_from_reference(
             &PlaneReference::Face {
@@ -4592,13 +4590,13 @@ mod tests {
         );
         apply_construction_plane_edit(
             &mut doc,
-            0,
+            pkey(0),
             &definition,
             ConstructionPlaneParent::Root,
         )
         .unwrap();
 
-        let child_origin_after = doc.construction_planes[1].origin.z;
+        let child_origin_after = doc.construction_planes[pkey(1)].origin.z;
         assert!((child_origin_after - child_origin_before - 15.0).abs() < 1e-3);
     }
 
@@ -4608,7 +4606,7 @@ mod tests {
     fn add_line_rectangle_drops_four_lines_axis_parallel_and_coincident_constraints() {
         use crate::model::{ConstraintKind, ConstraintLine, Document, FaceId, SketchAxis};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         // Four plain lines forming a closed loop (bottom, right, top, left).
         assert_eq!(doc.lines.len(), 4);
@@ -4653,7 +4651,7 @@ mod tests {
     fn add_line_rectangle_forms_a_recognized_polygon_face() {
         use crate::model::{Document, FaceId};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         let loops = crate::polygon::closed_line_loops(&doc, sketch);
         assert_eq!(loops.len(), 1, "the four lines are one closed loop");
@@ -4759,7 +4757,7 @@ mod tests {
         assert!(
             matches!(
                 target.kind,
-                PickTargetKind::Ground(_) | PickTargetKind::ConstructionPlane(0)
+                PickTargetKind::Ground(_) | PickTargetKind::ConstructionPlane(_)
             ),
             "ground fallback, got {:?}",
             target.kind
@@ -4808,7 +4806,7 @@ mod tests {
         use crate::constraints::{add_distance_constraint, solve_document_constraints};
         use crate::model::{DistanceTarget, Document, FaceId};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         // Start off-size, then lock width (bottom edge) and height (right edge).
         let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 3.0, 3.0, [false; 4]);
         add_distance_constraint(&mut doc, sketch, DistanceTarget::LineLength(lines[0]), "20mm".into())

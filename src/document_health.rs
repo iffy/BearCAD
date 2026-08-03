@@ -173,7 +173,8 @@ fn scene_element_for_line(line: &ConstraintLine) -> SceneElement {
         // A face's own edge depends on the extrusion that produced the face — same
         // relationship `hierarchy::face_element` tracks for sketches placed on a body face.
         ConstraintLine::FaceEdge { face, .. } => scene_element_for_face(face),
-        ConstraintLine::OriginAxis(_) => SceneElement::ConstructionPlane(0),
+        // A sketch axis belongs to no plane of its own; the origin stands in (#1055).
+        ConstraintLine::OriginAxis(_) => SceneElement::Origin,
     }
 }
 
@@ -380,7 +381,7 @@ fn geometry_elements_for_line(line: &ConstraintLine) -> Vec<SceneElement> {
         // A face's own edge isn't owned by anything markable-unstable in the usual sense (it
         // can't move); surface it via the extrusion instead, same as `scene_element_for_line`.
         ConstraintLine::FaceEdge { face, .. } => vec![scene_element_for_face(face)],
-        ConstraintLine::OriginAxis(_) => vec![SceneElement::ConstructionPlane(0)],
+        ConstraintLine::OriginAxis(_) => vec![SceneElement::Origin],
     }
 }
 
@@ -712,6 +713,7 @@ fn capture_geometry_snapshot(doc: &Document, element: SceneElement) -> Option<El
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::document_lifecycle::tombstone_element;
@@ -720,7 +722,7 @@ mod tests {
 
     fn parallel_lines_doc() -> (Document, usize, usize) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         let line_a = 0;

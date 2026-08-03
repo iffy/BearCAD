@@ -807,7 +807,7 @@ struct MoveGizmoDrag {
 /// snapshots the size the drag started from, giving the whole drag one undo step.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlaneResizeDrag {
-    plane: usize,
+    plane: model::ConstructionPlaneKey,
     corner: usize,
     start_extent: crate::model::PlaneExtent,
 }
@@ -3190,7 +3190,7 @@ enum WebIoEvent {
     OpenedDocument { name: String, bytes: Vec<u8> },
     ImportStl { name: String, bytes: Vec<u8> },
     ImportStep { name: String, bytes: Vec<u8> },
-    ImportImage { name: String, bytes: Vec<u8>, plane: Option<usize> },
+    ImportImage { name: String, bytes: Vec<u8>, plane: Option<model::ConstructionPlaneKey> },
     RunScript { bytes: Vec<u8> },
     Status(String),
 }
@@ -4520,7 +4520,7 @@ impl App {
     /// Import a PNG/JPEG onto a *specific* construction plane (the Elements pane's
     /// right-click "Import image on this plane…", #175).
     #[cfg(not(target_arch = "wasm32"))]
-    fn import_image_on_plane(&mut self, plane: usize) {
+    fn import_image_on_plane(&mut self, plane: model::ConstructionPlaneKey) {
         let picked = rfd::FileDialog::new()
             .add_filter("Image", &["png", "jpg", "jpeg"])
             .pick_file();
@@ -4933,7 +4933,7 @@ impl App {
     /// Import a PNG/JPEG onto a *specific* construction plane (the Elements pane's
     /// right-click "Import image on this plane…", #175).
     #[cfg(target_arch = "wasm32")]
-    fn import_image_on_plane(&mut self, plane: usize) {
+    fn import_image_on_plane(&mut self, plane: model::ConstructionPlaneKey) {
         self.web_pick_file("Image", &["png", "jpg", "jpeg"], move |name, bytes| {
             WebIoEvent::ImportImage { name, bytes, plane: Some(plane) }
         });
@@ -8505,17 +8505,18 @@ impl App {
             .collect()
     }
 
-    fn plane_resize_targets(&self) -> Vec<usize> {
+    fn plane_resize_targets(&self) -> Vec<model::ConstructionPlaneKey> {
         if self.state.tool != Tool::Select || self.state.sketch_session.is_some() {
             return Vec::new();
         }
-        (0..self.state.doc.construction_planes.len())
+        self.state
+            .doc
+            .construction_planes
+            .keys()
             .filter(|i| {
-                !self.state.doc.construction_planes[*i].deleted
-                    && self
-                        .state
-                        .scene_selection
-                        .is_selected(SceneElement::ConstructionPlane(*i))
+                self.state
+                    .scene_selection
+                    .is_selected(SceneElement::ConstructionPlane(*i))
                     && self
                         .state
                         .element_visibility
@@ -11712,8 +11713,8 @@ impl eframe::App for App {
                 self.element_filter_drawing_workbench = drawing_workbench;
             }
             let mut edit_sketch: Option<SketchId> = None;
-            let mut edit_plane: Option<usize> = None;
-            let mut import_image_on_plane: Option<usize> = None;
+            let mut edit_plane: Option<model::ConstructionPlaneKey> = None;
+            let mut import_image_on_plane: Option<model::ConstructionPlaneKey> = None;
             let mut edit_extrusion: Option<model::ExtrusionKey> = None;
             let mut edit_edge_treatment: Option<(model::ExtrusionKey, usize)> = None;
             let mut edit_edge_treatment_op: Option<crate::model::EdgeTreatmentOpKey> = None;
@@ -11756,10 +11757,10 @@ impl eframe::App for App {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
                     };
-                    let mut queue_edit_plane = |index: usize| {
+                    let mut queue_edit_plane = |index: model::ConstructionPlaneKey| {
                         edit_plane = Some(index);
                     };
-                    let mut queue_import_image_on_plane = |index: usize| {
+                    let mut queue_import_image_on_plane = |index: model::ConstructionPlaneKey| {
                         import_image_on_plane = Some(index);
                     };
                     let mut queue_edit_extrusion = |index: model::ExtrusionKey| {
@@ -25292,10 +25293,8 @@ impl App {
                 let element_health = health.element_status(SceneElement::Circle(ci));
                 draw_circle_edges(&painter, &project, doc, circle, dim, element_health);
             }
-            for (i, plane) in doc.construction_planes.iter().enumerate() {
-                if plane.deleted
-                    || !visibility.effective_visible(doc, SceneElement::ConstructionPlane(i))
-                {
+            for (i, plane) in doc.construction_planes.iter() {
+                if !visibility.effective_visible(doc, SceneElement::ConstructionPlane(i)) {
                     continue;
                 }
                 let session_face =
@@ -27349,6 +27348,7 @@ fn draw_ground(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
@@ -27360,7 +27360,7 @@ mod tests {
     #[test]
     fn hovering_a_wall_region_keeps_its_hole() {
         let mut doc = model::Document::default();
-        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(pkey(0)));
         let outer = construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 40.0, 20.0, [false; 4]);
         let inner = construction::add_line_rectangle(&mut doc, sketch, 5.0, 5.0, 30.0, 10.0, [false; 4]);
         let wall = model::ExtrudeFace::Boolean {
@@ -27389,7 +27389,7 @@ mod tests {
     #[test]
     fn sketch_offset_gizmo_frame_anchors_on_the_first_pick() {
         let mut doc = model::Document::default();
-        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(model::Line::from_local_endpoints(sketch, -10.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(model::ShapeKind::Line);
 
@@ -27825,7 +27825,7 @@ mod tests {
             Some(bkey(2))
         );
         assert_eq!(body_index_from_pick(&PickTargetKind::Line(0)), None);
-        assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(0)), None);
+        assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(pkey(0))), None);
     }
 
     /// #932: the anchor a shape lands on is whichever candidate the cursor is really
@@ -27949,7 +27949,7 @@ mod tests {
 
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -27965,7 +27965,7 @@ mod tests {
         let element_visibility = state.element_visibility.clone();
         let selection = state.scene_selection.clone();
         let health = state.document_health.clone();
-        let pending = Some(ExtrudeTarget::Plane(0));
+        let pending = Some(ExtrudeTarget::Plane(pkey(0)));
 
         let scene_input = build_viewport_scene_input(
             &state.doc,
@@ -28032,7 +28032,7 @@ mod tests {
         let mut state = AppState::default();
         // Build one real body: a rectangle extruded into a block.
         state.apply(Action::BeginSketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -28415,9 +28415,9 @@ mod tests {
 
         let mut state = AppState::default();
         // Two circles on planes 10 mm apart, so the loft blends through real space.
-        let s0 = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s0 = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         state.doc.circles.insert(Circle::from_local_center_radius(s0, 0.0, 0.0, 5.0, 0.0));
-        state.doc.construction_planes.push(crate::construction::plane_from_definition(
+        state.doc.construction_planes.insert(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
                     origin: glam::Vec3::ZERO,
@@ -28429,7 +28429,7 @@ mod tests {
             ),
             crate::model::ConstructionPlaneParent::Root,
         ));
-        let s1 = state.doc.add_sketch(FaceId::ConstructionPlane(1));
+        let s1 = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         state.doc.circles.insert(Circle::from_local_center_radius(s1, 0.0, 0.0, 3.0, 0.0));
         state.tool = Tool::Loft;
 
@@ -28516,7 +28516,7 @@ mod tests {
 
         let mut state = AppState::default();
         state.apply(Action::BeginSketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -28610,7 +28610,7 @@ mod tests {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, LineEnd, ShapeKind};
 
         state.apply(Action::BeginSketch {
-            face: crate::model::FaceId::ConstructionPlane(0),
+            face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
@@ -29076,7 +29076,7 @@ mod tests {
         // #459 diagnosis: a huge label rect would make `over_committed_dim_label`
         // true across the viewport and freeze every sketch drag.
         let mut state = crate::actions::AppState::default();
-        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         state.doc.lines.push(crate::model::Line::from_local_endpoints(
             sketch, -30.0, -20.0, 30.0, 20.0,
         ));
@@ -29464,7 +29464,7 @@ mod tests {
             PickLimit::Infinite,
         )
         .with_selected_color(crate::theme::CUT_ACCENT);
-        cutters.set_picked(&doc, [SceneElement::ConstructionPlane(1)]);
+        cutters.set_picked(&doc, [SceneElement::ConstructionPlane(pkey(1))]);
         let view = ToolPickerView {
             heading: "Cutters",
             picker: cutters,
@@ -29477,7 +29477,7 @@ mod tests {
         assert!(cut_bodies.is_empty(), "it is not a body either");
         assert_eq!(
             coloured,
-            vec![(SceneElement::ConstructionPlane(1), crate::theme::CUT_ACCENT)],
+            vec![(SceneElement::ConstructionPlane(pkey(1)), crate::theme::CUT_ACCENT)],
             "it reads in the picker's red"
         );
     }
@@ -29639,7 +29639,7 @@ mod tests {
         // #972: a whole-body loupe should read like the body does in the 3D view — a
         // solid-faced shape — not as a wireframe box of its feature edges.
         let mut doc = model::Document::default();
-        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(pkey(0)));
         let lines =
             construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 100.0, 100.0, [false; 4]);
         doc.extrusions.insert(model::Extrusion {
@@ -29696,7 +29696,7 @@ mod tests {
     fn every_loupe_has_content_to_magnify() {
         use construction::PickTargetKind as PK;
         let mut doc = model::Document::default();
-        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(pkey(0)));
         let lines =
             construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         doc.circles
@@ -29736,7 +29736,7 @@ mod tests {
             },
             PK::Body(bkey(0)),
             PK::GlobalAxis(construction::GlobalAxis::X),
-            PK::ConstructionPlane(0),
+            PK::ConstructionPlane(model::plane_key_for_slot(0)),
             PK::SketchFace(model::FaceId::Polygon(lines.to_vec())),
             // The two whose content is a single spot by nature: a point on the ground, and a
             // constraint, whose visual is its badge glyph drawn at the loupe's centre.
@@ -29752,7 +29752,7 @@ mod tests {
 
         // The plane's content is its own rectangle, not the pick spot — otherwise the loupe
         // frames itself around nothing.
-        let (segments, _) = pick_target_loupe_wireframe(&doc, &PK::ConstructionPlane(0), Vec3::ZERO);
+        let (segments, _) = pick_target_loupe_wireframe(&doc, &PK::ConstructionPlane(model::plane_key_for_slot(0)), Vec3::ZERO);
         assert_eq!(segments.len(), 4, "a plane's four edges");
     }
 
@@ -29821,7 +29821,7 @@ mod tests {
     fn a_loupe_frames_content_the_magnifier_would_miss() {
         use construction::PickTargetKind as PK;
         let mut doc = model::Document::default();
-        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(pkey(0)));
         let lines = construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 100.0, 100.0, [false; 4]);
         doc.extrusions.insert(model::Extrusion {
             sketch,
@@ -30028,7 +30028,7 @@ mod tests {
         // #394: with the Constraint tool, the sketch origin and the fixed origin axes are
         // constraint targets, so they must hover-highlight like they click-select (#241).
         let mut doc = crate::model::Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A line far from the origin so it never wins the pick.
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 30.0, 60.0, 30.0));
@@ -30090,7 +30090,7 @@ mod tests {
 
         // A sketch on the ground plane with one line near the origin.
         let mut doc = crate::model::Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
 
@@ -30170,7 +30170,7 @@ mod tests {
         use crate::actions::SketchSession;
 
         let mut doc = crate::model::Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
 
@@ -30542,7 +30542,7 @@ mod tests {
         let edge = K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X };
         let vertex = K::BodyVertex { body: bkey(0), position: Vec3::ZERO };
         let sketch_face = K::SketchFace(FaceId::Polygon(vec![0, 1, 2, 3]));
-        let plane_face = K::SketchFace(FaceId::ConstructionPlane(0));
+        let plane_face = K::SketchFace(FaceId::ConstructionPlane(pkey(0)));
         let all = [
             sketch_face.clone(),
             plane_face.clone(),
@@ -30572,7 +30572,7 @@ mod tests {
     fn exploder_offers_the_sketch_tool_its_faces_planes_and_all() {
         use crate::element_picker::{ElementFilter, ElementKind, PickLimit};
         use construction::PickTargetKind as K;
-        let plane = K::SketchFace(FaceId::ConstructionPlane(1));
+        let plane = K::SketchFace(FaceId::ConstructionPlane(pkey(1)));
         let cap = K::SketchFace(FaceId::Circle(rkey(0)));
         let body_face = K::BodyFace {
             body: bkey(0),
@@ -30602,7 +30602,7 @@ mod tests {
         use construction::PickTargetKind as K;
 
         let mut doc = crate::model::Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
 
@@ -30614,7 +30614,7 @@ mod tests {
         let all = [
             line.clone(),
             endpoint.clone(),
-            K::ConstructionPlane(1),
+            K::ConstructionPlane(model::plane_key_for_slot(1)),
             K::GlobalAxis(construction::GlobalAxis::X),
             K::Body(bkey(0)),
             K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
@@ -30640,17 +30640,19 @@ mod tests {
         use construction::PickTargetKind as K;
 
         let mut doc = crate::model::Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
-        projected.projection = Some(crate::model::ProjectionSource::Plane { plane: 2 });
+        projected.projection = Some(crate::model::ProjectionSource::Plane {
+            plane: doc.ground_plane().unwrap(),
+        });
         doc.lines.push(projected);
 
         let own_line = K::Line(0);
         let projected_line = K::Line(1);
-        let crossing_plane = K::ConstructionPlane(2);
-        let host_plane = K::ConstructionPlane(0);
+        let crossing_plane = K::ConstructionPlane(model::plane_key_for_slot(2));
+        let host_plane = K::ConstructionPlane(model::plane_key_for_slot(0));
         let body_edge = K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X };
         let all = [
             own_line,

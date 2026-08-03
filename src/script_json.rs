@@ -64,9 +64,9 @@ pub fn scene_element_from_kind(
     index: usize,
 ) -> Option<SceneElement> {
     match kind.to_ascii_lowercase().as_str() {
-        "plane" | "construction_plane" | "constructionplane" => {
-            Some(SceneElement::ConstructionPlane(index))
-        }
+        "plane" | "construction_plane" | "constructionplane" => Some(
+            SceneElement::ConstructionPlane(doc.construction_planes.keys().nth(index)?),
+        ),
         "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
@@ -203,7 +203,10 @@ pub fn scene_element_selection_index(
             crate::construction::GlobalAxis::Y => 1,
             crate::construction::GlobalAxis::Z => 2,
         }),
-        SceneElement::ConstructionPlane(i) | SceneElement::Line(i) => Some(*i),
+        SceneElement::Line(i) => Some(*i),
+        SceneElement::ConstructionPlane(key) => {
+            doc.construction_planes.keys().position(|k| k == *key)
+        }
         SceneElement::Circle(key) => doc.circles.keys().position(|k| k == *key),
         SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == *key),
         SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
@@ -1031,8 +1034,13 @@ fn extrude_target_from_json(
     v: &Value,
 ) -> Result<ExtrudeTarget, String> {
     let t = v.as_object().ok_or("extrude `to` must be an object")?;
-    if let Some(i) = opt_usize(t, "plane")? {
-        return Ok(ExtrudeTarget::Plane(i));
+    if let Some(ordinal) = opt_usize(t, "plane")? {
+        let key = doc
+            .construction_planes
+            .keys()
+            .nth(ordinal)
+            .ok_or_else(|| format!("no construction plane {ordinal}"))?;
+        return Ok(ExtrudeTarget::Plane(key));
     }
     if let Some(face) = t.get("face") {
         if !face.is_null() {
@@ -1484,8 +1492,13 @@ fn mate_ref_from_json(
             n(2)?,
         )))
     };
-    if let Some(i) = t.get("plane").and_then(Value::as_u64) {
-        return Ok(Some(crate::model::MateRef::Plane(i as usize)));
+    if let Some(ordinal) = t.get("plane").and_then(Value::as_u64) {
+        let key = doc
+            .construction_planes
+            .keys()
+            .nth(ordinal as usize)
+            .ok_or_else(|| format!("no construction plane {ordinal}"))?;
+        return Ok(Some(crate::model::MateRef::Plane(key)));
     }
     if let Some(v) = t.get("hole_axis").filter(|v| !v.is_null()) {
         let d = t
@@ -1806,7 +1819,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
-                    doc.construction_planes.iter().filter(|e| !e.deleted).count()
+                    doc.construction_planes.len()
                 }
                 "extrusion" => doc.extrusions.len(),
                 "body" => doc.bodies.len(),
@@ -1916,10 +1929,19 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             if let Some(name) = &constraint.name {
                 t.insert("name".into(), json!(name));
             }
-            t.insert("sketch".into(), json!(constraint.sketch));
+            t.insert(
+                "sketch".into(),
+                json!(doc.sketches.keys().position(|k| k == constraint.sketch)),
+            );
         }
         "construction_plane" | "plane" => {
-            let Some(plane) = doc.construction_planes.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the plane's ordinal (#1055).
+            let Some(plane) = doc
+                .construction_planes
+                .keys()
+                .nth(index)
+                .map(|k| &doc.construction_planes[k])
+            else {
                 return Ok(Value::Null);
             };
             t.insert("origin".into(), vec3_json(plane.origin));
@@ -2270,6 +2292,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -2534,7 +2557,7 @@ mod tests {
                 &json!({ "plane": { "kind": "construction_plane", "index": 0 }, "bodies": [0, 1] })
             ),
             Ok(Instruction::CreateMirrorOp {
-                plane: FaceId::ConstructionPlane(0),
+                plane: FaceId::ConstructionPlane(pkey(0)),
                 targets: vec![0, 1],
                 mode: crate::model::MirrorMode::NewBody,
             })
@@ -2546,7 +2569,7 @@ mod tests {
             ),
             Ok(Instruction::EditMirrorOp {
                 op: 2,
-                plane: FaceId::ConstructionPlane(1),
+                plane: FaceId::ConstructionPlane(pkey(1)),
                 targets: vec![3],
                 mode: crate::model::MirrorMode::NewBody,
             })
@@ -2921,7 +2944,7 @@ mod tests {
         // actually hold that many.
         let mut doc = Document::default();
         for _ in 0..5 {
-            doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+            doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
             doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(xkey(0)),
                 name: None,
@@ -3240,7 +3263,7 @@ mod tests {
     fn doc_with(lines: Value, circles: Value) -> Document {
         let mut doc = Document::default();
         for _ in 0..2 {
-            doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+            doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         }
         let keys: Vec<_> = doc.sketches.keys().collect();
         let resolve = |mut v: Value| -> Value {
@@ -3264,7 +3287,7 @@ mod tests {
     /// A document holding `n` circles, for the verbs that name one by ordinal (#1055).
     fn doc_with_circles(n: usize) -> Document {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         for i in 0..n {
             doc.circles.insert(crate::model::Circle::from_local_center_radius(
                 sketch,
@@ -3335,7 +3358,7 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             instr,
-            Instruction::Extrude { distance, target: Some(ExtrudeTarget::Plane(1)), .. }
+            Instruction::Extrude { distance, target: Some(ExtrudeTarget::Plane(_)), .. }
                 if distance == 0.0
         ));
         // extrude_face pushes/pulls a body face (here a construction plane) with a cut.
@@ -3346,7 +3369,7 @@ mod tests {
                 &doc
             ),
             Ok(Instruction::ExtrudeBodyFace {
-                face: FaceId::ConstructionPlane(0),
+                face: FaceId::ConstructionPlane(pkey(0)),
                 distance: 5.0,
                 body: ExtrudeBodyChoice::Cut,
                 target: None,
@@ -3391,7 +3414,7 @@ mod tests {
             ),
             Ok(Instruction::CreateSliceOp {
                 targets: vec![0],
-                cutters: vec![FaceId::ConstructionPlane(1)],
+                cutters: vec![FaceId::ConstructionPlane(pkey(1))],
                 extend_infinite: true,
             })
         );

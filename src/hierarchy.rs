@@ -32,7 +32,7 @@ pub enum HierarchyNode {
     /// no corresponding [`SceneElement`]: it isn't individually selectable, hideable, or
     /// otherwise dispatched through the scene graph (see [`scene_element_for_node`]).
     Document,
-    ConstructionPlane(usize),
+    ConstructionPlane(crate::model::ConstructionPlaneKey),
     Sketch(SketchId),
     Line(usize),
     Circle(crate::model::CircleKey),
@@ -126,7 +126,7 @@ pub enum SceneElement {
         drawing: crate::model::DrawingKey,
         element: crate::context::DrawingElementRef,
     },
-    ConstructionPlane(usize),
+    ConstructionPlane(crate::model::ConstructionPlaneKey),
     Sketch(SketchId),
     Line(usize),
     Circle(crate::model::CircleKey),
@@ -607,7 +607,7 @@ impl ElementVisibility {
 
     /// What a construction plane inherits from its ancestors, ignoring its own hidden flag
     /// (#667) — the part sketches drawn on it still follow.
-    fn plane_inherited_visible(&self, doc: &Document, index: usize) -> bool {
+    fn plane_inherited_visible(&self, doc: &Document, index: crate::model::ConstructionPlaneKey) -> bool {
         let Some(plane) = doc.construction_planes.get(index) else {
             return true;
         };
@@ -1756,8 +1756,8 @@ pub fn build_hierarchy(
     sketch_session: Option<SketchSession>,
 ) -> Vec<HierarchyEntry> {
     let mut roots = Vec::new();
-    for (i, plane) in doc.construction_planes.iter().enumerate() {
-        if plane.deleted || !matches!(plane.parent, ConstructionPlaneParent::Root) {
+    for (i, plane) in doc.construction_planes.iter() {
+        if !matches!(plane.parent, ConstructionPlaneParent::Root) {
             continue;
         }
         // Repeat-op plane instances (#221) and repeated-sketch host planes (#226/#231) are
@@ -1907,7 +1907,7 @@ pub fn build_hierarchy(
         children.extend(
             op.plane_outputs
                 .iter()
-                .filter(|&&pi| doc.construction_planes.get(pi).is_some_and(|p| !p.deleted))
+                .filter(|&&pi| doc.construction_planes.contains(pi))
                 .map(|&pi| HierarchyEntry {
                     node: HierarchyNode::ConstructionPlane(pi),
                     children: Vec::new(),
@@ -1917,7 +1917,7 @@ pub fn build_hierarchy(
         children.extend(
             op.sketch_plane_outputs
                 .iter()
-                .filter(|&&pi| doc.construction_planes.get(pi).is_some_and(|p| !p.deleted))
+                .filter(|&&pi| doc.construction_planes.contains(pi))
                 .map(|&pi| HierarchyEntry {
                     node: HierarchyNode::ConstructionPlane(pi),
                     children: build_face_sketches(doc, FaceId::ConstructionPlane(pi), sketch_session),
@@ -2774,7 +2774,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     out.insert(SceneElement::SketchText(ti));
                 }
             }
-            for (pi, plane) in doc.construction_planes.iter().enumerate() {
+            for (pi, plane) in doc.construction_planes.iter() {
                 if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
                     out.insert(SceneElement::ConstructionPlane(pi));
                     collect_descendants(doc, SceneElement::ConstructionPlane(pi), out);
@@ -3381,10 +3381,8 @@ pub fn unit_child_rows(doc: &Document, instance: crate::model::UnitInstanceKey) 
     };
     let inner = &unit.document;
     let mut rows = Vec::new();
-    for (i, plane) in inner.construction_planes.iter().enumerate().skip(1) {
-        if !plane.deleted {
-            rows.push((IconId::Plane, node_label(inner, HierarchyNode::ConstructionPlane(i))));
-        }
+    for (i, _plane) in inner.construction_planes.iter().skip(1) {
+        rows.push((IconId::Plane, node_label(inner, HierarchyNode::ConstructionPlane(i))));
     }
     for (i, _sketch) in inner.sketches.iter() {
         rows.push((IconId::Sketch, node_label(inner, HierarchyNode::Sketch(i))));
@@ -3499,8 +3497,8 @@ fn build_sketch_child_planes(
     sketch_session: Option<SketchSession>,
 ) -> Vec<HierarchyEntry> {
     let mut children = Vec::new();
-    for (pi, plane) in doc.construction_planes.iter().enumerate() {
-        if plane.deleted || !matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
+    for (pi, plane) in doc.construction_planes.iter() {
+        if !matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
             continue;
         }
         let face = FaceId::ConstructionPlane(pi);
@@ -3514,7 +3512,7 @@ fn build_sketch_child_planes(
 
 /// Whether a construction plane is a generated host for a repeated-sketch copy (#226/#231) —
 /// those group under their repeat operation, not at the top level.
-fn is_repeat_sketch_host_plane(doc: &Document, pi: usize) -> bool {
+fn is_repeat_sketch_host_plane(doc: &Document, pi: crate::model::ConstructionPlaneKey) -> bool {
     doc.repeat_ops
         .values()
         .any(|op| op.sketch_plane_outputs.contains(&pi))
@@ -3757,8 +3755,8 @@ pub fn show_pane(
     filter: &mut ElementFilter,
     filter_expanded: &mut bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
-    on_edit_plane: &mut impl FnMut(usize),
-    on_import_image_on_plane: &mut impl FnMut(usize),
+    on_edit_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
+    on_import_image_on_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
     on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
     on_edit_edge_treatment: &mut impl FnMut(crate::model::ExtrusionKey, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
@@ -4213,8 +4211,8 @@ fn show_graph_view(
     // The full row context menus work on graph nodes too (#623).
     active_drawing: Option<crate::model::DrawingKey>,
     on_edit_sketch: &mut impl FnMut(SketchId),
-    on_edit_plane: &mut impl FnMut(usize),
-    on_import_image_on_plane: &mut impl FnMut(usize),
+    on_edit_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
+    on_import_image_on_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
     on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
     on_edit_edge_treatment: &mut impl FnMut(crate::model::ExtrusionKey, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
@@ -4835,8 +4833,8 @@ fn show_row(
     related_constraints: &HashSet<crate::model::ConstraintKey>,
     style_selection: bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
-    on_edit_plane: &mut impl FnMut(usize),
-    on_import_image_on_plane: &mut impl FnMut(usize),
+    on_edit_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
+    on_import_image_on_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
     on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
     on_edit_edge_treatment: &mut impl FnMut(crate::model::ExtrusionKey, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
@@ -5288,8 +5286,8 @@ fn element_context_menu(
     element: &SceneElement,
     active_drawing: Option<crate::model::DrawingKey>,
     on_edit_sketch: &mut impl FnMut(SketchId),
-    on_edit_plane: &mut impl FnMut(usize),
-    on_import_image_on_plane: &mut impl FnMut(usize),
+    on_edit_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
+    on_import_image_on_plane: &mut impl FnMut(crate::model::ConstructionPlaneKey),
     on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
@@ -5456,6 +5454,8 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
@@ -5483,7 +5483,7 @@ mod tests {
     fn every_member_with_a_scene_element_can_be_moved_into_a_component() {
         use crate::model::ComponentMember as CM;
         let members = [
-            CM::ConstructionPlane(1),
+            CM::ConstructionPlane(pkey(1)),
             CM::Extrusion(xkey(1)),
             CM::Body(bkey(1)),
             CM::BooleanOp(bopkey(1)),
@@ -5509,7 +5509,7 @@ mod tests {
     fn produced_bodies_finds_what_a_row_made() {
         use crate::model::{Body, BodySource, Component, ComponentMember, JointKind, JointRef};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         doc.extrusions.insert(crate::model::Extrusion {
@@ -5606,7 +5606,7 @@ mod tests {
     /// A document with one imported unit (a sketch + a body inside) and one instance (#723).
     fn doc_with_unit_instance() -> Document {
         let mut inner = Document::default();
-        let sketch = inner.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = inner.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut inner, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         inner.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Imported(crate::arena::Key::from_bits(0)),
@@ -5815,7 +5815,7 @@ mod tests {
         });
         doc.repeat_ops.insert(crate::model::RepeatOperation {
             targets: vec![bkey(0)],
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             sketch_plane_outputs: Vec::new(),
@@ -5833,7 +5833,7 @@ mod tests {
             plane_outputs: Vec::new(),
             name: None,
         });
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let rev = doc.revolutions.insert(crate::model::Revolution {
             sketch,
             faces: Vec::new(),
@@ -5846,7 +5846,7 @@ mod tests {
         let edges = graph_dependency_edges(&doc);
         assert!(edges.contains(&(HierarchyNode::Body(bkey(0)), HierarchyNode::RepeatOp(repkey(0)))));
         assert!(edges.contains(&(
-            HierarchyNode::ConstructionPlane(0),
+            HierarchyNode::ConstructionPlane(pkey(0)),
             HierarchyNode::RepeatOp(repkey(0))
         )));
         assert!(edges.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::Revolution(rev))));
@@ -5865,8 +5865,7 @@ mod tests {
             length_unit: None,
             angle_unit: None,
         });
-        let plane = doc.construction_planes.len();
-        doc.construction_planes.push(crate::face::default_xy_plane());
+        let plane = doc.construction_planes.insert(crate::face::default_xy_plane());
         doc.set_component_member(CM::ConstructionPlane(plane), Some(ckey(0)));
 
         let tree = build_hierarchy(&doc, None);
@@ -5936,15 +5935,15 @@ mod tests {
     fn hiding_a_construction_plane_keeps_its_sketches_visible() {
         use crate::model::FaceId;
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
 
         let mut visibility = ElementVisibility::default();
         assert!(visibility.effective_visible(&doc, SceneElement::Sketch(sketch)));
-        visibility.set_visible(SceneElement::ConstructionPlane(0), false);
+        visibility.set_visible(SceneElement::ConstructionPlane(pkey(0)), false);
         assert!(
-            !visibility.effective_visible(&doc, SceneElement::ConstructionPlane(0)),
+            !visibility.effective_visible(&doc, SceneElement::ConstructionPlane(pkey(0))),
             "the plane itself goes away"
         );
         assert!(
@@ -5970,24 +5969,24 @@ mod tests {
         let mut doc = Document::default();
         // Just the ground plane: this test indexes planes by hand, so the other two datum
         // planes (#833) would only shift the numbers.
-        doc.construction_planes.truncate(1);
-        let base = doc.add_sketch(FaceId::ConstructionPlane(0));
+        retain_ground_plane_only(&mut doc);
+        let base = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         // A plane anchored to that sketch, with a second sketch drawn on it.
-        let mut plane = doc.construction_planes[0].clone();
+        let mut plane = doc.construction_planes[pkey(0)].clone();
         plane.parent = ConstructionPlaneParent::Sketch(base);
-        doc.construction_planes.push(plane);
-        let on_top = doc.add_sketch(FaceId::ConstructionPlane(1));
+        doc.construction_planes.insert(plane);
+        let on_top = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
 
         let mut visibility = ElementVisibility::default();
         assert!(visibility.effective_visible(&doc, SceneElement::Sketch(on_top)));
 
         // Hiding the anchored plane itself leaves the sketch on it alone (#667).
-        visibility.set_visible(SceneElement::ConstructionPlane(1), false);
+        visibility.set_visible(SceneElement::ConstructionPlane(pkey(1)), false);
         assert!(visibility.effective_visible(&doc, SceneElement::Sketch(on_top)));
 
         // Hiding the sketch the plane hangs off takes the whole chain with it.
         visibility.set_visible(SceneElement::Sketch(base), false);
-        assert!(!visibility.effective_visible(&doc, SceneElement::ConstructionPlane(1)));
+        assert!(!visibility.effective_visible(&doc, SceneElement::ConstructionPlane(pkey(1))));
         assert!(!visibility.effective_visible(&doc, SceneElement::Sketch(on_top)));
     }
 
@@ -6201,7 +6200,7 @@ label_hidden: false,
         assert!(f.shows(HierarchyNode::Document), "the root is always shown");
         assert!(f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
         assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
-        assert!(!f.shows(HierarchyNode::ConstructionPlane(0)));
+        assert!(!f.shows(HierarchyNode::ConstructionPlane(pkey(0))));
         assert!(!f.shows(HierarchyNode::Extrusion(xkey(0))));
     }
 
@@ -6235,9 +6234,9 @@ label_hidden: false,
         assert_eq!(
             tree[0].children.iter().map(|c| c.node).collect::<Vec<_>>(),
             vec![
-                HierarchyNode::ConstructionPlane(0),
-                HierarchyNode::ConstructionPlane(1),
-                HierarchyNode::ConstructionPlane(2),
+                HierarchyNode::ConstructionPlane(pkey(0)),
+                HierarchyNode::ConstructionPlane(pkey(1)),
+                HierarchyNode::ConstructionPlane(pkey(2)),
             ]
         );
 
@@ -6246,9 +6245,9 @@ label_hidden: false,
             list,
             vec![
                 HierarchyNode::Document,
-                HierarchyNode::ConstructionPlane(0),
-                HierarchyNode::ConstructionPlane(1),
-                HierarchyNode::ConstructionPlane(2),
+                HierarchyNode::ConstructionPlane(pkey(0)),
+                HierarchyNode::ConstructionPlane(pkey(1)),
+                HierarchyNode::ConstructionPlane(pkey(2)),
             ]
         );
     }
@@ -6260,13 +6259,13 @@ label_hidden: false,
         let mut doc = Document::default();
         // A second root-level construction plane (#87: root planes nest under Document,
         // not as separate roots).
-        doc.construction_planes.push(default_xy_plane());
+        doc.construction_planes.insert(default_xy_plane());
         doc.shape_order.push(ShapeKind::ConstructionPlane);
 
         // An orphaned extrusion: its sketch is tombstoned (unreachable), but the extrusion
         // itself is not cascaded away, so it must still surface — as a Document child, not
         // a top-level root.
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: Vec::new(),
@@ -6297,8 +6296,8 @@ label_hidden: false,
         assert_eq!(tree.len(), 1, "hierarchy should have exactly one root: {tree:?}");
         assert_eq!(tree[0].node, HierarchyNode::Document);
         let children: Vec<HierarchyNode> = tree[0].children.iter().map(|c| c.node).collect();
-        assert!(children.contains(&HierarchyNode::ConstructionPlane(0)));
-        assert!(children.contains(&HierarchyNode::ConstructionPlane(1)));
+        assert!(children.contains(&HierarchyNode::ConstructionPlane(pkey(0))));
+        assert!(children.contains(&HierarchyNode::ConstructionPlane(pkey(1))));
         assert!(children.contains(&HierarchyNode::Extrusion(xkey(0))));
         assert!(children.contains(&HierarchyNode::Body(bkey(0))));
     }
@@ -6332,20 +6331,20 @@ label_hidden: false,
         let mut doc = Document::default();
         // Just the ground plane: this test indexes planes by hand, so the other two datum
         // planes (#833) would only shift the numbers.
-        doc.construction_planes.truncate(1);
+        retain_ground_plane_only(&mut doc);
         // Independent planes (no input relationship) order by kind+index (#540), which is
         // stable across the randomized HashSet iteration order — never by creation time.
         // shape_order is populated only to prove it no longer influences pane ordering.
-        doc.construction_planes.push(default_xy_plane());
+        doc.construction_planes.insert(default_xy_plane());
         doc.shape_order.push(ShapeKind::ConstructionPlane);
-        doc.construction_planes.push(default_xy_plane());
+        doc.construction_planes.insert(default_xy_plane());
         doc.shape_order.push(ShapeKind::ConstructionPlane);
 
         let expected = vec![
             HierarchyNode::Document,
-            HierarchyNode::ConstructionPlane(0),
-            HierarchyNode::ConstructionPlane(1),
-            HierarchyNode::ConstructionPlane(2),
+            HierarchyNode::ConstructionPlane(pkey(0)),
+            HierarchyNode::ConstructionPlane(pkey(1)),
+            HierarchyNode::ConstructionPlane(pkey(2)),
         ];
         // Repeat: HashSet iteration order is randomized per run, so a non-deterministic
         // sort would eventually disagree.
@@ -6401,7 +6400,7 @@ label_hidden: false,
         use crate::actions::{Action, AppState, SketchSession};
 
         let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         assert!(state.sketch_session.is_none());
         assert_eq!(
             state.apply(Action::OpenSketch {
@@ -6417,9 +6416,9 @@ label_hidden: false,
         let mut doc = Document::default();
         // Just the ground plane: this test indexes planes by hand, so the other two datum
         // planes (#833) would only shift the numbers.
-        doc.construction_planes.truncate(1);
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
-        let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        retain_ground_plane_only(&mut doc);
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        let s1 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, s0, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.lines
             .push(Line::from_local_endpoints(s1, 0.0, 0.0, 5.0, 0.0));
@@ -6432,7 +6431,7 @@ label_hidden: false,
         let list = build_element_list(&doc, None);
         assert_eq!(list.len(), 4);
         assert_eq!(list[0], HierarchyNode::Document);
-        assert_eq!(list[1], HierarchyNode::ConstructionPlane(0));
+        assert_eq!(list[1], HierarchyNode::ConstructionPlane(pkey(0)));
         assert_eq!(list[2], HierarchyNode::Sketch(skey(0)));
         assert_eq!(list[3], HierarchyNode::Sketch(skey(1)));
     }
@@ -6440,7 +6439,7 @@ label_hidden: false,
     #[test]
     fn sketch_view_lists_constraints_for_active_sketch() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
@@ -6461,8 +6460,8 @@ label_hidden: false,
         let mut doc = Document::default();
         // Just the ground plane: this test indexes planes by hand, so the other two datum
         // planes (#833) would only shift the numbers.
-        doc.construction_planes.truncate(1);
-        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        retain_ground_plane_only(&mut doc);
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(crate::model::Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
         let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
@@ -6472,7 +6471,7 @@ label_hidden: false,
             list,
             vec![
                 HierarchyNode::Document,
-                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::ConstructionPlane(pkey(0)),
                 HierarchyNode::Sketch(skey(0)),
                 HierarchyNode::Circle(rkey(0)),
                 HierarchyNode::Sketch(skey(1)),
@@ -6486,8 +6485,8 @@ label_hidden: false,
         let mut doc = Document::default();
         // Just the ground plane: this test indexes planes by hand, so the other two datum
         // planes (#833) would only shift the numbers.
-        doc.construction_planes.truncate(1);
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        retain_ground_plane_only(&mut doc);
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let derived = plane_from_definition(
@@ -6502,7 +6501,7 @@ label_hidden: false,
             ),
             ConstructionPlaneParent::Sketch(sketch),
         );
-        doc.construction_planes.push(derived);
+        doc.construction_planes.insert(derived);
         doc.shape_order.push(ShapeKind::ConstructionPlane);
 
         let list = build_element_list(&doc, None);
@@ -6510,9 +6509,9 @@ label_hidden: false,
             list,
             vec![
                 HierarchyNode::Document,
-                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::ConstructionPlane(pkey(0)),
                 HierarchyNode::Sketch(skey(0)),
-                HierarchyNode::ConstructionPlane(1),
+                HierarchyNode::ConstructionPlane(pkey(1)),
             ]
         );
     }
@@ -6536,7 +6535,7 @@ label_hidden: false,
     #[test]
     fn sketch_offset_op_nests_under_its_sketch() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
@@ -6577,7 +6576,7 @@ label_hidden: false,
     #[test]
     fn sketch_offset_op_surfaces_at_root_when_its_sketch_is_gone() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.sketches.remove(sketch);
         doc.sketch_offset_ops.insert(crate::model::SketchOffsetOperation {
             sketch,
@@ -6600,7 +6599,7 @@ label_hidden: false,
     #[test]
     fn chamfer_fillet_bridge_line_nests_under_lower_index_trimmed_line() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
@@ -6640,7 +6639,7 @@ label_hidden: false,
     #[test]
     fn chamfer_fillet_bridge_line_falls_back_to_top_level_when_parent_is_gone() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut bridge = Line::from_local_endpoints(sketch, 7.0, 0.0, 10.0, 3.0);
@@ -6659,7 +6658,7 @@ label_hidden: false,
 
         // Also degrades gracefully when the recorded parent line exists but is tombstoned.
         let mut doc2 = Document::default();
-        let sketch2 = doc2.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch2 = doc2.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc2.lines
             .push(Line::from_local_endpoints(sketch2, 0.0, 0.0, 10.0, 0.0));
         doc2.lines[0].deleted = true;
@@ -6679,8 +6678,8 @@ label_hidden: false,
     #[test]
     fn row_style_faints_unrelated_rows_when_selection_active() {
         let mut doc = Document::default();
-        let _s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.add_sketch(FaceId::ConstructionPlane(0));
+        let _s0 = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selection,
@@ -6708,7 +6707,7 @@ label_hidden: false,
         );
         assert_eq!(
             row_style(
-                SceneElement::ConstructionPlane(0),
+                SceneElement::ConstructionPlane(pkey(0)),
                 &selection,
                 &context,
                 &related_constraints,
@@ -6737,7 +6736,7 @@ label_hidden: false,
     #[test]
     fn selection_context_includes_constraints_for_selected_line() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
@@ -6764,7 +6763,7 @@ label_hidden: false,
     #[test]
     fn row_style_highlights_related_constraint_when_line_selected() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
@@ -6821,7 +6820,7 @@ label_hidden: false,
         use crate::model::{Constraint, ConstraintKind, ConstraintLine, Line, ShapeKind};
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         let line_a = 0;
@@ -6883,7 +6882,7 @@ label_hidden: false,
         use crate::model::{Constraint, ConstraintKind, ConstraintLine, Line, ShapeKind};
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
@@ -6950,16 +6949,16 @@ label_hidden: false,
         let mut doc = Document::default();
         // Just the ground plane: this test indexes planes by hand, so the other two datum
         // planes (#833) would only shift the numbers.
-        doc.construction_planes.truncate(1);
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.construction_planes.push(plane_from_definition(
+        retain_ground_plane_only(&mut doc);
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
+        doc.construction_planes.insert(plane_from_definition(
             &default_xy_plane().definition,
             ConstructionPlaneParent::Sketch(sketch),
         ));
 
         let mut vis = ElementVisibility::default();
         vis.set_visible(SceneElement::Sketch(sketch), false);
-        assert!(!vis.effective_visible(&doc, SceneElement::ConstructionPlane(1)));
+        assert!(!vis.effective_visible(&doc, SceneElement::ConstructionPlane(pkey(1))));
     }
 
     #[test]
@@ -6996,7 +6995,7 @@ label_hidden: false,
         assert!(rb.contains(&SceneElement::Extrusion(xkey(0))), "extrusion depends on the sketch");
         assert!(rb.contains(&SceneElement::Body(bkey(0))), "body depends on the extrusion");
         assert!(!rb.contains(&SceneElement::Sketch(sketch)), "the marker itself stays");
-        assert!(!rb.contains(&SceneElement::ConstructionPlane(0)), "ancestors stay active");
+        assert!(!rb.contains(&SceneElement::ConstructionPlane(pkey(0))), "ancestors stay active");
 
         // "Just before here" additionally hides the marker element itself.
         let rb_before = rolled_back_elements(&doc, &before(SceneElement::Sketch(sketch)));
@@ -7018,7 +7017,7 @@ label_hidden: false,
         use crate::model::{Body, BodySource, ExtrudeFace, Extrusion};
 
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         let rect_lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.extrusions.insert(Extrusion {
@@ -7350,7 +7349,7 @@ label_hidden: false,
     fn sweep_appears_in_the_tree_and_feeds_from_its_inputs() {
         use crate::model::{Body, BodySource, SweepMode, Sweep, Line};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         let sweep = doc.sweeps.insert(Sweep {

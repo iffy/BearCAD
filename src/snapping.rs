@@ -479,6 +479,7 @@ pub fn find_normal_at_midpoint_snap(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
@@ -488,7 +489,7 @@ mod tests {
 
     fn sketch_doc() -> (Document, SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 

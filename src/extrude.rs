@@ -6437,6 +6437,8 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
+    use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
@@ -7354,7 +7356,7 @@ mod tests {
 
     fn sketch_doc() -> (Document, crate::model::SketchId) {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
     }
 
@@ -7369,7 +7371,7 @@ mod tests {
         assert!(doc.lines[0].is_curved());
         let op = RepeatOperation {
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             sketch_plane_outputs: Vec::new(),
@@ -7441,10 +7443,10 @@ mod tests {
     fn flip_runs_the_pattern_the_other_way_along_every_kind_of_path() {
         use crate::model::{Line, RepeatMode, RepeatOperation, RevolveAxis};
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let op = |axis: RevolveAxis, around: bool, flip: bool| RepeatOperation {
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             sketch_plane_outputs: Vec::new(),
@@ -7558,7 +7560,7 @@ mod tests {
         let doc = Document::default();
         let op = |around: bool, spacing: &str| RepeatOperation {
             targets: Vec::new(),
-            plane_targets: vec![0],
+            plane_targets: vec![pkey(0)],
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
             sketch_plane_outputs: Vec::new(),
@@ -7850,7 +7852,7 @@ mod tests {
             shadow: false,
         });
         // A target plane at x = 30, normal +X (an X-facing wall the repeat fills up to).
-        doc.construction_planes.push(crate::construction::plane_from_definition(
+        doc.construction_planes.insert(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
                     origin: glam::Vec3::new(30.0, 0.0, 0.0),
@@ -7862,7 +7864,7 @@ mod tests {
             ),
             crate::model::ConstructionPlaneParent::Root,
         ));
-        let plane_index = doc.construction_planes.len() - 1;
+        let plane_index = doc.construction_planes.keys().last().unwrap();
 
         let mut op = RepeatOperation {
             targets: vec![bkey(0)],
@@ -8721,7 +8723,7 @@ mod tests {
     /// A vertical construction plane (normal Y, u→X, v→Z) for sweep tests: sketch
     /// lines drawn on it run through the ground plane rather than in it.
     fn vertical_path_sketch(doc: &mut Document) -> crate::model::SketchId {
-        doc.construction_planes.push(crate::model::ConstructionPlane {
+        doc.construction_planes.insert(crate::model::ConstructionPlane {
             origin: Vec3::ZERO,
             normal: Vec3::Y,
             u_axis: Vec3::X,
@@ -8731,9 +8733,8 @@ mod tests {
             repeat_instance: None,
             name: None,
             extent: crate::model::PlaneExtent::default(),
-            deleted: false,
         });
-        doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1))
+        doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.keys().last().unwrap()))
     }
 
     /// #sweep: a 10x10 profile swept along a straight 30mm path normal to its plane
@@ -8858,7 +8859,7 @@ mod tests {
         // Cut tool: two circles on planes below and above the plate loft into a frustum
         // column punching through it.
         doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 3.0, 0.0));
-        doc.construction_planes.push(crate::construction::plane_from_definition(
+        doc.construction_planes.insert(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
                     origin: glam::Vec3::ZERO,
@@ -8870,7 +8871,7 @@ mod tests {
             ),
             crate::model::ConstructionPlaneParent::Root,
         ));
-        let top = doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1));
+        let top = doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.keys().last().unwrap()));
         doc.circles.insert(Circle::from_local_center_radius(top, 0.0, 0.0, 3.0, 0.0));
         doc.lofts.insert(crate::model::Loft {
             sections: vec![
@@ -8899,16 +8900,16 @@ mod tests {
     #[test]
     fn loft_stays_straight_for_off_origin_sections() {
         let mut doc = Document::default();
-        doc.construction_planes.truncate(1);
-        doc.construction_planes.push(crate::construction::plane_from_face(
+        retain_ground_plane_only(&mut doc);
+        doc.construction_planes.insert(crate::construction::plane_from_face(
             30.0,
             Vec3::ZERO,
             Vec3::Z,
         ));
-        let s0 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let s0 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.circles
             .insert(crate::model::Circle::from_local_center_radius(s0, -30.0, 0.0, 6.0, 0.0));
-        let s1 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(1));
+        let s1 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(1)));
         doc.circles
             .insert(crate::model::Circle::from_local_center_radius(s1, -30.0, 0.0, 3.0, 0.0));
         let loft = crate::model::Loft {
@@ -8935,10 +8936,10 @@ mod tests {
     #[test]
     fn loft_mesh_between_two_circles_closes_with_expected_volume() {
         let mut doc = Document::default();
-        doc.construction_planes.truncate(1);
-        let bottom = doc.add_sketch(FaceId::ConstructionPlane(0));
+        retain_ground_plane_only(&mut doc);
+        let bottom = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles.insert(Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
-        doc.construction_planes.push(crate::construction::plane_from_definition(
+        doc.construction_planes.insert(crate::construction::plane_from_definition(
             &crate::construction::definition_from_reference(
                 &crate::construction::PlaneReference::Face {
                     origin: glam::Vec3::ZERO,
@@ -8950,7 +8951,7 @@ mod tests {
             ),
             crate::model::ConstructionPlaneParent::Root,
         ));
-        let top = doc.add_sketch(FaceId::ConstructionPlane(1));
+        let top = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         doc.circles.insert(Circle::from_local_center_radius(top, 0.0, 0.0, 5.0, 0.0));
 
         let loft = crate::model::Loft {
@@ -8977,7 +8978,7 @@ mod tests {
     #[test]
     fn loft_mesh_requires_two_sections() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         let loft = crate::model::Loft {
             sections: vec![crate::model::LoftSection {
@@ -9025,9 +9026,9 @@ mod tests {
         let mut sketches = Vec::new();
         for (i, z) in [(0usize, 0.0f32), (1, 10.0), (2, 5.0)] {
             let plane_idx = if z == 0.0 {
-                0
+                doc.ground_plane().unwrap()
             } else {
-                doc.construction_planes.push(crate::construction::plane_from_definition(
+                doc.construction_planes.insert(crate::construction::plane_from_definition(
                     &crate::construction::definition_from_reference(
                         &crate::construction::PlaneReference::Face {
                             origin: glam::Vec3::ZERO,
@@ -9039,7 +9040,7 @@ mod tests {
                     ),
                     crate::model::ConstructionPlaneParent::Root,
                 ));
-                doc.construction_planes.len() - 1
+                doc.construction_planes.keys().last().unwrap()
             };
             let sketch = doc.add_sketch(FaceId::ConstructionPlane(plane_idx));
             doc.circles.insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
@@ -9147,7 +9148,7 @@ mod tests {
     #[test]
     fn face_boundary_loop_world_none_for_construction_plane() {
         let doc = Document::default();
-        assert!(face_boundary_loop_world(&doc, &FaceId::ConstructionPlane(0)).is_none());
+        assert!(face_boundary_loop_world(&doc, &FaceId::ConstructionPlane(pkey(0))).is_none());
     }
 
     #[test]
@@ -9418,7 +9419,7 @@ mod tests {
         use crate::construction::{definition_from_reference, plane_from_definition, PlaneReference};
         use crate::model::ConstructionPlaneParent;
         let (mut doc, sketch) = sketch_doc();
-        doc.construction_planes.push(plane_from_definition(
+        doc.construction_planes.insert(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Axis {
                     origin: Vec3::new(0.0, 0.0, 40.0),
@@ -9430,7 +9431,7 @@ mod tests {
             ),
             ConstructionPlaneParent::Root,
         ));
-        let target_plane = doc.construction_planes.len() - 1;
+        let target_plane = doc.construction_planes.keys().last().unwrap();
         doc.circles
             .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 40.0);

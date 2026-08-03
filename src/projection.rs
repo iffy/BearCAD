@@ -51,9 +51,9 @@ pub fn resolve_projection_source(
 pub fn plane_sketch_intersection(
     doc: &Document,
     sketch: SketchId,
-    plane: usize,
+    plane: crate::model::ConstructionPlaneKey,
 ) -> Option<(Vec3, Vec3)> {
-    let source = doc.construction_planes.get(plane).filter(|p| !p.deleted)?;
+    let source = doc.construction_planes.get(plane)?;
     let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
     let d = source.normal.cross(frame.normal);
     if d.length_squared() < 1e-8 {
@@ -169,6 +169,7 @@ pub fn projection_sources_from_selection(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::plane_key_for_slot as pkey;
     use super::*;
 
     /// #983: a datum plane's projection into a sketch runs along the two planes'
@@ -177,14 +178,14 @@ mod tests {
     #[test]
     fn plane_intersection_spans_the_source_extent_on_the_sketch_plane() {
         let mut doc = Document::default();
-        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // YZ (index 2, normal X) crosses the ground sketch along the world Y axis.
-        let (a, b) = plane_sketch_intersection(&doc, sketch, 2).expect("YZ crosses the ground");
+        let (a, b) = plane_sketch_intersection(&doc, sketch, pkey(2)).expect("YZ crosses the ground");
         for p in [a, b] {
             assert!(p.x.abs() < 1e-4 && p.z.abs() < 1e-4, "on both planes: {p:?}");
         }
         assert!((a - b).length() > 1.0, "a real span, not a degenerate point");
         // The sketch's own plane is parallel to itself: nothing to intersect.
-        assert!(plane_sketch_intersection(&doc, sketch, 0).is_none());
+        assert!(plane_sketch_intersection(&doc, sketch, pkey(0)).is_none());
     }
 }
