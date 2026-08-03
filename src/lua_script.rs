@@ -2484,7 +2484,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
                 "body" => doc.bodies.len(),
-                "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
+                "drawing" => doc.drawings.len(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
@@ -5634,6 +5634,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::drawing_key_for_slot as dkey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::sketch_op_key_for_slot as skop;
@@ -7928,7 +7929,7 @@ mod tests {
             "#,
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
-        assert_eq!(state.doc.drawings[0].views.len(), 1);
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 1);
     }
 
     /// #648/#649/#650: naming both points makes a move a **snap** — the picked source corner
@@ -8733,7 +8734,7 @@ mod tests {
         );
         assert_eq!(state.doc.sketches.len(), 2, "cap sketch created: {}", state.status);
         assert_eq!(state.doc.circles.len(), 2);
-        let d = &state.doc.drawings[0];
+        let d = &state.doc.drawings[dkey(0)];
         assert_eq!(
             (d.page_width_mm, d.page_height_mm, d.margin_mm),
             (297.0, 210.0, 8.0)
@@ -9305,20 +9306,20 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.drawings.len(), 1);
-        assert_eq!(state.doc.drawings[0].name.as_deref(), Some("Plan"));
-        assert_eq!(state.doc.drawings[0].views.len(), 2);
-        assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Top);
+        assert_eq!(state.doc.drawings[dkey(0)].name.as_deref(), Some("Plan"));
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 2);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].orientation, DrawingOrientation::Top);
         assert_eq!(
-            state.doc.drawings[0].views[1].orientation,
+            state.doc.drawings[dkey(0)].views[1].orientation,
             DrawingOrientation::Isometric
         );
         // Creating a drawing opens it in the drawing pane.
-        assert_eq!(state.editing_drawing, Some(0));
+        assert_eq!(state.editing_drawing, Some(dkey(0)));
         // It appears in the Elements pane, labelled by its name.
         let list = crate::hierarchy::build_element_list(&state.doc, None);
-        assert!(list.iter().any(|n| matches!(n, HierarchyNode::Drawing(0))));
+        assert!(list.iter().any(|n| matches!(n, HierarchyNode::Drawing(_))));
         assert!(
-            crate::names::node_label(&state.doc, HierarchyNode::Drawing(0)).starts_with("Plan")
+            crate::names::node_label(&state.doc, HierarchyNode::Drawing(dkey(0))).starts_with("Plan")
         );
     }
 
@@ -9335,7 +9336,7 @@ mod tests {
             assert(tostring(err):find("body"), "unexpected error: " .. tostring(err))
         "#,
         );
-        assert_eq!(state.doc.drawings[0].views.len(), 0);
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 0);
     }
 
     /// #180: `bearcad.drawing_dimension{}` toggles a view edge's length dimension, keyed by the
@@ -9360,7 +9361,7 @@ mod tests {
         };
         let baseline = run_lua(base_script);
         assert!(
-            baseline.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            baseline.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty(),
             "a new projection starts with no dimensions shown (#331)"
         );
         // A bottom edge of the front view; toggling it adds then removes its dimension.
@@ -9373,15 +9374,15 @@ mod tests {
 
         let shown = run_lua(&script(1, a, b));
         assert_eq!(
-            shown.doc.drawings[0].views[0].dimensioned_edges.len(),
+            shown.doc.drawings[dkey(0)].views[0].dimensioned_edges.len(),
             1,
             "one toggle shows the dimension"
         );
-        assert!(shown.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
+        assert!(shown.doc.drawings[dkey(0)].views[0].dimensioned_edges.contains(&expected));
 
         let hidden = run_lua(&script(2, a, b));
         assert!(
-            hidden.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            hidden.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty(),
             "toggling the same edge twice hides it again"
         );
     }
@@ -9401,18 +9402,18 @@ mod tests {
         // The cylinder's base rim circle is centred at the sketch origin offset (10, 5, 0).
         let toggle = "bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {10, 5, 0} }\n";
         let baseline = run_lua(base_script);
-        assert!(baseline.doc.drawings[0].views[0].dimensioned_circles.is_empty());
+        assert!(baseline.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty());
 
         let shown = run_lua(&format!("{base_script}\n{toggle}"));
         assert_eq!(
-            shown.doc.drawings[0].views[0].dimensioned_circles,
+            shown.doc.drawings[dkey(0)].views[0].dimensioned_circles,
             vec![crate::hierarchy::quantize_body_point(glam::Vec3::new(10.0, 5.0, 0.0))],
             "one toggle shows the circle's diameter dimension"
         );
 
         let hidden = run_lua(&format!("{base_script}\n{toggle}{toggle}"));
         assert!(
-            hidden.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
+            hidden.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty(),
             "toggling the same circle twice hides it again"
         );
     }
@@ -9432,13 +9433,13 @@ mod tests {
         let on = run_lua(&format!(
             "{base}\nbearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = true }}"
         ));
-        assert!(on.doc.drawings[0].views[1].align_lines);
+        assert!(on.doc.drawings[dkey(0)].views[1].align_lines);
 
         let off = run_lua(&format!(
             "{base}\nbearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = true }}\n\
              bearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = false }}"
         ));
-        assert!(!off.doc.drawings[0].views[1].align_lines);
+        assert!(!off.doc.drawings[dkey(0)].views[1].align_lines);
 
         // The base view isn't aligned, so the toggle is rejected (raising a Lua error) and
         // the flag stays off.
@@ -9447,7 +9448,7 @@ mod tests {
              bearcad.drawing_view_align_lines{{ drawing = d, view = 0, show = true }}\n\
              end)\nassert(not ok, \"toggling a non-aligned view must fail\")"
         ));
-        assert!(!rejected.doc.drawings[0].views[0].align_lines);
+        assert!(!rejected.doc.drawings[dkey(0)].views[0].align_lines);
     }
 
     /// #372: `bearcad.drawing_view_label{}` edits a view's caption — visibility, position
@@ -9465,7 +9466,7 @@ mod tests {
             "{base}\nbearcad.drawing_view_label{{ drawing = d, view = 0, hidden = true, \
              pos = \"bottom-center\", text = \"Plate {{w}}\" }}"
         ));
-        let view = &state.doc.drawings[0].views[0];
+        let view = &state.doc.drawings[dkey(0)].views[0];
         assert!(view.label_hidden);
         assert_eq!(view.label_pos, crate::model::DrawingLabelPos::BottomCenter);
         assert_eq!(view.label_text.as_deref(), Some("Plate {w}"));
@@ -9474,7 +9475,7 @@ mod tests {
             "{base}\nbearcad.drawing_view_label{{ drawing = d, view = 0, text = \"custom\" }}\n\
              bearcad.drawing_view_label{{ drawing = d, view = 0, text = \"\" }}"
         ));
-        let view = &reset.doc.drawings[0].views[0];
+        let view = &reset.doc.drawings[dkey(0)].views[0];
         assert_eq!(view.label_text, None, "empty text returns to the automatic caption");
         assert!(!view.label_hidden, "untouched aspects keep their values");
     }
@@ -9493,7 +9494,7 @@ mod tests {
             bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
         "#,
         );
-        let views = &state.doc.drawings[0].views;
+        let views = &state.doc.drawings[dkey(0)].views;
         let view = &views[0];
         let creases = crate::drawing::drawing_view_world_edges(&state.doc, view);
         let dimensionable = crate::drawing::drawing_view_dimensionable_edges(&state.doc, views, view);
@@ -9527,23 +9528,23 @@ mod tests {
         "#,
         );
         // A new view starts with no circle diameters shown (#331/#342).
-        assert!(state.doc.drawings[0].views[0].dimensioned_circles.is_empty());
+        assert!(state.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty());
         state.apply(crate::actions::Action::SetAllDrawingDimensions {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             show: true,
         });
         assert!(
-            !state.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
+            !state.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty(),
             "Show all reveals the circle's diameter dimension"
         );
         state.apply(crate::actions::Action::SetAllDrawingDimensions {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             show: false,
         });
         assert!(
-            state.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
+            state.doc.drawings[dkey(0)].views[0].dimensioned_circles.is_empty(),
             "Hide all clears the circle's diameter dimension (#342)"
         );
     }
@@ -9640,26 +9641,26 @@ mod tests {
             bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
         "#;
         let mut state = run_lua(script);
-        assert!(state.doc.drawings[0].views[0].dimensioned_edges.is_empty());
+        assert!(state.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty());
         assert_eq!(
             state.apply(crate::actions::Action::SetAllDrawingDimensions {
-                drawing: 0,
+                drawing: dkey(0),
                 view: 0,
                 show: true,
             }),
             crate::actions::ActionResult::Ok
         );
         assert!(
-            !state.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            !state.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty(),
             "Show all populates the default dimension set"
         );
         state.apply(crate::actions::Action::SetAllDrawingDimensions {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             show: false,
         });
         assert!(
-            state.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            state.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty(),
             "Hide all clears the dimension set"
         );
     }
@@ -9682,9 +9683,9 @@ mod tests {
             )
         };
         let shown = run_lua(&script(1));
-        assert_eq!(shown.doc.drawings[0].views[0].angle_dims.len(), 1);
+        assert_eq!(shown.doc.drawings[dkey(0)].views[0].angle_dims.len(), 1);
         let hidden = run_lua(&script(2));
-        assert_eq!(hidden.doc.drawings[0].views[0].angle_dims.len(), 0);
+        assert_eq!(hidden.doc.drawings[dkey(0)].views[0].angle_dims.len(), 0);
     }
 
     /// #180: an angle needs two *different* edges.
@@ -9702,7 +9703,7 @@ mod tests {
             assert(not ok, "same edge twice should error")
         "#,
         );
-        assert_eq!(state.doc.drawings[0].views[0].angle_dims.len(), 0);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].angle_dims.len(), 0);
     }
 
     /// #180: a drawing exports to a self-contained SVG with its title, view captions,
@@ -9719,7 +9720,7 @@ mod tests {
             bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
         "#,
         );
-        let svg = crate::drawing::drawing_to_svg(&state.doc, 0).expect("svg");
+        let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
         assert!(svg.starts_with("<svg"), "is an svg document");
         assert!(svg.contains("<line"), "has projected edge lines");
         assert!(svg.contains("Plate"), "has the drawing title");

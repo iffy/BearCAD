@@ -2025,6 +2025,11 @@ A **technical drawing** is a black-on-white sheet for print/PDF output. A docume
 number of them; each references bodies but produces no solid geometry, so drawings live
 outside the shape/undo DAG (undo is snapshot-based, §4.3).
 
+- **Drawing identity (#1055):** `Document::drawings` is an `arena::Arena`, and a drawing is
+  named by a `DrawingKey` — `SceneElement::Drawing`/`DrawingElement`, the hierarchy's
+  drawing/projection/dimension/annotation nodes, `ComponentMember::Drawing`, the open
+  drawing and the popped-out one, and the drawing selection. A script names a drawing by its
+  **ordinal** among the live ones, resolved to a key at the script boundary.
 - **Create & manage:** the Elements pane has a **＋ New Drawing** button (and a `Drawing`
   node, with its own icon, per drawing). Right-clicking a drawing — or clicking its row —
   **opens it** in the drawing pane, which takes over the central area. The **editor** is

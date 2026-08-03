@@ -1740,7 +1740,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 }
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
                 "body" => doc.bodies.len(),
-                "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
+                "drawing" => doc.drawings.len(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()

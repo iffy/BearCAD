@@ -778,7 +778,7 @@ struct EdgeTreatmentGizmoDrag {
 /// perpendicular offset from its edge, written back as a `dimension_offsets` override.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DrawingDimLabelDrag {
-    drawing: usize,
+    drawing: model::DrawingKey,
     view: usize,
     key: ([i32; 3], [i32; 3]),
     /// A circle Ø-label drag (#397): `key.0` is the circle's quantized centre and the offset
@@ -3157,13 +3157,13 @@ struct App {
     /// across frames so the grab survives the card moving out from under the finger — and so a
     /// press that began on a card is resolved touch-safely, without egui's hover-based overlap
     /// arbitration (which touch can't provide before the press).
-    drawing_view_drag: Option<(usize, usize)>,
+    drawing_view_drag: Option<(model::DrawingKey, usize)>,
     /// Whether the Parameters pane was visible before entering the Drawing workbench (#398):
     /// it hides by default there (still re-showable from the View menu) and this restores it
     /// on the way back to the model.
     params_visible_before_drawing: bool,
     /// A drawing popped out into its own OS window (#276), so it can sit beside the 3D view.
-    drawing_window: Option<usize>,
+    drawing_window: Option<model::DrawingKey>,
     /// The DEV → Report issue window (#627), dev builds only: files an issue (with optional
     /// screenshot/document-JSON attachments) into the repo's local todoer db.
     report_issue: Option<ReportIssueWindow>,
@@ -5693,7 +5693,7 @@ impl App {
                 // projections, text notes, and shown dimensions. The `wants_keyboard_input` guard
                 // keeps Backspace editing the annotation textarea instead of deleting the note.
                 let selected = self.state.selected_drawing_elements.clone();
-                let mut views_to_remove: Vec<(usize, usize)> = Vec::new();
+                let mut views_to_remove: Vec<(model::DrawingKey, usize)> = Vec::new();
                 for (drawing, element) in selected {
                     match element {
                         context::DrawingElementRef::Projection(view) => {
@@ -11717,7 +11717,7 @@ impl eframe::App for App {
             let mut edit_edge_treatment: Option<(usize, usize)> = None;
             let mut edit_edge_treatment_op: Option<crate::model::EdgeTreatmentOpKey> = None;
             let mut edit_operation: Option<hierarchy::SceneElement> = None;
-            let mut edit_drawing: Option<usize> = None;
+            let mut edit_drawing: Option<model::DrawingKey> = None;
             let mut select_drawing_element: Option<hierarchy::HierarchyNode> = None;
             let mut hover_drawing_element: Option<hierarchy::HierarchyNode> = None;
             // Which drawing element is currently selected, as a hierarchy leaf, so its Elements-
@@ -11743,7 +11743,7 @@ impl eframe::App for App {
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
             let mut add_to_drawing: Option<SceneElement> = None;
-            let mut rename_drawing: Option<(usize, String)> = None;
+            let mut rename_drawing: Option<(model::DrawingKey, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             let mut add_component: Option<Option<model::ComponentKey>> = None;
             let mut move_to_component: Option<(SceneElement, Option<model::ComponentKey>)> = None;
@@ -11776,7 +11776,7 @@ impl eframe::App for App {
                     let mut queue_joint_rest = |command: hierarchy::JointRestCommand| {
                         joint_rest = Some(command);
                     };
-                    let mut queue_edit_drawing = |index: usize| {
+                    let mut queue_edit_drawing = |index: model::DrawingKey| {
                         edit_drawing = Some(index);
                     };
                     let mut queue_select_drawing_element = |node: hierarchy::HierarchyNode| {
@@ -11788,7 +11788,7 @@ impl eframe::App for App {
                                 hover_drawing_element = Some(n);
                             }
                         };
-                    let mut queue_rename_drawing = |index: usize, name: String| {
+                    let mut queue_rename_drawing = |index: model::DrawingKey, name: String| {
                         rename_drawing = Some((index, name));
                     };
                     let mut queue_export_body = |index: model::BodyKey| {
@@ -12746,7 +12746,6 @@ impl eframe::App for App {
                             .doc
                             .drawings
                             .get(d)
-                            .filter(|dr| !dr.deleted)
                             .and_then(|dr| dr.views.get(v))?;
                         let source = match view.sketch {
                             Some(si) => crate::names::node_label(
@@ -14512,7 +14511,7 @@ impl eframe::App for App {
                 // A technical drawing open (#180) takes over the central area with its
                 // white-on-black editor sheet (#254); otherwise the 3D viewport renders as usual.
                 match self.state.editing_drawing {
-                    Some(di) if self.state.doc.drawings.get(di).is_some_and(|d| !d.deleted) => {
+                    Some(di) if self.state.doc.drawings.get(di).is_some() => {
                         self.draw_drawing_pane(ui, di);
                     }
                     _ => {
@@ -14526,7 +14525,7 @@ impl eframe::App for App {
         // view. Uses an *immediate* viewport so the render closure can borrow `self`.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(di) = self.drawing_window {
-            if self.state.doc.drawings.get(di).is_none_or(|d| d.deleted) {
+            if self.state.doc.drawings.get(di).is_none() {
                 self.drawing_window = None;
             } else {
                 let title =
@@ -19730,7 +19729,7 @@ impl App {
     /// The technical-drawing pane (#180): a black-on-white sheet for the open drawing. Each
     /// view renders its body as an orthographic/isometric wireframe (feature edges), laid out
     /// in a grid; views are added and removed from the controls at the top.
-    fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: usize) {
+    fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: model::DrawingKey) {
         use crate::model::DrawingOrientation;
         // The editor is white-on-black to match the app's dark-mode aesthetic (#254); export
         // (see `drawing.rs`) stays the opposite — black ink on a white sheet.
@@ -19797,7 +19796,6 @@ impl App {
             .doc
             .drawings
             .get(drawing)
-            .filter(|d| !d.deleted)
             .map(|d| (d.page_width_mm, d.page_height_mm, d.margin_mm))
         {
             let avail = egui::Rect::from_min_max(
@@ -21195,7 +21193,7 @@ impl App {
 
     /// Native: pick a path and write the drawing PDF. Web: generate the bytes and download.
     #[cfg(not(target_arch = "wasm32"))]
-    fn export_drawing_pdf(&mut self, drawing: usize) {
+    fn export_drawing_pdf(&mut self, drawing: model::DrawingKey) {
         let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("PDF drawing", &["pdf"])
@@ -21210,7 +21208,7 @@ impl App {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn export_drawing_svg(&mut self, drawing: usize) {
+    fn export_drawing_svg(&mut self, drawing: model::DrawingKey) {
         let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("SVG drawing", &["svg"])
@@ -21225,7 +21223,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_drawing_svg(&mut self, drawing: usize) {
+    fn export_drawing_svg(&mut self, drawing: model::DrawingKey) {
         let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
         match crate::drawing::drawing_to_svg(&self.state.doc, drawing) {
             Some(svg) => self.web_save_bytes(
@@ -21235,12 +21233,12 @@ impl App {
                 svg.into_bytes(),
                 format!("Exported {name}"),
             ),
-            None => self.state.status = format!("Export failed: no drawing {drawing}"),
+            None => self.state.status = format!("Export failed: no drawing {}", drawing.index()),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn export_drawing_pdf(&mut self, drawing: usize) {
+    fn export_drawing_pdf(&mut self, drawing: model::DrawingKey) {
         let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
         match crate::drawing::drawing_to_pdf(&self.state.doc, drawing) {
             Some(bytes) => self.web_save_bytes(
@@ -21250,7 +21248,7 @@ impl App {
                 bytes,
                 format!("Exported {name}"),
             ),
-            None => self.state.status = format!("Export failed: no drawing {drawing}"),
+            None => self.state.status = format!("Export failed: no drawing {}", drawing.index()),
         }
     }
 

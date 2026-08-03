@@ -38,7 +38,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::DrawingElement { drawing, .. } => doc
             .drawings
             .get(drawing)
-            .is_some_and(|d| !d.deleted),
+            .is_some(),
         SceneElement::ConstructionPlane(index) => construction_plane_alive(doc, index),
         SceneElement::Sketch(sketch) => sketch_alive(doc, sketch),
         SceneElement::Line(index) => line_alive(doc, index),

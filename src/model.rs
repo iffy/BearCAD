@@ -1705,6 +1705,12 @@ pub fn joint_key_for_slot(n: usize) -> JointKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for a drawing (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn drawing_key_for_slot(n: usize) -> DrawingKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a component (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn component_key_for_slot(n: usize) -> ComponentKey {
@@ -3754,8 +3760,6 @@ pub struct Drawing {
     pub name: Option<String>,
     #[serde(default)]
     pub views: Vec<DrawingView>,
-    #[serde(default)]
-    pub deleted: bool,
     /// Page width and height in millimetres (#273). Default: landscape US Letter (11 x 8.5 in).
     #[serde(default = "default_page_width_mm")]
     pub page_width_mm: f32,
@@ -3768,6 +3772,9 @@ pub struct Drawing {
     #[serde(default)]
     pub annotations: Vec<DrawingAnnotation>,
 }
+
+/// A drawing's identity (#1055): stable across deletions of other drawings.
+pub type DrawingKey = crate::arena::Key<Drawing>;
 
 /// A free text annotation on a drawing page (#312). Positions and sizes are page-relative
 /// fractions so they stay put across page-size changes and render identically at any zoom.
@@ -3813,7 +3820,6 @@ impl Default for Drawing {
             page_height_mm: default_page_height_mm(),
             margin_mm: default_page_margin_mm(),
             annotations: Vec::new(),
-            deleted: false,
         }
     }
 }
@@ -4076,7 +4082,7 @@ pub struct Document {
     pub sketch_texts: Vec<SketchText>,
     /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
     #[serde(default)]
-    pub drawings: Vec<Drawing>,
+    pub drawings: crate::arena::Arena<Drawing>,
     /// Joints between parts (#891): kinematic relationships resolved in place at
     /// recompute — no output bodies.
     #[serde(default)]
@@ -4182,7 +4188,7 @@ pub enum ComponentMember {
     EdgeTreatmentOp(EdgeTreatmentOpKey),
     Revolution(RevolutionKey),
     Sweep(SweepKey),
-    Drawing(usize),
+    Drawing(DrawingKey),
 }
 
 impl Document {
@@ -4308,7 +4314,7 @@ impl Default for Document {
             sketch_vertex_treatment_ops: crate::arena::Arena::new(),
             sketch_slice_ops: crate::arena::Arena::new(),
             sketch_texts: Vec::new(),
-            drawings: Vec::new(),
+            drawings: crate::arena::Arena::new(),
             joints: crate::arena::Arena::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),

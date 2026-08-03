@@ -77,7 +77,7 @@ pub enum HierarchyNode {
     /// A technical drawing (#180). A display-only top-level leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
     /// (opening the drawing pane), but isn't a selectable/hideable scene element.
-    Drawing(usize),
+    Drawing(crate::model::DrawingKey),
     /// A 3D edge chamfer/fillet applied to an extrusion (#77); `index` is into that
     /// extrusion's `edge_treatments`. A display-only leaf (like [`HierarchyNode::Document`]
     /// it has no [`SceneElement`]): it nests under its extrusion and is right-clickable to
@@ -87,14 +87,14 @@ pub enum HierarchyNode {
     /// nested under its [`HierarchyNode::Drawing`]. `view` indexes the drawing's `views`. It has
     /// no [`SceneElement`] (not selectable/hideable through the scene graph); its source
     /// body/sketch is a second input, surfaced once the element graph (#252) lands.
-    DrawingProjection { drawing: usize, view: usize },
+    DrawingProjection { drawing: crate::model::DrawingKey, view: usize },
     /// A component (#423): a named group row whose member roots nest beneath it; components
     /// nest inside each other via their `parent` link.
     Component(crate::model::ComponentKey),
     /// A text note on a drawing page (#333), nested under its [`HierarchyNode::Drawing`].
     /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
     /// leaf with no [`SceneElement`]; clicking it opens the drawing.
-    DrawingAnnotation { drawing: usize, annotation: usize },
+    DrawingAnnotation { drawing: crate::model::DrawingKey, annotation: usize },
     /// An imported unit instance (#723): a selectable top-level row (its
     /// [`SceneElement::UnitInstance`] renames, hides, and deletes the instance). Its
     /// children ([`HierarchyNode::UnitChild`]) expand beneath it in the List view.
@@ -106,7 +106,7 @@ pub enum HierarchyNode {
     /// A length dimension shown on a projection (#341), nested under its
     /// [`HierarchyNode::DrawingProjection`]. `a`/`b` are the dimensioned edge's quantized world
     /// endpoints. A display-only leaf; clicking it opens the drawing and selects the dimension.
-    DrawingDimension { drawing: usize, view: usize, a: [i32; 3], b: [i32; 3] },
+    DrawingDimension { drawing: crate::model::DrawingKey, view: usize, a: [i32; 3], b: [i32; 3] },
     /// A joint between parts (#891): a childless top-level row whose members feed it as
     /// graph inputs — a relationship, not a feature, so nothing nests under it.
     Joint(crate::model::JointKey),
@@ -123,7 +123,7 @@ pub enum SceneElement {
     /// The drawing workbench had its own parallel selection world because its items weren't
     /// scene elements; this is what lets its inputs be ordinary element pickers.
     DrawingElement {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         element: crate::context::DrawingElementRef,
     },
     ConstructionPlane(usize),
@@ -1102,10 +1102,7 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
     // A drawing projection depends on its source body/sketch (#281).
-    for (di, drawing) in doc.drawings.iter().enumerate() {
-        if drawing.deleted {
-            continue;
-        }
+    for (di, drawing) in doc.drawings.iter() {
         for (vi, view) in drawing.views.iter().enumerate() {
             let source = match view.sketch {
                 Some(si) => HierarchyNode::Sketch(si),
@@ -2099,8 +2096,8 @@ pub fn build_hierarchy(
     }
     // Technical drawings (#180): top-level leaves (they reference bodies but aren't part of
     // the geometry DAG), each right-clickable to open its drawing pane.
-    for (di, drawing) in doc.drawings.iter().enumerate() {
-        if !drawing.deleted {
+    for (di, drawing) in doc.drawings.iter() {
+        {
             // Each placed view is a "projection" child of the drawing (#281), with its shown
             // dimensions nested under it (#341); each text note is a "text" child (#333).
             let mut children: Vec<HierarchyEntry> = drawing
@@ -3771,11 +3768,11 @@ pub fn show_pane(
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
-    on_edit_drawing: &mut impl FnMut(usize),
+    on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
-    on_rename_drawing: &mut impl FnMut(usize, String),
+    on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_export_component: &mut impl FnMut(crate::model::ComponentKey),
@@ -3786,7 +3783,7 @@ pub fn show_pane(
     on_delete_element: &mut impl FnMut(SceneElement),
     // `active_drawing`: the open drawing (Drawing workbench) enabling the row "Add to
     // drawing" action (#274); `on_add_to_drawing` receives the body index.
-    active_drawing: Option<usize>,
+    active_drawing: Option<crate::model::DrawingKey>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
     // The armed element picker (#965), if any: a row it can take wears the pick affordance on
@@ -4218,7 +4215,7 @@ fn show_graph_view(
     armed: Option<&crate::element_picker::ElementPicker>,
     rolled_back: &HashSet<SceneElement>,
     // The full row context menus work on graph nodes too (#623).
-    active_drawing: Option<usize>,
+    active_drawing: Option<crate::model::DrawingKey>,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
@@ -4232,8 +4229,8 @@ fn show_graph_view(
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
-    on_edit_drawing: &mut impl FnMut(usize),
-    on_rename_drawing: &mut impl FnMut(usize, String),
+    on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
+    on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
 ) {
     let positions = graph_node_positions(tree);
     if positions.is_empty() {
@@ -4849,11 +4846,11 @@ fn show_row(
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
-    on_edit_drawing: &mut impl FnMut(usize),
+    on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
     selected_drawing_leaf: Option<HierarchyNode>,
-    on_rename_drawing: &mut impl FnMut(usize, String),
+    on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
     on_export_body: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
@@ -4861,7 +4858,7 @@ fn show_row(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
-    active_drawing: Option<usize>,
+    active_drawing: Option<crate::model::DrawingKey>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
     armed: Option<&crate::element_picker::ElementPicker>,
@@ -5257,9 +5254,9 @@ fn show_row(
 fn drawing_context_menu(
     ui: &mut egui::Ui,
     doc: &Document,
-    index: usize,
-    on_edit_drawing: &mut impl FnMut(usize),
-    on_rename_drawing: &mut impl FnMut(usize, String),
+    index: crate::model::DrawingKey,
+    on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
+    on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
 ) {
     if ui.button("Edit drawing").clicked() {
         on_edit_drawing(index);
@@ -5293,7 +5290,7 @@ fn element_context_menu(
     doc: &Document,
     node: HierarchyNode,
     element: &SceneElement,
-    active_drawing: Option<usize>,
+    active_drawing: Option<crate::model::DrawingKey>,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
@@ -5463,6 +5460,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
@@ -6031,7 +6029,7 @@ mod tests {
             name: Some("Plate".to_string()),
             shadow: false,
         });
-        doc.drawings.push(crate::model::Drawing {
+        doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
                 body: bkey(0),
                 sketch: None,
@@ -6056,18 +6054,18 @@ label_hidden: false,
         });
 
         let tree = build_hierarchy(&doc, None);
-        // Document -> Drawing(0) -> DrawingProjection { drawing: 0, view: 0 }.
+        // Document -> Drawing(0) -> DrawingProjection { drawing: dkey(0), view: 0 }.
         let drawing = tree[0]
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Drawing(0))
+            .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
             .expect("drawing node present");
         assert_eq!(
             drawing.children.iter().map(|c| c.node).collect::<Vec<_>>(),
-            vec![HierarchyNode::DrawingProjection { drawing: 0, view: 0 }]
+            vec![HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }]
         );
         assert_eq!(
-            node_label(&doc, HierarchyNode::DrawingProjection { drawing: 0, view: 0 }),
+            node_label(&doc, HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }),
             "Plate — Front"
         );
     }
@@ -6078,7 +6076,7 @@ label_hidden: false,
         let mut doc = Document::default();
         let a = crate::hierarchy::quantize_body_point(glam::Vec3::ZERO);
         let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
-        doc.drawings.push(crate::model::Drawing {
+        doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
                 body: bkey(0),
                 sketch: None,
@@ -6105,7 +6103,7 @@ label_hidden: false,
         let drawing = tree[0]
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Drawing(0))
+            .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
             .expect("drawing node");
         let projection = drawing
             .children
@@ -6114,7 +6112,7 @@ label_hidden: false,
             .expect("projection node");
         assert_eq!(
             projection.children.iter().map(|c| c.node).collect::<Vec<_>>(),
-            vec![HierarchyNode::DrawingDimension { drawing: 0, view: 0, a, b }],
+            vec![HierarchyNode::DrawingDimension { drawing: dkey(0), view: 0, a, b }],
             "the dimension nests under its projection"
         );
     }
@@ -6124,7 +6122,7 @@ label_hidden: false,
     #[test]
     fn drawing_annotations_show_as_hierarchy_children() {
         let mut doc = Document::default();
-        doc.drawings.push(crate::model::Drawing {
+        doc.drawings.insert(crate::model::Drawing {
             annotations: vec![crate::model::DrawingAnnotation {
                 text: "Scale 1:2".to_string(),
                 pos_x: 0.05,
@@ -6139,17 +6137,17 @@ label_hidden: false,
         let drawing = tree[0]
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::Drawing(0))
+            .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
             .expect("drawing node present");
         assert!(
             drawing
                 .children
                 .iter()
-                .any(|c| c.node == HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }),
+                .any(|c| c.node == HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }),
             "the text note is a child of the drawing"
         );
         assert_eq!(
-            node_label(&doc, HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }),
+            node_label(&doc, HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }),
             "Text: Scale 1:2"
         );
     }
@@ -6201,8 +6199,8 @@ label_hidden: false,
         assert!(f.shows(HierarchyNode::Body(bkey(0))));
         assert!(f.shows(HierarchyNode::Sketch(0)));
         assert!(f.shows(HierarchyNode::Document), "the root is always shown");
-        assert!(f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
-        assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }));
+        assert!(f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
+        assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
         assert!(!f.shows(HierarchyNode::ConstructionPlane(0)));
         assert!(!f.shows(HierarchyNode::Extrusion(0)));
     }
@@ -6213,17 +6211,17 @@ label_hidden: false,
     #[test]
     fn model_workbench_default_hides_drawing_components() {
         let f = ElementFilter::default();
-        assert!(f.shows(HierarchyNode::Drawing(0)), "the drawing row itself stays");
-        assert!(!f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
-        assert!(!f.shows(HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }));
+        assert!(f.shows(HierarchyNode::Drawing(dkey(0))), "the drawing row itself stays");
+        assert!(!f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
+        assert!(!f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
         assert!(!f.shows(HierarchyNode::DrawingDimension {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             a: [0; 3],
             b: [0; 3]
         }));
         let f = ElementFilter { drawing_components: true, ..ElementFilter::default() };
-        assert!(f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
+        assert!(f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
     }
 
     #[test]

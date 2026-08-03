@@ -174,8 +174,8 @@ pub fn resolved_view_axes(views: &[DrawingView], view: &DrawingView) -> (Vec3, V
 /// The on-page position of a view (#296), resolving an aligned child's shared axis to its
 /// parent's so the two always line up regardless of which was dragged. Non-aligned views (and
 /// children whose parent is gone) return their own stored `(pos_x, pos_y)`.
-pub fn resolved_view_pos(doc: &Document, drawing: usize, view: usize) -> (f32, f32) {
-    let Some(d) = doc.drawings.get(drawing).filter(|d| !d.deleted) else {
+pub fn resolved_view_pos(doc: &Document, drawing: crate::model::DrawingKey, view: usize) -> (f32, f32) {
+    let Some(d) = doc.drawings.get(drawing) else {
         return (0.5, 0.5);
     };
     let Some(v) = d.views.get(view) else {
@@ -202,8 +202,8 @@ pub fn resolved_view_pos(doc: &Document, drawing: usize, view: usize) -> (f32, f
 /// A view's effective print scale (#296/#300): an aligned child inherits its parent's scale
 /// (walking the chain), so a whole aligned group prints at one scale. Non-aligned views use
 /// their own `scale`.
-pub fn resolved_view_scale(doc: &Document, drawing: usize, view: usize) -> Option<String> {
-    let d = doc.drawings.get(drawing).filter(|d| !d.deleted)?;
+pub fn resolved_view_scale(doc: &Document, drawing: crate::model::DrawingKey, view: usize) -> Option<String> {
+    let d = doc.drawings.get(drawing)?;
     let v = d.views.get(view)?;
     match v.aligned_parent {
         Some(p) if p != view && d.views.get(p).is_some() => {
@@ -975,8 +975,8 @@ pub fn dimension_label_layout(
 
 /// The page size (width, height) in PDF points for a drawing — its configured mm page (#298),
 /// landscape US-Letter by default — or `None` if the index is missing/deleted.
-fn page_dims(doc: &Document, index: usize) -> Option<(f32, f32)> {
-    let drawing = doc.drawings.get(index).filter(|d| !d.deleted)?;
+fn page_dims(doc: &Document, index: crate::model::DrawingKey) -> Option<(f32, f32)> {
+    let drawing = doc.drawings.get(index)?;
     Some((
         drawing.page_width_mm * PT_PER_MM,
         drawing.page_height_mm * PT_PER_MM,
@@ -986,8 +986,12 @@ fn page_dims(doc: &Document, index: usize) -> Option<(f32, f32)> {
 /// Draw a whole drawing into `canvas`, WYSIWYG with the editor (#297): each view is a card
 /// centred at its `pos_x`/`pos_y` page fraction, sized like the editor's cards, on the
 /// drawing's configured page. The title sits in the top margin.
-fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Option<()> {
-    let drawing = doc.drawings.get(index).filter(|d| !d.deleted)?;
+fn render_drawing<C: Canvas>(
+    doc: &Document,
+    index: crate::model::DrawingKey,
+    canvas: &mut C,
+) -> Option<()> {
+    let drawing = doc.drawings.get(index)?;
     let (width, height) = page_dims(doc, index)?;
     let unit = doc.default_length_unit;
 
@@ -1484,7 +1488,7 @@ impl Canvas for SvgCanvas {
 
 /// Render one drawing to a self-contained black-on-white SVG document. `None` if the drawing
 /// index is missing or deleted.
-pub fn drawing_to_svg(doc: &Document, index: usize) -> Option<String> {
+pub fn drawing_to_svg(doc: &Document, index: crate::model::DrawingKey) -> Option<String> {
     let (width, height) = page_dims(doc, index)?;
     let mut canvas = SvgCanvas { body: String::new() };
     render_drawing(doc, index, &mut canvas)?;
@@ -1653,7 +1657,7 @@ impl Canvas for PdfCanvas {
 
 /// Render one drawing to a self-contained single-page PDF (black-on-white, Helvetica text).
 /// `None` if the drawing index is missing or deleted.
-pub fn drawing_to_pdf(doc: &Document, index: usize) -> Option<Vec<u8>> {
+pub fn drawing_to_pdf(doc: &Document, index: crate::model::DrawingKey) -> Option<Vec<u8>> {
     let (width, height) = page_dims(doc, index)?;
     let mut canvas = PdfCanvas::new(height);
     render_drawing(doc, index, &mut canvas)?;
@@ -1717,6 +1721,7 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::drawing_key_for_slot as dkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Drawing, DrawingView};
@@ -2027,7 +2032,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
 
     fn doc_with_drawing() -> Document {
         let mut doc = Document::default();
-        doc.drawings.push(Drawing {
+        doc.drawings.insert(Drawing {
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
                 body: bkey(0),
@@ -2059,7 +2064,6 @@ label_hidden: false,
                 wrap_frac: None,
                 deleted: false,
             }],
-            deleted: false,
             ..Default::default()
         });
         doc
@@ -2067,7 +2071,7 @@ label_hidden: false,
 
     #[test]
     fn svg_export_is_a_document() {
-        let svg = drawing_to_svg(&doc_with_drawing(), 0).unwrap();
+        let svg = drawing_to_svg(&doc_with_drawing(), dkey(0)).unwrap();
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("Plate"));
         assert!(svg.trim_end().ends_with("</svg>"));
@@ -2075,7 +2079,7 @@ label_hidden: false,
 
     #[test]
     fn pdf_export_is_a_single_page_document() {
-        let pdf = drawing_to_pdf(&doc_with_drawing(), 0).unwrap();
+        let pdf = drawing_to_pdf(&doc_with_drawing(), dkey(0)).unwrap();
         assert!(pdf.starts_with(b"%PDF-1.4"), "has a PDF header");
         assert!(pdf.ends_with(b"%%EOF\n"), "ends at EOF marker");
         let text = String::from_utf8_lossy(&pdf);
@@ -2134,7 +2138,7 @@ label_hidden: false,
     #[test]
     fn pdf_page_matches_the_configured_page_size() {
         let doc = doc_with_drawing();
-        let pdf = drawing_to_pdf(&doc, 0).unwrap();
+        let pdf = drawing_to_pdf(&doc, dkey(0)).unwrap();
         let text = String::from_utf8_lossy(&pdf);
         assert!(
             text.contains("/MediaBox [0 0 792.00 612.00]"),
@@ -2143,9 +2147,9 @@ label_hidden: false,
         );
 
         let mut doc = doc;
-        doc.drawings[0].page_width_mm = 210.0; // portrait A4
-        doc.drawings[0].page_height_mm = 297.0;
-        let pdf = drawing_to_pdf(&doc, 0).unwrap();
+        doc.drawings[dkey(0)].page_width_mm = 210.0; // portrait A4
+        doc.drawings[dkey(0)].page_height_mm = 297.0;
+        let pdf = drawing_to_pdf(&doc, dkey(0)).unwrap();
         let text = String::from_utf8_lossy(&pdf);
         let media = text.lines().find(|l| l.contains("MediaBox")).unwrap().to_string();
         assert!(
@@ -2159,14 +2163,14 @@ label_hidden: false,
     #[test]
     fn svg_places_views_at_their_page_positions() {
         let mut doc = doc_with_drawing();
-        let mut second = doc.drawings[0].views[0].clone();
-        doc.drawings[0].views[0].pos_x = 0.25;
-        doc.drawings[0].views[0].pos_y = 0.3;
+        let mut second = doc.drawings[dkey(0)].views[0].clone();
+        doc.drawings[dkey(0)].views[0].pos_x = 0.25;
+        doc.drawings[dkey(0)].views[0].pos_y = 0.3;
         second.pos_x = 0.75;
         second.pos_y = 0.7;
-        doc.drawings[0].views.push(second);
-        let svg = drawing_to_svg(&doc, 0).unwrap();
-        let (page_w, page_h) = page_dims(&doc, 0).unwrap();
+        doc.drawings[dkey(0)].views.push(second);
+        let svg = drawing_to_svg(&doc, dkey(0)).unwrap();
+        let (page_w, page_h) = page_dims(&doc, dkey(0)).unwrap();
         // Exports have no card border (#337); each view's caption text is placed at
         // (cell_x + CELL_PAD, cell_y + 20), so its position pins the card.
         let cell_w = page_w * CELL_FRAC;
@@ -2182,8 +2186,8 @@ label_hidden: false,
     #[test]
     fn missing_drawing_has_no_export() {
         let doc = Document::default();
-        assert!(drawing_to_svg(&doc, 0).is_none());
-        assert!(drawing_to_pdf(&doc, 0).is_none());
+        assert!(drawing_to_svg(&doc, dkey(0)).is_none());
+        assert!(drawing_to_pdf(&doc, dkey(0)).is_none());
     }
 
     /// #376: a detected circle's normal must not depend on the edge order it was fed in —
@@ -2227,31 +2231,31 @@ label_hidden: false,
     fn svg_view_label_hides_moves_and_customizes() {
         let mut doc = doc_with_drawing();
         let auto_caption = "Body 0 — Front";
-        let svg = drawing_to_svg(&doc, 0).unwrap();
+        let svg = drawing_to_svg(&doc, dkey(0)).unwrap();
         assert!(svg.contains(auto_caption), "default: the automatic caption exports");
 
-        doc.drawings[0].views[0].label_hidden = true;
-        let svg = drawing_to_svg(&doc, 0).unwrap();
+        doc.drawings[dkey(0)].views[0].label_hidden = true;
+        let svg = drawing_to_svg(&doc, dkey(0)).unwrap();
         assert!(!svg.contains(auto_caption), "hidden: no caption in the export");
 
-        doc.drawings[0].views[0].label_hidden = false;
+        doc.drawings[dkey(0)].views[0].label_hidden = false;
         doc.parameters.insert(crate::model::Parameter {
             name: "w".to_string(),
             expression: "40mm".to_string(),
             primary: false,
             source: None,
         });
-        doc.drawings[0].views[0].label_text = Some("Width {w}".to_string());
-        doc.drawings[0].views[0].label_pos = crate::model::DrawingLabelPos::BottomRight;
-        let svg = drawing_to_svg(&doc, 0).unwrap();
+        doc.drawings[dkey(0)].views[0].label_text = Some("Width {w}".to_string());
+        doc.drawings[dkey(0)].views[0].label_pos = crate::model::DrawingLabelPos::BottomRight;
+        let svg = drawing_to_svg(&doc, dkey(0)).unwrap();
         assert!(!svg.contains(auto_caption), "a custom template replaces the auto caption");
         assert!(
             svg.contains("Width 40.0 mm"),
             "custom template interpolates {{param}} fields"
         );
         // Bottom-right: anchored at (cell_x + cell_w - CELL_PAD, cell_y + cell_h - 8).
-        let (page_w, page_h) = page_dims(&doc, 0).unwrap();
-        let view = &doc.drawings[0].views[0];
+        let (page_w, page_h) = page_dims(&doc, dkey(0)).unwrap();
+        let view = &doc.drawings[dkey(0)].views[0];
         let x = view.pos_x * page_w + page_w * CELL_FRAC * 0.5 - CELL_PAD;
         let y = view.pos_y * page_h + page_h * CELL_FRAC * 0.5 - 8.0;
         let needle = format!("<text x=\"{x:.1}\" y=\"{y:.1}\"");

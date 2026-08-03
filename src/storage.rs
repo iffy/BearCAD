@@ -265,7 +265,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     )?;
     save_arena_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
-    save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
+    save_arena_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
     save_indexed_nodes(&tx, &mut row_id, "unit", &doc.units)?;
     save_arena_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
@@ -600,7 +600,7 @@ pub fn open(path: &str) -> Result<Document> {
         load_arena_entities(&conn, "sketch_vertex_treatment_op")?;
     let sketch_slice_ops = load_arena_entities(&conn, "sketch_slice_op")?;
     let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
-    let drawings = load_indexed_entities(&conn, "drawing")?;
+    let drawings = load_arena_entities(&conn, "drawing")?;
     let joints = load_arena_entities(&conn, "joint")?;
     let units = load_indexed_entities(&conn, "unit")?;
     let unit_instances = load_arena_entities(&conn, "unit_instance")?;
@@ -911,6 +911,48 @@ mod tests {
                 loaded.bodies[out].source,
                 crate::model::BodySource::Boolean { op: kept, solid: 0 },
                 "{suffix}: its output body still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: drawings keep their keys across a save, and so does a membership entry that
+    /// names one.
+    #[test]
+    fn drawing_keys_survive_a_save_and_reload() {
+        let drawing = |name: &str| crate::model::Drawing {
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        let mut doc = Document::default();
+        let doomed = doc.drawings.insert(drawing("doomed"));
+        let kept = doc.drawings.insert(drawing("kept"));
+        assert!(doc.drawings.remove(doomed).is_some());
+        let component = doc.components.insert(crate::model::Component {
+            name: Some("Sheets".to_string()),
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+        });
+        doc.set_component_member(crate::model::ComponentMember::Drawing(kept), Some(component));
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_drawing_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.drawings.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.drawings.get(kept).and_then(|d| d.name.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.component_of(crate::model::ComponentMember::Drawing(kept)),
+                Some(component),
+                "{suffix}: the membership entry still names it"
             );
             let _ = std::fs::remove_file(&path);
         }

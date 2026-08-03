@@ -2119,6 +2119,11 @@ fn joint_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::mode
     doc.joints.keys().nth(ordinal)
 }
 
+/// The drawing an ordinal names — the inverse of [`drawing_ordinal`].
+fn drawing_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::DrawingKey> {
+    doc.drawings.keys().nth(ordinal)
+}
+
 /// A component's ordinal among the live ones — what a script writes (#1055).
 fn component_ordinal(
     doc: &crate::model::Document,
@@ -5046,6 +5051,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetDrawingPage { drawing, width_mm, height_mm, margin_mm } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::SetDrawingPage {
                     drawing,
                     width_mm,
@@ -5061,11 +5070,19 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::ExportDrawingSvg { drawing, path } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::ExportDrawingSvg { drawing, path });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::ExportDrawingPdf { drawing, path } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::ExportDrawingPdf { drawing, path });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -5075,6 +5092,10 @@ impl ScriptRunner {
                 body,
                 orientation,
             } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let Some(body) = body_key(&state.doc, body) else {
                     self.last_action_error = Some(format!("No body {body}"));
                     return StepResult::Continue;
@@ -5092,6 +5113,10 @@ impl ScriptRunner {
                 sketch,
                 orientation,
             } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::AddDrawingSketchView {
                     drawing,
                     sketch,
@@ -5101,6 +5126,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::AddDrawingAnnotation { drawing, text, x, y, wrap } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::AddDrawingAnnotation {
                     drawing,
                     text,
@@ -5112,11 +5141,19 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::AddAlignedDrawingView { drawing, parent, dir, pos } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::AddAlignedDrawingView { drawing, parent, dir, pos });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::MoveDrawingView { drawing, view, x, y } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::MoveDrawingView {
                     drawing,
                     view,
@@ -5132,6 +5169,10 @@ impl ScriptRunner {
                 a,
                 b,
             } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let q = |p: (f32, f32, f32)| {
                     crate::hierarchy::quantize_body_point(glam::Vec3::new(p.0, p.1, p.2))
                 };
@@ -5145,6 +5186,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::ToggleDrawingCircleDimension { drawing, view, center } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::ToggleDrawingCircleDimension {
                     drawing,
                     view,
@@ -5156,12 +5201,20 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetDrawingViewAlignLines { drawing, view, show } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let result =
                     state.apply(Action::SetDrawingViewAlignLines { drawing, view, show });
                 self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetDrawingViewLabel { drawing, view, hidden, pos, text } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let pos = match pos.as_deref() {
                     Some(name) => match crate::model::DrawingLabelPos::from_name(name) {
                         Some(p) => Some(p),
@@ -5190,6 +5243,10 @@ impl ScriptRunner {
                 edge1,
                 edge2,
             } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
                 let q = |p: (f32, f32, f32)| {
                     crate::hierarchy::quantize_body_point(glam::Vec3::new(p.0, p.1, p.2))
                 };

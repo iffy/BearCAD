@@ -24,7 +24,7 @@ pub struct ContextInput<'a> {
     /// is suppressed, since drawing projections/annotations have their own selection state.
     pub in_drawing_workbench: bool,
     /// The open drawing page (#967), so a drawing item's element can name which page it is on.
-    pub open_drawing: Option<usize>,
+    pub open_drawing: Option<crate::model::DrawingKey>,
     pub draw_rect_construction: Option<bool>,
     /// Rectangle anchor mode (#532): `Some` while the Rectangle tool is active.
     pub rect_anchor: Option<crate::actions::RectAnchor>,
@@ -126,7 +126,7 @@ pub struct ContextInput<'a> {
     /// The Select tool's drawing element picker rows (#346): one `(drawing, element, label)` per
     /// selected projection/text/dimension, in selection order. Populated only in the drawing
     /// workbench with the Select tool active; drives the always-visible combo-box picker.
-    pub drawing_selection: Vec<(usize, DrawingElementRef, String)>,
+    pub drawing_selection: Vec<(crate::model::DrawingKey, DrawingElementRef, String)>,
     /// The Add-view tool is active with nothing placed yet (#289): renders its pick hint.
     pub drawing_add_active: bool,
     /// The Aligned-view tool is active (#365): renders its "Base view" element picker.
@@ -792,7 +792,7 @@ pub enum DrawingAnnotationEdit {
 /// selection, or clear it entirely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawingSelectionEdit {
-    Remove(usize, DrawingElementRef),
+    Remove(crate::model::DrawingKey, DrawingElementRef),
     Clear,
 }
 
@@ -1029,7 +1029,7 @@ pub struct ContextPaneContent {
     /// The Select tool's always-visible drawing element picker (#346): `(drawing, element, label)`
     /// per selected projection/text/dimension. `Some` (possibly empty) whenever the Select tool is
     /// active in the drawing workbench.
-    pub drawing_selection: Option<Vec<(usize, DrawingElementRef, String)>>,
+    pub drawing_selection: Option<Vec<(crate::model::DrawingKey, DrawingElementRef, String)>>,
     /// The Add-view tool is active with nothing placed yet (#289).
     pub drawing_add_active: bool,
     /// The Aligned-view tool's "Base view" picker (#365): `Some` when the tool is active; the inner

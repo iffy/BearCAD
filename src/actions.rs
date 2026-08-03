@@ -1583,8 +1583,8 @@ pub enum Action {
     /// Export bodies to an STL file. `body` names a single body; `None` exports all bodies.
     ExportStl { path: String, body: Option<String> },
     /// Export a technical drawing (#180) to a vector SVG file (prints to PDF).
-    ExportDrawingSvg { drawing: usize, path: String },
-    ExportDrawingPdf { drawing: usize, path: String },
+    ExportDrawingSvg { drawing: crate::model::DrawingKey, path: String },
+    ExportDrawingPdf { drawing: crate::model::DrawingKey, path: String },
     /// Export a single body (by index) to an STL file — used by the body row's context menu,
     /// which has the index in hand and works for unnamed bodies too.
     ExportStlBody { path: String, body: crate::model::BodyKey },
@@ -2055,37 +2055,37 @@ pub enum Action {
     /// Create a new technical drawing (#180) and open it in the drawing pane.
     CreateDrawing { name: Option<String> },
     /// Rename a technical drawing (#255): empty clears back to the default label.
-    RenameDrawing { drawing: usize, name: String },
+    RenameDrawing { drawing: crate::model::DrawingKey, name: String },
     /// Set a drawing's page size and margin, in millimetres (#273). `None` keeps the
     /// drawing's current value, so partial updates work (#406).
     SetDrawingPage {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         width_mm: Option<f32>,
         height_mm: Option<f32>,
         margin_mm: Option<f32>,
     },
     /// Add a body view (in a given orientation) to a drawing.
     AddDrawingView {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         body: crate::model::BodyKey,
         orientation: crate::model::DrawingOrientation,
     },
     /// Add a sketch projection to a drawing (#278).
     AddDrawingSketchView {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         sketch: usize,
         orientation: crate::model::DrawingOrientation,
     },
     /// Drag a placed view to a new page position (fraction 0..1) (#274).
     MoveDrawingView {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         pos_x: f32,
         pos_y: f32,
     },
     /// Change a placed view's projection orientation (#274).
     SetDrawingViewOrientation {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         orientation: crate::model::DrawingOrientation,
     },
@@ -2093,13 +2093,13 @@ pub enum Action {
     /// Rejected unless the text parses ([`crate::model::parse_drawing_scale`]), so the model
     /// only ever holds the last valid scale.
     SetDrawingViewScale {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         scale: Option<String>,
     },
     /// Set how a placed view renders (#301): visible edges only, wireframe, or shaded.
     SetDrawingViewStyle {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         style: crate::model::DrawingViewStyle,
     },
@@ -2107,7 +2107,7 @@ pub enum Action {
     /// edge's quantized endpoints. `offset` is signed projected-mm past the default gap;
     /// `None` restores the auto-placed default.
     SetDrawingDimensionOffset {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         a: [i32; 3],
         b: [i32; 3],
@@ -2116,7 +2116,7 @@ pub enum Action {
     /// Set (or clear) a circle Ø-label offset override (#397), keyed by the circle's
     /// quantized world centre — the circle analogue of [`Self::SetDrawingDimensionOffset`].
     SetDrawingCircleDimOffset {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         center: [i32; 3],
         offset: Option<f32>,
@@ -2125,7 +2125,7 @@ pub enum Action {
     /// body, oriented per the glass-box unfolding for `dir`, placed adjacent to `parent` and
     /// kept lined up with it. `pos` is the free-axis fraction (the shared axis follows parent).
     AddAlignedDrawingView {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         parent: usize,
         dir: crate::model::AlignDir,
         pos: f32,
@@ -2133,23 +2133,23 @@ pub enum Action {
     /// Add a free text annotation to a drawing page (#312) at a page-fraction position; returns
     /// with it selected. `wrap_frac` set = a wrapped box, `None` = a growing single line.
     AddDrawingAnnotation {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         text: String,
         pos_x: f32,
         pos_y: f32,
         wrap_frac: Option<f32>,
     },
     /// Edit a drawing annotation's text (#312); empty text removes it.
-    EditDrawingAnnotationText { drawing: usize, annotation: usize, text: String },
+    EditDrawingAnnotationText { drawing: crate::model::DrawingKey, annotation: usize, text: String },
     /// Move a drawing annotation to a page-fraction position (#312).
-    MoveDrawingAnnotation { drawing: usize, annotation: usize, pos_x: f32, pos_y: f32 },
+    MoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: usize, pos_x: f32, pos_y: f32 },
     /// Remove a drawing annotation (#312).
-    RemoveDrawingAnnotation { drawing: usize, annotation: usize },
+    RemoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: usize },
     /// Remove a body view from a drawing by its index.
-    RemoveDrawingView { drawing: usize, view: usize },
+    RemoveDrawingView { drawing: crate::model::DrawingKey, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
     ToggleDrawingDimension {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         a: [i32; 3],
         b: [i32; 3],
@@ -2157,13 +2157,13 @@ pub enum Action {
     /// Toggle a detected circle's diameter dimension (by quantized world centre) in a
     /// drawing view (#373) — the per-circle analogue of [`Self::ToggleDrawingDimension`].
     ToggleDrawingCircleDimension {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         center: [i32; 3],
     },
     /// Show or hide the dashed projection lines from an aligned child to its base view (#377).
     SetDrawingViewAlignLines {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         show: bool,
     },
@@ -2171,7 +2171,7 @@ pub enum Action {
     /// visibility, position within the card, or the custom text template
     /// (`Some(None)` resets the text to the automatic caption).
     SetDrawingViewLabel {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         hidden: Option<bool>,
         pos: Option<crate::model::DrawingLabelPos>,
@@ -2180,19 +2180,19 @@ pub enum Action {
     /// Show every length/diameter dimension for a view (`show = true`, populating the deduped,
     /// staggered default set) or hide them all (`show = false`, clearing the set), #331.
     SetAllDrawingDimensions {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         show: bool,
     },
     /// Toggle the angle dimension between two edges (each by quantized world endpoints).
     ToggleDrawingAngle {
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         view: usize,
         edge1: crate::model::DrawingEdgeKey,
         edge2: crate::model::DrawingEdgeKey,
     },
     /// Open a drawing in the drawing pane (`Some`) or close the pane (`None`).
-    EditDrawing { drawing: Option<usize> },
+    EditDrawing { drawing: Option<crate::model::DrawingKey> },
     /// Finalize the in-progress revolve (reads `creating_revolve`).
     CommitRevolve,
     /// Scripted/replayed revolve creation with an explicit payload. `bodies` is the
@@ -3168,14 +3168,14 @@ pub struct AppState {
     /// The technical drawing (#180) currently open in the drawing pane, if any. UI state
     /// (never persisted): while `Some`, the central area shows that drawing instead of the
     /// 3D viewport.
-    pub editing_drawing: Option<usize>,
+    pub editing_drawing: Option<crate::model::DrawingKey>,
     /// The elements selected on the open drawing page (#346): projections, text notes, and shown
     /// dimensions, each tagged with its owning drawing index. Multi-select, mirrored by the Select
     /// tool's element picker and the Elements pane. The single-element `selected_drawing_view` /
     /// `_annotation` / `_dimension` accessors derive their per-type context editors from this set
     /// (each returns `Some` only when exactly one element of that type is selected). UI state
     /// (never persisted).
-    pub selected_drawing_elements: Vec<(usize, crate::context::DrawingElementRef)>,
+    pub selected_drawing_elements: Vec<(crate::model::DrawingKey, crate::context::DrawingElementRef)>,
     /// The drawing element the Select-tool element picker is hovering (#328), highlighted on the
     /// page. UI state (never persisted).
     pub hovered_drawing_element: Option<crate::context::DrawingElementRef>,
@@ -3450,7 +3450,7 @@ impl MeshExportFormat {
 impl AppState {
     /// The single selected projection `(drawing, view)` — `Some` only when exactly one element is
     /// selected and it is a projection, so the view context editor shows for a lone selection (#346).
-    pub fn selected_drawing_view(&self) -> Option<(usize, usize)> {
+    pub fn selected_drawing_view(&self) -> Option<(crate::model::DrawingKey, usize)> {
         match self.selected_drawing_elements.as_slice() {
             [(d, crate::context::DrawingElementRef::Projection(v))] => Some((*d, *v)),
             _ => None,
@@ -3459,7 +3459,7 @@ impl AppState {
 
     /// The single selected text annotation `(drawing, annotation)`, or `None` unless exactly one
     /// text element is selected (#346).
-    pub fn selected_drawing_annotation(&self) -> Option<(usize, usize)> {
+    pub fn selected_drawing_annotation(&self) -> Option<(crate::model::DrawingKey, usize)> {
         match self.selected_drawing_elements.as_slice() {
             [(d, crate::context::DrawingElementRef::Text(a))] => Some((*d, *a)),
             _ => None,
@@ -3468,7 +3468,9 @@ impl AppState {
 
     /// The single selected dimension `(drawing, view, a, b)`, or `None` unless exactly one
     /// dimension is selected (#346).
-    pub fn selected_drawing_dimension(&self) -> Option<(usize, usize, [i32; 3], [i32; 3])> {
+    pub fn selected_drawing_dimension(
+        &self,
+    ) -> Option<(crate::model::DrawingKey, usize, [i32; 3], [i32; 3])> {
         match self.selected_drawing_elements.as_slice() {
             [(d, crate::context::DrawingElementRef::Dimension { view, a, b })] => {
                 Some((*d, *view, *a, *b))
@@ -3480,21 +3482,21 @@ impl AppState {
     /// Whether a specific drawing element is currently selected (#346).
     pub fn is_drawing_element_selected(
         &self,
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         element: crate::context::DrawingElementRef,
     ) -> bool {
         self.selected_drawing_elements.contains(&(drawing, element))
     }
 
     /// Replace the drawing selection with exactly this one element (#346).
-    pub fn select_drawing_only(&mut self, drawing: usize, element: crate::context::DrawingElementRef) {
+    pub fn select_drawing_only(&mut self, drawing: crate::model::DrawingKey, element: crate::context::DrawingElementRef) {
         self.selected_drawing_elements = vec![(drawing, element)];
     }
 
     /// Toggle a drawing element in the multi-selection (#346): remove it if present, else add it.
     pub fn toggle_drawing_element(
         &mut self,
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         element: crate::context::DrawingElementRef,
     ) {
         if let Some(pos) = self
@@ -3511,7 +3513,7 @@ impl AppState {
     /// Remove a specific element from the drawing selection if present (#346).
     pub fn deselect_drawing_element(
         &mut self,
-        drawing: usize,
+        drawing: crate::model::DrawingKey,
         element: crate::context::DrawingElementRef,
     ) {
         self.selected_drawing_elements
@@ -3526,7 +3528,7 @@ impl AppState {
     /// Fix up the selection after view `view` of `drawing` is removed (its later siblings shift
     /// down by one): drop any selected projection/dimension on that view and renumber higher ones
     /// (#346). Annotations are tombstoned, not renumbered, so they need no shifting.
-    pub fn drawing_selection_view_removed(&mut self, drawing: usize, view: usize) {
+    pub fn drawing_selection_view_removed(&mut self, drawing: crate::model::DrawingKey, view: usize) {
         use crate::context::DrawingElementRef as R;
         self.selected_drawing_elements.retain(|(d, e)| {
             !(*d == drawing
@@ -5946,7 +5948,7 @@ fn validate_slice_inputs(
 fn element_label(element: SceneElement) -> String {
     match element {
         SceneElement::DrawingElement { drawing, element } => {
-            format!("{element:?} on drawing {drawing}")
+            format!("{element:?} on drawing {}", drawing.index())
         }
         SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
@@ -6486,12 +6488,12 @@ impl AppState {
             }
             Action::ExportDrawingSvg { drawing, path } => {
                 let Some(svg) = crate::drawing::drawing_to_svg(&self.doc, drawing) else {
-                    self.status = format!("Export failed: no drawing {drawing}");
+                    self.status = format!("Export failed: no drawing {}", drawing.index());
                     return ActionResult::Err(self.status.clone());
                 };
                 match std::fs::write(&path, svg) {
                     Ok(()) => {
-                        self.status = format!("Exported drawing {drawing} to {path}");
+                        self.status = format!("Exported drawing {} to {path}", drawing.index());
                         ActionResult::Ok
                     }
                     Err(e) => {
@@ -6502,12 +6504,12 @@ impl AppState {
             }
             Action::ExportDrawingPdf { drawing, path } => {
                 let Some(pdf) = crate::drawing::drawing_to_pdf(&self.doc, drawing) else {
-                    self.status = format!("Export failed: no drawing {drawing}");
+                    self.status = format!("Export failed: no drawing {}", drawing.index());
                     return ActionResult::Err(self.status.clone());
                 };
                 match std::fs::write(&path, pdf) {
                     Ok(()) => {
-                        self.status = format!("Exported drawing {drawing} to {path}");
+                        self.status = format!("Exported drawing {} to {path}", drawing.index());
                         ActionResult::Ok
                     }
                     Err(e) => {
@@ -10001,14 +10003,14 @@ impl AppState {
                     wrap_frac: None,
                     deleted: false,
                 });
-                self.doc.drawings.push(drawing);
-                self.editing_drawing = Some(index);
+                let key = self.doc.drawings.insert(drawing);
+                self.editing_drawing = Some(key);
                 self.status = format!("Added drawing {index}");
                 ActionResult::Ok
             }
             Action::RenameDrawing { drawing, name } => {
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
-                    let e = format!("Drawing {drawing} not found");
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    let e = format!("Drawing {} not found", drawing.index());
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -10018,8 +10020,8 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetDrawingPage { drawing, width_mm, height_mm, margin_mm } => {
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 };
                 // Clamp to sane positive sizes; the margin can't exceed half the smaller side.
                 let w = width_mm.unwrap_or(d.page_width_mm).max(10.0);
@@ -10039,8 +10041,8 @@ impl AppState {
                 if !self.doc.bodies.contains(body) {
                     return ActionResult::Err(format!("No body {body:?}"));
                 }
-                if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                if self.doc.drawings.get(drawing).is_none() {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
                 // Cascade new placements down-right from the page centre so they don't fully
                 // stack (#274); wrap back after a handful.
@@ -10071,9 +10073,10 @@ label_hidden: false,
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!(
-                    "Added {} view of body {} to drawing {drawing}",
+                    "Added {} view of body {} to drawing {}",
+                    orientation.label(),
                     body.index(),
-                    orientation.label()
+                    drawing.index()
                 );
                 ActionResult::Ok
             }
@@ -10081,8 +10084,8 @@ label_hidden: false,
                 if self.doc.sketches.get(sketch).is_none_or(|s| s.deleted) {
                     return ActionResult::Err(format!("No sketch {sketch}"));
                 }
-                if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                if self.doc.drawings.get(drawing).is_none() {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
                 let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 // Views start with no dimensions shown (#331).
@@ -10110,7 +10113,7 @@ label_hidden: false,
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
-                self.status = format!("Added sketch {sketch} to drawing {drawing}");
+                self.status = format!("Added sketch {sketch} to drawing {}", drawing.index());
                 ActionResult::Ok
             }
             Action::AddAlignedDrawingView { drawing, parent, dir, pos } => {
@@ -10118,11 +10121,10 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get(parent))
                     .cloned()
                 else {
-                    return ActionResult::Err(format!("No view {parent} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {parent} in drawing {}", drawing.index()));
                 };
                 let Some(orientation) =
                     crate::drawing::aligned_child_orientation(pv.orientation, dir)
@@ -10165,8 +10167,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::MoveDrawingView { drawing, view, pos_x, pos_y } => {
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 };
                 let Some(v) = d.views.get_mut(view) else {
                     return ActionResult::Err(format!("No view {view}"));
@@ -10178,8 +10180,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::SetDrawingViewOrientation { drawing, view, orientation } => {
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 };
                 let Some(v) = d.views.get_mut(view) else {
                     return ActionResult::Err(format!("No view {view}"));
@@ -10205,10 +10207,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 v.scale = scale;
                 self.status = match &v.scale {
@@ -10222,18 +10223,17 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 v.style = style;
                 self.status = format!("Set view style: {}", style.label());
                 ActionResult::Ok
             }
             Action::AddDrawingAnnotation { drawing, text, pos_x, pos_y, wrap_frac } => {
-                if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                if self.doc.drawings.get(drawing).is_none() {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
                 let d = &mut self.doc.drawings[drawing];
                 d.annotations.push(crate::model::DrawingAnnotation {
@@ -10254,7 +10254,6 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.annotations.get_mut(annotation))
                 else {
                     return ActionResult::Err(format!("No annotation {annotation}"));
@@ -10276,7 +10275,6 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.annotations.get_mut(annotation))
                 else {
                     return ActionResult::Err(format!("No annotation {annotation}"));
@@ -10290,7 +10288,6 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.annotations.get_mut(annotation))
                 else {
                     return ActionResult::Err(format!("No annotation {annotation}"));
@@ -10304,17 +10301,17 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::RemoveDrawingView { drawing, view } => {
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
-                    return ActionResult::Err(format!("No drawing {drawing}"));
+                let Some(d) = self.doc.drawings.get_mut(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 };
                 if view >= d.views.len() {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 }
                 d.views.remove(view);
                 // Keep the page selection valid (#289/#346): drop any selection on the removed
                 // view and shift later views down by one.
                 self.drawing_selection_view_removed(drawing, view);
-                self.status = format!("Removed view {view} from drawing {drawing}");
+                self.status = format!("Removed view {view} from drawing {}", drawing.index());
                 ActionResult::Ok
             }
             Action::ToggleDrawingDimension {
@@ -10329,10 +10326,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 if let Some(pos) = v.dimensioned_edges.iter().position(|e| *e == key) {
                     v.dimensioned_edges.remove(pos);
@@ -10350,10 +10346,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 if let Some(pos) = v.dimensioned_circles.iter().position(|c| *c == center) {
                     v.dimensioned_circles.remove(pos);
@@ -10369,10 +10364,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 if v.aligned_parent.is_none() {
                     return ActionResult::Err(
@@ -10392,10 +10386,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 if let Some(hidden) = hidden {
                     v.label_hidden = hidden;
@@ -10417,11 +10410,10 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get(view))
                     .cloned()
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 let (keys, offsets) = if show {
                     default_dimensioned_edges(&self.doc, &self.doc.drawings[drawing].views, &v)
@@ -10458,10 +10450,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 v.dimension_offsets.retain(|(k, _)| *k != key);
                 if let Some(o) = offset {
@@ -10474,10 +10465,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 v.circle_dim_offsets.retain(|(k, _)| *k != center);
                 if let Some(o) = offset {
@@ -10504,10 +10494,9 @@ label_hidden: false,
                     .doc
                     .drawings
                     .get_mut(drawing)
-                    .filter(|d| !d.deleted)
                     .and_then(|d| d.views.get_mut(view))
                 else {
-                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
                 };
                 if let Some(pos) = v.angle_dims.iter().position(|e| *e == key) {
                     v.angle_dims.remove(pos);
@@ -10520,8 +10509,8 @@ label_hidden: false,
             }
             Action::EditDrawing { drawing } => {
                 if let Some(di) = drawing {
-                    if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
-                        return ActionResult::Err(format!("No drawing {di}"));
+                    if self.doc.drawings.get(di).is_none() {
+                        return ActionResult::Err(format!("No drawing {}", di.index()));
                     }
                     // The Drawing workbench offers Select/Projection/Aligned view/Dimension/Text
                     // (#271, #295 dropped Move, #289 Projection, #296 Aligned view, #312 Text);
@@ -15948,6 +15937,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
@@ -21528,10 +21518,10 @@ mod tests {
     fn rename_drawing_sets_and_clears_the_name() {
         let mut state = AppState::default();
         state.apply(Action::CreateDrawing { name: None });
-        state.apply(Action::RenameDrawing { drawing: 0, name: "  Front sheet  ".to_string() });
-        assert_eq!(state.doc.drawings[0].name.as_deref(), Some("Front sheet"));
-        state.apply(Action::RenameDrawing { drawing: 0, name: String::new() });
-        assert_eq!(state.doc.drawings[0].name, None, "empty name clears back to default");
+        state.apply(Action::RenameDrawing { drawing: dkey(0), name: "  Front sheet  ".to_string() });
+        assert_eq!(state.doc.drawings[dkey(0)].name.as_deref(), Some("Front sheet"));
+        state.apply(Action::RenameDrawing { drawing: dkey(0), name: String::new() });
+        assert_eq!(state.doc.drawings[dkey(0)].name, None, "empty name clears back to default");
     }
 
     /// #271: opening a drawing (entering the Drawing workbench) drops a model-only tool back to
@@ -21541,17 +21531,17 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::SetTool(Tool::Extrude));
-        state.apply(Action::EditDrawing { drawing: Some(0) });
+        state.apply(Action::EditDrawing { drawing: Some(dkey(0)) });
         assert_eq!(state.tool, Tool::Select, "Extrude isn't a Drawing-workbench tool");
         state.apply(Action::EditDrawing { drawing: None });
         state.apply(Action::SetTool(Tool::Move));
-        state.apply(Action::EditDrawing { drawing: Some(0) });
+        state.apply(Action::EditDrawing { drawing: Some(dkey(0)) });
         assert_eq!(state.tool, Tool::Select, "Move is no longer a Drawing-workbench tool (#295)");
 
         // A Drawing-workbench tool is preserved.
         state.apply(Action::SetTool(Tool::Dimension));
         state.apply(Action::EditDrawing { drawing: None });
-        state.apply(Action::EditDrawing { drawing: Some(0) });
+        state.apply(Action::EditDrawing { drawing: Some(dkey(0)) });
         assert_eq!(state.tool, Tool::Dimension, "Dimension stays selected");
     }
 
@@ -21567,12 +21557,12 @@ mod tests {
         state.apply(Action::CreateDrawing { name: None });
 
         let result = state.apply(Action::AddDrawingSketchView {
-            drawing: 0,
+            drawing: dkey(0),
             sketch,
             orientation: DrawingOrientation::Top,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let view = &state.doc.drawings[0].views[0];
+        let view = &state.doc.drawings[dkey(0)].views[0];
         assert_eq!(view.sketch, Some(sketch));
         assert!(
             !crate::drawing::drawing_view_world_edges(&state.doc, view).is_empty(),
@@ -21589,26 +21579,26 @@ mod tests {
         state.apply(Action::ExitSketch);
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
-            drawing: 0,
+            drawing: dkey(0),
             body: bkey(0),
             orientation: DrawingOrientation::Front,
         });
 
-        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.8, pos_y: 0.2 });
-        let v = &state.doc.drawings[0].views[0];
+        state.apply(Action::MoveDrawingView { drawing: dkey(0), view: 0, pos_x: 0.8, pos_y: 0.2 });
+        let v = &state.doc.drawings[dkey(0)].views[0];
         assert_eq!((v.pos_x, v.pos_y), (0.8, 0.2));
 
         // Out-of-range positions clamp to the page.
-        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 1.5, pos_y: -0.3 });
-        let v = &state.doc.drawings[0].views[0];
+        state.apply(Action::MoveDrawingView { drawing: dkey(0), view: 0, pos_x: 1.5, pos_y: -0.3 });
+        let v = &state.doc.drawings[dkey(0)].views[0];
         assert_eq!((v.pos_x, v.pos_y), (1.0, 0.0));
 
         state.apply(Action::SetDrawingViewOrientation {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             orientation: DrawingOrientation::Isometric,
         });
-        assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Isometric);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].orientation, DrawingOrientation::Isometric);
     }
 
     /// #300: a view's print scale accepts `page:model` text, rejects anything else (keeping
@@ -21627,32 +21617,32 @@ mod tests {
         state.apply(Action::ExitSketch);
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
-            drawing: 0,
+            drawing: dkey(0),
             body: bkey(0),
             orientation: DrawingOrientation::Front,
         });
         let result = state.apply(Action::SetDrawingViewScale {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             scale: Some("1:20".to_string()),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
-        assert_eq!(state.doc.drawings[0].views[0].scale.as_deref(), Some("1:20"));
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].scale.as_deref(), Some("1:20"));
 
         let result = state.apply(Action::SetDrawingViewScale {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             scale: Some("nonsense".to_string()),
         });
         assert!(matches!(result, ActionResult::Err(_)), "invalid scale is rejected");
         assert_eq!(
-            state.doc.drawings[0].views[0].scale.as_deref(),
+            state.doc.drawings[dkey(0)].views[0].scale.as_deref(),
             Some("1:20"),
             "the last valid scale survives"
         );
 
-        state.apply(Action::SetDrawingViewScale { drawing: 0, view: 0, scale: None });
-        assert_eq!(state.doc.drawings[0].views[0].scale, None, "cleared back to auto-fit");
+        state.apply(Action::SetDrawingViewScale { drawing: dkey(0), view: 0, scale: None });
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].scale, None, "cleared back to auto-fit");
     }
 
     /// #301: display styles — `Visible` removes hidden lines (less total stroked length than
@@ -21665,7 +21655,7 @@ mod tests {
         state.apply(Action::ExitSketch);
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
-            drawing: 0,
+            drawing: dkey(0),
             body: bkey(0),
             orientation: DrawingOrientation::Isometric,
         });
@@ -21675,22 +21665,22 @@ mod tests {
         };
         let wire = crate::drawing::styled_view_geometry(
             &state.doc,
-            &state.doc.drawings[0].views,
-            &state.doc.drawings[0].views[0],
+            &state.doc.drawings[dkey(0)].views,
+            &state.doc.drawings[dkey(0)].views[0],
         );
         assert!(wire.tris.is_empty() && !wire.segments.is_empty());
 
         let result = state.apply(Action::SetDrawingViewStyle {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             style: DrawingViewStyle::Visible,
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert_eq!(state.doc.drawings[0].views[0].style, DrawingViewStyle::Visible);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].style, DrawingViewStyle::Visible);
         let visible = crate::drawing::styled_view_geometry(
             &state.doc,
-            &state.doc.drawings[0].views,
-            &state.doc.drawings[0].views[0],
+            &state.doc.drawings[dkey(0)].views,
+            &state.doc.drawings[dkey(0)].views[0],
         );
         assert!(visible.tris.is_empty());
         let (wire_len, visible_len) = (total_len(&wire), total_len(&visible));
@@ -21700,14 +21690,14 @@ mod tests {
         );
 
         state.apply(Action::SetDrawingViewStyle {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             style: DrawingViewStyle::Shaded,
         });
         let shaded = crate::drawing::styled_view_geometry(
             &state.doc,
-            &state.doc.drawings[0].views,
-            &state.doc.drawings[0].views[0],
+            &state.doc.drawings[dkey(0)].views,
+            &state.doc.drawings[dkey(0)].views[0],
         );
         assert!(!shaded.tris.is_empty(), "shaded style fills front faces");
         assert!(
@@ -21725,27 +21715,27 @@ mod tests {
         state.apply(Action::ExitSketch);
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
-            drawing: 0,
+            drawing: dkey(0),
             body: bkey(0),
             orientation: DrawingOrientation::Front,
         });
-        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.4, pos_y: 0.4 });
+        state.apply(Action::MoveDrawingView { drawing: dkey(0), view: 0, pos_x: 0.4, pos_y: 0.4 });
         // A child placed below shares pos_x with its parent, free pos_y.
         let result = state.apply(Action::AddAlignedDrawingView {
-            drawing: 0,
+            drawing: dkey(0),
             parent: 0,
             dir: AlignDir::Below,
             pos: 0.8,
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
-        assert_eq!(state.doc.drawings[0].views[1].orientation, DrawingOrientation::Bottom);
-        let (cx, cy) = crate::drawing::resolved_view_pos(&state.doc, 0, 1);
+        assert_eq!(state.doc.drawings[dkey(0)].views[1].orientation, DrawingOrientation::Bottom);
+        let (cx, cy) = crate::drawing::resolved_view_pos(&state.doc, dkey(0), 1);
         assert!((cx - 0.4).abs() < 1e-4, "child shares parent's horizontal position");
         assert!((cy - 0.8).abs() < 1e-4, "child's vertical position is free");
 
         // Move the parent horizontally: the child follows on the shared axis.
-        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.25, pos_y: 0.4 });
-        let (cx2, _) = crate::drawing::resolved_view_pos(&state.doc, 0, 1);
+        state.apply(Action::MoveDrawingView { drawing: dkey(0), view: 0, pos_x: 0.25, pos_y: 0.4 });
+        let (cx2, _) = crate::drawing::resolved_view_pos(&state.doc, dkey(0), 1);
         assert!((cx2 - 0.25).abs() < 1e-4, "child follows the parent's shared axis");
     }
 
@@ -21758,29 +21748,29 @@ mod tests {
         let sketch = state.doc.sketches.len() - 1;
         state.apply(Action::ExitSketch);
         state.apply(Action::CreateDrawing { name: None });
-        state.apply(Action::EditDrawing { drawing: Some(0) });
+        state.apply(Action::EditDrawing { drawing: Some(dkey(0)) });
         state.apply(Action::SetTool(Tool::DrawingAdd));
 
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Body(bkey(0)),
             additive: false,
         });
-        assert_eq!(state.doc.drawings[0].views.len(), 1, "body click placed a view");
-        assert_eq!(state.selected_drawing_view(), Some((0, 0)), "the new view is selected");
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 1, "body click placed a view");
+        assert_eq!(state.selected_drawing_view(), Some((dkey(0), 0)), "the new view is selected");
         assert!(state.scene_selection.is_empty(), "the click fed the tool, not the selection");
 
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Sketch(sketch),
             additive: false,
         });
-        assert_eq!(state.doc.drawings[0].views.len(), 2, "sketch click placed a view");
-        assert_eq!(state.doc.drawings[0].views[1].sketch, Some(sketch));
-        assert_eq!(state.selected_drawing_view(), Some((0, 1)));
+        assert_eq!(state.doc.drawings[dkey(0)].views.len(), 2, "sketch click placed a view");
+        assert_eq!(state.doc.drawings[dkey(0)].views[1].sketch, Some(sketch));
+        assert_eq!(state.selected_drawing_view(), Some((dkey(0), 1)));
 
         // Removing the selected view drops the selection; removing an earlier view shifts it.
-        state.apply(Action::RemoveDrawingView { drawing: 0, view: 1 });
+        state.apply(Action::RemoveDrawingView { drawing: dkey(0), view: 1 });
         assert_eq!(state.selected_drawing_view(), None);
-        state.select_drawing_only(0, crate::context::DrawingElementRef::Projection(0));
+        state.select_drawing_only(dkey(0), crate::context::DrawingElementRef::Projection(0));
         state.apply(Action::EditDrawing { drawing: None });
         assert_eq!(state.tool, Tool::Select, "Add-view tool is workbench-only");
         assert_eq!(state.selected_drawing_view(), None, "closing the drawing clears it");
@@ -21790,20 +21780,20 @@ mod tests {
     fn drawing_multiselect_toggle_and_single_accessors() {
         use crate::context::DrawingElementRef as R;
         let mut s = AppState::default();
-        s.editing_drawing = Some(0);
+        s.editing_drawing = Some(dkey(0));
         // One projection selected → the single-element view accessor resolves it.
-        s.select_drawing_only(0, R::Projection(2));
-        assert_eq!(s.selected_drawing_view(), Some((0, 2)));
-        assert!(s.is_drawing_element_selected(0, R::Projection(2)));
+        s.select_drawing_only(dkey(0), R::Projection(2));
+        assert_eq!(s.selected_drawing_view(), Some((dkey(0), 2)));
+        assert!(s.is_drawing_element_selected(dkey(0), R::Projection(2)));
         // Toggle a text in: now two are selected, so no single-element editor shows.
-        s.toggle_drawing_element(0, R::Text(1));
+        s.toggle_drawing_element(dkey(0), R::Text(1));
         assert_eq!(s.selected_drawing_elements.len(), 2);
         assert_eq!(s.selected_drawing_view(), None);
         assert_eq!(s.selected_drawing_annotation(), None);
         // Toggle the projection back off → only the text remains, and its accessor resolves.
-        s.toggle_drawing_element(0, R::Projection(2));
-        assert_eq!(s.selected_drawing_annotation(), Some((0, 1)));
-        s.deselect_drawing_element(0, R::Text(1));
+        s.toggle_drawing_element(dkey(0), R::Projection(2));
+        assert_eq!(s.selected_drawing_annotation(), Some((dkey(0), 1)));
+        s.deselect_drawing_element(dkey(0), R::Text(1));
         assert!(s.selected_drawing_elements.is_empty());
     }
 
@@ -21813,22 +21803,22 @@ mod tests {
         let a = [0, 0, 0];
         let b = [1, 0, 0];
         let mut s = AppState::default();
-        s.editing_drawing = Some(0);
+        s.editing_drawing = Some(dkey(0));
         s.selected_drawing_elements = vec![
-            (0, R::Projection(1)),
-            (0, R::Projection(3)),
-            (0, R::Dimension { view: 4, a, b }),
-            (0, R::Text(0)),
+            (dkey(0), R::Projection(1)),
+            (dkey(0), R::Projection(3)),
+            (dkey(0), R::Dimension { view: 4, a, b }),
+            (dkey(0), R::Text(0)),
         ];
         // Remove view 2: lower indices unchanged, higher ones shift down, text untouched.
-        s.drawing_selection_view_removed(0, 2);
-        assert!(s.is_drawing_element_selected(0, R::Projection(1)));
-        assert!(s.is_drawing_element_selected(0, R::Projection(2)));
-        assert!(s.is_drawing_element_selected(0, R::Dimension { view: 3, a, b }));
-        assert!(s.is_drawing_element_selected(0, R::Text(0)));
+        s.drawing_selection_view_removed(dkey(0), 2);
+        assert!(s.is_drawing_element_selected(dkey(0), R::Projection(1)));
+        assert!(s.is_drawing_element_selected(dkey(0), R::Projection(2)));
+        assert!(s.is_drawing_element_selected(dkey(0), R::Dimension { view: 3, a, b }));
+        assert!(s.is_drawing_element_selected(dkey(0), R::Text(0)));
         // Removing a view that is itself selected drops it.
-        s.drawing_selection_view_removed(0, 2);
-        assert!(!s.is_drawing_element_selected(0, R::Projection(2)));
+        s.drawing_selection_view_removed(dkey(0), 2);
+        assert!(!s.is_drawing_element_selected(dkey(0), R::Projection(2)));
     }
 
     /// #232: an in-sketch repeat takes its direction from a picked edge (its unit vector), and
@@ -21917,28 +21907,28 @@ mod tests {
     fn drawing_page_defaults_to_landscape_letter_and_is_settable() {
         let mut state = AppState::default();
         state.apply(Action::CreateDrawing { name: None });
-        let d = &state.doc.drawings[0];
+        let d = &state.doc.drawings[dkey(0)];
         assert!((d.page_width_mm - 11.0 * 25.4).abs() < 1e-3, "landscape: 11in wide");
         assert!((d.page_height_mm - 8.5 * 25.4).abs() < 1e-3);
         assert!((d.margin_mm - 0.5 * 25.4).abs() < 1e-3);
 
         state.apply(Action::SetDrawingPage {
-            drawing: 0,
+            drawing: dkey(0),
             width_mm: Some(210.0),
             height_mm: Some(297.0),
             margin_mm: Some(10.0),
         });
-        let d = &state.doc.drawings[0];
+        let d = &state.doc.drawings[dkey(0)];
         assert_eq!((d.page_width_mm, d.page_height_mm, d.margin_mm), (210.0, 297.0, 10.0));
 
         // A too-large margin is clamped to just under half the smaller side.
         state.apply(Action::SetDrawingPage {
-            drawing: 0,
+            drawing: dkey(0),
             width_mm: Some(100.0),
             height_mm: Some(200.0),
             margin_mm: Some(999.0),
         });
-        assert!(state.doc.drawings[0].margin_mm <= 49.0, "margin clamped to fit");
+        assert!(state.doc.drawings[dkey(0)].margin_mm <= 49.0, "margin clamped to fit");
     }
 
     /// #253: DeleteElement tombstones one specific element (the right-click → Delete path) and
@@ -22655,32 +22645,32 @@ mod tests {
         let mut state = box_extrusion_state();
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::AddDrawingView {
-            drawing: 0,
+            drawing: dkey(0),
             body: bkey(0),
             orientation: crate::model::DrawingOrientation::Top,
         });
         let center = [100, 200, 300];
         state.apply(Action::SetDrawingCircleDimOffset {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             center,
             offset: Some(4.5),
         });
-        assert_eq!(state.doc.drawings[0].views[0].circle_dim_offsets, vec![(center, 4.5)]);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets, vec![(center, 4.5)]);
         state.apply(Action::SetDrawingCircleDimOffset {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             center,
             offset: Some(-2.0),
         });
-        assert_eq!(state.doc.drawings[0].views[0].circle_dim_offsets, vec![(center, -2.0)]);
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets, vec![(center, -2.0)]);
         state.apply(Action::SetDrawingCircleDimOffset {
-            drawing: 0,
+            drawing: dkey(0),
             view: 0,
             center,
             offset: None,
         });
-        assert!(state.doc.drawings[0].views[0].circle_dim_offsets.is_empty());
+        assert!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets.is_empty());
     }
 
     /// #508: starting an extrude faces the free half-space the camera is looking at.
@@ -25301,13 +25291,13 @@ mod tests {
             state.apply(Action::CreateDrawing { name: Some("Bracket".to_string()) }),
             ActionResult::Ok
         );
-        let drawing = &state.doc.drawings[0];
+        let drawing = &state.doc.drawings[dkey(0)];
         assert_eq!(drawing.annotations.len(), 1, "one default title annotation");
         assert_eq!(drawing.annotations[0].text, "Bracket");
         assert!(!drawing.annotations[0].deleted);
         // An unnamed drawing falls back to a "Drawing N" title.
         state.apply(Action::CreateDrawing { name: None });
-        assert_eq!(state.doc.drawings[1].annotations[0].text, "Drawing 1");
+        assert_eq!(state.doc.drawings[dkey(1)].annotations[0].text, "Drawing 1");
     }
 
     #[test]

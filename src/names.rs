@@ -575,7 +575,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             .and_then(|d| d.name.as_deref())
             .filter(|n| !n.trim().is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| format!("Drawing {i}")),
+            .unwrap_or_else(|| format!("Drawing {}", i.index())),
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match doc
                 .extrusions
