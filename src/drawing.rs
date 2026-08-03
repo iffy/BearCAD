@@ -1096,10 +1096,7 @@ fn render_drawing<C: Canvas>(
     }
 
     // Free text annotations (#312): wrapped to their box, positioned by page fraction.
-    for ann in &drawing.annotations {
-        if ann.deleted {
-            continue;
-        }
+    for ann in drawing.annotations.values() {
         let font = (ann.size_frac * height).clamp(4.0, 400.0);
         let x = ann.pos_x * width;
         let y = ann.pos_y * height + font; // baseline of the first line
@@ -2056,14 +2053,13 @@ label_hidden: false,
             }],
             // The title now renders as a normal text annotation, added with the drawing (#335),
             // not a baked-in export stamp — mirror that here.
-            annotations: vec![crate::model::DrawingAnnotation {
+            annotations: crate::arena::Arena::from_iter([crate::model::DrawingAnnotation {
                 text: "Plate".to_string(),
                 pos_x: 0.045,
                 pos_y: 0.02,
                 size_frac: 0.028,
                 wrap_frac: None,
-                deleted: false,
-            }],
+            }]),
             ..Default::default()
         });
         doc

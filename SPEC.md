@@ -102,7 +102,7 @@ ones, resolved to a key at the script boundary.
   #430) or use right-click → **Move to**; the Document root row is the drop target for
   un-filing. Right-click a component: **New
   component inside**, **Move to document root**, **Delete** (deleting re-homes contents
-  to the parent, `document_lifecycle::tombstone_element`).
+  to the parent, `document_lifecycle::delete_element`).
 - **Visibility:** hiding a component hides everything inside it — members resolve
   through `hierarchy::owning_component` (a body via its producing op/extrusion, an
   extrusion or image via its sketch's host plane) and every ancestor component must be
@@ -854,7 +854,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     bodies can't be re-picked unless the operation being edited already owns them).
   - The operation element is **editable**: selecting it offers "Edit operation", which
     re-opens the pickers (kind, sides, keep-B) and applies in place, re-shadowing inputs
-    accordingly. Deleting the operation tombstones its outputs and releases its inputs
+    accordingly. Deleting the operation removes its outputs and releases its inputs
     from shadow (unless another live operation still consumes them). Undo of a commit
     restores inputs and removes the operation and its outputs as one step.
   - **Live result preview (#1033):** as soon as every side the operation needs is picked
@@ -1046,7 +1046,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   operation element** (`Document::move_ops`, `ShapeKind::MoveOperation`) with one moved
   output body per input (`BodySource::Moved { op, target }`); inputs become shadow bodies,
   exactly like the Combine tool. "Edit move" re-opens the tool (outputs grow/shrink with
-  the target list; removed ones tombstone). Meshes transform on every target (works in the
+  the target list; removed ones go away). Meshes transform on every target (works in the
   lean build); the BREP shape transforms through the kernel (`Shape::transformed`,
   `bearcad_shape_transform` natively and in the web kernel module) so moved bodies chain
   into booleans and export as real BREP. **Translation drag gizmos (#215):** with bodies
@@ -1130,7 +1130,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   real BREP, and the mesh path reflects each triangle with **reversed winding** so normals stay
   outward. "Edit mirror" (double-click / the pane button, or a lone selected mirror op) re-opens
   the tool with its plane + bodies loaded; outputs grow/shrink with the target list (removed
-  ones tombstone). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…},
+  ones go away). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…},
   output? = "new"|"join"|"cut", name? }` and `bearcad.edit_mirror{ index, plane, bodies,
   output? }`; the default output stays implicit so existing scripts round-trip unchanged. In the elements graph the plane's body and
   every input body feed the Mirror node, and each reflected body nests beneath it.
@@ -1407,7 +1407,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Face (loop) slicing** (#238): a `face_targets` entry (a closed boundary loop's line indices)
     is bisected where a cutter crosses its boundary at two points — the two crossed edges are
     split, a cut **chord** line is emitted between the crossings, and generated coincidence
-    constraints (`constraint_outputs`, tombstoned/regenerated on rebuild like the fragments) stitch
+    constraints (`constraint_outputs`, removed and regenerated on rebuild like the fragments) stitch
     the pieces so the loop resolves into two faces. The split pieces inherit the crossed edges'
     corner coincidences, so uncrossed neighbours attach to the correct side. This works because
     `closed_line_loops` now extracts **minimal, vertex-simple** faces: it drops self-touching cycles
@@ -2079,6 +2079,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   drawing/projection/dimension/annotation nodes, `ComponentMember::Drawing`, the open
   drawing and the popped-out one, and the drawing selection. A script names a drawing by its
   **ordinal** among the live ones, resolved to a key at the script boundary.
+- **Annotation identity (#1055):** a page's `annotations` is an `arena::Arena` too, and a text
+  note is named by an `AnnotationKey` — `DrawingElementRef::Text`,
+  `HierarchyNode::DrawingAnnotation`, and the add/edit/move/remove actions. Deleting one
+  removes it, so the note beside it does not slide into its place under an open editor. A
+  script names an annotation by its **ordinal** among the live ones on that page.
 - **Create & manage:** the Elements pane has a **＋ New Drawing** button (and a `Drawing`
   node, with its own icon, per drawing). Right-clicking a drawing — or clicking its row —
   **opens it** in the drawing pane, which takes over the central area. The **editor** is
@@ -3390,7 +3395,7 @@ constrained to them follows.
 
 **Elements pane (#723):** an instance is **one selectable row** (`SceneElement::
 UnitInstance`): rename, hide, select, and delete work like any element; deleting
-tombstones the instance and the **embedded copy stays** (unit indices remain stable, and
+removes the instance and the **embedded copy stays** (unit keys remain stable, and
 re-importing the same source reuses it). The row's triangle expands the unit's contents
 as display-only leaves (`HierarchyNode::UnitChild`) in the List. Read-only is enforced at
 the scene-identity layer: unit contents map to **no `SceneElement`** — the single gate

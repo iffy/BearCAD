@@ -205,7 +205,7 @@ thread_local! {
 /// [`crate::model::BodySource::UnitInstance`] body is what makes the unit's geometry
 /// snappable and referenceable exactly like the document's own — Move's point pickers,
 /// body-edge dimensions (#647), face pickers, and export all see an ordinary body. Runs
-/// on the same every-mutation seam as document health; deleting an instance tombstones
+/// on the same every-mutation seam as document health; deleting an instance removes
 /// its body here on the next pass.
 pub fn sync_unit_bodies(doc: &mut Document) {
     use crate::model::BodySource;

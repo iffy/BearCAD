@@ -12825,7 +12825,6 @@ impl eframe::App for App {
                         .drawings
                         .get(d)
                         .and_then(|dr| dr.annotations.get(a))
-                        .filter(|ann| !ann.deleted)
                         .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
                 }),
             drawing_selection: self
@@ -20806,8 +20805,8 @@ impl App {
         // them, and let the Text tool place new ones (click = growing, drag = wrapped box).
         if let Some(page) = page_rect {
             let mut place: Option<(f32, f32, Option<f32>)> = None; // pos_x, pos_y, wrap_frac
-            let mut move_ann: Option<(usize, f32, f32)> = None;
-            let mut select_ann: Option<usize> = None;
+            let mut move_ann: Option<(crate::model::AnnotationKey, f32, f32)> = None;
+            let mut select_ann: Option<crate::model::AnnotationKey> = None;
             let annotations = self
                 .state
                 .doc
@@ -20815,10 +20814,7 @@ impl App {
                 .get(drawing)
                 .map(|d| d.annotations.clone())
                 .unwrap_or_default();
-            for (ai, ann) in annotations.iter().enumerate() {
-                if ann.deleted {
-                    continue;
-                }
+            for (ai, ann) in annotations.iter() {
                 let font_px = (ann.size_frac * page.height()).clamp(6.0, 200.0);
                 let pos = page.min + egui::vec2(ann.pos_x * page.width(), ann.pos_y * page.height());
                 let wrap_px = ann

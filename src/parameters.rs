@@ -318,13 +318,8 @@ impl ParametersPaneState {
     }
 }
 
-/// The **live** parameter with this name, if any (#995).
-///
-/// Deleted parameters are tombstoned rather than removed, to keep every other parameter's index
-/// stable. That is bookkeeping, not a claim on the name: a tombstone is invisible in the pane and
-/// already ignored when expressions are evaluated (`parameter_value_by_name`), so having it still
-/// answer to its name only ever produced "Parameter 'x' already exists" about a parameter that
-/// isn't there. Deleting one frees its name.
+/// The parameter with this name, if any (#995). Deleting a parameter frees its name — it is
+/// gone from the arena, so nothing is left to answer to it.
 pub fn parameter_index_by_name(doc: &Document, name: &str) -> Option<ParameterKey> {
     doc.parameters
         .iter()
@@ -1269,7 +1264,7 @@ pub fn set_parameter_expression(
 }
 
 pub fn delete_parameter(doc: &mut Document, index: ParameterKey) -> Result<(), String> {
-    if !crate::document_lifecycle::tombstone_parameter(doc, index) {
+    if !crate::document_lifecycle::delete_parameter(doc, index) {
         return Err(format!("Parameter {index:?} not found"));
     }
     Ok(())
@@ -1833,7 +1828,7 @@ mod tests {
     use super::*;
     use crate::actions::AppState;
     use crate::constraints::add_distance_constraint;
-    use crate::document_lifecycle::tombstone_element;
+    use crate::document_lifecycle::delete_element;
     use crate::hierarchy::SceneElement;
     use crate::model::{DistanceTarget, Document, FaceId, Line, ShapeKind};
 
@@ -1988,10 +1983,8 @@ mod tests {
         assert_eq!(doc.parameters.values().nth(2).unwrap().expression, "2 * B");
     }
 
-    /// #995: deleting a parameter frees its name. Deleted parameters are tombstoned so every
-    /// other parameter's index stays put, but a tombstone is invisible in the pane and already
-    /// ignored when expressions evaluate — so having it still answer to its name only ever
-    /// produced "already exists" about a parameter that isn't there.
+    /// #995: deleting a parameter frees its name — it is removed outright, so nothing is left
+    /// to raise "already exists" about a parameter that isn't there.
     #[test]
     fn a_deleted_parameters_name_can_be_used_again() {
         let mut doc = Document::default();
@@ -2005,7 +1998,7 @@ mod tests {
         let j = add_parameter(&mut doc, "slotwidth".into(), "5".into())
             .expect("the name is free once the parameter is gone");
         assert_ne!(i, j, "the reused slot carries a new generation, so the keys differ");
-        assert!(doc.parameters.get(i).is_none(), "the old parameter is gone, not tombstoned");
+        assert!(doc.parameters.get(i).is_none(), "the old parameter is gone");
         assert!(doc.parameters.contains(j));
 
         // The name now resolves to the new one.
@@ -2513,7 +2506,7 @@ mod tests {
     fn computed_parameter_survives_line_deletion() {
         let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
         add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
-        tombstone_element(&mut doc, SceneElement::Line(line_index));
+        delete_element(&mut doc, SceneElement::Line(line_index));
         assert_eq!(doc.parameters.len(), 1);
         assert_eq!(doc.parameters.values().next().unwrap().expression, "10.0 mm");
         let health = crate::document_health::recompute_document_health(&doc);

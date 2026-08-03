@@ -29,7 +29,7 @@ use crate::document_health::{
     require_parameter_editable,
     selection_frozen_summary, DocumentHealth,
 };
-use crate::document_lifecycle::{delete_targets_from_selection, tombstone_elements};
+use crate::document_lifecycle::{delete_targets_from_selection, delete_elements};
 use crate::selection::{click_scene_selection, SceneSelection};
 use crate::model::SketchId;
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
@@ -1959,7 +1959,7 @@ pub enum Action {
     /// first-class operation (#531) rather than an in-place extrusion edit.
     EditEdgeTreatment { extrusion: crate::model::ExtrusionKey, index: usize },
     /// Re-open a committed edge-treatment **operation** (#531) for editing: reloads its edges,
-    /// kind, and amount into `creating_edge_treatment`, tombstones the op (releasing its shadow
+    /// kind, and amount into `creating_edge_treatment`, removes the op (releasing its shadow
     /// inputs and outputs) so the gizmo commit rebuilds it, and switches to the matching tool.
     EditEdgeTreatmentOp { op: crate::model::EdgeTreatmentOpKey },
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
@@ -2140,11 +2140,11 @@ pub enum Action {
         wrap_frac: Option<f32>,
     },
     /// Edit a drawing annotation's text (#312); empty text removes it.
-    EditDrawingAnnotationText { drawing: crate::model::DrawingKey, annotation: usize, text: String },
+    EditDrawingAnnotationText { drawing: crate::model::DrawingKey, annotation: crate::model::AnnotationKey, text: String },
     /// Move a drawing annotation to a page-fraction position (#312).
-    MoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: usize, pos_x: f32, pos_y: f32 },
+    MoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: crate::model::AnnotationKey, pos_x: f32, pos_y: f32 },
     /// Remove a drawing annotation (#312).
-    RemoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: usize },
+    RemoveDrawingAnnotation { drawing: crate::model::DrawingKey, annotation: crate::model::AnnotationKey },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: crate::model::DrawingKey, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -2529,7 +2529,7 @@ pub enum Action {
         extend_infinite: bool,
     },
     /// Re-point an existing slice operation at new targets / cutters / extend flag. Fragment
-    /// bodies are resized to the new piece counts (grow pushes bodies, shrink tombstones).
+    /// bodies are resized to the new piece counts (grow pushes bodies, shrink removes).
     EditSliceOperation {
         op: crate::model::SliceOpKey,
         targets: Vec<crate::model::BodyKey>,
@@ -3460,7 +3460,9 @@ impl AppState {
 
     /// The single selected text annotation `(drawing, annotation)`, or `None` unless exactly one
     /// text element is selected (#346).
-    pub fn selected_drawing_annotation(&self) -> Option<(crate::model::DrawingKey, usize)> {
+    pub fn selected_drawing_annotation(
+        &self,
+    ) -> Option<(crate::model::DrawingKey, crate::model::AnnotationKey)> {
         match self.selected_drawing_elements.as_slice() {
             [(d, crate::context::DrawingElementRef::Text(a))] => Some((*d, *a)),
             _ => None,
@@ -3528,7 +3530,7 @@ impl AppState {
 
     /// Fix up the selection after view `view` of `drawing` is removed (its later siblings shift
     /// down by one): drop any selected projection/dimension on that view and renumber higher ones
-    /// (#346). Annotations are tombstoned, not renumbered, so they need no shifting.
+    /// (#346). Annotations are keyed (#1055), never renumbered, so they need no shifting.
     pub fn drawing_selection_view_removed(&mut self, drawing: crate::model::DrawingKey, view: usize) {
         use crate::context::DrawingElementRef as R;
         self.selected_drawing_elements.retain(|(d, e)| {
@@ -3589,7 +3591,7 @@ impl AppState {
     fn apply_extrude_body_mode(&mut self, ei: crate::model::ExtrusionKey, mode: ExtrudeBodyMode) {
         let current = crate::model::body_index_for_extrusion(&self.doc, ei);
         // The body is solely `ei`'s home (a lone added extrusion, no cuts) — removing `ei`
-        // would leave it empty, so it should be tombstoned rather than emptied.
+        // would leave it empty, so it should be removed rather than emptied.
         let solely_owns = |doc: &Document, bi: crate::model::BodyKey| {
             doc.bodies.get(bi).is_some_and(|b| {
                 b.source.extrusion_indices() == [ei] && b.source.cut_extrusion_indices().is_empty()
@@ -3616,7 +3618,7 @@ impl AppState {
         }
         if let Some(bi) = current {
             if solely_owns(&self.doc, bi) {
-                crate::document_lifecycle::tombstone_element(
+                crate::document_lifecycle::delete_element(
                     &mut self.doc,
                     SceneElement::Body(bi),
                 );
@@ -3746,7 +3748,7 @@ impl AppState {
                 return;
             }
         }
-        let _ = crate::document_lifecycle::tombstone_element(
+        let _ = crate::document_lifecycle::delete_element(
             &mut self.doc,
             crate::hierarchy::SceneElement::Sketch(sketch),
         );
@@ -8769,7 +8771,7 @@ impl AppState {
             }
             Action::DeleteElement { element } => {
                 let target = crate::document_lifecycle::delete_target_for_element(element);
-                let changed = crate::document_lifecycle::tombstone_element(&mut self.doc, target);
+                let changed = crate::document_lifecycle::delete_element(&mut self.doc, target);
                 if !changed {
                     return ActionResult::Ok;
                 }
@@ -8791,7 +8793,7 @@ impl AppState {
                     return ActionResult::Ok;
                 }
                 let targets = delete_targets_from_selection(&self.scene_selection);
-                let count = tombstone_elements(&mut self.doc, &targets);
+                let count = delete_elements(&mut self.doc, &targets);
                 if let Some(session) = self.sketch_session {
                     if !crate::document_lifecycle::sketch_alive(&self.doc, session.sketch) {
                         self.exit_sketch_session();
@@ -9285,7 +9287,7 @@ impl AppState {
                     .collect();
                 // Tombstone the op (releasing its shadow inputs and beveled outputs) so the
                 // gizmo commit rebuilds it from the reloaded edges/amount.
-                crate::document_lifecycle::tombstone_element(
+                crate::document_lifecycle::delete_element(
                     &mut self.doc,
                     SceneElement::EdgeTreatmentOp(op),
                 );
@@ -10031,13 +10033,12 @@ impl AppState {
                     .clone()
                     .unwrap_or_else(|| format!("Drawing {index}"));
                 let pos_x = (drawing.margin_mm / drawing.page_width_mm).clamp(0.0, 0.4);
-                drawing.annotations.push(crate::model::DrawingAnnotation {
+                drawing.annotations.insert(crate::model::DrawingAnnotation {
                     text: title,
                     pos_x,
                     pos_y: 0.02,
                     size_frac: 0.028,
                     wrap_frac: None,
-                    deleted: false,
                 });
                 let key = self.doc.drawings.insert(drawing);
                 self.editing_drawing = Some(key);
@@ -10272,15 +10273,13 @@ label_hidden: false,
                     return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
                 let d = &mut self.doc.drawings[drawing];
-                d.annotations.push(crate::model::DrawingAnnotation {
+                let ai = d.annotations.insert(crate::model::DrawingAnnotation {
                     text,
                     pos_x: pos_x.clamp(0.0, 1.0),
                     pos_y: pos_y.clamp(0.0, 1.0),
                     size_frac: 0.025,
                     wrap_frac,
-                    deleted: false,
                 });
-                let ai = d.annotations.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Text(ai));
                 self.status = "Added text".to_string();
                 ActionResult::Ok
@@ -10292,10 +10291,10 @@ label_hidden: false,
                     .get_mut(drawing)
                     .and_then(|d| d.annotations.get_mut(annotation))
                 else {
-                    return ActionResult::Err(format!("No annotation {annotation}"));
+                    return ActionResult::Err(format!("No annotation {}", annotation.index()));
                 };
                 if text.trim().is_empty() {
-                    a.deleted = true;
+                    self.doc.drawings[drawing].annotations.remove(annotation);
                     self.deselect_drawing_element(
                         drawing,
                         crate::context::DrawingElementRef::Text(annotation),
@@ -10313,7 +10312,7 @@ label_hidden: false,
                     .get_mut(drawing)
                     .and_then(|d| d.annotations.get_mut(annotation))
                 else {
-                    return ActionResult::Err(format!("No annotation {annotation}"));
+                    return ActionResult::Err(format!("No annotation {}", annotation.index()));
                 };
                 a.pos_x = pos_x.clamp(0.0, 1.0);
                 a.pos_y = pos_y.clamp(0.0, 1.0);
@@ -10326,9 +10325,10 @@ label_hidden: false,
                     .get_mut(drawing)
                     .and_then(|d| d.annotations.get_mut(annotation))
                 else {
-                    return ActionResult::Err(format!("No annotation {annotation}"));
+                    return ActionResult::Err(format!("No annotation {}", annotation.index()));
                 };
-                a.deleted = true;
+                let _ = a;
+                self.doc.drawings[drawing].annotations.remove(annotation);
                 self.deselect_drawing_element(
                     drawing,
                     crate::context::DrawingElementRef::Text(annotation),
@@ -10754,7 +10754,7 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                // Resize body outputs to instance-count × targets (tombstone extras, grow new).
+                // Resize body outputs to instance-count × targets (drop extras, grow new).
                 let want = offsets.len() * targets.len();
                 let have = self.doc.repeat_ops[op].outputs.len();
                 if want > have {
@@ -12199,7 +12199,7 @@ label_hidden: false,
                     }
                 }
                 // Recompute the target-major fragment list and reconcile the output bodies:
-                // reuse existing slots, push new ones for a surplus, tombstone the shortfall.
+                // reuse existing outputs, mint new ones for a surplus, drop the shortfall.
                 let desired: Vec<(usize, usize)> = (0..targets.len())
                     .flat_map(|target| {
                         let pieces = crate::extrude::slice_piece_count(&self.doc, op, target)
@@ -14134,7 +14134,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
     let Some(op) = doc.sketch_slice_ops.get(op_index).cloned() else {
         return false;
     };
-    // Reset any prior run: un-shadow every target, tombstone old fragments.
+    // Reset any prior run: un-shadow every target, remove old fragments.
     for &a in &op.line_targets {
         if let Some(l) = doc.lines.get_mut(a) {
             l.shadow = false;
@@ -14149,7 +14149,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
         doc.lines.remove(f);
     }
     // Face-slice targets (#238): un-shadow every boundary line (any were shadowed as crossed
-    // edges) and tombstone the coincidence constraints a prior run generated.
+    // edges) and remove the coincidence constraints a prior run generated.
     for loop_lines in &op.face_targets {
         for &li in loop_lines {
             if let Some(l) = doc.lines.get_mut(li) {
@@ -14695,7 +14695,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     // reflected edges join into a fillable face. Face detection keys vertices by coincidence
     // constraints (see `polygon::vertex_key`), and the reflection preserves coincidence, so a
     // `Coincident` between two mirrored source endpoints maps to one between the matching output
-    // endpoints. Old ones are tombstoned first, so a rebuild stays idempotent.
+    // endpoints. Old ones are removed first, so a rebuild stays idempotent.
     for &ci in &op.constraint_outputs {
         doc.constraints.remove(ci);
     }
@@ -14785,7 +14785,7 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
     };
     let sketch = op.sketch;
 
-    // Reset any prior run: un-shadow the sources, tombstone old outputs + stitch constraints.
+    // Reset any prior run: un-shadow the sources, remove old outputs + stitch constraints.
     for &li in &op.line_targets {
         if let Some(l) = doc.lines.get_mut(li) {
             l.shadow = false;
@@ -15030,7 +15030,7 @@ fn resolve_treatment_corner_sources(
 /// `op_index`. Each copy rides a fresh construction plane parallel to the source's, translated by
 /// the instance offset, and carries copies of the source's lines/circles (plane-local coords
 /// unchanged, so they step by the offset in world). Regenerates from scratch each call: prior
-/// generated planes/sketches/entities are tombstoned first. Restricted to construction-plane
+/// generated planes/sketches/entities are removed first. Restricted to construction-plane
 /// hosted sketches; others are skipped.
 fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::model::RepeatOpKey) {
     let Some(op) = doc.repeat_ops.get(op_index).cloned() else {
@@ -15940,6 +15940,7 @@ mod tests {
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
+    use crate::model::annotation_key_for_slot as akey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -18322,7 +18323,7 @@ mod tests {
     }
 
     /// #723: the instance row renames through the ordinary rename action, and deleting it
-    /// tombstones the instance while the embedded copy stays (unit indices remain stable
+    /// removes the instance while the embedded copy stays (unit keys remain stable
     /// and re-importing the same source stays cheap).
     #[test]
     fn unit_instance_row_renames_and_deletes_as_an_instance() {
@@ -20580,7 +20581,7 @@ mod tests {
     }
 
     /// #538 (delete): deleting the op un-shadows every source edge (sharp corner restored) and
-    /// tombstones all generated trimmed copies + bridges.
+    /// removes all generated trimmed copies + bridges.
     #[test]
     fn deleting_a_vertex_treatment_op_unshadows_sources_and_removes_outputs() {
         let mut state = AppState::default();
@@ -20593,15 +20594,15 @@ mod tests {
         let op = state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap().clone();
         assert!(state.doc.lines[lkey(0)].shadow && state.doc.lines[lkey(1)].shadow);
 
-        crate::document_lifecycle::tombstone_element(
+        crate::document_lifecycle::delete_element(
             &mut state.doc,
             SceneElement::SketchVertexTreatmentOp(skop(0)),
         );
 
-        assert!(state.doc.sketch_vertex_treatment_ops.is_empty(), "the op is removed, not tombstoned");
+        assert!(state.doc.sketch_vertex_treatment_ops.is_empty(), "the op is gone");
         // Sources un-shadowed (live geometry, sharp corner back).
         assert!(!state.doc.lines[lkey(0)].shadow && !state.doc.lines[lkey(1)].shadow);
-        // Every generated trimmed copy + bridge is tombstoned.
+        // Every generated trimmed copy + bridge is gone.
         for out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
             assert!(!state.doc.lines.contains(*out), "output line {} should be gone", out.index());
         }
@@ -20934,7 +20935,7 @@ mod tests {
         assert_eq!(state.doc.boolean_ops.values().nth(0).unwrap().keep_b, true);
     }
 
-    /// Deleting the operation element tombstones its outputs and releases its inputs.
+    /// Deleting the operation element removes its outputs and releases its inputs.
     #[test]
     fn boolean_delete_releases_inputs() {
         let mut state = two_box_state(true);
@@ -20946,11 +20947,11 @@ mod tests {
             solid_count: None,
         });
         let out = state.doc.boolean_ops.values().nth(0).unwrap().outputs[0];
-        assert!(crate::document_lifecycle::tombstone_element(
+        assert!(crate::document_lifecycle::delete_element(
             &mut state.doc,
             SceneElement::BooleanOp(bopkey(0)),
         ));
-        assert!(state.doc.boolean_ops.is_empty(), "the operation is removed, not tombstoned");
+        assert!(state.doc.boolean_ops.is_empty(), "the operation is gone");
         assert!(!state.doc.bodies.contains(out));
         assert!(!state.doc.bodies.values().nth(0).unwrap().shadow);
         assert!(!state.doc.bodies.values().nth(1).unwrap().shadow);
@@ -21778,14 +21779,14 @@ mod tests {
         assert_eq!(s.selected_drawing_view(), Some((dkey(0), 2)));
         assert!(s.is_drawing_element_selected(dkey(0), R::Projection(2)));
         // Toggle a text in: now two are selected, so no single-element editor shows.
-        s.toggle_drawing_element(dkey(0), R::Text(1));
+        s.toggle_drawing_element(dkey(0), R::Text(akey(1)));
         assert_eq!(s.selected_drawing_elements.len(), 2);
         assert_eq!(s.selected_drawing_view(), None);
         assert_eq!(s.selected_drawing_annotation(), None);
         // Toggle the projection back off → only the text remains, and its accessor resolves.
         s.toggle_drawing_element(dkey(0), R::Projection(2));
-        assert_eq!(s.selected_drawing_annotation(), Some((dkey(0), 1)));
-        s.deselect_drawing_element(dkey(0), R::Text(1));
+        assert_eq!(s.selected_drawing_annotation(), Some((dkey(0), akey(1))));
+        s.deselect_drawing_element(dkey(0), R::Text(akey(1)));
         assert!(s.selected_drawing_elements.is_empty());
     }
 
@@ -21800,14 +21801,14 @@ mod tests {
             (dkey(0), R::Projection(1)),
             (dkey(0), R::Projection(3)),
             (dkey(0), R::Dimension { view: 4, a, b }),
-            (dkey(0), R::Text(0)),
+            (dkey(0), R::Text(akey(0))),
         ];
         // Remove view 2: lower indices unchanged, higher ones shift down, text untouched.
         s.drawing_selection_view_removed(dkey(0), 2);
         assert!(s.is_drawing_element_selected(dkey(0), R::Projection(1)));
         assert!(s.is_drawing_element_selected(dkey(0), R::Projection(2)));
         assert!(s.is_drawing_element_selected(dkey(0), R::Dimension { view: 3, a, b }));
-        assert!(s.is_drawing_element_selected(dkey(0), R::Text(0)));
+        assert!(s.is_drawing_element_selected(dkey(0), R::Text(akey(0))));
         // Removing a view that is itself selected drops it.
         s.drawing_selection_view_removed(dkey(0), 2);
         assert!(!s.is_drawing_element_selected(dkey(0), R::Projection(2)));
@@ -21923,16 +21924,16 @@ mod tests {
         assert!(state.doc.drawings[dkey(0)].margin_mm <= 49.0, "margin clamped to fit");
     }
 
-    /// #253: DeleteElement tombstones one specific element (the right-click → Delete path) and
+    /// #253: DeleteElement deletes one specific element (the right-click → Delete path) and
     /// drops it from the selection, independent of what else is selected.
     #[test]
-    fn delete_element_tombstones_one_element() {
+    fn delete_element_removes_one_element() {
         let mut state = two_box_state(false);
         state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(0)), additive: false });
         state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(1)), additive: true });
         assert!(state.doc.bodies.contains(bkey(0)));
         state.apply(Action::DeleteElement { element: SceneElement::Body(bkey(0)) });
-        assert!(!state.doc.bodies.contains(bkey(0)), "the targeted body is tombstoned");
+        assert!(!state.doc.bodies.contains(bkey(0)), "the targeted body is gone");
         assert!(state.doc.bodies.contains(bkey(1)), "other bodies are untouched");
         assert!(!state.scene_selection.is_selected(SceneElement::Body(bkey(0))), "deleted element leaves the selection");
         // Undoable.
@@ -23433,7 +23434,7 @@ mod tests {
     }
 
     /// #259/#531: re-opening a committed chamfer/fillet **operation** reloads it into the
-    /// gizmo-driven `creating_edge_treatment` (edges, kind, amount), tombstones the old op, and
+    /// gizmo-driven `creating_edge_treatment` (edges, kind, amount), removes the old op, and
     /// switches to the matching tool; the gizmo commit rebuilds it as a fresh operation.
     #[test]
     fn edit_edge_treatment_reopens_the_gizmo() {
@@ -23461,7 +23462,7 @@ mod tests {
         assert_eq!(cet.amount_live, 3.0);
         assert!(cet.pending_focus);
 
-        // Committing a new amount rebuilds the operation (the old one stays tombstoned).
+        // Committing a new amount rebuilds the operation (the old one is gone).
         state.apply(Action::CommitEdgeTreatments {
             edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
@@ -24865,7 +24866,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_selection_tombstones_selected_geometry() {
+    fn delete_selection_removes_selected_geometry() {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::default());
         state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
@@ -24967,7 +24968,7 @@ mod tests {
 
     #[test]
     fn frozen_unstable_line_blocks_rename_and_vertex_drag() {
-        use crate::document_lifecycle::tombstone_element;
+        use crate::document_lifecycle::delete_element;
         use crate::model::{Constraint, ConstraintKind, ConstraintLine, LineEnd};
 
         let mut state = AppState::default();
@@ -24986,7 +24987,7 @@ mod tests {
             dim_offset: None,
             name: None,
         });
-        tombstone_element(&mut state.doc, SceneElement::Line(lkey(0)));
+        delete_element(&mut state.doc, SceneElement::Line(lkey(0)));
         state.refresh_document_health();
         state.apply(Action::OpenSketch {
             sketch,
@@ -25039,8 +25040,8 @@ mod tests {
     }
 
     #[test]
-    fn open_tombstoned_document_recomputes_health() {
-        use crate::document_lifecycle::tombstone_element;
+    fn open_document_with_deletions_recomputes_health() {
+        use crate::document_lifecycle::delete_element;
         use crate::model::{Constraint, ConstraintKind, ConstraintLine};
 
         let dir = std::env::temp_dir();
@@ -25065,7 +25066,7 @@ mod tests {
             name: None,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        tombstone_element(&mut doc, SceneElement::Line(lkey(0)));
+        delete_element(&mut doc, SceneElement::Line(lkey(0)));
         crate::storage::save(&path, &doc).unwrap();
 
         let loaded = crate::storage::open(&path).unwrap();
@@ -25282,11 +25283,10 @@ mod tests {
         );
         let drawing = &state.doc.drawings[dkey(0)];
         assert_eq!(drawing.annotations.len(), 1, "one default title annotation");
-        assert_eq!(drawing.annotations[0].text, "Bracket");
-        assert!(!drawing.annotations[0].deleted);
+        assert_eq!(drawing.annotations[akey(0)].text, "Bracket");
         // An unnamed drawing falls back to a "Drawing N" title.
         state.apply(Action::CreateDrawing { name: None });
-        assert_eq!(state.doc.drawings[dkey(1)].annotations[0].text, "Drawing 1");
+        assert_eq!(state.doc.drawings[dkey(1)].annotations[akey(0)].text, "Drawing 1");
     }
 
     #[test]

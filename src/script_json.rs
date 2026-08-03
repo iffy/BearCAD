@@ -212,10 +212,14 @@ pub fn scene_element_selection_index(
         SceneElement::RepeatedFace { instance, .. } => Some(*instance),
         // A page item indexes by its place on the page; a dimension has no index of its own,
         // so it reports the view it is shown on (#967).
-        SceneElement::DrawingElement { element, .. } => {
+        SceneElement::DrawingElement { drawing, element } => {
             use crate::context::DrawingElementRef as D;
             Some(match element {
-                D::Projection(i) | D::Text(i) => *i,
+                D::Projection(i) => *i,
+                D::Text(key) => doc
+                    .drawings
+                    .get(*drawing)
+                    .and_then(|d| d.annotations.keys().position(|k| k == *key))?,
                 D::Dimension { view, .. } => *view,
             })
         }

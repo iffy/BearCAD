@@ -31,7 +31,7 @@ pub fn construction_plane_alive(
     doc.construction_planes.contains(index)
 }
 
-/// Whether a scene element is present and not tombstoned.
+/// Whether a scene element is still present in the document.
 pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
     match element {
         // A drawing item lives as long as its page does; the page's own bookkeeping
@@ -131,7 +131,7 @@ fn point_owner_alive(
     }
 }
 
-/// Normalize a selection entry to the entity that should be tombstoned.
+/// Normalize a selection entry to the entity that should be deleted.
 pub fn delete_target_for_element(element: SceneElement) -> SceneElement {
     match element {
         SceneElement::Point(point) => match point_owner_element(&point) {
@@ -155,7 +155,7 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
     })
 }
 
-/// Unique tombstone targets from the current selection (deduped).
+/// Unique delete targets from the current selection (deduped).
 pub fn delete_targets_from_selection(selection: &SceneSelection) -> Vec<SceneElement> {
     let mut seen = HashSet::new();
     let mut targets = Vec::new();
@@ -168,12 +168,12 @@ pub fn delete_targets_from_selection(selection: &SceneSelection) -> Vec<SceneEle
     targets
 }
 
-/// Tombstone one element and any owned children. Returns true if anything changed.
-pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
+/// Delete one element and any owned children. Returns true if anything changed.
+pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
     let mut changed = false;
     match element {
         // Deleting from a drawing page goes through the drawing's own actions (#967), which
-        // renumber what's left; there is nothing to tombstone here.
+        // renumber what's left; there is nothing to delete here.
         SceneElement::DrawingElement { .. } => {}
         // Deleting a component re-homes its members and child components to its parent
         // (#423) — grouping is organizational, so nothing inside is deleted.
@@ -195,7 +195,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         c.parent = parent;
                     }
                 }
-                tombstone_joints_referencing(doc, crate::model::JointRef::Component(index));
+                delete_joints_referencing(doc, crate::model::JointRef::Component(index));
                 changed = true;
             }
         }
@@ -204,47 +204,47 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         // stable and re-importing the same source stays cheap (it reuses the copy).
         SceneElement::UnitInstance(index) => {
             if doc.unit_instances.remove(index).is_some() {
-                tombstone_joints_referencing(doc, crate::model::JointRef::UnitInstance(index));
+                delete_joints_referencing(doc, crate::model::JointRef::UnitInstance(index));
                 changed = true;
             }
         }
         SceneElement::ConstructionPlane(index) => {
-            if tombstone_construction_plane(doc, index) {
+            if delete_construction_plane(doc, index) {
                 changed = true;
             }
         }
         SceneElement::Sketch(sketch) => {
-            if tombstone_sketch(doc, sketch) {
+            if delete_sketch(doc, sketch) {
                 changed = true;
             }
         }
         SceneElement::Circle(index) => {
-            if tombstone_circle(doc, index) {
+            if delete_circle(doc, index) {
                 changed = true;
             }
         }
         SceneElement::Line(index) => {
-            if tombstone_line(doc, index) {
+            if delete_line(doc, index) {
                 changed = true;
             }
         }
         SceneElement::Constraint(index) => {
-            if tombstone_constraint(doc, index) {
+            if delete_constraint(doc, index) {
                 changed = true;
             }
         }
         SceneElement::Point(point) => {
             if let Some(owner) = point_owner_element(&point) {
-                changed |= tombstone_element(doc, owner);
+                changed |= delete_element(doc, owner);
             }
         }
         SceneElement::Extrusion(index) => {
-            if tombstone_extrusion(doc, index) {
+            if delete_extrusion(doc, index) {
                 changed = true;
             }
         }
         SceneElement::Body(index) => {
-            if tombstone_body(doc, index) {
+            if delete_body(doc, index) {
                 changed = true;
             }
         }
@@ -358,7 +358,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             if let Some(removed) = doc.sketch_vertex_treatment_ops.remove(index) {
                 {
                     // Deleting the chamfer/fillet (#538) un-shadows the source edges (they
-                    // become live geometry again, sharp corner restored) and tombstones the
+                    // become live geometry again, sharp corner restored) and removes the
                     // generated trimmed copies, bridges, and stitch constraints.
                     let op = removed.clone();
                     for &li in &op.line_targets {
@@ -540,7 +540,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
     changed
 }
 
-fn tombstone_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) -> bool {
+fn delete_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) -> bool {
     // The history-tape marker to drop is the one for this extrusion's place among the live
     // ones, read before the removal (#1055).
     let Some(ordinal) = doc.extrusions.keys().position(|k| k == index) else {
@@ -559,7 +559,7 @@ fn tombstone_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) ->
     for bi in dependent {
         let solely_owned = doc.bodies[bi].source.extrusion_indices() == [index];
         if solely_owned {
-            tombstone_body(doc, bi);
+            delete_body(doc, bi);
         } else {
             doc.bodies[bi].source.remove_extrusion(index);
         }
@@ -567,7 +567,7 @@ fn tombstone_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) ->
     true
 }
 
-fn tombstone_body(doc: &mut Document, index: crate::model::BodyKey) -> bool {
+fn delete_body(doc: &mut Document, index: crate::model::BodyKey) -> bool {
     // The history-tape marker to drop is the one for this body's place among the live ones,
     // read before the removal (#1055).
     let Some(ordinal) = doc.bodies.keys().position(|k| k == index) else {
@@ -575,13 +575,13 @@ fn tombstone_body(doc: &mut Document, index: crate::model::BodyKey) -> bool {
     };
     doc.bodies.remove(index);
     remove_shape_order_entry(doc, ShapeKind::Body, ordinal);
-    tombstone_joints_referencing(doc, crate::model::JointRef::Body(index));
+    delete_joints_referencing(doc, crate::model::JointRef::Body(index));
     true
 }
 
-/// A joint dies with any of the things it joins (#891): tombstone every live joint that
+/// A joint dies with any of the things it joins (#891): remove every live joint that
 /// holds `member`.
-fn tombstone_joints_referencing(doc: &mut Document, member: crate::model::JointRef) -> bool {
+fn delete_joints_referencing(doc: &mut Document, member: crate::model::JointRef) -> bool {
     let mut changed = false;
     let doomed: Vec<crate::model::JointKey> = doc
         .joints
@@ -601,17 +601,17 @@ fn tombstone_joints_referencing(doc: &mut Document, member: crate::model::JointR
 }
 
 /// Tombstone every target in `elements`.
-pub fn tombstone_elements(doc: &mut Document, elements: &[SceneElement]) -> usize {
+pub fn delete_elements(doc: &mut Document, elements: &[SceneElement]) -> usize {
     let mut count = 0usize;
     for element in elements {
-        if tombstone_element(doc, element.clone()) {
+        if delete_element(doc, element.clone()) {
             count += 1;
         }
     }
     count
 }
 
-fn tombstone_construction_plane(
+fn delete_construction_plane(
     doc: &mut Document,
     index: crate::model::ConstructionPlaneKey,
 ) -> bool {
@@ -624,12 +624,12 @@ fn tombstone_construction_plane(
     remove_shape_order_entry(doc, ShapeKind::ConstructionPlane, ordinal);
     let face = FaceId::ConstructionPlane(index);
     for sketch in doc.sketches_on_face(face).collect::<Vec<_>>() {
-        tombstone_sketch(doc, sketch);
+        delete_sketch(doc, sketch);
     }
     true
 }
 
-fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
+fn delete_sketch(doc: &mut Document, sketch: SketchId) -> bool {
     // The history-tape marker to drop is the one for this sketch's place among the live
     // ones, read before the removal (#1055).
     let Some(ordinal) = doc.sketches.keys().position(|k| k == sketch) else {
@@ -645,7 +645,7 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
         .map(|(i, _)| i)
         .collect();
     for li in lines {
-        tombstone_line(doc, li);
+        delete_line(doc, li);
     }
     let circles: Vec<crate::model::CircleKey> = doc
         .circles
@@ -654,7 +654,7 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
         .map(|(i, _)| i)
         .collect();
     for ci in circles {
-        tombstone_circle(doc, ci);
+        delete_circle(doc, ci);
     }
     let constraints: Vec<crate::model::ConstraintKey> = doc
         .constraints
@@ -663,7 +663,7 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
         .map(|(i, _)| i)
         .collect();
     for ci in constraints {
-        tombstone_constraint(doc, ci);
+        delete_constraint(doc, ci);
     }
     let planes: Vec<crate::model::ConstructionPlaneKey> = doc
         .construction_planes
@@ -674,12 +674,12 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
         .map(|(i, _)| i)
         .collect();
     for pi in planes {
-        tombstone_construction_plane(doc, pi);
+        delete_construction_plane(doc, pi);
     }
     true
 }
 
-fn tombstone_circle(doc: &mut Document, index: crate::model::CircleKey) -> bool {
+fn delete_circle(doc: &mut Document, index: crate::model::CircleKey) -> bool {
     // The history-tape marker to drop is the one for this circle's place among the live
     // ones, read before the removal (#1055).
     let Some(ordinal) = doc.circles.keys().position(|k| k == index) else {
@@ -689,12 +689,12 @@ fn tombstone_circle(doc: &mut Document, index: crate::model::CircleKey) -> bool 
     remove_shape_order_entry(doc, ShapeKind::Circle, ordinal);
     let face = FaceId::Circle(index);
     for sketch in doc.sketches_on_face(face).collect::<Vec<_>>() {
-        tombstone_sketch(doc, sketch);
+        delete_sketch(doc, sketch);
     }
     true
 }
 
-fn tombstone_line(doc: &mut Document, index: crate::model::LineKey) -> bool {
+fn delete_line(doc: &mut Document, index: crate::model::LineKey) -> bool {
     // The history-tape marker to drop is the one for this line's place among the live ones,
     // read before the removal (#1055).
     let Some(ordinal) = doc.lines.keys().position(|k| k == index) else {
@@ -720,7 +720,7 @@ fn detach_line_from_sketch_ops(doc: &mut Document, line: crate::model::LineKey) 
             let is_target = op.line_targets[i] == line;
             let is_output = op.line_outputs.get(i).copied() == Some(line);
             if is_target || is_output {
-                // Deleting a source also tombstones its generated output.
+                // Deleting a source also removes its generated output.
                 if is_target {
                     if let Some(&out) = op.line_outputs.get(i) {
                         if out != line {
@@ -763,7 +763,7 @@ fn detach_line_from_sketch_ops(doc: &mut Document, line: crate::model::LineKey) 
     }
 }
 
-fn tombstone_constraint(doc: &mut Document, index: crate::model::ConstraintKey) -> bool {
+fn delete_constraint(doc: &mut Document, index: crate::model::ConstraintKey) -> bool {
     // The history-tape marker to drop is the one for this constraint's place among the live
     // ones, read before the removal (#1055).
     let Some(ordinal) = doc.constraints.keys().position(|k| k == index) else {
@@ -776,7 +776,7 @@ fn tombstone_constraint(doc: &mut Document, index: crate::model::ConstraintKey) 
 
 /// Remove a parameter (used by `DeleteParameter` and selection delete). Its name is free
 /// again the moment it goes, because it is actually gone (#1055).
-pub fn tombstone_parameter(doc: &mut Document, index: crate::model::ParameterKey) -> bool {
+pub fn delete_parameter(doc: &mut Document, index: crate::model::ParameterKey) -> bool {
     // The history-tape marker to drop is the one for this parameter's place among the live
     // ones, read before the removal.
     let Some(ordinal) = doc.parameters.keys().position(|k| k == index) else {
@@ -912,7 +912,7 @@ mod tests {
         let first = doc.tracing_images.insert(image("first"));
         let second = doc.tracing_images.insert(image("second"));
 
-        assert!(tombstone_element(&mut doc, SceneElement::Image(first)));
+        assert!(delete_element(&mut doc, SceneElement::Image(first)));
         assert_eq!(doc.tracing_images.len(), 1, "gone, not marked");
         assert_eq!(
             doc.tracing_images.get(second).map(|i| i.source_name.as_str()),
@@ -921,7 +921,7 @@ mod tests {
         );
         assert!(!element_alive(&doc, SceneElement::Image(first)));
         assert!(
-            !tombstone_element(&mut doc, SceneElement::Image(first)),
+            !delete_element(&mut doc, SceneElement::Image(first)),
             "deleting it twice changes nothing"
         );
     }
@@ -959,10 +959,10 @@ mod tests {
         key
     }
 
-    /// #891: deleting a joint tombstones it and removes its shape-order entry; nothing it
+    /// #891: deleting a joint removes it along with its shape-order entry; nothing it
     /// joins is touched.
     #[test]
-    fn tombstone_joint_leaves_members_alone() {
+    fn deleting_a_joint_leaves_its_members_alone() {
         let mut doc = Document::default();
         let a = push_test_body(&mut doc);
         let b = push_test_body(&mut doc);
@@ -971,14 +971,14 @@ mod tests {
             vec![crate::model::JointRef::Body(a), crate::model::JointRef::Body(b)],
         );
         let order_len = doc.shape_order.len();
-        assert!(tombstone_element(&mut doc, SceneElement::Joint(ji)));
+        assert!(delete_element(&mut doc, SceneElement::Joint(ji)));
         assert!(!doc.joints.contains(ji));
         assert!(!element_alive(&doc, SceneElement::Joint(ji)));
         assert!(body_alive(&doc, a));
         assert!(body_alive(&doc, b));
         assert_eq!(doc.shape_order.len(), order_len - 1);
         // Already dead: a second delete is a no-op.
-        assert!(!tombstone_element(&mut doc, SceneElement::Joint(ji)));
+        assert!(!delete_element(&mut doc, SceneElement::Joint(ji)));
     }
 
     /// #891: a joint dies with either of the things it joins — here a member body.
@@ -991,7 +991,7 @@ mod tests {
             &mut doc,
             vec![crate::model::JointRef::Body(a), crate::model::JointRef::Body(b)],
         );
-        assert!(tombstone_element(&mut doc, SceneElement::Body(a)));
+        assert!(delete_element(&mut doc, SceneElement::Body(a)));
         assert!(!doc.joints.contains(ji), "joint must die with its member body");
         assert!(body_alive(&doc, b));
     }
@@ -1021,7 +1021,7 @@ mod tests {
                 crate::model::JointRef::UnitInstance(uikey(0)),
             ],
         );
-        assert!(tombstone_element(&mut doc, SceneElement::UnitInstance(uikey(0))));
+        assert!(delete_element(&mut doc, SceneElement::UnitInstance(uikey(0))));
         assert!(!doc.joints.contains(ji), "joint must die with its unit instance");
     }
 
@@ -1049,7 +1049,7 @@ mod tests {
             name: None,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        assert!(tombstone_line(&mut doc, line_a));
+        assert!(delete_line(&mut doc, line_a));
         assert!(!doc.lines.contains(line_a));
         assert!(!line_alive(&doc, line_a));
         assert!(line_alive(&doc, line_b));
@@ -1067,9 +1067,9 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_elements_counts_unique_targets() {
+    fn delete_elements_counts_unique_targets() {
         let (mut doc, _, line_a, line_b) = sketch_with_two_lines();
-        let count = tombstone_elements(
+        let count = delete_elements(
             &mut doc,
             &[
                 SceneElement::Line(line_a),

@@ -618,7 +618,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 Some(a) => {
                     let first = a.text.lines().next().unwrap_or("").trim();
                     if first.is_empty() {
-                        format!("Text {annotation}")
+                        format!("Text {}", annotation.index())
                     } else {
                         let mut s: String = first.chars().take(20).collect();
                         if first.chars().count() > 20 {

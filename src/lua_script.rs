@@ -245,10 +245,15 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::RepeatedFace { instance, .. } => instance,
         // A drawing item indexes by its place on the page; a dimension has no index of its
         // own, so it reports the view it's on.
-        SceneElement::DrawingElement { element, .. } => {
+        SceneElement::DrawingElement { drawing, element } => {
             use crate::context::DrawingElementRef as D;
             match element {
-                D::Projection(i) | D::Text(i) => i,
+                D::Projection(i) => i,
+                D::Text(key) => doc
+                    .drawings
+                    .get(drawing)
+                    .and_then(|d| d.annotations.keys().position(|k| k == key))
+                    .unwrap_or(0),
                 D::Dimension { view, .. } => view,
             }
         }
@@ -6022,9 +6027,9 @@ mod tests {
                 "copy circle {ci:?} is listed once"
             );
         }
-        // Deleting the op tombstones the copies.
-        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchRepeatOp(skop(0)));
-        assert!(state.doc.sketch_repeat_ops.is_empty(), "the op is removed, not tombstoned");
+        // Deleting the op removes the copies.
+        crate::document_lifecycle::delete_element(&mut state.doc, SceneElement::SketchRepeatOp(skop(0)));
+        assert!(state.doc.sketch_repeat_ops.is_empty(), "the op is gone");
         for &ci in &op.circle_outputs {
             assert!(!state.doc.circles.contains(ci), "copy circle {ci:?} removed with the op");
         }
@@ -6268,9 +6273,9 @@ mod tests {
             - xs.iter().cloned().fold(f32::MAX, f32::min);
         assert!((w - 14.0).abs() < 1e-3, "negative offset shrinks, got {w}");
 
-        // Deleting the op tombstones the outputs.
-        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchOffsetOp(skop(0)));
-        assert!(state.doc.sketch_offset_ops.is_empty(), "the op is removed, not tombstoned");
+        // Deleting the op removes the outputs.
+        crate::document_lifecycle::delete_element(&mut state.doc, SceneElement::SketchOffsetOp(skop(0)));
+        assert!(state.doc.sketch_offset_ops.is_empty(), "the op is gone");
         for &li in &op.line_outputs {
             assert!(!state.doc.lines.contains(li));
         }
@@ -6485,7 +6490,7 @@ mod tests {
                 li.index()
             );
         }
-        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchSliceOp(skop(0)));
+        crate::document_lifecycle::delete_element(&mut state.doc, SceneElement::SketchSliceOp(skop(0)));
         assert!(!state.doc.lines[lkey(0)].shadow, "delete un-shadows the original");
         for &li in &op.line_outputs {
             assert!(!state.doc.lines.contains(li), "fragment {} removed", li.index());
@@ -7851,7 +7856,7 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 1);
-        crate::document_lifecycle::tombstone_element(
+        crate::document_lifecycle::delete_element(
             &mut state.doc,
             SceneElement::Extrusion(xkey(0)),
         );

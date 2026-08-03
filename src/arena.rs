@@ -12,10 +12,6 @@
 //! stops resolving: a stale reference returns `None` rather than silently naming whichever
 //! element moved into that position.
 
-// The full handle API lands before the 35 collections that will use it, so parts of it are
-// unreferenced until their conversion arrives. This allow comes off with the last one (#1055).
-#![allow(dead_code)]
-
 use std::marker::PhantomData;
 
 /// A handle to a `T` in an [`Arena`]. Cheap to copy, stable across insertions and removals,
@@ -114,7 +110,7 @@ enum Slot<T> {
 
 /// A collection whose elements keep their identity when their neighbours are removed.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(from = "ArenaRepr<T>", into = "ArenaRepr<T>", bound = "T: Clone + serde::Serialize + serde::de::DeserializeOwned")]
+#[serde(try_from = "ArenaRepr<T>", into = "ArenaRepr<T>", bound = "T: Clone + serde::Serialize + serde::de::DeserializeOwned")]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
     /// Slots to reuse before growing. Reusing keeps the backing array compact after a lot of
@@ -248,14 +244,23 @@ impl<T> Arena<T> {
     /// Rebuild from elements that already have keys — a file's contents (#1055). The keys are
     /// preserved exactly, so every reference stored elsewhere in the document still resolves;
     /// slots no entry claims are free for reuse.
-    pub fn from_keyed(entries: impl IntoIterator<Item = (Key<T>, T)>) -> Self {
+    ///
+    /// Two entries claiming the same slot is a corrupt file, not a recoverable one: whichever
+    /// lost would vanish while every reference to it went on resolving to the winner. Say so
+    /// rather than loading quietly (#1066).
+    pub fn from_keyed(
+        entries: impl IntoIterator<Item = (Key<T>, T)>,
+    ) -> std::result::Result<Self, String> {
         let entries: Vec<(Key<T>, T)> = entries.into_iter().collect();
         let mut arena = Self::new();
         let Some(top) = entries.iter().map(|(k, _)| k.index).max() else {
-            return arena;
+            return Ok(arena);
         };
         arena.slots = (0..=top).map(|_| Slot::Vacant { generation: 0 }).collect();
         for (key, value) in entries {
+            if matches!(arena.slots[key.index as usize], Slot::Occupied { .. }) {
+                return Err(format!("two entries claim slot {}", key.index));
+            }
             arena.slots[key.index as usize] =
                 Slot::Occupied { generation: key.generation, value };
             arena.len += 1;
@@ -267,7 +272,7 @@ impl<T> Arena<T> {
             .filter(|(_, s)| matches!(s, Slot::Vacant { .. }))
             .map(|(i, _)| i as u32)
             .collect();
-        arena
+        Ok(arena)
     }
 }
 
@@ -301,8 +306,11 @@ impl<T> From<Arena<T>> for ArenaRepr<T> {
     }
 }
 
-impl<T> From<ArenaRepr<T>> for Arena<T> {
-    fn from(repr: ArenaRepr<T>) -> Self {
+impl<T> TryFrom<ArenaRepr<T>> for Arena<T> {
+    type Error = String;
+
+    /// Two entries claiming the same slot is a corrupt file — see [`Arena::from_keyed`].
+    fn try_from(repr: ArenaRepr<T>) -> std::result::Result<Self, String> {
         let highest = repr.entries.iter().map(|(i, ..)| *i).max();
         let mut slots: Vec<Slot<T>> = match highest {
             Some(top) => (0..=top).map(|_| Slot::Vacant { generation: 0 }).collect(),
@@ -310,6 +318,9 @@ impl<T> From<ArenaRepr<T>> for Arena<T> {
         };
         let mut len = 0;
         for (index, generation, value) in repr.entries {
+            if matches!(slots[index as usize], Slot::Occupied { .. }) {
+                return Err(format!("two entries claim slot {index}"));
+            }
             slots[index as usize] = Slot::Occupied { generation, value };
             len += 1;
         }
@@ -320,13 +331,33 @@ impl<T> From<ArenaRepr<T>> for Arena<T> {
             .filter(|(_, s)| matches!(s, Slot::Vacant { .. }))
             .map(|(i, _)| i as u32)
             .collect();
-        Self { slots, free, len }
+        Ok(Self { slots, free, len })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1066: a file with two entries in one slot is corrupt — whichever lost would vanish
+    /// while every reference to it went on resolving to the winner. Both load paths say so.
+    #[test]
+    fn two_entries_in_one_slot_are_rejected() {
+        let key = Key::<&str>::new;
+        assert_eq!(
+            Arena::from_keyed([(key(0, 0), "a"), (key(2, 0), "c"), (key(0, 1), "b")]),
+            Err("two entries claim slot 0".to_string())
+        );
+        // The same through serde, which is how a real file arrives.
+        let json = r#"{"entries":[[0,0,"a"],[2,0,"c"],[0,1,"b"]]}"#;
+        let err = serde_json::from_str::<Arena<String>>(json).unwrap_err();
+        assert!(err.to_string().contains("two entries claim slot 0"), "{err}");
+        // A well-formed one with a hole still loads, hole free for reuse.
+        let arena: Arena<String> =
+            serde_json::from_str(r#"{"entries":[[0,0,"a"],[2,0,"c"]]}"#).unwrap();
+        assert_eq!(arena.len(), 2);
+        assert_eq!(arena.get(Key::new(2, 0)), Some(&"c".to_string()));
+    }
 
     #[test]
     fn a_key_resolves_to_its_own_element() {

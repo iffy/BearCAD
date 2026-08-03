@@ -1808,7 +1808,7 @@ mod tests {
         .unwrap();
 
         // Delete the coincident constraint.
-        crate::document_lifecycle::tombstone_element(&mut doc, SceneElement::Constraint(id));
+        crate::document_lifecycle::delete_element(&mut doc, SceneElement::Constraint(id));
 
         let partner_before = point_uv(&doc, sketch, p1.clone()).unwrap();
         drag_point(&mut doc, sketch, p0, 5.0, 5.0).unwrap();

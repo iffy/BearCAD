@@ -776,7 +776,7 @@ pub struct DrawingAnnotationControl {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DrawingElementRef {
     Projection(usize),
-    Text(usize),
+    Text(crate::model::AnnotationKey),
     Dimension { view: usize, a: [i32; 3], b: [i32; 3] },
 }
 

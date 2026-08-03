@@ -92,9 +92,12 @@ pub enum HierarchyNode {
     /// nest inside each other via their `parent` link.
     Component(crate::model::ComponentKey),
     /// A text note on a drawing page (#333), nested under its [`HierarchyNode::Drawing`].
-    /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
-    /// leaf with no [`SceneElement`]; clicking it opens the drawing.
-    DrawingAnnotation { drawing: crate::model::DrawingKey, annotation: usize },
+    /// `annotation` keys into the drawing's `annotations` (#1055). Like a projection it's a
+    /// display-only leaf with no [`SceneElement`]; clicking it opens the drawing.
+    DrawingAnnotation {
+        drawing: crate::model::DrawingKey,
+        annotation: crate::model::AnnotationKey,
+    },
     /// An imported unit instance (#723): a selectable top-level row (its
     /// [`SceneElement::UnitInstance`] renames, hides, and deletes the instance). Its
     /// children ([`HierarchyNode::UnitChild`]) expand beneath it in the List view.
@@ -2120,13 +2123,11 @@ pub fn build_hierarchy(
                         .collect(),
                 })
                 .collect();
-            for (ai, ann) in drawing.annotations.iter().enumerate() {
-                if !ann.deleted {
-                    children.push(HierarchyEntry {
-                        node: HierarchyNode::DrawingAnnotation { drawing: di, annotation: ai },
-                        children: Vec::new(),
-                    });
-                }
+            for ai in drawing.annotations.keys() {
+                children.push(HierarchyEntry {
+                    node: HierarchyNode::DrawingAnnotation { drawing: di, annotation: ai },
+                    children: Vec::new(),
+                });
             }
             roots.push(HierarchyEntry {
                 node: HierarchyNode::Drawing(di),
@@ -3589,7 +3590,7 @@ fn build_sketch_entry(
             // it came from, rather than sitting as an ordinary sibling. Since `chamfer_fillet_
             // parent` is always a lower line index, and `doc.lines` is iterated in index order,
             // the parent's entry is always already in `children` by the time we get here. If
-            // the parent is gone (tombstoned) or otherwise not found — same graceful-orphan
+            // the parent is gone or otherwise not found — same graceful-orphan
             // handling as elsewhere in this file — fall back to a top-level sibling instead of
             // dropping the bridging line from the tree.
             if let Some(parent) = line.chamfer_fillet_parent {
@@ -5462,6 +5463,7 @@ mod tests {
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
+    use crate::model::annotation_key_for_slot as akey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -6123,14 +6125,13 @@ label_hidden: false,
     fn drawing_annotations_show_as_hierarchy_children() {
         let mut doc = Document::default();
         doc.drawings.insert(crate::model::Drawing {
-            annotations: vec![crate::model::DrawingAnnotation {
+            annotations: crate::arena::Arena::from_iter([crate::model::DrawingAnnotation {
                 text: "Scale 1:2".to_string(),
                 pos_x: 0.05,
                 pos_y: 0.05,
                 size_frac: 0.03,
                 wrap_frac: None,
-                deleted: false,
-            }],
+            }]),
             ..Default::default()
         });
         let tree = build_hierarchy(&doc, None);
@@ -6143,11 +6144,11 @@ label_hidden: false,
             drawing
                 .children
                 .iter()
-                .any(|c| c.node == HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }),
+                .any(|c| c.node == HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: akey(0) }),
             "the text note is a child of the drawing"
         );
         assert_eq!(
-            node_label(&doc, HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }),
+            node_label(&doc, HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: akey(0) }),
             "Text: Scale 1:2"
         );
     }
@@ -6200,7 +6201,7 @@ label_hidden: false,
         assert!(f.shows(HierarchyNode::Sketch(skey(0))));
         assert!(f.shows(HierarchyNode::Document), "the root is always shown");
         assert!(f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
-        assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
+        assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: akey(0) }));
         assert!(!f.shows(HierarchyNode::ConstructionPlane(pkey(0))));
         assert!(!f.shows(HierarchyNode::Extrusion(xkey(0))));
     }
@@ -6213,7 +6214,7 @@ label_hidden: false,
         let f = ElementFilter::default();
         assert!(f.shows(HierarchyNode::Drawing(dkey(0))), "the drawing row itself stays");
         assert!(!f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
-        assert!(!f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
+        assert!(!f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: akey(0) }));
         assert!(!f.shows(HierarchyNode::DrawingDimension {
             drawing: dkey(0),
             view: 0,
@@ -6255,7 +6256,7 @@ label_hidden: false,
 
     #[test]
     fn root_level_items_nest_under_document_root() {
-        use crate::document_lifecycle::tombstone_element;
+        use crate::document_lifecycle::delete_element;
 
         let mut doc = Document::default();
         // A second root-level construction plane (#87: root planes nest under Document,
@@ -6263,7 +6264,7 @@ label_hidden: false,
         doc.construction_planes.insert(default_xy_plane());
         doc.shape_order.push(ShapeKind::ConstructionPlane);
 
-        // An orphaned extrusion: its sketch is tombstoned (unreachable), but the extrusion
+        // An orphaned extrusion: its sketch is gone, but the extrusion
         // itself is not cascaded away, so it must still surface — as a Document child, not
         // a top-level root.
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
@@ -6277,7 +6278,7 @@ label_hidden: false,
             symmetric: false,
             edge_treatments: Vec::new(),
         });
-        assert!(tombstone_element(&mut doc, SceneElement::Sketch(sketch)));
+        assert!(delete_element(&mut doc, SceneElement::Sketch(sketch)));
         assert!(!sketch_alive(&doc, sketch));
 
         // An orphaned body (STL import, no source extrusion, #70) also nests under Document.
@@ -6818,7 +6819,7 @@ label_hidden: false,
 
     #[test]
     fn row_style_prefers_invalid_and_unstable_over_selection() {
-        use crate::document_lifecycle::tombstone_element;
+        use crate::document_lifecycle::delete_element;
         use crate::model::{Constraint, ConstraintKind, ConstraintLine, Line, ShapeKind};
 
         let mut doc = Document::default();
@@ -6837,7 +6838,7 @@ label_hidden: false,
             dim_offset: None,
             name: None,
         });
-        tombstone_element(&mut doc, SceneElement::Line(line_a));
+        delete_element(&mut doc, SceneElement::Line(line_a));
         let health = crate::document_health::recompute_document_health(&doc);
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
@@ -6878,7 +6879,7 @@ label_hidden: false,
     /// #511: an invalid/unstable row still paints as selected when picked in the pane.
     #[test]
     fn invalid_and_unstable_rows_still_show_selection_highlight() {
-        use crate::document_lifecycle::tombstone_element;
+        use crate::document_lifecycle::delete_element;
         use crate::model::{Constraint, ConstraintKind, ConstraintLine, Line, ShapeKind};
 
         let mut doc = Document::default();
@@ -6897,7 +6898,7 @@ label_hidden: false,
             dim_offset: None,
             name: None,
         });
-        tombstone_element(&mut doc, SceneElement::Line(lkey(0)));
+        delete_element(&mut doc, SceneElement::Line(lkey(0)));
         let health = crate::document_health::recompute_document_health(&doc);
 
         let mut selection = SceneSelection::default();

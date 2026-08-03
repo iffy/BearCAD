@@ -955,7 +955,7 @@ impl ElementPicker {
         self.picked.push(element);
     }
 
-    /// Drop picked elements that no longer satisfy `keep` — e.g. tombstoned by a delete.
+    /// Drop picked elements that no longer satisfy `keep` — e.g. removed by a delete.
     pub fn retain(&mut self, mut keep: impl FnMut(&SceneElement) -> bool) {
         self.picked.retain(|e| keep(e));
     }

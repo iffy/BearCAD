@@ -1876,7 +1876,9 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             use crate::context::DrawingElementRef as D;
             let (kind, index) = match element {
                 D::Projection(i) => ("projection", i),
-                D::Text(i) => ("annotation", i),
+                // No document here to count live annotations against (#1070), so a key falls
+                // back to its slot.
+                D::Text(key) => ("annotation", key.index() as usize),
                 D::Dimension { view, .. } => ("drawing_dimension", view),
             };
             ElementScriptTokens {
@@ -7542,7 +7544,7 @@ mod tests {
     }
 
     #[test]
-    fn script_delete_selection_tombstones_line() {
+    fn script_delete_selection_removes_a_line() {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(crate::model::FaceId::default());
         state.doc.lines.insert(crate::model::Line::from_local_endpoints(

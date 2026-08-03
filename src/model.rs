@@ -1480,7 +1480,7 @@ impl BodySource {
     /// Remove `extrusion` from this source in whatever role it plays (e.g. undoing a merge or
     /// a cut). Collapses back to the simplest form once the cut list is empty (and to the
     /// single-extrusion form when one added index remains). No-op if `extrusion` isn't owned.
-    /// Undo never removes a body's last/only *added* extrusion this way — that path tombstones
+    /// Undo never removes a body's last/only *added* extrusion this way — that path deletes
     /// the whole body instead.
     pub fn remove_extrusion(&mut self, extrusion: ExtrusionKey) {
         match self {
@@ -1775,6 +1775,12 @@ pub fn unit_key_for_slot(n: usize) -> UnitKey {
 /// The same for a drawing (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn drawing_key_for_slot(n: usize) -> DrawingKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a drawing annotation (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn annotation_key_for_slot(n: usize) -> AnnotationKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -3152,7 +3158,7 @@ pub struct SketchVertexTreatmentOperation {
     /// Generated bridge lines, index-aligned with `corners`.
     #[serde(default)]
     pub bridge_outputs: Vec<LineKey>,
-    /// Generated stitch coincidence constraints; tombstoned+regenerated each rebuild.
+    /// Generated stitch coincidence constraints; removed and regenerated each rebuild.
     #[serde(default)]
     pub constraint_outputs: Vec<ConstraintKey>,
     #[serde(default)]
@@ -3844,7 +3850,7 @@ pub struct Drawing {
     pub margin_mm: f32,
     /// Free text annotations placed on the page (#312): notes, titles, callouts.
     #[serde(default)]
-    pub annotations: Vec<DrawingAnnotation>,
+    pub annotations: crate::arena::Arena<DrawingAnnotation>,
 }
 
 /// A drawing's identity (#1055): stable across deletions of other drawings.
@@ -3864,9 +3870,10 @@ pub struct DrawingAnnotation {
     /// Optional wrap width as a fraction of page width; `None` is a single growing line (#312).
     #[serde(default)]
     pub wrap_frac: Option<f32>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// An annotation's identity (#1055): stable across deletions of other annotations on the page.
+pub type AnnotationKey = crate::arena::Key<DrawingAnnotation>;
 
 fn default_annotation_size() -> f32 {
     0.025
@@ -3893,7 +3900,7 @@ impl Default for Drawing {
             page_width_mm: default_page_width_mm(),
             page_height_mm: default_page_height_mm(),
             margin_mm: default_page_margin_mm(),
-            annotations: Vec::new(),
+            annotations: crate::arena::Arena::new(),
         }
     }
 }

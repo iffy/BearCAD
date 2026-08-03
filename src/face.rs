@@ -1100,10 +1100,8 @@ pub fn pick_sketch_face(
     }
 
     for (i, plane) in doc.construction_planes.iter().collect::<Vec<_>>().into_iter().rev() {
-        // A tombstoned plane is not there to be picked (#1051). Every other candidate in this
-        // function already filters its own deleted flag; planes did not, so a deleted one went
-        // on hovering, selecting, and — because the Shape tool anchors through here — catching
-        // shapes meant for the face behind it.
+        // A deleted plane is not there to be picked (#1051) — it is gone from the arena, so
+        // this loop cannot reach it at all.
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             let candidate = FaceId::ConstructionPlane(i);

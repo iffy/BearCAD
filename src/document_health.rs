@@ -717,7 +717,7 @@ mod tests {
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
-    use crate::document_lifecycle::tombstone_element;
+    use crate::document_lifecycle::delete_element;
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line, ShapeKind};
     use crate::model::FaceId;
 
@@ -746,7 +746,7 @@ mod tests {
     fn delete_line_marks_constraint_invalid_and_partner_unstable() {
         let (mut doc, line_a, line_b) = parallel_lines_doc();
         let y_before = doc.lines[line_b].y0;
-        tombstone_element(&mut doc, SceneElement::Line(line_a));
+        delete_element(&mut doc, SceneElement::Line(line_a));
         let health = recompute_document_health(&doc);
         assert_eq!(
             health.element_status(SceneElement::Constraint(nkey(0))),
@@ -793,7 +793,7 @@ mod tests {
     #[test]
     fn constraint_annotation_color_reflects_health() {
         let (mut doc, line_a, _) = parallel_lines_doc();
-        tombstone_element(&mut doc, SceneElement::Line(line_a));
+        delete_element(&mut doc, SceneElement::Line(line_a));
         let health = recompute_document_health(&doc);
         let base = Color32::from_rgb(180, 188, 204);
         assert_eq!(
@@ -809,7 +809,7 @@ mod tests {
         doc.lines
             .insert(Line::from_local_endpoints(sketch, 20.0, 0.0, 30.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        tombstone_element(&mut doc, SceneElement::Line(line_a));
+        delete_element(&mut doc, SceneElement::Line(line_a));
         let health = recompute_document_health(&doc);
         assert_eq!(
             health.element_status(SceneElement::Line(line_b)),

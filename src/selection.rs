@@ -61,7 +61,7 @@ impl SceneSelection {
         self.picker.clear();
     }
 
-    /// Drop selected elements that no longer satisfy `keep` (e.g. tombstoned after a delete).
+    /// Drop selected elements that no longer satisfy `keep` (e.g. removed by a delete).
     pub fn retain(&mut self, keep: impl FnMut(&SceneElement) -> bool) {
         self.picker.retain(keep);
     }

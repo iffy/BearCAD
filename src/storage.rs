@@ -299,7 +299,7 @@ fn load_arena_entities<T: serde::de::DeserializeOwned>(
         let payload = row.map_err(|e| e.to_string())?;
         entries.push(serde_json::from_str(&payload).map_err(|e| e.to_string())?);
     }
-    Ok(crate::arena::Arena::from_keyed(entries))
+    crate::arena::Arena::from_keyed(entries)
 }
 
 fn load_shape_order_meta(conn: &Connection) -> Option<Vec<ShapeKind>> {
@@ -1349,6 +1349,43 @@ mod tests {
                 Some(component),
                 "{suffix}: the membership entry still names it"
             );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: a page's text annotations keep their keys across a save — a note deleted from
+    /// the middle does not renumber the ones after it.
+    #[test]
+    fn annotation_keys_survive_a_save_and_reload() {
+        let annotation = |text: &str| crate::model::DrawingAnnotation {
+            text: text.to_string(),
+            pos_x: 0.1,
+            pos_y: 0.1,
+            size_frac: 0.028,
+            wrap_frac: None,
+        };
+        let mut page = crate::model::Drawing::default();
+        let doomed = page.annotations.insert(annotation("doomed"));
+        let kept = page.annotations.insert(annotation("kept"));
+        assert!(page.annotations.remove(doomed).is_some());
+        let mut doc = Document::default();
+        let drawing = doc.drawings.insert(page);
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_annotation_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            let page = loaded.drawings.get(drawing).expect("the page");
+            assert_eq!(page.annotations.len(), 1, "{suffix}");
+            assert_eq!(
+                page.annotations.get(kept).map(|a| a.text.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert!(page.annotations.get(doomed).is_none(), "{suffix}");
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -2436,7 +2473,7 @@ mod tests {
     #[test]
     fn round_trips_removed_entities() {
         let dir = std::env::temp_dir();
-        let path = dir.join("bearcad_tombstone_roundtrip.bearcad");
+        let path = dir.join("bearcad_removal_roundtrip.bearcad");
         let path = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
 
@@ -2511,12 +2548,12 @@ mod tests {
 
     #[test]
     fn round_trips_a_deleted_line_with_an_alive_sibling() {
-        use crate::document_lifecycle::tombstone_element;
+        use crate::document_lifecycle::delete_element;
         use crate::hierarchy::SceneElement;
         use crate::model::{Constraint, ConstraintKind, ConstraintLine};
 
         let dir = std::env::temp_dir();
-        let path = dir.join("bearcad_tombstone_sibling.bearcad");
+        let path = dir.join("bearcad_removal_sibling.bearcad");
         let path = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
 
@@ -2537,7 +2574,7 @@ mod tests {
             name: None,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        tombstone_element(&mut doc, SceneElement::Line(lkey(0)));
+        delete_element(&mut doc, SceneElement::Line(lkey(0)));
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
