@@ -1195,8 +1195,10 @@ pub struct CreatingJoint {
     /// Index into `members` of the held side — the first picked, unless the pane swaps it.
     pub base: usize,
     pub kind: crate::model::JointKind,
-    /// Where the parts start out (#1021).
-    pub mate: crate::model::JointMate,
+    /// Where the parts start out (#1021/#1079): the **same** in-progress move the Move tool
+    /// drives. Sharing the state rather than a component is what keeps the two from quietly
+    /// drifting into two behaviours (#1068).
+    pub placement: CreatingMove,
     pub position: String,
     pub position2: String,
     pub position3: String,
@@ -1219,39 +1221,83 @@ pub struct CreatingJoint {
 /// one.
 fn seeded_joint_frame(
     frame: &crate::model::JointFrame,
-    mate: &crate::model::JointMate,
+    placement: &crate::model::MoveOperation,
 ) -> crate::model::JointFrame {
     let mut frame = frame.clone();
-    if frame.origin.is_none() {
-        frame.origin = mate.fixed_face.as_ref().and_then(|r| match r {
-            crate::model::MateRef::Point(p) => Some(*p),
-            _ => None,
-        });
-    }
+    // A Face Snap placement names a plane: its fixed face is the natural axis, and the point
+    // it lands on the natural origin. Every other mode names none, and leaves these empty.
     if frame.primary.is_none() {
-        frame.primary = mate.fixed_face;
-    }
-    if frame.secondary.is_none() {
-        frame.secondary = mate.line_up.iter().find_map(|row| row.fixed);
+        frame.primary = match placement.end_point_a {
+            Some(crate::model::MovePointRef::OnFace { body, centroid, normal, .. }) => {
+                Some(crate::model::MateRef::Face { body, centroid, normal })
+            }
+            _ => None,
+        };
     }
     frame
 }
 
-impl CreatingJoint {
-    /// The line-up rows to show (#1015): the picked ones, plus one empty row to pick into
-    /// while anything is still open. No open row means the part is fully placed — which is
-    /// the whole "placed" signal, with no prose in the pane.
-    pub fn line_up_rows(&self, open: bool) -> Vec<crate::model::MateLineUp> {
-        let mut rows = self.mate.line_up.clone();
-        if self.mate.has_face_pair()
-            && open
-            && !rows.last().is_some_and(|r: &crate::model::MateLineUp| !r.is_complete())
-        {
-            rows.push(crate::model::MateLineUp::default());
+impl CreatingMove {
+    /// This in-progress move as a stored [`crate::model::MoveOperation`] (#1079) — how a
+    /// joint keeps its placement, and the shape `extrude::move_op_transform` resolves.
+    pub fn as_op(&self) -> crate::model::MoveOperation {
+        crate::model::MoveOperation {
+            targets: self.targets.clone(),
+            translate_mode: self.translate_mode,
+            start_point_a: self.start_point_a,
+            end_point_a: self.end_point_a,
+            start_point_b: self.start_point_b,
+            end_point_b: self.end_point_b,
+            start_point_c: self.start_point_c,
+            end_point_c: self.end_point_c,
+            plane_targets: self.plane_targets.clone(),
+            image_targets: self.image_targets.clone(),
+            instance_targets: self.instance_targets.clone(),
+            tx: self.tx.clone(),
+            ty: self.ty.clone(),
+            tz: self.tz.clone(),
+            rx: self.rx.clone(),
+            ry: self.ry.clone(),
+            rz: self.rz.clone(),
+            roll_angle: self.roll_angle.clone(),
+            face_flip: self.face_flip,
+            face_spin: self.face_spin.clone(),
+            face_offset: self.face_offset.clone(),
+            outputs: Vec::new(),
+            name: None,
         }
-        rows
     }
 
+    /// The inverse: a stored placement loaded back into the tool (#1079).
+    pub fn from_op(op: &crate::model::MoveOperation) -> Self {
+        Self {
+            targets: op.targets.clone(),
+            translate_mode: op.translate_mode,
+            start_point_a: op.start_point_a,
+            end_point_a: op.end_point_a,
+            start_point_b: op.start_point_b,
+            end_point_b: op.end_point_b,
+            start_point_c: op.start_point_c,
+            end_point_c: op.end_point_c,
+            plane_targets: op.plane_targets.clone(),
+            image_targets: op.image_targets.clone(),
+            instance_targets: op.instance_targets.clone(),
+            tx: op.tx.clone(),
+            ty: op.ty.clone(),
+            tz: op.tz.clone(),
+            rx: op.rx.clone(),
+            ry: op.ry.clone(),
+            rz: op.rz.clone(),
+            roll_angle: op.roll_angle.clone(),
+            face_flip: op.face_flip,
+            face_spin: op.face_spin.clone(),
+            face_offset: op.face_offset.clone(),
+            editing: None,
+        }
+    }
+}
+
+impl CreatingJoint {
     /// The **mobile** (driven) side of a two-sided joint (#991) — the member that isn't the
     /// base. `None` until one is picked.
     ///
@@ -1313,7 +1359,7 @@ impl CreatingJoint {
             members: joint.members.clone(),
             base: joint.base,
             kind: joint.kind.clone(),
-            mate: joint.mate.clone(),
+            placement: CreatingMove::from_op(&joint.placement),
             frame: joint.frame.clone(),
             position: joint.position.clone(),
             position2: joint.position2.clone(),
@@ -2380,7 +2426,8 @@ pub enum Action {
         members: Vec<crate::model::JointRef>,
         base: usize,
         kind: crate::model::JointKind,
-        mate: crate::model::JointMate,
+        /// Where the parts start out (#1021/#1079): an ordinary move.
+        placement: crate::model::MoveOperation,
         /// How the joint's freedoms are oriented (#1079).
         frame: crate::model::JointFrame,
         position: String,
@@ -2394,7 +2441,8 @@ pub enum Action {
         members: Vec<crate::model::JointRef>,
         base: usize,
         kind: crate::model::JointKind,
-        mate: crate::model::JointMate,
+        /// Where the parts start out (#1021/#1079): an ordinary move.
+        placement: crate::model::MoveOperation,
         /// How the joint's freedoms are oriented (#1079).
         frame: crate::model::JointFrame,
         position: String,
@@ -7547,7 +7595,9 @@ impl AppState {
                     self.creating_move = Some(CreatingMove::default());
                     self.status = "Cancelled move".to_string();
                 } else if self.creating_joint.as_ref().is_some_and(|c| {
-                    !c.members.is_empty() || !c.mate.is_empty() || c.editing.is_some()
+                    !c.members.is_empty()
+                        || c.placement.start_point_a.is_some()
+                        || c.editing.is_some()
                 }) {
                     // Esc drops the in-progress joint (#894), like a move.
                     self.creating_joint = Some(CreatingJoint::default());
@@ -11774,7 +11824,7 @@ label_hidden: false,
                         members: cj.members.clone(),
                         base: cj.base,
                         kind: cj.kind.clone(),
-                        mate: crate::mate::settled_mate(&cj.mate),
+                        placement: cj.placement.as_op(),
                         frame: cj.frame.clone(),
                         position: cj.position.clone(),
                         position2: cj.position2.clone(),
@@ -11785,7 +11835,7 @@ label_hidden: false,
                         members: cj.members.clone(),
                         base: cj.base,
                         kind: cj.kind.clone(),
-                        mate: crate::mate::settled_mate(&cj.mate),
+                        placement: cj.placement.as_op(),
                         frame: cj.frame.clone(),
                         position: cj.position.clone(),
                         position2: cj.position2.clone(),
@@ -11805,7 +11855,7 @@ label_hidden: false,
                 members,
                 base,
                 kind,
-                mate,
+                placement,
                 frame,
                 position,
                 position2,
@@ -11818,12 +11868,12 @@ label_hidden: false,
                 }
                 // The rest pose (#898) is captured from creation: wherever the parts were
                 // (and whatever position that implied) is what Revert returns to.
-                let mate_seed = mate.clone();
+                let placement_seed = placement.clone();
                 let joint = crate::model::Joint {
                     members,
                     base: if base < 2 { base } else { 0 },
                     kind,
-                    mate,
+                    placement,
                     position: position.clone(),
                     position2: position2.clone(),
                     position3: position3.clone(),
@@ -11832,7 +11882,7 @@ label_hidden: false,
                     rest3: position3,
                     limits,
                     name: None,
-                    frame: seeded_joint_frame(&frame, &mate_seed),
+                    frame: seeded_joint_frame(&frame, &placement_seed),
                 };
                 // A joint that can't resolve — closing a loop, or claiming a part another
                 // joint drives — is refused with the reason, not committed broken (#893).
@@ -11854,7 +11904,7 @@ label_hidden: false,
                 members,
                 base,
                 kind,
-                mate,
+                placement,
                 frame,
                 position,
                 position2,
@@ -11873,8 +11923,8 @@ label_hidden: false,
                 joint.members = members;
                 joint.base = if base < 2 { base } else { 0 };
                 joint.kind = kind;
-                joint.frame = seeded_joint_frame(&frame, &mate);
-                joint.mate = mate;
+                joint.frame = seeded_joint_frame(&frame, &placement);
+                joint.placement = placement;
                 joint.position = position;
                 joint.position2 = position2;
                 joint.position3 = position3;
@@ -15396,8 +15446,6 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         // Likewise the Joint tool's mate rows and stops: the chain, not a stored flag.
         | P::JointMovingFace
         | P::JointFixedFace
-        | P::JointLineUpMoving(_)
-        | P::JointLineUpFixed(_)
         | P::JointMinStop
         | P::JointMaxStop
         | P::JointFrameOrigin
@@ -15657,35 +15705,23 @@ pub fn apply_pick(
             true
         }
         // The mate's own rows (#1014/#1015): every pick a mate can hold already names a
-        // scene element, so this is one arm for all of them — the face pair and every
-        // line-up row, from the viewport, the pane or a script alike.
-        (
-            P::JointMovingFace
-            | P::JointFixedFace
-            | P::JointLineUpMoving(_)
-            | P::JointLineUpFixed(_),
-            element,
-        ) => {
+        // scene element, so this is one arm for both sides of the joint's placement (#1079),
+        // from the viewport, the pane or a script alike.
+        (P::JointMovingFace | P::JointFixedFace, element) => {
             let Some(pick) = element.to_mate_ref() else { return false };
+            let crate::model::MateRef::Face { body, centroid, normal } = pick else {
+                return false;
+            };
+            let point =
+                crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] };
             let cj = state.creating_joint.get_or_insert_with(CreatingJoint::default);
-            fn slot(cj: &mut CreatingJoint, i: usize, moving: bool) -> &mut Option<crate::model::MateRef> {
-                while cj.mate.line_up.len() <= i {
-                    cj.mate.line_up.push(crate::model::MateLineUp::default());
-                }
-                let row = &mut cj.mate.line_up[i];
-                if moving { &mut row.moving } else { &mut row.fixed }
-            }
-            let slot: &mut Option<crate::model::MateRef> = match target {
-                P::JointMovingFace => &mut cj.mate.moving_face,
-                P::JointFixedFace => &mut cj.mate.fixed_face,
-                P::JointLineUpMoving(i) => slot(cj, i, true),
-                _ => {
-                    let P::JointLineUpFixed(i) = target else { unreachable!() };
-                    slot(cj, i, false)
-                }
+            cj.placement.translate_mode = crate::model::MoveTranslateMode::FaceSnap;
+            let slot = match target {
+                P::JointMovingFace => &mut cj.placement.start_point_a,
+                _ => &mut cj.placement.end_point_a,
             };
             // The same toggle every picker has: clicking what's already there empties it.
-            *slot = (*slot != Some(pick)).then_some(pick);
+            *slot = (*slot != Some(point)).then_some(point);
             true
         }
         // Everything else the pane can route is a whole body, which the existing per-tool

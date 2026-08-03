@@ -945,7 +945,7 @@ mod tests {
             members,
             base: 0,
             kind: crate::model::JointKind::Revolute,
-            mate: Default::default(),
+            placement: Default::default(),
             position: String::new(),
             position2: String::new(),
             position3: String::new(),

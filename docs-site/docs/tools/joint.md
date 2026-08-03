@@ -42,23 +42,16 @@ relationship and nothing moves.
 
 ## Mating
 
-**Put this face on that face, then line this up with that.**
+**Put this face on that face.**
 
-The **face pair** is the placement: pick a face on each part and the moving one sits flush on
-the other. **Flip** turns it the other way round; **Offset** holds it off by a distance, as an
-expression like any other.
+Mating is a **move** — the same one the [Move tool](./move.md) makes, in the same modes. Most
+joints want **Face Snap**: pick a face on each part and the moving one lands on the other,
+surfaces together. **Flip** puts it on the other side, **Gap** holds it off by a distance, and
+**Turn** spins it about the face it sits on. All of them are expressions, like any other.
 
-**Line-up rows** take away what the face pair leaves — two slides in the mating plane and the
-spin about it. Each row pairs a point or an edge on each part, and the pick **need not lie in
-the mating plane**: line a part up by a hole rim, a boss centre, or a corner right across it.
-Two points bring their projections together; two edges make them run in line; a point and an
-edge put the point on the line.
-
-A row appears as soon as there is something for it to pin, and stops appearing once the part
-is fully placed. A face plus two more picks places anything.
-
-A hole, a boss or a shaft has a **centre line** you can pick, so putting a peg in a hole is a
-face pair plus one line-up row.
+The other modes are there when a joint isn't going flat onto anything: **Point Snap** lands a
+point on a point, **Free** takes typed amounts and turns, and **In place** says *leave it where
+it is* — no picks, no values, for parts already sitting where they belong.
 
 The fixed side takes a datum plane, a world axis or the origin too, which is how the first
 part of an assembly is grounded.
@@ -76,9 +69,10 @@ commit. **Animate** turns that sweep off — one switch for every joint.
 **Second axis**. The Axis is what a Slider slides along and a Revolute turns about; the
 Second axis fixes the roll, which a Planar or Ball joint needs.
 
-Mating fills these in — the fixed face becomes the Axis, and the first line-up row the Second
-axis — so most joints need nothing said. Change any of them to move the joint's freedoms
-somewhere else without disturbing where the mate put the part.
+Mating on a face fills the Axis in for you — the fixed face's own direction — so most joints
+need nothing said. Change any of them to move the joint's freedoms somewhere else without
+disturbing where the mate put the part. A joint mated some other way starts with no axis, and
+asks for one.
 
 An Axis takes anything with a direction: a flat face or datum plane (its normal), a body edge
 or world axis, or a hole's centre line. The Origin takes a point.
@@ -152,33 +146,22 @@ Double-click the row to edit the joint.
 local moving = bearcad.body_faces(1)[1]
 local fixed  = bearcad.body_faces(0)[2]
 
--- Join two bodies with a hinge: face on face, lined up by a corner, swung 90°.
+-- Join two bodies with a hinge: face on face, swung 90°.
 bearcad.joint{
   a = 0, b = 1, kind = "revolute",
   face = { moving = moving, fixed = fixed, offset = 2 },
   -- Optional: say which way the hinge swings. Left out, the fixed face decides.
   frame_axis = { axis = "z" },
-  line_up = {
-    {
-      moving = { body = 1, vertex = {40, 0, 0} },
-      fixed  = { body = 0, vertex = {0, 0, 0} },
-    },
-  },
   position = 90,
   turn_min = 0, turn_max = 110,
   name = "Hinge",
 }
 
--- Put a peg in a hole: face on face, then line the two centre lines up.
+-- Put a peg in a hole: face on face, turning and sliding about the hole's centre line.
 bearcad.joint{
   a = 0, b = 1, kind = "cylindrical",
   face = { moving = bearcad.body_faces(1)[1], fixed = bearcad.body_faces(0)[1] },
-  line_up = {
-    {
-      moving = bearcad.body_cylinders(1)[1].axis,
-      fixed  = bearcad.body_cylinders(0)[1].axis,
-    },
-  },
+  frame_axis = bearcad.body_cylinders(0)[1].axis,
 }
 
 -- Ground the first part against a datum plane.

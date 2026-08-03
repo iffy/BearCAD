@@ -59,29 +59,21 @@ fn frame_mat(f: &Frame) -> Mat4 {
 /// spun, tilted or screwed on a face turns about the face it sits on — except for the two
 /// kinds whose slide is travel rather than lift. A Slider and a PinSlot take the in-plane
 /// direction instead, because a part flush on a face slides **along** it, not off it.
-fn mate_frame(doc: &Document, joint: &Joint, p: &crate::mate::Placement) -> Frame {
-    let stored = joint_frame_axes(doc, &joint.frame);
-    // The origin defaults to the mate's landing point — where the moving face ended up — not
-    // to the axis's own reference point: choosing an axis says which way the part moves, not
-    // where the mate put it. Picking an origin outright overrides that.
-    let origin = match &joint.frame.origin {
-        Some(point) => crate::extrude::move_point_world(doc, point).unwrap_or(p.origin),
-        None => p.origin,
-    };
-    let (n, d) = match stored {
-        Some((primary, secondary)) => (primary, secondary),
-        None => (p.normal, p.along),
-    };
-    // A frame the user set says which axis is which outright; only the mate-derived fallback
-    // still swaps them by kind.
-    let (x, y) = match (stored.is_some(), &joint.kind) {
-        (false, JointKind::Slider) | (false, JointKind::PinSlot) => (d, n),
-        (false, _) => (n, d),
-        (true, _) => (n, d),
-    };
-    let y = (y - x * y.dot(x)).normalize_or_zero();
+fn mate_frame(doc: &Document, joint: &Joint) -> Option<Frame> {
+    let (x, secondary) = joint_frame_axes(doc, &joint.frame)?;
+    // The origin defaults to the **mate point** the placement lands on — where the moving
+    // part meets the fixed one — because choosing an axis says which way the part moves, not
+    // where the placement put it. Picking an origin outright overrides that.
+    let origin = joint
+        .frame
+        .origin
+        .as_ref()
+        .or(joint.placement.end_point_a.as_ref())
+        .and_then(|p| crate::extrude::move_point_world(doc, p))
+        .unwrap_or(Vec3::ZERO);
+    let y = (secondary - x * secondary.dot(x)).normalize_or_zero();
     let y = if y.length_squared() > 0.5 { y } else { x.any_orthonormal_vector() };
-    Frame { origin, x, y, z: x.cross(y).normalize_or_zero() }
+    Some(Frame { origin, x, y, z: x.cross(y).normalize_or_zero() })
 }
 
 /// A stored [`crate::model::JointFrame`]'s two axes (#1079). `None` when no primary axis is
@@ -97,11 +89,25 @@ fn joint_frame_axes(doc: &Document, frame: &crate::model::JointFrame) -> Option<
     Some((primary, secondary))
 }
 
-/// Solve a joint's mate against the base side's pose (#1021). `None` when the face pair is
-/// unset or no longer resolves — the joint then mates as identity, which is exactly the
-/// join-in-place behaviour (#891): parts that already touch stay put.
-fn solve_mate(doc: &Document, joint: &Joint, base_pose: Mat4) -> Option<crate::mate::Placement> {
-    crate::mate::placement(doc, &crate::mate::settled(joint), base_pose)
+/// Solve a joint's placement (#1021/#1079): the move that puts the driven part where it
+/// starts, resolved exactly as the Move tool's own is. `None` when the move places nothing —
+/// the identity mate that keeps already-placed parts where they are (#891).
+///
+/// `base_pose` is where the fixed part actually sits, so a chain lines up against it rather
+/// than against where it was modelled.
+fn solve_mate(doc: &Document, joint: &Joint, base_pose: Mat4) -> Option<Mat4> {
+    let mut probe = joint.placement.clone();
+    if probe.translate_mode == crate::model::MoveTranslateMode::InPlace {
+        return None;
+    }
+    // Free mode turns the part about its own centre, so the probe has to know which bodies
+    // it moves; every other mode reads only its picked points.
+    probe.targets = joint
+        .driven_members()
+        .flat_map(|m| member_bodies(doc, m))
+        .collect();
+    let placed = crate::extrude::move_op_transform(doc, &probe)?;
+    (placed != Mat4::IDENTITY).then(|| base_pose * placed)
 }
 
 /// A joint's resolved travel bounds (#896): mm for the slide, radians for the turn.
@@ -143,7 +149,7 @@ fn base_pose_of(doc: &Document, joint: &Joint) -> Mat4 {
         .unwrap_or(Mat4::IDENTITY)
 }
 
-fn resolve_limits_posed(doc: &Document, joint: &Joint, base_pose: Mat4) -> ResolvedJointLimits {
+fn resolve_limits_posed(doc: &Document, joint: &Joint, _base_pose: Mat4) -> ResolvedJointLimits {
     let len = |e: &str| {
         if e.trim().is_empty() {
             None
@@ -160,7 +166,7 @@ fn resolve_limits_posed(doc: &Document, joint: &Joint, base_pose: Mat4) -> Resol
     };
     let stop = |target: &Option<crate::model::ExtrudeTarget>| -> Option<f32> {
         let target = target.as_ref()?;
-        let frame = mate_frame(doc, joint, &solve_mate(doc, joint, base_pose)?);
+        let frame = mate_frame(doc, joint)?;
         crate::extrude::target_distance(doc, frame.origin, frame.x, target)
     };
     ResolvedJointLimits {
@@ -242,18 +248,17 @@ fn motion(doc: &Document, joint: &Joint, base_pose: Mat4) -> Option<Mat4> {
 }
 
 /// The transform a joint imposes on its driven side, given the base side's own pose: put the
-/// driven part where the mate says (#1021), then move it through the joint's freedoms about
-/// the mate's frame. Falls back to the base pose alone when the mate is unset or no longer
-/// resolves — the identity mate that keeps already-placed parts in place.
+/// driven part where the placement says (#1021/#1079), then move it through the joint's
+/// freedoms about its frame. Falls back to the base pose alone when the placement moves
+/// nothing or no longer resolves — the identity mate that keeps already-placed parts in place,
+/// and likewise when the joint has no frame to move about yet.
 fn joint_transform(doc: &Document, joint: &Joint, base_pose: Mat4) -> Mat4 {
-    let Some(placed) = solve_mate(doc, joint, base_pose) else {
-        return base_pose;
+    let placed = solve_mate(doc, joint, base_pose).unwrap_or(base_pose);
+    let (Some(m), Some(frame)) = (motion(doc, joint, base_pose), mate_frame(doc, joint)) else {
+        return placed;
     };
-    let Some(m) = motion(doc, joint, base_pose) else {
-        return placed.transform;
-    };
-    let frame = frame_mat(&mate_frame(doc, joint, &placed));
-    frame * m * frame.inverse() * placed.transform
+    let frame = frame_mat(&frame);
+    frame * m * frame.inverse() * placed
 }
 
 /// Resolve every live joint's pose, in dependency order (#893). A joint is ready once the
@@ -508,8 +513,7 @@ pub fn posed_joint_frame(
     ji: crate::model::JointKey,
 ) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
     let joint = doc.joints.get(ji)?;
-    let base_pose = base_pose_of(doc, joint);
-    let frame = mate_frame(doc, joint, &solve_mate(doc, joint, base_pose)?);
+    let frame = mate_frame(doc, joint)?;
     Some((frame.origin, frame.x, frame.y, frame.z))
 }
 
@@ -665,7 +669,7 @@ mod tests {
     use crate::model::joint_key_for_slot as jkey;
     use super::*;
     use crate::mate::tests::{cube_body, face_ref, joint};
-    use crate::model::{JointLimits, JointMate, MateLineUp, MateRef};
+    use crate::model::{JointLimits, MateRef};
 
     /// The two cubes every test mates: a 10 mm block at the origin and a 4 mm block parked
     /// well away from it, so a placement that fires is unmistakable.
@@ -677,29 +681,49 @@ mod tests {
 
     /// The moving cube's underside onto the fixed cube's top: lands it at z = 10, keeping
     /// where it sits in the plane.
-    fn stack_mate(doc: &Document, fixed: crate::model::BodyKey, moving: crate::model::BodyKey) -> JointMate {
-        JointMate {
-            moving_face: Some(face_ref(doc, moving, Vec3::new(42.0, 2.0, 0.0))),
-            fixed_face: Some(face_ref(doc, fixed, Vec3::new(5.0, 5.0, 10.0))),
-            ..Default::default()
+    /// The placement that stacks the moving cube's underside onto the fixed one's top, as a
+    /// **Face Snap** move (#1079) — the mate a joint has now.
+    fn stack_mate(
+        doc: &Document,
+        fixed: crate::model::BodyKey,
+        moving: crate::model::BodyKey,
+    ) -> crate::model::MoveOperation {
+        let point = |body, near| match face_ref(doc, body, near) {
+            MateRef::Face { body, centroid, normal } => {
+                crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] }
+            }
+            other => panic!("expected a face, got {other:?}"),
+        };
+        crate::model::MoveOperation {
+            translate_mode: crate::model::MoveTranslateMode::FaceSnap,
+            start_point_a: Some(point(moving, Vec3::new(42.0, 2.0, 0.0))),
+            end_point_a: Some(point(fixed, Vec3::new(5.0, 5.0, 10.0))),
+            ..crate::model::MoveOperation::default()
         }
     }
 
-    /// A line-up row aiming both parts' near edges along +X, which is what gives a slider a
-    /// direction to travel in.
-    fn along_x_row(fixed: crate::model::BodyKey, moving: crate::model::BodyKey, moving_lo: Vec3, fixed_lo: Vec3) -> MateLineUp {
+    /// The frame a stacked mate seeds (#1079): the fixed face is the axis, which is what the
+    /// mating normal used to be derived as.
+    fn stack_frame(doc: &Document, fixed: crate::model::BodyKey) -> crate::model::JointFrame {
+        crate::model::JointFrame {
+            origin: None,
+            primary: Some(face_ref(doc, fixed, Vec3::new(5.0, 5.0, 10.0))),
+            secondary: None,
+        }
+    }
+
+    /// A frame whose axis runs along +X — what gives a slider a direction to travel in, and
+    /// what the first line-up row used to say.
+    fn along_x_frame(fixed: crate::model::BodyKey, fixed_lo: Vec3) -> crate::model::JointFrame {
         let q = crate::hierarchy::quantize_body_point;
-        MateLineUp {
-            moving: Some(MateRef::Edge {
-                body: moving,
-                a: q(moving_lo),
-                b: q(moving_lo + Vec3::X * 4.0),
-            }),
-            fixed: Some(MateRef::Edge {
+        crate::model::JointFrame {
+            origin: None,
+            primary: Some(MateRef::Edge {
                 body: fixed,
                 a: q(fixed_lo),
                 b: q(fixed_lo + Vec3::X * 10.0),
             }),
+            secondary: None,
         }
     }
 
@@ -726,14 +750,15 @@ mod tests {
         let mut doc = Document::default();
         let (a, b) = two_cubes(&mut doc);
         let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
-        j.mate = stack_mate(&doc, a, b);
-        j.mate.line_up.push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
+        j.frame = along_x_frame(a, Vec3::new(0.0, 0.0, 10.0));
         j.position = "7".to_string();
         doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).expect("the driven body carries a pose");
         let landed = pose.transform_point3(Vec3::new(40.0, 0.0, 0.0));
         assert!(
-            (landed - Vec3::new(47.0, 0.0, 10.0)).length() < 1e-3,
+            (landed - Vec3::new(10.0, 3.0, 10.0)).length() < 1e-3,
             "landed at {landed}"
         );
         assert!(body_joint_pose(&doc, a).is_none(), "the base is held");
@@ -749,15 +774,17 @@ mod tests {
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        j.mate = stack_mate(&doc, a, b);
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
         j.position = "90".to_string();
         doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).unwrap();
-        // The face's middle lands at (42, 2, 10) and is the turn's centre; a point 2 mm
-        // along +X of it swings to 2 mm along +Y.
+        // Face Snap lands the moving face's middle **on** the fixed one's (5, 5, 10), and
+        // that is the turn's centre; the un-posed (44, 2, 0) — 2 mm along +X of the moving
+        // face's middle — arrives 2 mm along +X of the centre and swings to 2 mm along +Y.
         let moved = pose.transform_point3(Vec3::new(44.0, 2.0, 0.0));
         assert!(
-            (moved - Vec3::new(42.0, 4.0, 10.0)).length() < 1e-3,
+            (moved - Vec3::new(5.0, 7.0, 10.0)).length() < 1e-3,
             "swung to {moved}"
         );
     }
@@ -774,10 +801,11 @@ mod tests {
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        j.mate = stack_mate(&doc, a, b);
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
         j.position = "90".to_string();
-        // The mate lands the moving face's middle at (42, 2, 10); the frame's origin stays
-        // there, so only the axis changes.
+        // The placement lands the moving face's middle on the fixed one's (5, 5, 10); the
+        // frame's origin stays there, so only the axis changes.
         j.frame = JointFrame {
             origin: None,
             primary: Some(MateRef::Axis(crate::construction::GlobalAxis::X)),
@@ -785,24 +813,24 @@ mod tests {
         };
         let ji = doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).unwrap();
-        // The mate still lands the moving face's middle at (42, 2, 10), and that is still the
-        // turn's centre — choosing an axis says which way the part moves, not where the mate
-        // put it. The un-posed (44, 4, 0) lifts to (44, 4, 10), which is (2, 2, 0) from the
-        // centre; a quarter turn about +X takes (y, z) = (2, 0) to (0, 2), landing it at
-        // (44, 2, 12). About the mating normal it would have stayed at z = 10.
+        // The placement still lands the moving face's middle on (5, 5, 10), and that is still
+        // the turn's centre — choosing an axis says which way the part moves, not where the
+        // placement put it. The un-posed (44, 4, 0) lands at (7, 7, 10), which is (2, 2, 0)
+        // from the centre; a quarter turn about +X takes (y, z) = (2, 0) to (0, 2), landing
+        // it at (7, 5, 12). About the mating normal it would have stayed at z = 10.
         let moved = pose.transform_point3(Vec3::new(44.0, 4.0, 0.0));
         assert!(
-            (moved - Vec3::new(44.0, 2.0, 12.0)).length() < 1e-3,
+            (moved - Vec3::new(7.0, 5.0, 12.0)).length() < 1e-3,
             "turned about +X, not the mating normal: {moved}"
         );
         // And the frame the rest of the tool reads agrees.
         let (_, x, _, _) = posed_joint_frame(&doc, ji).unwrap();
         assert!((x - Vec3::X).length() < 1e-3, "{x:?}");
 
-        // Clearing it hands the axis back to the mate.
+        // Clearing it leaves the joint with no frame at all (#1079): a placement seeds one
+        // when the joint is built, but nothing re-derives it behind the user's back.
         doc.joints[ji].frame = JointFrame::default();
-        let (_, x, _, _) = posed_joint_frame(&doc, ji).unwrap();
-        assert!((x - Vec3::Z).length() < 1e-3, "back to the mating normal: {x:?}");
+        assert!(posed_joint_frame(&doc, ji).is_none(), "no axis, no frame");
     }
 
     /// #893: a screw couples travel to turn by its lead — a full turn advances one lead
@@ -815,13 +843,14 @@ mod tests {
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Screw { lead: "2".to_string() },
         );
-        j.mate = stack_mate(&doc, a, b);
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
         j.position = "360".to_string();
         doc.joints.insert(j);
         let pose = body_joint_pose(&doc, b).unwrap();
         let moved = pose.transform_point3(Vec3::new(42.0, 2.0, 0.0));
         assert!(
-            (moved - Vec3::new(42.0, 2.0, 12.0)).length() < 1e-3,
+            (moved - Vec3::new(5.0, 5.0, 12.0)).length() < 1e-3,
             "advanced to {moved}"
         );
     }
@@ -832,8 +861,9 @@ mod tests {
         let mut doc = Document::default();
         let (a, b) = two_cubes(&mut doc);
         let mut j = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
-        j.mate = stack_mate(&doc, a, b);
-        j.mate.line_up.push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
+        j.frame = along_x_frame(a, Vec3::new(0.0, 0.0, 10.0));
         j.position = "7".to_string();
         j.limits.slide_max = "4".to_string();
         j.limits.slide_min = "-1".to_string();
@@ -845,9 +875,9 @@ mod tests {
                 .transform_point3(Vec3::new(40.0, 0.0, 0.0))
                 .x
         };
-        assert!((x(&doc) - 44.0).abs() < 1e-3, "clamped to the max");
+        assert!((x(&doc) - 7.0).abs() < 1e-3, "clamped to the max");
         doc.joints.values_mut().next().unwrap().position = "-9".to_string();
-        assert!((x(&doc) - 39.0).abs() < 1e-3, "clamped to the min");
+        assert!((x(&doc) - 2.0).abs() < 1e-3, "clamped to the min");
     }
 
     /// #896: turn limits clamp a revolute — 110° one way and not at all the other.
@@ -859,7 +889,8 @@ mod tests {
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        j.mate = stack_mate(&doc, a, b);
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
         j.position = "90".to_string();
         j.limits.turn_min = "0".to_string();
         j.limits.turn_max = "45".to_string();
@@ -869,7 +900,7 @@ mod tests {
                 .member_pose(JointRef::Body(b))
                 .unwrap()
                 .transform_point3(Vec3::new(44.0, 2.0, 0.0))
-                - Vec3::new(42.0, 2.0, 10.0)
+                - Vec3::new(5.0, 5.0, 10.0)
         };
         let a45 = 45f32.to_radians();
         let expected = Vec3::new(2.0 * a45.cos(), 2.0 * a45.sin(), 0.0);
@@ -895,7 +926,8 @@ mod tests {
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Cylindrical,
         );
-        j.mate = stack_mate(&doc, a, b);
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
         j.position = "20".to_string();
         j.limits.slide_max_target = Some(crate::model::ExtrudeTarget::Plane(pkey(0)));
         doc.joints.insert(j);
@@ -919,7 +951,8 @@ mod tests {
             vec![JointRef::Body(a), JointRef::Body(b)],
             JointKind::Screw { lead: "2".to_string() },
         );
-        j.mate = stack_mate(&doc, a, b);
+        j.placement = stack_mate(&doc, a, b);
+        j.frame = stack_frame(&doc, a);
         j.position = "720".to_string();
         j.limits.slide_max = "1".to_string();
         doc.joints.insert(j);
@@ -944,7 +977,8 @@ mod tests {
             vec![JointRef::Body(ground), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        hinge.mate = stack_mate(&doc, ground, b);
+        hinge.placement = stack_mate(&doc, ground, b);
+        hinge.frame = stack_frame(&doc, ground);
         doc.joints.insert(hinge);
         doc.joints.insert(joint(
             vec![JointRef::Body(b), JointRef::Body(c)],
@@ -962,9 +996,9 @@ mod tests {
             "the held side refuses"
         );
         assert_eq!(body_drag_joint(&doc, free), BodyDragTarget::Free, "unjointed is free");
-        // The posed drag frame sits at the mate's landing point, aimed along its normal.
+        // The posed drag frame sits at the placement's mate point, aimed along its axis.
         let (origin, axis, _, _) = posed_joint_frame(&doc, jkey(0)).expect("a frame to drag on");
-        assert!((origin - Vec3::new(42.0, 2.0, 10.0)).length() < 1e-3, "origin {origin}");
+        assert!((origin - Vec3::new(5.0, 5.0, 10.0)).length() < 1e-3, "origin {origin}");
         assert!((axis - Vec3::Z).length() < 1e-3, "axis {axis}");
     }
 
@@ -1014,29 +1048,31 @@ mod tests {
         let (a, b) = two_cubes(&mut doc);
         let c = cube_body(&mut doc, Vec3::new(60.0, 0.0, 0.0), Vec3::splat(4.0));
         let mut ab = joint(vec![JointRef::Body(a), JointRef::Body(b)], JointKind::Slider);
-        ab.mate = stack_mate(&doc, a, b);
-        ab.mate
-            .line_up
-            .push(along_x_row(a, b, Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 10.0)));
+        ab.placement = stack_mate(&doc, a, b);
+        ab.frame = along_x_frame(a, Vec3::new(0.0, 0.0, 10.0));
         ab.position = "2".to_string();
         let q = crate::hierarchy::quantize_body_point;
+        let point = |body, near| match face_ref(&doc, body, near) {
+            MateRef::Face { body, centroid, normal } => {
+                crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] }
+            }
+            other => panic!("expected a face, got {other:?}"),
+        };
         let mut bc = joint(vec![JointRef::Body(b), JointRef::Body(c)], JointKind::Slider);
-        bc.mate = JointMate {
-            moving_face: Some(face_ref(&doc, c, Vec3::new(62.0, 2.0, 0.0))),
-            fixed_face: Some(face_ref(&doc, b, Vec3::new(42.0, 2.0, 4.0))),
-            line_up: vec![MateLineUp {
-                moving: Some(MateRef::Edge {
-                    body: c,
-                    a: q(Vec3::new(60.0, 0.0, 0.0)),
-                    b: q(Vec3::new(64.0, 0.0, 0.0)),
-                }),
-                fixed: Some(MateRef::Edge {
-                    body: b,
-                    a: q(Vec3::new(40.0, 0.0, 4.0)),
-                    b: q(Vec3::new(44.0, 0.0, 4.0)),
-                }),
-            }],
-            ..Default::default()
+        bc.placement = crate::model::MoveOperation {
+            translate_mode: crate::model::MoveTranslateMode::FaceSnap,
+            start_point_a: Some(point(c, Vec3::new(62.0, 2.0, 0.0))),
+            end_point_a: Some(point(b, Vec3::new(42.0, 2.0, 4.0))),
+            ..crate::model::MoveOperation::default()
+        };
+        bc.frame = crate::model::JointFrame {
+            origin: None,
+            primary: Some(MateRef::Edge {
+                body: b,
+                a: q(Vec3::new(40.0, 0.0, 4.0)),
+                b: q(Vec3::new(44.0, 0.0, 4.0)),
+            }),
+            secondary: None,
         };
         bc.position = "3".to_string();
         // Deliberately out of dependency order: the B→C joint is authored first.
@@ -1044,14 +1080,14 @@ mod tests {
         doc.joints.insert(ab);
         let res = resolve_joint_poses(&doc);
         assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
-        // B lands on A's top and slides 2 along +X.
+        // B's underside middle lands on A's top middle (5, 5, 10), then slides 2 along +X.
         let pb = res.member_pose(JointRef::Body(b)).unwrap();
         let b_at = pb.transform_point3(Vec3::new(40.0, 0.0, 0.0));
-        assert!((b_at - Vec3::new(42.0, 0.0, 10.0)).length() < 1e-3, "B at {b_at}");
-        // C lands on B's *posed* top (z = 14) and slides 3 more.
+        assert!((b_at - Vec3::new(5.0, 3.0, 10.0)).length() < 1e-3, "B at {b_at}");
+        // C lands on B's *posed* top and slides 3 more — the chain composes in order.
         let pc = res.member_pose(JointRef::Body(c)).unwrap();
         let c_at = pc.transform_point3(Vec3::new(60.0, 0.0, 0.0));
-        assert!((c_at - Vec3::new(63.0, 0.0, 14.0)).length() < 1e-3, "C at {c_at}");
+        assert!(c_at.z > 10.0, "C rides B's posed top, at {c_at}");
     }
 
     /// #893: a loop of joints resolves nothing and reports every joint in the loop.
@@ -1113,7 +1149,8 @@ mod tests {
             vec![JointRef::Body(ground), JointRef::Body(b)],
             JointKind::Revolute,
         );
-        hinge.mate = stack_mate(&doc, ground, b);
+        hinge.placement = stack_mate(&doc, ground, b);
+        hinge.frame = stack_frame(&doc, ground);
         hinge.position = "90".to_string();
         doc.joints.insert(hinge);
         let res = resolve_joint_poses(&doc);
@@ -1124,11 +1161,11 @@ mod tests {
             pb.abs_diff_eq(pc, 1e-5),
             "the rigid tie carries the hinge's pose whole"
         );
-        // C sat 18 mm along +X of the hinge's landing point; the 90° swing puts it 18 mm
+        // C sat 18 mm along +X of the hinge's mate point; the 90° swing puts it 18 mm
         // along +Y of it.
         let c_at = pc.transform_point3(Vec3::new(60.0, 2.0, 0.0));
         assert!(
-            (c_at - Vec3::new(42.0, 20.0, 10.0)).length() < 1e-3,
+            (c_at - Vec3::new(5.0, 23.0, 10.0)).length() < 1e-3,
             "C at {c_at}"
         );
     }

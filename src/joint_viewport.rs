@@ -179,7 +179,7 @@ mod tests {
             members: vec![JointRef::Body(bkey(0)), JointRef::Body(bkey(1))],
             base: 0,
             kind,
-            mate: Default::default(),
+            placement: Default::default(),
             position: String::new(),
             position2: String::new(),
             position3: String::new(),

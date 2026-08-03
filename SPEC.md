@@ -1026,8 +1026,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   algorithm written out twice, seven states and nine; they now declare a chain each
   (`move_focus_chain` / `joint_focus_chain`) and share the walk. A Free move has no point
   pairs, so its chain is just the bodies and start A; the Joint tool's chain runs the parts, the
-  mate's face pair, then a line-up row at a time (#1021), and its slide stops (#896) are
-  hand-focused from the pane rather than stepped into, so they sit outside it.
+  mate's two faces (#1021/#1079), and then — only when the placement named no plane to seed
+  it from — the joint's own axis; its slide stops (#896) are hand-focused from the pane rather
+  than stepped into, so they sit outside it.
 
   - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
     B** on stationary geometry, adds the **rotation** — the pane labels the B and C rows
@@ -1547,45 +1548,45 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   parts start out; below it, a section named for the **kind** (*Slider*, *Revolute*, …) holds
   that kind's own freedoms and the limits on them. Rigid has neither, so it gets no second
   section.
-  **The mate (#1021, `model::JointMate`):** *put this face on that face, then line this up with
-  that.* Alternating labeled rows — **Moving face** / **Fixed face**, then each line-up as
-  **Line up N moving** / **Line up N fixed** (#1024) — not two side-by-side columns. The mate is a
-  **starting placement and nothing more**: it works out to a rigid transform (`mate::placement`) that the kind's freedoms then act
-  on top of, exactly where the frames sat in `joints::joint_transform`, and has no bearing on how
-  the joint moves. Anchoring a slider fully and then choosing its slide axis and limits stays
-  valid — the two are independent by design.
-  - **The face pair (#1014):** a face on the moving part and the face (or datum plane) it lands
-    on. Completing it places the part flush, which is a usable placement on its own — so the
-    common mate is two clicks. **Flip** switches which way the part ends up facing (the default
-    puts the normals opposed, so the surfaces touch) and **Offset** holds it off by a parametric
-    distance.
-  - **Line-up rows (#1015):** after the face pair the part can still slide two ways in the mating
-    plane and spin about its normal. Each row pairs a point or edge on the moving part with one
-    on the fixed side, and — the point of it — **the pick need not lie in the mating plane**.
-    Both picks are projected along the mating normal and the relationship applied to the
-    *projections*, so a part lines up by a hole rim, a boss centre or a far corner, and a row can
-    never disturb the face pair. Two points make their projections coincide (pinning both
-    slides); two edges make theirs collinear (the spin and the slide across the line); a point
-    and an edge put the point on the line. A face plus two more picks fully places a part.
-  - **One row at a time (#1016):** completing a row opens the next; a pick that pins nothing the
-    rows before it left open is refused, and **no further row appears once nothing is left to
-    pin** — which is the whole "fully placed" signal, with no prose in the pane
-    (`Placement::open_freedoms`).
-  - **Least motion:** what the face pair and the rows leave undetermined is chosen by least
-    motion from where the part already sits, so a part dragged roughly into place doesn't jump
-    across the document and the preview doesn't drift as rows are added. The in-plane fit is
-    linear in the slide for any fixed spin, so it solves as a sweep over the spin with a
-    least-norm 2×2 solve inside — no iteration to diverge, and an underdetermined mate falls out
-    as "stay put" rather than as a failure.
-  - **The freedoms' frame (#1079, `model::JointFrame`):** how the joint works is its **own**
+  **The mate is a move (#1021/#1068/#1079).** A joint mate is *a move — optionally a no-op,
+  when the part is already where it belongs — plus the joint's limits*, so it **is** one:
+  `Joint::placement` is a `MoveOperation` and the Joint tool drives the same `CreatingMove`
+  the Move tool does (§7.4). Sharing the state rather than a component is what stops the two
+  drifting into two behaviours. Every move mode is available: **Face Snap** is the default and
+  the common case (two clicks — a face on the moving part, a face on the fixed one), **Point
+  Snap** and **Free** place a part that isn't going flat onto anything, and **In place** says
+  "leave it where it is" with no picks and no values.
+
+  The pane keeps its two named parts: **Mate** says where the parts start out — the same
+  **Moving face** / **Fixed face** rows, plus Face Snap's **Flip**, **Gap** and **Turn** — and
+  below it **Freedom** says how the joint works, then a section named for the **kind**
+  (*Slider*, *Revolute*, …) holds that kind's own limits. Rigid has no freedoms, so it gets no
+  kind section.
+
+  The mate remains a **starting placement and nothing more**: it works out to a rigid transform
+  (`extrude::move_op_transform`, the same call the Move tool resolves through) that the kind's
+  freedoms then act on top of, and has no bearing on how the joint moves.
+
+  - **Face on face.** Face Snap lands the moving face's point **on** the fixed face's — by
+    default each face's middle — with the normals opposed so the surfaces touch. **Flip** puts
+    the part on the other side, **Gap** holds it off along the normal, and **Turn** spins it
+    about that normal through the mate point. This replaced the *line-up rows* that used to
+    take away what a face pair left free: a mate point plus a turn pins all three of those
+    freedoms directly, and says so in the same vocabulary the Move tool already used. It is
+    only as exact as the meshed face's centroid, which is why mating on a hole's own centre is
+    tracked separately (#1080).
+  - **Grounding against the world (#1018):** the fixed side takes a datum plane, a world axis
+    or the origin as readily as another part's geometry, which is how the first part of an
+    assembly is placed.
+  - **The freedoms' frame (#1079, `model::JointFrame`):**  - **The freedoms' frame (#1079, `model::JointFrame`):** how the joint works is its **own**
     state — an **Origin**, an **Axis** and a **Second axis** in the pane's *Freedom* section —
     not something derived from the mate. It used to be derived, and could be, because a mate
     was always a face on a face; a joint's placement is now an ordinary move (#1068) and three
     of the four move modes name no plane at all, so a joint mated by Point Snap, Free or In
     place would otherwise have no axis to slide along or turn about.
 
-    The mate **seeds** it — a fixed face becomes the Axis and the first line-up row the Second
-    axis (`actions::seeded_joint_frame`, run where the joint is built, so a scripted joint is
+    The placement **seeds** it — a Face Snap mate's fixed face becomes the Axis
+    (`actions::seeded_joint_frame`, run where the joint is built, so a scripted joint is
     seeded exactly like a drawn one) — and every field stays editable either way. An Axis input
     takes anything with a **direction**: a face or datum plane contributes its normal, an edge
     or world axis its own direction, a hole its centre line; a bare point has none and is
@@ -1593,19 +1594,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     axis's own reference point, because choosing an axis says which way the part moves, not
     where the mate put it.
 
-    With no frame set the old rule still answers exactly: the primary axis is the **mating
-    normal** — a part spun, tilted or screwed on a face turns about the face it sits on —
-    except for `slider` and `pin_slot`, whose slide is travel rather than lift: those take the
-    first line-up row's direction, because a part flush on a face slides *along* it. A frame
-    the user set is taken as given, with no swap by kind: it says which axis is which.
+    A joint with **no** Axis has no frame at all: it holds its parts where the placement put
+    them, which is what a Rigid joint does anyway and is the honest answer for the others
+    until an axis is given. Nothing re-derives one behind the user's back.
 
     Scripted as `frame_origin =` (a point), `frame_axis =` and `frame_axis2 =` (mate picks) on
     `bearcad.joint` / `edit_joint` / `begin_joint`; left out, the mate seeds them.
   - **Holes and shafts (#1013):** a round wall is one element with a **centre line** of its
     own (`SceneElement::BodyCylinder` / `BodyAxis`, fitted by `extrude::fit_cylinder` from the
     mesh, so an imported part gets them as readily as a modelled hole). Lining a hole up on a
-    shaft is then one line-up row picking each centre line, rather than a fudge with face
-    centres.
+    shaft is then a matter of naming that centre line — as the joint's **Axis**, or (#1080)
+    as the point a Face Snap mate lands on.
   - **Grounding against the world (#1018):** the fixed side takes a datum plane, a world axis or
     the origin as readily as another part's geometry, which is how the first part of an assembly
     is placed. World-fixed picks don't ride the base's pose; body picks do, so a chain lines up
@@ -1659,7 +1658,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Shortcut (#921):** **J** picks the tool; pressing it again **cycles the kind**
   (`JointKind::next`, the dropdown's order), clearing the positions as a kind change does.
   Scripting (#901/#1020): `bearcad.joint{ a =, b = | parts = {…}, kind =, lead?, base = "a"|"b",
-  face? = { moving =, fixed =, flip?, offset? }, line_up? = { { moving =, fixed = }, … },
+  face? = { moving =, fixed =, flip?, offset?, spin? },
+  frame_origin?, frame_axis?, frame_axis2?,
   position?, position2?, position3?, slide_min?,
   slide_max?, slide_min_to?, slide_max_to?, turn_min?, turn_max?, name? }`, where a mate pick is
   `{ body =, face = {x,y,z}, normal = {x,y,z} }`, `{ plane = i }`,
@@ -2892,7 +2892,7 @@ ordinal too.
   `ElementKind::Cylinder` — a picker wanting something to sit a part flush on must not be
   offered one), and its **centre line** as `SceneElement::BodyAxis`, derived geometry with no
   owning entity like `GlobalAxis`, picked at edge priority and usable anywhere a straight
-  reference is: a mate's line-up row (#1015), a Revolve axis, a Repeat path. Fitted from the
+  reference is: a joint's Axis (#1079), a Revolve axis, a Repeat path. Fitted from the
   mesh, so an imported part gets them as readily as a modelled hole; memoized alongside the
   face groups (`extrude::body_cylinders`), with an un-posed twin for mate resolution.
   Scripting: `bearcad.body_cylinders(i)` reports each wall's axis, radius and length, and

@@ -1284,26 +1284,30 @@ fn parse_mate_ref(
 }
 
 /// The `face = {…}` block of a joint call (#1020).
-fn parse_mate(lua: &Lua, opts: &Table) -> mlua::Result<crate::model::JointMate> {
-    let mut mate = crate::model::JointMate::default();
-    if let Some(face) = opts.get::<Option<Table>>("face")? {
-        check_keys(&face, "joint face", &["moving", "fixed", "flip", "offset"])?;
-        mate.moving_face = parse_mate_ref(lua, face.get("moving")?, "face.moving")?;
-        mate.fixed_face = parse_mate_ref(lua, face.get("fixed")?, "face.fixed")?;
-        mate.flip = face.get::<Option<bool>>("flip")?.unwrap_or(false);
-        mate.offset = joint_position_arg(&face, "offset")?;
-    }
-    if let Some(rows) = opts.get::<Option<Table>>("line_up")? {
-        for row in rows.sequence_values::<Table>() {
-            let row = row?;
-            check_keys(&row, "joint line_up row", &["moving", "fixed"])?;
-            mate.line_up.push(crate::model::MateLineUp {
-                moving: parse_mate_ref(lua, row.get("moving")?, "line_up.moving")?,
-                fixed: parse_mate_ref(lua, row.get("fixed")?, "line_up.fixed")?,
-            });
+/// A joint's placement from its `face = { moving, fixed, flip?, offset?, spin? }` table
+/// (#1020/#1079): a **Face Snap** move, which is what a mate always was.
+fn parse_mate(lua: &Lua, opts: &Table) -> mlua::Result<crate::model::MoveOperation> {
+    let mut placement = crate::model::MoveOperation::default();
+    let Some(face) = opts.get::<Option<Table>>("face")? else {
+        return Ok(placement);
+    };
+    check_keys(&face, "joint face", &["moving", "fixed", "flip", "offset", "spin"])?;
+    let point = |r: Option<crate::model::MateRef>| match r {
+        Some(crate::model::MateRef::Face { body, centroid, normal }) => {
+            Ok(Some(crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] }))
         }
-    }
-    Ok(mate)
+        Some(_) => Err(mlua::Error::external(
+            "a joint's `face` picks must be flat faces".to_string(),
+        )),
+        None => Ok(None),
+    };
+    placement.translate_mode = crate::model::MoveTranslateMode::FaceSnap;
+    placement.start_point_a = point(parse_mate_ref(lua, face.get("moving")?, "face.moving")?)?;
+    placement.end_point_a = point(parse_mate_ref(lua, face.get("fixed")?, "face.fixed")?)?;
+    placement.face_flip = face.get::<Option<bool>>("flip")?.unwrap_or(false);
+    placement.face_offset = joint_position_arg(&face, "offset")?;
+    placement.face_spin = joint_position_arg(&face, "spin")?;
+    Ok(placement)
 }
 
 /// Keys every shape call accepts (#909).
@@ -1770,7 +1774,7 @@ type JointOpArgs = (
     Vec<crate::model::JointRef>,
     usize,
     crate::model::JointKind,
-    crate::model::JointMate,
+    crate::model::MoveOperation,
     crate::model::JointFrame,
     String,
     String,
@@ -5063,12 +5067,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, mate, frame, position, position2, position3, limits) =
+            let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::CreateJointOp {
-                    members, base, kind, mate, frame, position, position2, position3, limits,
+                    members, base, kind, placement, frame, position, position2, position3, limits,
                 })?;
             }
             let element = SceneElement::Joint(unsafe {
@@ -5089,12 +5093,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "begin_joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, mate, frame, position, position2, position3, limits) =
+            let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "begin_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::BeginJointOp {
-                    members, base, kind, mate, frame, position, position2, position3, limits,
+                    members, base, kind, placement, frame, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -5105,12 +5109,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_joint",
         lua.create_function(|lua, opts: Table| {
             let op: usize = opts.get("index")?;
-            let (members, base, kind, mate, frame, position, position2, position3, limits) =
+            let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "edit_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::EditJointOp {
-                    op, members, base, kind, mate, frame, position, position2, position3, limits,
+                    op, members, base, kind, placement, frame, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -8482,12 +8486,12 @@ mod tests {
         assert_eq!(joint.name.as_deref(), Some("Hinge"));
         assert_eq!(joint.rest, "90", "rest pose captured from creation (#898)");
         let pose = crate::joints::body_joint_pose(&state.doc, bkey(1)).expect("driven body posed");
-        // B's underside lands on A's top (z = 5) keeping its place in the plane, so its
-        // face middle sits at (45, 5, 5); the 90° turn about that normal swings B's far
-        // corner (50, 0, 0) — 5 mm along +X and 5 mm along -Y of it — round to (50, 10, 5).
+        // Face Snap lands B's underside middle **on** A's top middle (5, 5, 5) (#1079); the
+        // 90° turn about that normal swings B's far corner (50, 0, 0) — 5 mm along +X and
+        // 5 mm along -Y of the mate point — round to (10, 10, 5).
         let landed = pose.transform_point3(glam::Vec3::new(50.0, 0.0, 0.0));
         assert!(
-            (landed - glam::Vec3::new(50.0, 10.0, 5.0)).length() < 1e-2,
+            (landed - glam::Vec3::new(10.0, 10.0, 5.0)).length() < 1e-2,
             "swung corner lands at {landed:?}"
         );
         // The status names the joint and both parts.
@@ -8497,7 +8501,7 @@ mod tests {
     /// #1013: a hole and a shaft have centre lines you can pick, so "put this peg in that
     /// hole" is one face pair and one line-up row — no fudging with face centres.
     #[test]
-    fn lua_joint_lines_up_two_hole_axes() {
+    fn lua_joint_seats_a_peg_in_a_hole() {
         let state = run_lua(
             r#"
             bearcad.rect{ width = 40, height = 40 }
@@ -8520,24 +8524,24 @@ mod tests {
             bearcad.joint{
               a = 0, b = 1, kind = "cylindrical",
               face = { moving = face_facing(1, {0,0,-1}), fixed = face_facing(0, {0,0,1}) },
-              line_up = {
-                {
-                  moving = bearcad.body_cylinders(1)[1].axis,
-                  fixed  = bearcad.body_cylinders(0)[1].axis,
-                },
-              },
+              -- The hole's own centre line is the axis the peg turns and slides about.
+              frame_axis = bearcad.body_cylinders(0)[1].axis,
             }
             "#,
         );
         assert_eq!(state.doc.joints.len(), 1);
         let mesh = crate::extrude::body_solid_mesh(&state.doc, bkey(1)).expect("the peg meshes");
         let (min, max) = mesh.bounds().expect("bounds");
-        // The peg stands on the plate's top face (z = 6) and its axis lands on the hole's,
-        // so it is centred on (20, 20).
+        // The peg stands on the plate's top face (z = 6), and Face Snap lands its underside's
+        // middle on that face's middle — which, on a square plate with a central hole, is the
+        // hole's own centre (20, 20). So the peg comes out concentric with it (#1079).
         assert!((min.z - 6.0).abs() < 0.05, "peg sits on the plate, got {min}");
+        // Only as exact as the meshed face's centroid: a square plate with a round hole
+        // triangulates to a centroid a fraction off its true centre, so mating centre-on-centre
+        // lands the peg a couple of tenths out. #1080 tracks mating on a hole's own centre.
         assert!(
-            ((min.x + max.x) * 0.5 - 20.0).abs() < 0.05
-                && ((min.y + max.y) * 0.5 - 20.0).abs() < 0.05,
+            ((min.x + max.x) * 0.5 - 20.0).abs() < 0.5
+                && ((min.y + max.y) * 0.5 - 20.0).abs() < 0.5,
             "peg is concentric with the hole, spans {min}..{max}"
         );
     }
@@ -8564,7 +8568,7 @@ mod tests {
         assert!(state.doc.joints.is_empty(), "nothing is committed");
         let cj = state.creating_joint.as_ref().expect("a joint in progress");
         assert_eq!(cj.members.len(), 2);
-        assert!(cj.mate.has_face_pair());
+        assert!(cj.placement.start_point_a.is_some() && cj.placement.end_point_a.is_some());
         assert!(matches!(cj.kind, crate::model::JointKind::Slider));
     }
 
@@ -8896,8 +8900,12 @@ mod tests {
         // No frame given: the mate's fixed face seeds it.
         let seeded = run_lua(&script(""));
         let j = seeded.doc.joints.values().next().unwrap();
-        assert_eq!(j.frame.primary, j.mate.fixed_face, "the fixed face is the axis");
-        assert!(j.frame.secondary.is_none(), "nothing lined up, so no second axis");
+        assert_eq!(
+            j.frame.primary,
+            j.placement.end_point_a.as_ref().and_then(crate::model::move_point_host_mate_ref),
+            "the fixed face is the axis"
+        );
+        assert!(j.frame.secondary.is_none(), "nothing else named, so no second axis");
 
         // Given outright, it is used as given rather than seeded over.
         let set = run_lua(&script(r#", frame_axis = { axis = "x" }"#));

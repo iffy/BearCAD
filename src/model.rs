@@ -2300,6 +2300,15 @@ pub fn move_point_host_face(point: &MovePointRef) -> Option<crate::hierarchy::Sc
     })
 }
 
+/// The face a mating point sits on as a [`MateRef`] (#1079) — how the joint pane shows the
+/// two faces its placement named. `None` for a point that isn't on one.
+pub fn move_point_host_mate_ref(point: &MovePointRef) -> Option<MateRef> {
+    let MovePointRef::OnFace { body, centroid, normal, .. } = point else {
+        return None;
+    };
+    Some(MateRef::Face { body: *body, centroid: *centroid, normal: *normal })
+}
+
 impl MoveOperation {
     /// Whether this move's translation actually comes from its two snap points (#650). A Snap
     /// move that hasn't got both points yet — or one with no bodies at all, like a plane or
@@ -2357,9 +2366,11 @@ impl MovePointRef {
 /// A move operation (Move tool, #176/#183): a rigid **translation** applied to whole bodies.
 /// Inputs become **shadow** bodies; each input gets a moved output body (`BodySource::Moved`),
 /// and the operation itself is an editable pane element. The translation components are
-/// expressions, so moves are parameter-driven like dimensions. Rotation was pulled out for
-/// now (#663) — the tool translates only.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// expressions, so moves are parameter-driven like dimensions.
+///
+/// `Default` is the empty move — no targets, no picks, no amounts — which places nothing.
+/// That is what a joint holds until its mate is set (#1079).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MoveOperation {
     /// Input bodies, one output per entry (same order).
     pub targets: Vec<BodyKey>,
@@ -2535,60 +2546,6 @@ impl MateRef {
     }
 }
 
-/// One line-up row of a mate (#1015): a point or edge on the moving part paired with one on
-/// the fixed side. Both picks are projected along the mating normal and the relationship
-/// applied to the projections, so the pick need not lie in the mating plane.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MateLineUp {
-    #[serde(default)]
-    pub moving: Option<MateRef>,
-    #[serde(default)]
-    pub fixed: Option<MateRef>,
-}
-
-impl MateLineUp {
-    pub fn is_complete(&self) -> bool {
-        self.moving.is_some() && self.fixed.is_some()
-    }
-}
-
-/// How a joint's parts are placed to start with (#1021): put a face on a face, then line it
-/// up. A **starting placement only** — it composes into a rigid transform ahead of the kind's
-/// freedoms and has no bearing on how the joint moves.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct JointMate {
-    /// The face on the moving (driven) part.
-    #[serde(default)]
-    pub moving_face: Option<MateRef>,
-    /// The face — or datum plane (#1018) — on the fixed side it lands on.
-    #[serde(default)]
-    pub fixed_face: Option<MateRef>,
-    /// Which way the part ends up facing. The default puts the normals opposed, so the
-    /// surfaces touch; flipped, they point the same way.
-    #[serde(default)]
-    pub flip: bool,
-    /// A gap held along the fixed face's normal, a mm expression. Empty is flush.
-    #[serde(default)]
-    pub offset: String,
-    /// Line-up rows (#1015), applied in order to what the face pair leaves free.
-    #[serde(default)]
-    pub line_up: Vec<MateLineUp>,
-}
-
-impl JointMate {
-    /// Whether the face pair is complete — the point at which the mate places anything.
-    pub fn has_face_pair(&self) -> bool {
-        self.moving_face.is_some() && self.fixed_face.is_some()
-    }
-
-    /// Nothing picked at all: the joint mates as identity and parts stay where they are.
-    pub fn is_empty(&self) -> bool {
-        self.moving_face.is_none()
-            && self.fixed_face.is_none()
-            && self.line_up.iter().all(|r| r.moving.is_none() && r.fixed.is_none())
-    }
-}
-
 /// How a joint's freedoms are oriented (#1079): the frame its slide and turn act in.
 ///
 /// This used to be derived from the mate at solve time — the primary axis *was* the mating
@@ -2664,11 +2621,13 @@ pub struct Joint {
     pub base: usize,
     #[serde(default)]
     pub kind: JointKind,
-    /// Where the parts start out (#1021): a face on a face, then the line-up rows that take
-    /// away what the face pair leaves free. A placement only — the kind's freedoms act on top
-    /// of it. Empty mates as identity, so joining parts already in place moves nothing.
+    /// Where the parts start out (#1021/#1079): an ordinary **move**, in any of its modes.
+    /// A joint mate *is* a move — optionally a no-op, when the part is already where it
+    /// belongs — so it is one, rather than a second thing shaped like one. A placement only:
+    /// the kind's freedoms act on top of it, oriented by [`Joint::frame`]. An empty move
+    /// places nothing, so joining parts already in place moves nothing.
     #[serde(default)]
-    pub mate: JointMate,
+    pub placement: MoveOperation,
     /// How the freedoms are oriented (#1079). Seeded from the mate when it names a plane,
     /// and editable either way.
     #[serde(default)]

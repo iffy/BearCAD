@@ -417,9 +417,6 @@ pub struct JointControl {
     pub fixed_face_focused: bool,
     pub flip: bool,
     pub offset: String,
-    /// The line-up rows (#1015), each with its two picks and which of them is armed. The
-    /// last is the one being picked into; there is none once nothing is left to pin.
-    pub line_up: Vec<JointLineUpRow>,
     pub position: String,
     pub position2: String,
     pub position3: String,
@@ -446,25 +443,6 @@ pub struct JointControl {
     /// Whether the preview sweep animates (#906) — one app-wide switch, shown on every
     /// joint's pane.
     pub animate: bool,
-}
-
-/// A line-up row picker's registered name (#1015/#968): rows are numbered so a script can
-/// name one, and the mate rows don't collide with the part slots above them. Beyond the
-/// numbered few a row keeps the plain name — a mate is fully placed in two or three.
-fn line_up_heading(row: usize, moving: bool) -> &'static str {
-    const MOVING: [&str; 4] = ["Line up 1 moving", "Line up 2 moving", "Line up 3 moving", "Line up 4 moving"];
-    const FIXED: [&str; 4] = ["Line up 1 fixed", "Line up 2 fixed", "Line up 3 fixed", "Line up 4 fixed"];
-    let table = if moving { &MOVING } else { &FIXED };
-    table.get(row).copied().unwrap_or(if moving { "Line up moving" } else { "Line up fixed" })
-}
-
-/// One line-up row of the Mate section (#1015).
-#[derive(Clone, Debug, PartialEq)]
-pub struct JointLineUpRow {
-    pub moving: Option<crate::model::MateRef>,
-    pub moving_focused: bool,
-    pub fixed: Option<crate::model::MateRef>,
-    pub fixed_focused: bool,
 }
 
 /// One edit from the Joint context section (#894).
@@ -516,11 +494,6 @@ pub enum JointEdit {
     ClearFramePrimary,
     FrameSecondaryFocus,
     ClearFrameSecondary,
-    /// A line-up row (#1015), by its index.
-    LineUpMovingFocus(usize),
-    ClearLineUpMoving(usize),
-    LineUpFixedFocus(usize),
-    ClearLineUpFixed(usize),
     Commit,
 }
 
@@ -1326,8 +1299,6 @@ pub enum PickerTarget {
     /// row (indexed, since the rows appear one at a time as the mate is pinned down).
     JointMovingFace,
     JointFixedFace,
-    JointLineUpMoving(usize),
-    JointLineUpFixed(usize),
     JointMinStop,
     JointMaxStop,
     /// How the joint works (#1079): where its freedoms act and which way they run. Seeded
@@ -2004,8 +1975,6 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             picker
         };
         const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
-        const LINE_UP_KINDS: [ElementKind; 3] =
-            [ElementKind::Vertex, ElementKind::Edge, ElementKind::Axis];
         for (heading, target, pick, on_moving, focused) in [
             (
                 "Moving face",
@@ -2031,34 +2000,6 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 separator_above: false,
                 render: PickerRender::Inline,
             });
-        }
-        for (i, row) in j.line_up.iter().enumerate() {
-            for (heading, target, pick, on_moving, focused) in [
-                (
-                    line_up_heading(i, true),
-                    PickerTarget::JointLineUpMoving(i),
-                    row.moving,
-                    true,
-                    row.moving_focused,
-                ),
-                (
-                    line_up_heading(i, false),
-                    PickerTarget::JointLineUpFixed(i),
-                    row.fixed,
-                    false,
-                    row.fixed_focused,
-                ),
-            ] {
-                let mut picker = mate_picker(&LINE_UP_KINDS, on_moving, focused);
-                picker.set_picked(input.doc, pick.as_ref().map(SceneElement::from_mate_ref));
-                tool_pickers.push(ToolPickerView {
-                    heading,
-                    picker,
-                    target,
-                    separator_above: false,
-                    render: PickerRender::Inline,
-                });
-            }
         }
         // The joint's frame (#1079). An axis input takes anything with a **direction** — a
         // face or datum plane (its normal), a body edge or world axis, a hole's centre line —
@@ -5741,26 +5682,6 @@ pub fn show_pane(
                 }
             });
         }
-        for i in 0..control.line_up.len() {
-            mate_row(
-                ui,
-                &mut pending,
-                line_up_heading(i, true),
-                ("joint_mate", "line_up_moving", i),
-                PickerTarget::JointLineUpMoving(i),
-                JointEdit::LineUpMovingFocus(i),
-                JointEdit::ClearLineUpMoving(i),
-            );
-            mate_row(
-                ui,
-                &mut pending,
-                line_up_heading(i, false),
-                ("joint_mate", "line_up_fixed", i),
-                PickerTarget::JointLineUpFixed(i),
-                JointEdit::LineUpFixedFocus(i),
-                JointEdit::ClearLineUpFixed(i),
-            );
-        }
         // What this kind of joint can do, under its own name (#997): the freedoms it has and
         // the limits on them. Rigid has neither, so it gets no section at all.
         if !matches!(control.kind, crate::model::JointKind::Rigid) {
@@ -8585,7 +8506,6 @@ mod tests {
                 fixed_face: None, fixed_face_focused: false,
                 flip: false,
                 offset: String::new(),
-                line_up: Vec::new(),
                 position: String::new(),
                 position2: String::new(),
                 position3: String::new(),

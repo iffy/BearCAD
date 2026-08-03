@@ -1462,7 +1462,11 @@ pub fn move_point_face_normal(
     let crate::model::MovePointRef::OnFace { body, centroid, normal, .. } = point else {
         return None;
     };
-    let tris = body_face_triangles(doc, *body, *centroid, *normal)?;
+    // The **un-posed** mesh, like `move_point_world`'s own face arm: a joint resolves its
+    // placement from inside the pose pass, so reaching for the posed mesh here would be a
+    // re-entrant borrow — and would resolve the key against geometry the joint itself moved.
+    let solid = body_solid_mesh_uncached_pub(doc, *body)?;
+    let tris = face_group_matching(&solid, *centroid, *normal)?;
     let (u, v) = face_group_basis(&tris);
     Some(u.cross(v).normalize_or_zero())
 }
@@ -1531,7 +1535,8 @@ fn move_targets_center(doc: &Document, op: &crate::model::MoveOperation) -> Opti
     let mut hi = Vec3::splat(f32::MIN);
     let mut any = false;
     for &body in &op.targets {
-        if let Some((a, b)) = body_solid_mesh(doc, body).and_then(|m| m.bounds()) {
+        // Un-posed, for the same reason `move_point_face_normal` is.
+        if let Some((a, b)) = body_solid_mesh_uncached_pub(doc, body).and_then(|m| m.bounds()) {
             lo = lo.min(a);
             hi = hi.max(b);
             any = true;
@@ -3933,8 +3938,9 @@ pub(crate) fn document_pose_fingerprint(doc: &Document) -> u64 {
             // JointRef is a small enum of indices.
             format!("{m:?}").hash(&mut h);
         }
-        // Mate placement affects posed presentation of an in-progress joint.
-        format!("{:?}", j.mate).hash(&mut h);
+        // The placement and the frame both affect an in-progress joint's posed presentation.
+        format!("{:?}", j.placement).hash(&mut h);
+        format!("{:?}", j.frame).hash(&mut h);
     }
     for (i, c) in doc.components.iter() {
         i.hash(&mut h);

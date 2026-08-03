@@ -519,14 +519,14 @@ pub fn instruction_from_json(
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
-            let (members, base, kind, mate, frame, position, position2, position3, limits) =
+            let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 joint_op_args(doc, o)?;
-            Ok(Instruction::CreateJointOp { members, base, kind, mate, frame, position, position2, position3, limits })
+            Ok(Instruction::CreateJointOp { members, base, kind, placement, frame, position, position2, position3, limits })
         }
         "begin_joint" => {
-            let (members, base, kind, mate, frame, position, position2, position3, limits) =
+            let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 joint_op_args(doc, o)?;
-            Ok(Instruction::BeginJointOp { members, base, kind, mate, frame, position, position2, position3, limits })
+            Ok(Instruction::BeginJointOp { members, base, kind, placement, frame, position, position2, position3, limits })
         }
         "set_joint_rest" => Ok(Instruction::SetJointRest {
             op: req_usize(o, "index", "set_joint_rest")?,
@@ -537,9 +537,9 @@ pub fn instruction_from_json(
         "revert_joints" => Ok(Instruction::RevertAllJoints),
         "edit_joint" => {
             let op = req_usize(o, "index", "edit_joint")?;
-            let (members, base, kind, mate, frame, position, position2, position3, limits) =
+            let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 joint_op_args(doc, o)?;
-            Ok(Instruction::EditJointOp { op, members, base, kind, mate, frame, position, position2, position3, limits })
+            Ok(Instruction::EditJointOp { op, members, base, kind, placement, frame, position, position2, position3, limits })
         }
         "begin_move" => {
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
@@ -1384,7 +1384,7 @@ fn joint_op_args(
         Vec<crate::model::JointRef>,
         usize,
         crate::model::JointKind,
-        crate::model::JointMate,
+        crate::model::MoveOperation,
         crate::model::JointFrame,
         String,
         String,
@@ -1500,26 +1500,25 @@ fn joint_op_args(
 fn mate_from_json(
     doc: &crate::model::Document,
     o: &Map<String, Value>,
-) -> Result<crate::model::JointMate, String> {
-    let mut mate = crate::model::JointMate::default();
-    if let Some(face) = o.get("face").and_then(Value::as_object) {
-        mate.moving_face = mate_ref_from_json(doc, face.get("moving"), "face.moving")?;
-        mate.fixed_face = mate_ref_from_json(doc, face.get("fixed"), "face.fixed")?;
-        mate.flip = face.get("flip").and_then(Value::as_bool).unwrap_or(false);
-        mate.offset = expr_arg(face, "offset")?;
-    }
-    if let Some(rows) = o.get("line_up").and_then(Value::as_array) {
-        for row in rows {
-            let row = row
-                .as_object()
-                .ok_or("joint `line_up` rows must be objects")?;
-            mate.line_up.push(crate::model::MateLineUp {
-                moving: mate_ref_from_json(doc, row.get("moving"), "line_up.moving")?,
-                fixed: mate_ref_from_json(doc, row.get("fixed"), "line_up.fixed")?,
-            });
-        }
-    }
-    Ok(mate)
+) -> Result<crate::model::MoveOperation, String> {
+    let mut placement = crate::model::MoveOperation::default();
+    let Some(face) = o.get("face").and_then(Value::as_object) else {
+        return Ok(placement);
+    };
+    let point = |r: Option<crate::model::MateRef>| match r {
+        Some(crate::model::MateRef::Face { body, centroid, normal }) => Ok(Some(
+            crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] },
+        )),
+        Some(_) => Err("a joint's `face` picks must be flat faces".to_string()),
+        None => Ok(None),
+    };
+    placement.translate_mode = crate::model::MoveTranslateMode::FaceSnap;
+    placement.start_point_a = point(mate_ref_from_json(doc, face.get("moving"), "face.moving")?)?;
+    placement.end_point_a = point(mate_ref_from_json(doc, face.get("fixed"), "face.fixed")?)?;
+    placement.face_flip = face.get("flip").and_then(Value::as_bool).unwrap_or(false);
+    placement.face_offset = expr_arg(face, "offset")?;
+    placement.face_spin = expr_arg(face, "spin")?;
+    Ok(placement)
 }
 
 /// One side of a mate pick (#1020): a body `face` + `normal`, a datum `plane`, a body
@@ -2695,12 +2694,7 @@ mod tests {
                         "flip": true,
                         "offset": 2,
                     },
-                    "line_up": [
-                        {
-                            "moving": { "body": 1, "edge": [[40, 0, 0], [44, 0, 0]] },
-                            "fixed": { "axis": "x" },
-                        },
-                    ],
+                    "frame_axis": { "axis": "x" },
                     "position": 90,
                 })
             ),
@@ -2711,35 +2705,36 @@ mod tests {
                 ],
                 base: 0,
                 kind: crate::model::JointKind::Revolute,
-                mate: crate::model::JointMate {
-                    moving_face: Some(crate::model::MateRef::Face {
+                // A joint's mate is a Face Snap move (#1079).
+                placement: crate::model::MoveOperation {
+                    translate_mode: crate::model::MoveTranslateMode::FaceSnap,
+                    start_point_a: Some(crate::model::MovePointRef::OnFace {
                         body: bkey(1),
                         centroid: [4000, 0, 0],
                         normal: [0, 0, 100],
+                        uv: [0, 0],
                     }),
-                    fixed_face: Some(crate::model::MateRef::Face {
+                    end_point_a: Some(crate::model::MovePointRef::OnFace {
                         body: bkey(0),
                         centroid: [0, 0, 0],
                         normal: [0, 0, 100],
+                        uv: [0, 0],
                     }),
-                    flip: true,
-                    offset: "2".into(),
-                    line_up: vec![crate::model::MateLineUp {
-                        moving: Some(crate::model::MateRef::Edge {
-                            body: bkey(1),
-                            a: [4000, 0, 0],
-                            b: [4400, 0, 0],
-                        }),
-                        fixed: Some(crate::model::MateRef::Axis(
-                            crate::construction::GlobalAxis::X,
-                        )),
-                    }],
+                    face_flip: true,
+                    face_offset: "2".into(),
+                    ..Default::default()
+                },
+                frame: crate::model::JointFrame {
+                    origin: None,
+                    primary: Some(crate::model::MateRef::Axis(
+                        crate::construction::GlobalAxis::X,
+                    )),
+                    secondary: None,
                 },
                 position: "90".into(),
                 position2: String::new(),
                 position3: String::new(),
                 limits: Default::default(),
-                frame: Default::default(),
             })
         );
         // `base = "b"` names the second member as the held side.
@@ -2756,7 +2751,7 @@ mod tests {
                 ],
                 base: 1,
                 kind: crate::model::JointKind::Screw { lead: "2".into() },
-                mate: Default::default(),
+                placement: Default::default(),
                 position: String::new(),
                 position2: String::new(),
                 position3: String::new(),
