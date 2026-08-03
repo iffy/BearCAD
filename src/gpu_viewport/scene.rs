@@ -284,11 +284,41 @@ pub struct ViewportScene {
     /// Tracing images (#170): textured world-space quads, drawn after the opaque scene
     /// (depth-tested, no depth write) so bodies in front occlude them.
     pub images: Vec<ViewportImageQuad>,
+    /// The ground grid (#1073), when one is showing: a single footprint quad whose fragment
+    /// shader draws the lattice. Thick world-space line quads could not stay thin — one
+    /// viewed edge-on foreshortens into a wedge and one viewed close up swells — so the
+    /// lines are measured in **pixels**, per fragment, from the screen-space derivative of
+    /// the world position.
+    pub grid: Option<ViewportGrid>,
     pub view_proj: Mat4,
     /// Camera eye in world space — the fragment shader's view-dependent lighting terms
     /// need it, and it can't be recovered from `view_proj` cheaply enough per pixel (#1037).
     pub eye: Vec3,
     pub clear_color: [f32; 4],
+}
+
+/// The shader-drawn ground grid (#1073). One quad covering the visible ground footprint,
+/// plus the lattice parameters its fragment shader needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewportGrid {
+    /// The footprint's four world corners, already nudged away from the camera by
+    /// [`GRID_DEPTH_BIAS`] so real coincident geometry wins the depth test.
+    pub corners: [Vec3; 4],
+    /// World spacing of the subdividing lines and of the heavy ones (#464).
+    pub fine_step: f32,
+    pub coarse_step: f32,
+    /// How far the fine level has faded in with zoom, 0..1 — a continuous ramp, so a
+    /// subdivision never pops into existence (#464).
+    pub fine_fade: f32,
+    /// Line widths in **pixels**, which is the whole point: constant on screen at any
+    /// distance and any grazing angle.
+    pub fine_width_px: f32,
+    pub coarse_width_px: f32,
+    pub axis_width_px: f32,
+    pub fine_color: [f32; 4],
+    pub coarse_color: [f32; 4],
+    /// The x = 0 and y = 0 lines, drawn heavier than their coarse neighbours.
+    pub axis_color: [f32; 4],
 }
 
 /// One tracing image's draw data (#170). `id` keys the renderer's texture cache (stable for
@@ -2145,7 +2175,6 @@ impl<'a> SceneMesh<'a> {
         // Two grid levels from the document's unit ladder (#464): heavy lines at the
         // coarse step, lighter subdividing lines at the fine step between them.
         let (fine_step, coarse_step) = grid_steps_for_unit(unit, FINE_MIN_PX / ppw);
-        let subdiv = ((coarse_step / fine_step).round() as i64).max(2);
         let axis_len = (MIN_AXIS_PX / ppw).max(GRID_EXTENT);
         // The grid covers the **visible ground footprint** (#467), not a fixed box around
         // the origin: cast a 3×3 fan of screen points onto z = 0 and bound their hits.
@@ -2195,72 +2224,36 @@ impl<'a> SceneMesh<'a> {
             let lifted = offset_corners_toward_camera(corners, Vec3::Z, eye, GRID_DEPTH_BIAS);
             self.push_quad_fill(lifted, fill);
         } else {
-            // Index range of step-multiples covering [lo, hi], hard-capped to `max_n`
-            // lines each side of the anchor. Lines stay on fixed world multiples of
-            // their step, so zooming or panning never slides them.
-            let line_range = |lo: f32, hi: f32, step: f32, center: f32, max_n: i64| {
-                let a = (lo / step).floor() as i64;
-                let b = (hi / step).ceil() as i64;
-                let c = (center / step).round() as i64;
-                (a.max(c - max_n), b.min(c + max_n))
-            };
-            let mut vertical = |x: f32, color: Color32| {
-                self.push_line_segment_with_bias(
-                    Vec3::new(x, lo.y, 0.0),
-                    Vec3::new(x, hi.y, 0.0),
-                    color,
-                    1.0,
-                    cam,
-                    viewport,
-                    view_proj,
-                    GRID_DEPTH_BIAS,
-                );
-            };
-            let heavy = sketch_ground_color(palette.grid, dim);
-            let axis_heavy = sketch_ground_color(palette.grid_axis, dim);
-            let (hx0, hx1) = line_range(lo.x, hi.x, coarse_step, anchor.x, 400);
-            for i in hx0..=hx1 {
-                vertical(i as f32 * coarse_step, if i == 0 { axis_heavy } else { heavy });
-            }
-            // Fine subdivisions, fading in with zoom.
-            let fade = (fine_step * ppw - FINE_MIN_PX) / (FINE_FULL_PX - FINE_MIN_PX);
-            let fine_color = mix_color(
-                palette.background,
-                sketch_ground_color(palette.grid, dim),
-                0.7 * fade.clamp(0.0, 1.0),
-            );
-            if fade > 0.01 {
-                let (fx0, fx1) = line_range(lo.x, hi.x, fine_step, anchor.x, 600);
-                for i in fx0..=fx1 {
-                    if i % subdiv != 0 {
-                        vertical(i as f32 * fine_step, fine_color);
-                    }
-                }
-            }
-            let mut horizontal = |y: f32, color: Color32| {
-                self.push_line_segment_with_bias(
-                    Vec3::new(lo.x, y, 0.0),
-                    Vec3::new(hi.x, y, 0.0),
-                    color,
-                    1.0,
-                    cam,
-                    viewport,
-                    view_proj,
-                    GRID_DEPTH_BIAS,
-                );
-            };
-            let (hy0, hy1) = line_range(lo.y, hi.y, coarse_step, anchor.y, 400);
-            for j in hy0..=hy1 {
-                horizontal(j as f32 * coarse_step, if j == 0 { axis_heavy } else { heavy });
-            }
-            if fade > 0.01 {
-                let (fy0, fy1) = line_range(lo.y, hi.y, fine_step, anchor.y, 600);
-                for j in fy0..=fy1 {
-                    if j % subdiv != 0 {
-                        horizontal(j as f32 * fine_step, fine_color);
-                    }
-                }
-            }
+            // One footprint quad; the lattice is computed per fragment (#1073). The old
+            // per-line world-space quads could not hold a constant on-screen width — at a
+            // grazing angle each quad foreshortened into a wedge, and up close it swelled —
+            // so the widths below are pixels, measured against the screen-space derivative
+            // of world position in the shader.
+            let corners = [
+                Vec3::new(lo.x, lo.y, 0.0),
+                Vec3::new(hi.x, lo.y, 0.0),
+                Vec3::new(hi.x, hi.y, 0.0),
+                Vec3::new(lo.x, hi.y, 0.0),
+            ];
+            // Fine subdivisions fade in with zoom (#464), a continuous ramp so nothing pops.
+            let fade = ((fine_step * ppw - FINE_MIN_PX) / (FINE_FULL_PX - FINE_MIN_PX))
+                .clamp(0.0, 1.0);
+            self.scene.grid = Some(ViewportGrid {
+                corners: offset_corners_toward_camera(corners, Vec3::Z, eye, GRID_DEPTH_BIAS),
+                fine_step,
+                coarse_step,
+                fine_fade: fade,
+                fine_width_px: 1.0,
+                coarse_width_px: 1.0,
+                axis_width_px: 1.0,
+                fine_color: color32_to_gpu(mix_color(
+                    palette.background,
+                    sketch_ground_color(palette.grid, dim),
+                    0.7,
+                )),
+                coarse_color: color32_to_gpu(sketch_ground_color(palette.grid, dim)),
+                axis_color: color32_to_gpu(sketch_ground_color(palette.grid_axis, dim)),
+            });
         }
         self.push_line_segment_with_bias(
             Vec3::ZERO,
@@ -5186,6 +5179,31 @@ mod tests {
     /// #1037: lighting moved into `shader.wgsl`, so the CPU `realistic_shade` above is a
     /// mirror rather than the implementation. The two can drift silently — nothing compiles
     /// the WGSL against the Rust — so pin every shared constant to the shader source.
+    /// Nothing in the build compiles the WGSL — a GPU device does, at startup, on a machine
+    /// that has one. So parse and validate it here (#1073), with wgpu's own front end, and a
+    /// typo fails the test suite instead of the app.
+    #[test]
+    fn the_shader_parses_and_validates() {
+        let wgsl = include_str!("shader.wgsl");
+        let module = naga::front::wgsl::parse_str(wgsl)
+            .unwrap_or_else(|e| panic!("shader.wgsl does not parse: {}", e.emit_to_string(wgsl)));
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        validator
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("shader.wgsl does not validate: {e:?}"));
+        // Every entry point the renderer names must exist.
+        let entries: Vec<&str> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
+        for name in [
+            "vs_main", "fs_main", "vs_grid", "fs_grid", "vs_blit", "fs_blit", "vs_text",
+            "fs_text", "fs_image",
+        ] {
+            assert!(entries.contains(&name), "shader.wgsl has no `{name}`: {entries:?}");
+        }
+    }
+
     #[test]
     fn realistic_terms_match_the_shader() {
         let wgsl = include_str!("shader.wgsl");
@@ -6389,7 +6407,16 @@ mod tests {
             constraint_connector_color: None,
         });
         assert!(!scene.vertices.is_empty());
+        // The world axes are still line quads; the grid itself is a shader (#1073).
         assert!(!scene.indices.is_empty());
+        let grid = scene.grid.expect("the ground grid");
+        assert!(grid.coarse_step > grid.fine_step, "{grid:?}");
+        // Widths are pixels, not world units — that is what keeps a line one pixel across
+        // whether it is under the camera or at the horizon.
+        assert!(grid.fine_width_px > 0.0 && grid.coarse_width_px > 0.0);
+        // The footprint is a real quad, not a degenerate one.
+        let (a, b, c) = (grid.corners[0], grid.corners[1], grid.corners[3]);
+        assert!((b - a).length() > 1.0 && (c - a).length() > 1.0, "{grid:?}");
         assert_eq!(scene.clear_color[0], color32_to_gpu(Color32::from_gray(28))[0]);
     }
 
@@ -6405,6 +6432,26 @@ mod tests {
                     && (v.color[2] - gpu[2]).abs() < 0.02
             })
             .count()
+    }
+
+    /// #1073: the ground modes each ask for the right thing — a shader grid, a solid fill
+    /// with no lattice, or nothing at all.
+    #[test]
+    fn ground_display_modes_pick_grid_solid_or_nothing() {
+        use crate::camera::GroundDisplay;
+        let mut state = AppState::default();
+
+        state.cam.set_ground_display(GroundDisplay::Grid);
+        assert!(build_scene_for_doc(&state).grid.is_some(), "Grid draws the lattice");
+
+        state.cam.set_ground_display(GroundDisplay::Solid);
+        let solid = build_scene_for_doc(&state);
+        assert!(solid.grid.is_none(), "Solid is a plain fill, with no lines on it");
+        assert!(!solid.indices.is_empty(), "and it still fills the footprint");
+
+        state.cam.set_ground_display(GroundDisplay::None);
+        let hidden = build_scene_for_doc(&state);
+        assert!(hidden.grid.is_none(), "None hides the ground entirely (#579)");
     }
 
     fn build_scene_for_doc(state: &AppState) -> ViewportScene {
@@ -7151,7 +7198,13 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-        assert!(scene.indices.len() > CIRCLE_SEGMENTS);
+        // The circle's stroke is an overlay, and the grid stopped contributing indices when
+        // it became a shader (#1073), so count every layer rather than just the base one.
+        let total = scene.indices.len()
+            + scene.sketch_fill_indices.len()
+            + scene.plane_fill_indices.len()
+            + scene.overlay_indices.len();
+        assert!(total > CIRCLE_SEGMENTS, "{total}");
     }
 
     #[test]

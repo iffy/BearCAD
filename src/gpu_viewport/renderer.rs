@@ -25,6 +25,19 @@ struct GpuUniforms {
     /// Camera eye in world space (xyz), for the view-dependent lighting terms in
     /// `fs_main`; `w` is padding.
     eye: [f32; 4],
+    /// Ground grid (#1073): fine step, coarse step, fine-level fade, padding.
+    grid_steps: [f32; 4],
+    /// Grid line widths in pixels: fine, coarse, origin axes, padding.
+    grid_widths: [f32; 4],
+    grid_fine_color: [f32; 4],
+    grid_coarse_color: [f32; 4],
+    grid_axis_color: [f32; 4],
+}
+
+impl GpuUniforms {
+    /// The grid fields for a frame that is not showing one — zero width, so even a stray
+    /// draw paints nothing.
+    const NO_GRID: ([f32; 4], [f32; 4]) = ([1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
 }
 
 /// Vertex layout shared by every scene-geometry pipeline: position, colour, and the
@@ -58,6 +71,14 @@ pub struct ViewportGpuResources {
     /// exactly once so translucent overlaps don't double-blend (#3).
     sketch_fill_pipeline: wgpu::RenderPipeline,
     scene_transparent_pipeline: wgpu::RenderPipeline,
+    /// The ground grid (#1073): one footprint quad whose fragment shader draws the lattice
+    /// in pixel-measured widths. Depth-tested so bodies occlude it, but never depth-writing
+    /// — the gaps between lines must not hide anything below z = 0.
+    grid_pipeline: wgpu::RenderPipeline,
+    /// The grid quad's four vertices, rewritten each frame the footprint moves, and its
+    /// two triangles, which never change.
+    grid_vertex_buffer: wgpu::Buffer,
+    grid_index_buffer: wgpu::Buffer,
     text_pipeline: wgpu::RenderPipeline,
     /// Tracing-image quads (#170): the text pipeline's layout with a full-color fragment.
     image_pipeline: wgpu::RenderPipeline,
@@ -163,6 +184,11 @@ impl ViewportGpuResources {
                 view_proj: Mat4::IDENTITY.to_cols_array_2d(),
                 light_dir: [0.0, 0.0, 1.0, 0.0],
                 eye: [0.0, 0.0, 0.0, 0.0],
+                grid_steps: GpuUniforms::NO_GRID.0,
+                grid_widths: GpuUniforms::NO_GRID.1,
+                grid_fine_color: [0.0; 4],
+                grid_coarse_color: [0.0; 4],
+                grid_axis_color: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
         });
@@ -628,6 +654,49 @@ impl ViewportGpuResources {
             cache: None,
         });
 
+        // Ground-grid pipeline (#1073). Alpha-blended and depth-tested but not
+        // depth-writing: the transparent gaps between lines must not occlude geometry
+        // under the ground plane.
+        let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_grid_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_grid"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_grid"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: VIEWPORT_DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: multisample_state(msaa_sample_count),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("bearcad_viewport_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -653,6 +722,17 @@ impl ViewportGpuResources {
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let grid_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bearcad_viewport_grid_vertices"),
+            size: (4 * std::mem::size_of::<GpuVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let grid_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("bearcad_viewport_grid_indices"),
+            contents: bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3]),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         let text_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bearcad_viewport_text_vertices"),
             size: 4096,
@@ -674,6 +754,9 @@ impl ViewportGpuResources {
             gizmo_pipeline,
             sketch_fill_pipeline,
             scene_transparent_pipeline,
+            grid_pipeline,
+            grid_vertex_buffer,
+            grid_index_buffer,
             text_pipeline,
             image_pipeline,
             image_textures: Mutex::new(std::collections::HashMap::new()),
@@ -935,6 +1018,17 @@ impl ViewportGpuResources {
                     [l.x, l.y, l.z, 0.0]
                 },
                 eye: [scene.eye.x, scene.eye.y, scene.eye.z, 0.0],
+                grid_steps: match &scene.grid {
+                    Some(g) => [g.fine_step, g.coarse_step, g.fine_fade, 0.0],
+                    None => GpuUniforms::NO_GRID.0,
+                },
+                grid_widths: match &scene.grid {
+                    Some(g) => [g.fine_width_px, g.coarse_width_px, g.axis_width_px, 0.0],
+                    None => GpuUniforms::NO_GRID.1,
+                },
+                grid_fine_color: scene.grid.map(|g| g.fine_color).unwrap_or_default(),
+                grid_coarse_color: scene.grid.map(|g| g.coarse_color).unwrap_or_default(),
+                grid_axis_color: scene.grid.map(|g| g.axis_color).unwrap_or_default(),
             }),
         );
         if !scene.vertices.is_empty() {
@@ -957,6 +1051,17 @@ impl ViewportGpuResources {
                 0,
                 bytemuck::cast_slice(&combined_indices),
             );
+        }
+        // The grid's four footprint corners (#1073). Colour and normal are unused by
+        // `vs_grid`/`fs_grid` — only the world position matters — but the vertex layout is
+        // shared with the scene pipelines, so they are still filled in.
+        if let Some(grid) = &scene.grid {
+            let quad: [GpuVertex; 4] = std::array::from_fn(|i| GpuVertex {
+                position: grid.corners[i].to_array(),
+                color: [0.0; 4],
+                normal: [0.0, 0.0, 1.0, 0.0],
+            });
+            queue.write_buffer(&self.grid_vertex_buffer, 0, bytemuck::cast_slice(&quad));
         }
         if !scene.text_vertices.is_empty() {
             queue.write_buffer(
@@ -1104,6 +1209,15 @@ impl ViewportGpuResources {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // The grid first, under everything (#1073): it does not write depth, so
+            // drawing it before the scene is what lets bodies occlude it normally.
+            if scene.grid.is_some() {
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_pipeline(&self.grid_pipeline);
+                pass.set_vertex_buffer(0, self.grid_vertex_buffer.slice(..));
+                pass.set_index_buffer(self.grid_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..6, 0, 0..1);
+            }
             if total_index_count > 0 {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));

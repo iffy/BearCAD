@@ -18,6 +18,13 @@ winres = "0.1"
 # is on; unused otherwise. Small, so kept as an unconditional build-dep.
 cc = "1"
 
+[dev-dependencies]
+# The WGSL in `src/gpu_viewport/shader.wgsl` is only compiled when a GPU device exists, which
+# never happens in the test suite — a typo in it would ship. naga is wgpu's own shader
+# front-end and is already in the tree; parsing + validating the file in a test catches it
+# (#1073).
+naga = { version = "29", features = ["wgsl-in"] }
+
 [dependencies]
 # wgpu, eframe and friends report through the `log` crate — surface acquisition failures,
 # lost or outdated swapchains, reconfigurations. Nothing installed a logger, so all of that

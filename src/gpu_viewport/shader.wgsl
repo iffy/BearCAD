@@ -4,6 +4,14 @@ struct Uniforms {
     light_dir: vec4f,
     // xyz: camera eye in world space, for the view-dependent terms. w: unused.
     eye: vec4f,
+    // Ground grid (#1073): x fine step, y coarse step (world mm), z how far the fine level
+    // has faded in with zoom (0..1), w unused.
+    grid_steps: vec4f,
+    // Line widths in **pixels**: x fine, y coarse, z the x=0/y=0 axis lines, w unused.
+    grid_widths: vec4f,
+    grid_fine_color: vec4f,
+    grid_coarse_color: vec4f,
+    grid_axis_color: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -132,6 +140,78 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         + vec3f(REALISTIC_SPECULAR * specular);
     let lit = linear_to_srgb(tonemap(shaded));
     return vec4f(lit * alpha, alpha);
+}
+
+// ---- Ground grid (#1073) ----
+//
+// A world-space quad of constant thickness cannot look like a line: seen edge-on it
+// foreshortens into a wedge, and seen close up it swells. So the ground is one quad and the
+// lattice is measured here, per fragment, in pixels — `fwidth` gives world-mm-per-pixel at
+// this exact fragment, whatever the angle or distance, and the line is as many of those
+// across as asked for. That also anti-aliases for free: the coverage ramp is exactly one
+// pixel wide by construction.
+
+struct GridVertexOutput {
+    @builtin(position) clip_position: vec4f,
+    @location(0) world_xy: vec2f,
+}
+
+@vertex
+fn vs_grid(input: VertexInput) -> GridVertexOutput {
+    var out: GridVertexOutput;
+    out.clip_position = uniforms.view_proj * vec4f(input.position, 1.0);
+    out.world_xy = input.position.xy;
+    return out;
+}
+
+/// Coverage of a lattice of lines every `step` world-mm, `width_px` pixels wide, at `p`.
+/// `duv` is world-mm per pixel along each axis at this fragment.
+fn lattice_coverage(p: vec2f, duv: vec2f, step: f32, width_px: f32) -> f32 {
+    // Distance to the nearest multiple of `step`, per axis, in world units.
+    let to_line = abs(fract(p / step + 0.5) - 0.5) * step;
+    // ...expressed in pixels, so the width below means what it says at any angle.
+    let px = to_line / max(duv, vec2f(1e-12));
+    let half = width_px * 0.5;
+    // A one-pixel ramp: full coverage inside the line, none a pixel outside it.
+    let cov = vec2f(1.0) - smoothstep(vec2f(half - 0.5), vec2f(half + 0.5), px);
+    return max(cov.x, cov.y);
+}
+
+/// The same for the two lines through the origin, which are single lines rather than a
+/// lattice — `fract` would repeat them across the whole plane.
+fn axis_coverage(p: vec2f, duv: vec2f, width_px: f32) -> f32 {
+    let px = abs(p) / max(duv, vec2f(1e-12));
+    let half = width_px * 0.5;
+    let cov = vec2f(1.0) - smoothstep(vec2f(half - 0.5), vec2f(half + 0.5), px);
+    return max(cov.x, cov.y);
+}
+
+@fragment
+fn fs_grid(input: GridVertexOutput) -> @location(0) vec4f {
+    // World-mm per pixel along each world axis, at this fragment. Under perspective this
+    // grows with distance and with grazing angle, which is exactly the correction wanted.
+    let duv = fwidth(input.world_xy);
+
+    let fine = lattice_coverage(input.world_xy, duv, uniforms.grid_steps.x, uniforms.grid_widths.x)
+        * clamp(uniforms.grid_steps.z, 0.0, 1.0);
+    let coarse =
+        lattice_coverage(input.world_xy, duv, uniforms.grid_steps.y, uniforms.grid_widths.y);
+    let axis = axis_coverage(input.world_xy, duv, uniforms.grid_widths.z);
+
+    // Paint fine first, then coarse over it, then the origin axes on top — the same order
+    // the lines used to be drawn in, so the hierarchy reads the same.
+    var rgb = uniforms.grid_fine_color.rgb;
+    var a = fine * uniforms.grid_fine_color.a;
+    rgb = mix(rgb, uniforms.grid_coarse_color.rgb, coarse);
+    a = mix(a, uniforms.grid_coarse_color.a, coarse);
+    rgb = mix(rgb, uniforms.grid_axis_color.rgb, axis);
+    a = mix(a, uniforms.grid_axis_color.a, axis);
+
+    if (a <= 0.0) {
+        discard;
+    }
+    // Premultiplied, matching every other pipeline's blend state.
+    return vec4f(rgb * a, a);
 }
 
 struct BlitVertexOutput {

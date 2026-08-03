@@ -159,7 +159,14 @@ features in dependency order.
   inches under feet, then tens of feet for imperial ones. As the camera zooms in the
   next-finer rung **fades in** continuously (8→32 px screen spacing), and every line
   sits on a fixed world multiple of its step, so zooming never pops or slides lines.
-  Line count stays bounded (extent is a fixed multiple of the heavy step).
+- **The grid is a fragment shader (#1073).** The ground is one quad covering the visible
+  footprint, and every line is worked out per pixel from the screen-space derivative of the
+  world position (`fs_grid` in `shader.wgsl`, fed by `ViewportGrid`). Widths are therefore
+  in **pixels**, not world units: a grid line is razor thin whether it runs under the camera
+  or off to the horizon, and stays that way at a grazing angle, where the world-space
+  quads it replaces used to foreshorten into wedges. The one-pixel coverage ramp
+  anti-aliases it as a side effect. The quad is depth-tested but never depth-writing, so
+  bodies occlude the grid while the gaps between its lines hide nothing.
 - **Datum planes & plane size (#833):** a new document opens with three construction
   planes — **XY**, **XZ** and **YZ** — each 100 mm square and placed in the positive
   quadrant of its own space, standing the same 5 mm clear of the origin in both of its
