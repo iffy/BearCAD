@@ -1040,6 +1040,8 @@ mod tests {
             ry: String::new(),
             rz: String::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -1664,6 +1666,8 @@ mod tests {
             ry: String::new(),
             rz: String::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         });
         doc.joints.insert(crate::model::Joint {
             members: vec![

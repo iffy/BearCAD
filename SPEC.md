@@ -902,6 +902,25 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   centre**, X then Y then Z, before the translation carries it away: typing "45° about Z"
   means "turn it where it stands", not "swing it around the world origin".
 
+  **Face Snap (#1077).** Two staged pickers (#1075) — a face on the moving part and a point
+  within it, then a face on something fixed and a point within that. The picked points *are*
+  the mate points: a `MovePointRef::OnFace` already carries the face it lies on, so nothing
+  else has to be stored to remember which face was chosen, and they land in the same
+  `start_point_a`/`end_point_a` slots Point Snap uses. A viewport click takes the **exact
+  spot** under the cursor rather than the nearest corner — snapping it to a corner would
+  quietly change which mate you asked for.
+
+  The placement is then: land start A on end A, turn the moving face's normal to meet the
+  target's, and spin about the target's normal through the mate point. `face_flip` chooses
+  the side — the default opposes the two normals so the surfaces touch, which is what "put
+  this face on that face" nearly always means; flipped, they point the same way and the part
+  sits behind the face. `face_spin` is the turn, a degree expression, set either in the pane
+  or by dragging a **ring gizmo centred on the mate point and normal to the target face** —
+  the same control, two ways in. The A→A connector and the ghost preview work exactly as they
+  do for Point Snap. Scripted as `flip? = true` and `spin? =` on `move_bodies`; a move naming
+  two `on_face` points and no B pair *is* a Face Snap, while a B pair says the turn comes from
+  a second point pair, so a script written before Face Snap existed still means Point Snap.
+
   Point Snap derives the offset from two picked points:
   - A **Start point A** picker (#649/#668) takes a corner, the midpoint of a feature edge,
     or a point on a planar face (#738/#1074) on one of the **moving** bodies

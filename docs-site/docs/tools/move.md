@@ -52,6 +52,12 @@ Move slides whole bodies to a new place, producing moved copies.
      the other two pairs. Because of that it can only ride a circle, so four spots a quarter
      turn apart on it are marked in blue: as it sits now, a quarter turn either way, and
      upside down.
+   - **Face Snap** — pick a **Moving face** on a body being moved and a **Fixed face** on one
+     that isn't; each click takes both the face and the exact spot on it you clicked. The part
+     lands with that spot on that spot and the two surfaces together. **Flip** puts it on the
+     other side instead, and **Turn** spins it about the fixed face — type a value or drag the
+     ring that appears at the mate point. A **yellow line** connects the two spots, and the
+     ghost shows where the part lands.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). Under **Rotation**, type **X / Y / Z** turns as well; they spin
      the part about its own centre. Everything is an expression, so the move stays parametric.
@@ -123,6 +129,12 @@ it, with the angle reading out as you move.
 -- Free: explicit components, and turns about the part's own centre.
 bearcad.move_bodies{ bodies = {0}, x = 40, z = "plate_thickness" }
 bearcad.move_bodies{ bodies = {0}, rz = 90 }
+
+-- Face Snap: put a face on a face. `flip` picks the side; `spin` turns it.
+bearcad.move_bodies{ bodies = {0},
+  from = { body = 0, on_face = {5, 5, 5}, normal = {0, 0, 1} },
+  to   = { body = 1, on_face = {40, 5, 2.5}, normal = {-1, 0, 0} },
+  spin = 45 }
 
 -- Point Snap: land one point on another. `vertex` is a corner; `edge` takes a midpoint.
 bearcad.move_bodies{ bodies = {0},

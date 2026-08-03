@@ -286,6 +286,10 @@ pub struct MoveControl {
     pub rx: String,
     pub ry: String,
     pub rz: String,
+    /// Face Snap (#1077): which side of the target face to land on, and the turn about its
+    /// normal through the mate point.
+    pub face_flip: bool,
+    pub face_spin: String,
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
     /// other pickers is armed.
     pub bodies_focused: bool,
@@ -329,6 +333,9 @@ pub enum MoveEdit {
     Rx(String),
     Ry(String),
     Rz(String),
+    /// Face Snap's side flip and its turn about the target normal (#1077).
+    FaceFlip(bool),
+    FaceSpin(String),
     /// Arm / clear the source-point picker (#649).
     StartAFocus,
     ClearStartA,
@@ -1280,6 +1287,11 @@ pub enum PickerTarget {
     JointMobile,
     /// The **fixed** (held) side — the base.
     JointFixed,
+    /// Face Snap's two staged pickers (#1077): a face on the moving part and a point within
+    /// it, then a face on something fixed and a point within that. One picker each, because
+    /// "a point on that face" is only meaningful against the face it follows (#1075).
+    MoveFaceMoving,
+    MoveFaceFixed,
     /// The Move tool's six mating-point pickers (#649/#650/#958). Rendered inline among the
     /// tool's other controls, but registered like every other picker.
     MoveStartA,
@@ -2248,6 +2260,40 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // heading and the Angle-snap slider, so they're `Inline` — but they belong in this list
         // like every other picker (#958), or focus, hover and scripts can't see them.
         let moving = m.targets.clone();
+        // Face Snap's two staged pickers (#1077): each takes a face, then a point on it. The
+        // point it ends up holding *is* the mate point — a `MovePointRef::OnFace` already
+        // carries the face it lies on, so nothing else has to be stored to remember it.
+        if m.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
+            for (heading, target, point, on_moving, focused) in [
+                ("Moving face", PickerTarget::MoveFaceMoving, m.start_a, true, m.start_a_focused),
+                ("Fixed face", PickerTarget::MoveFaceFixed, m.end_a, false, m.end_a_focused),
+            ] {
+                let rule = if on_moving {
+                    PickRule::OnBodies(moving.clone())
+                } else {
+                    PickRule::OffBodies(moving.clone())
+                };
+                let mut picker = ElementPicker::face_then_point(
+                    ElementFilter::kind(ElementKind::Face).rule(rule.clone()),
+                    ElementFilter::kind(ElementKind::Vertex).rule(rule),
+                );
+                picker.set_focused(focused);
+                // The picked point implies its face, so a filled picker shows both rows.
+                if let Some(p) = point {
+                    if let Some(face) = crate::model::move_point_host_face(&p) {
+                        picker.push(face);
+                    }
+                    picker.push(SceneElement::from_move_point(p));
+                }
+                tool_pickers.push(ToolPickerView {
+                    heading,
+                    picker,
+                    target,
+                    separator_above: false,
+                    render: PickerRender::Inline,
+                });
+            }
+        }
         for (heading, target, point, on_moving, focused) in [
             ("Start point A", PickerTarget::MoveStartA, m.start_a, true, m.start_a_focused),
             ("End point A", PickerTarget::MoveEndA, m.end_a, false, m.end_a_focused),
@@ -5094,6 +5140,9 @@ pub fn show_pane(
         ui.separator();
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<MoveEdit> = None;
+        // Face Snap's flip and turn (#1077) land here rather than in `pending`, which the
+        // picker-row closure borrows for the length of its life.
+        let mut face_edit: Option<MoveEdit> = None;
         // Move mode (#648/#1076): snap a point onto a point, put a face on a face, type the
         // amounts outright, or — for a joint — leave the part where it already is.
         {
@@ -5140,9 +5189,52 @@ pub fn show_pane(
                 }
             });
         };
+        // Face Snap (#1077): two staged pickers — a face and a point on it, per side — then
+        // which side to land on and how far round to turn.
+        if control.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
+            picker_row(
+                ui,
+                "Moving face",
+                "move_face_moving",
+                PickerTarget::MoveFaceMoving,
+                MoveEdit::StartAFocus,
+                MoveEdit::ClearStartA,
+            );
+            picker_row(
+                ui,
+                "Fixed face",
+                "move_face_fixed",
+                PickerTarget::MoveFaceFixed,
+                MoveEdit::EndAFocus,
+                MoveEdit::ClearEndA,
+            );
+            // Assigned into a local rather than `pending`: the picker rows above and below
+            // hold a mutable borrow of it for as long as their closure is alive.
+            let mut flip = control.face_flip;
+            labeled_row(ui, "Side", |ui| {
+                if ui.checkbox(&mut flip, "Flip").changed() {
+                    face_edit = Some(MoveEdit::FaceFlip(flip));
+                }
+            });
+            labeled_row(ui, "Turn", |ui| {
+                let mut text = control.face_spin.clone();
+                crate::expression_input::ValueInput::new(
+                    "move_face_spin",
+                    crate::expression_input::ValueKind::Angle,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if text != control.face_spin {
+                    face_edit = Some(MoveEdit::FaceSpin(text));
+                }
+            });
+        }
         // In place (#1076) has nothing to pick and nothing to type — the mate is the identity.
         // Offering no rows is how the pane says so; there is no prose to say it with.
-        if control.translate_mode != crate::model::MoveTranslateMode::InPlace {
+        if matches!(
+            control.translate_mode,
+            crate::model::MoveTranslateMode::PointSnap | crate::model::MoveTranslateMode::Free
+        ) {
             picker_row(
                 ui,
                 "Start point A",
@@ -5260,7 +5352,7 @@ pub fn show_pane(
                 field(ui, "Z", &control.rz, ValueKind::Angle, &MoveEdit::Rz);
             }
         }
-        if let Some(edit) = pending {
+        if let Some(edit) = pending.or(face_edit) {
             on_move_edit(edit);
         }
         ui.add_space(2.0);
@@ -8187,6 +8279,8 @@ mod tests {
                 rx: String::new(),
                 ry: String::new(),
                 rz: String::new(),
+                face_flip: false,
+                face_spin: String::new(),
                 editing: false,
                 can_commit: true,
             }),

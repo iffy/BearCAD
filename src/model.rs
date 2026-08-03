@@ -2286,6 +2286,20 @@ pub enum MovePointRef {
     Origin,
 }
 
+/// The face a mating point sits on, as a pickable element (#1077) — `None` for a point that
+/// isn't on one. A `MovePointRef::OnFace` already carries its face's key, so a Face Snap
+/// picker can show both of its rows from the point alone.
+pub fn move_point_host_face(point: &MovePointRef) -> Option<crate::hierarchy::SceneElement> {
+    let MovePointRef::OnFace { body, centroid, normal, .. } = point else {
+        return None;
+    };
+    Some(crate::hierarchy::SceneElement::BodyFace {
+        body: *body,
+        centroid: *centroid,
+        normal: *normal,
+    })
+}
+
 impl MoveOperation {
     /// Whether this move's translation actually comes from its two snap points (#650). A Snap
     /// move that hasn't got both points yet — or one with no bodies at all, like a plane or
@@ -2385,6 +2399,15 @@ pub struct MoveOperation {
     pub ty: String,
     #[serde(default)]
     pub tz: String,
+    /// Face Snap (#1077): which side of the target face to land on. The default puts the two
+    /// normals **opposed**, so the surfaces touch — outsides of objects go together; flipped,
+    /// they point the same way and the part sits behind the face.
+    #[serde(default)]
+    pub face_flip: bool,
+    /// Face Snap (#1077): the turn of the moving face about the target face's normal, through
+    /// the mate point. A degree expression; empty = 0.
+    #[serde(default)]
+    pub face_spin: String,
     /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions; empty = 0.
     /// Applied about the moving bodies' own centre, in X-then-Y-then-Z order, before the
     /// translation — so typing a turn spins the part where it stands rather than swinging it

@@ -1175,6 +1175,10 @@ pub struct CreatingMove {
     pub rx: String,
     pub ry: String,
     pub rz: String,
+    /// Face Snap (#1077): which side of the target face to land on, and the turn about its
+    /// normal through the mate point.
+    pub face_flip: bool,
+    pub face_spin: String,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<crate::model::MoveOpKey>,
 }
@@ -2292,6 +2296,9 @@ pub enum Action {
         rx: String,
         ry: String,
         rz: String,
+        /// Face Snap's side flip and its turn about the target normal (#1077).
+        face_flip: bool,
+        face_spin: String,
     },
     /// Re-point an existing move operation.
     EditMoveOperation {
@@ -2319,6 +2326,9 @@ pub enum Action {
         rx: String,
         ry: String,
         rz: String,
+        /// Face Snap's side flip and its turn about the target normal (#1077).
+        face_flip: bool,
+        face_spin: String,
     },
     /// Commit the in-progress Joint-tool operation (#894).
     CommitJoint,
@@ -11423,7 +11433,15 @@ label_hidden: false,
                 };
                 if let Err(e) = commit_inline_parameter_defs(
                     &mut self.doc,
-                    [&mut cm.tx, &mut cm.ty, &mut cm.tz, &mut cm.rx, &mut cm.ry, &mut cm.rz],
+                    [
+                        &mut cm.tx,
+                        &mut cm.ty,
+                        &mut cm.tz,
+                        &mut cm.rx,
+                        &mut cm.ry,
+                        &mut cm.rz,
+                        &mut cm.face_spin,
+                    ],
                 ) {
                     self.status = e.clone();
                     self.creating_move = Some(cm);
@@ -11449,6 +11467,8 @@ label_hidden: false,
                         rx: cm.rx.clone(),
                         ry: cm.ry.clone(),
                         rz: cm.rz.clone(),
+                        face_flip: cm.face_flip,
+                        face_spin: cm.face_spin.clone(),
                     }),
                     None => {
                         // Coalesce (#217): re-moving the same element folds into its existing
@@ -11477,10 +11497,12 @@ label_hidden: false,
                                     ty,
                                     tz,
                                     // Coalescing only folds free translations, which carry
-                                    // no turn (#1076).
+                                    // no turn (#1076) and no face pair (#1077).
                                     rx: String::new(),
                                     ry: String::new(),
                                     rz: String::new(),
+                                    face_flip: false,
+                                    face_spin: String::new(),
                                 })
                             }
                             None => self.apply(Action::CreateMoveOperation {
@@ -11501,6 +11523,8 @@ label_hidden: false,
                                 rx: cm.rx.clone(),
                                 ry: cm.ry.clone(),
                                 rz: cm.rz.clone(),
+                                face_flip: cm.face_flip,
+                                face_spin: cm.face_spin.clone(),
                             }),
                         }
                     }
@@ -11512,7 +11536,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin } => {
                 if targets.is_empty()
                     && plane_targets.is_empty()
                     && image_targets.is_empty()
@@ -11546,6 +11570,8 @@ label_hidden: false,
                     rx,
                     ry,
                     rz,
+                    face_flip,
+                    face_spin,
                     outputs: Vec::new(),
                     name: None,
                 });
@@ -11584,7 +11610,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, targets, plane_targets, image_targets, instance_targets, tx, ty, tz, rx, ry, rz, face_flip, face_spin } => {
                 if self.doc.move_ops.get(op).is_none() {
                     let e = format!("Move operation {op:?} not found");
                     self.status = e.clone();
@@ -11621,6 +11647,8 @@ label_hidden: false,
                     entry.rx = rx;
                     entry.ry = ry;
                     entry.rz = rz;
+                    entry.face_flip = face_flip;
+                    entry.face_spin = face_spin;
                 }
                 if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op]).is_none() {
                     self.doc.move_ops[op] = old.clone();
@@ -15291,7 +15319,9 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::PlaneAnchor => {}
         // The Move tool's point pickers arm through the focus chain's override, which the
         // pane sets directly — the chain, not a flag on the tool state (#954).
-        P::MoveStartA
+        P::MoveFaceMoving
+        | P::MoveFaceFixed
+        | P::MoveStartA
         | P::MoveEndA
         | P::MoveStartB
         | P::MoveEndB
@@ -16674,6 +16704,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let moved = state.doc.construction_planes[pkey(0)].origin;
@@ -16704,6 +16736,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!((state.doc.construction_planes[pkey(0)].origin.z - base.z).abs() < 1e-3);
     }
@@ -16784,6 +16818,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         let img = &state.doc.tracing_images[image];
@@ -16815,6 +16851,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(state.doc.tracing_images[image].origin.0.abs() < 1e-3);
 
@@ -16838,6 +16876,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         let img = &state.doc.tracing_images[image];
         assert_eq!(img.origin, (0.0, 0.0), "image snaps back to authored base");
@@ -17172,6 +17212,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));
@@ -18311,6 +18353,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
         assert!(state.doc.move_ops.values().nth(0).unwrap().outputs.is_empty(), "the instance itself moves");
@@ -21036,6 +21080,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.len(), 1);
@@ -21083,6 +21129,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
@@ -21104,6 +21152,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().outputs.len(), 2);
@@ -21136,6 +21186,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.move_ops.values().nth(0).unwrap().clone();
@@ -22183,6 +22235,8 @@ mod tests {
             rx: String::new(),
             ry: String::new(),
             rz: String::new(),
+            face_flip: false,
+            face_spin: String::new(),
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!((state.doc.construction_planes[pkey(0)].origin.x - 5.0).abs() < 1e-3);

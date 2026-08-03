@@ -1411,6 +1411,20 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
                 * glam::Mat4::from_translation(-pivot),
         );
     }
+    // Face Snap (#1077) turns the moving face to meet the target face, then spins it about
+    // the target's normal, both about the mate point.
+    if op.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
+        let Some(rot) = move_face_snap_rotation(doc, op) else {
+            return Some(translation);
+        };
+        let pivot = move_point_world(doc, op.end_point_a.as_ref()?)?;
+        return Some(
+            glam::Mat4::from_translation(pivot)
+                * glam::Mat4::from_mat3(rot)
+                * glam::Mat4::from_translation(-pivot)
+                * translation,
+        );
+    }
     // The B pair adds a rotation about end point A, applied after the translation (#669).
     let Some(rot) = move_snap_rotation(doc, op) else {
         return Some(translation);
@@ -1424,6 +1438,53 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
             * glam::Mat4::from_translation(-pivot)
             * translation,
     )
+}
+
+/// The outward world normal of the face a [`crate::model::MovePointRef::OnFace`] sits on
+/// (#1077). `None` for any other kind of point — Face Snap needs faces on both sides.
+pub fn move_point_face_normal(
+    doc: &Document,
+    point: &crate::model::MovePointRef,
+) -> Option<Vec3> {
+    let crate::model::MovePointRef::OnFace { body, centroid, normal, .. } = point else {
+        return None;
+    };
+    let tris = body_face_triangles(doc, *body, *centroid, *normal)?;
+    let (u, v) = face_group_basis(&tris);
+    Some(u.cross(v).normalize_or_zero())
+}
+
+/// Face Snap's rotation (#1077): turn the moving face's normal to meet the target face's,
+/// then spin about the target's normal by `face_spin`.
+///
+/// The default opposes the two normals, so the surfaces touch — outsides of objects go
+/// together, which is what "put this face on that face" nearly always means. `face_flip`
+/// points them the same way instead, putting the part behind the face.
+///
+/// `None` until both points are picked, both resolve, and both sit on faces.
+pub fn move_face_snap_rotation(
+    doc: &Document,
+    op: &crate::model::MoveOperation,
+) -> Option<glam::Mat3> {
+    if op.translate_mode != crate::model::MoveTranslateMode::FaceSnap {
+        return None;
+    }
+    let from = move_point_face_normal(doc, op.start_point_a.as_ref()?)?;
+    let to = move_point_face_normal(doc, op.end_point_a.as_ref()?)?;
+    if from.length_squared() < 0.5 || to.length_squared() < 0.5 {
+        return None;
+    }
+    let want = if op.face_flip { to } else { -to };
+    let align = glam::Mat3::from_quat(glam::Quat::from_rotation_arc(from, want));
+    let spin = if op.face_spin.trim().is_empty() {
+        0.0
+    } else {
+        crate::value::eval_angle_rad_in_doc(&op.face_spin, doc)?
+    };
+    if spin.abs() < 1e-9 {
+        return Some(align);
+    }
+    Some(glam::Mat3::from_axis_angle(to, spin) * align)
 }
 
 /// Free mode's typed turns as one rotation (#1076): X, then Y, then Z, about the world axes.
@@ -6931,6 +6992,8 @@ mod tests {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         };
         assert!(op.has_snap_rotation());
         let m = move_op_transform(&doc, &op).expect("transform");
@@ -7021,6 +7084,8 @@ mod tests {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         };
         assert!(base.has_snap_rotation() && !base.has_snap_roll());
         // With B alone, +10Z stays put — the spin is undecided, so nothing turns.
@@ -7158,6 +7223,8 @@ mod tests {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         };
         let (axis, angle) = move_snap_rotation_axis_angle(&doc, &op).unwrap();
         assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "quarter turn, got {angle}");
@@ -7238,6 +7305,8 @@ mod tests {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         };
         assert!(!base.has_snap_translation());
         assert_eq!(
@@ -7354,6 +7423,8 @@ mod tests {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         };
         assert!(op.has_snap_translation());
         assert_eq!(
@@ -7472,6 +7543,8 @@ mod tests {
             rz: String::new(),
             outputs: vec![bkey(3)],
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         });
 
         let d = descendant_bodies(&doc, &[bkey(0)]);
@@ -7830,6 +7903,8 @@ mod tests {
             rz: String::new(),
             outputs: vec![bkey(1)],
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         });
         doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Moved { op: mopkey(0), target: 0 },
@@ -8420,6 +8495,8 @@ mod tests {
             rz: String::new(),
             outputs: vec![bkey(1)],
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         });
         doc.bodies.insert(Body {
             source: BodySource::Moved { op: mopkey(0), target: 0 },
@@ -9890,6 +9967,91 @@ mod tests {
         assert_eq!(resolved, vec![(expect_ei, expect_edge)]);
     }
 
+    /// #1077: Face Snap turns the moving face to meet the target face and lands its point on
+    /// the target's. By default the two normals end up **opposed**, so the surfaces touch —
+    /// which is what "put this face on that face" nearly always means; the flip points them
+    /// the same way instead.
+    #[test]
+    fn face_snap_puts_a_face_on_a_face() {
+        use crate::model::{MoveOperation, MoveTranslateMode};
+        // Two boxes: A at the origin, B 40mm along +X. Both 10x10x5.
+        let (mut doc, sketch) = sketch_doc();
+        for (x, slot) in [(0.0f32, 0usize), (40.0, 1)] {
+            let profile = rect_profile(&mut doc, sketch, x, 0.0, 10.0, 10.0);
+            doc.extrusions.insert(extrusion(sketch, vec![profile], 5.0));
+            doc.bodies.insert(crate::model::Body {
+                source: crate::model::BodySource::Extrusion(xkey(slot)),
+                material: None,
+                name: None,
+                shadow: false,
+            });
+        }
+        // Pick a face of a body by its outward normal, as a point at its centre.
+        let cap = |body: usize, want: Vec3| {
+            let solid = body_solid_mesh(&doc, bkey(body)).expect("box mesh");
+            let tris = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+                .into_iter()
+                .find(|t| {
+                    let n = (t[0][1] - t[0][0]).cross(t[0][2] - t[0][0]).normalize_or_zero();
+                    n.dot(want) > 0.9
+                })
+                .expect("a face with that normal");
+            let q = crate::hierarchy::quantize_body_point;
+            crate::model::MovePointRef::OnFace {
+                body: bkey(body),
+                centroid: q(face_group_center(&tris)),
+                normal: q((tris[0][1] - tris[0][0]).cross(tris[0][2] - tris[0][0]).normalize_or_zero()),
+                uv: [0, 0],
+            }
+        };
+        let op = |flip: bool, spin: &str| MoveOperation {
+            targets: vec![bkey(0)],
+            translate_mode: MoveTranslateMode::FaceSnap,
+            // A's top cap (+Z) onto B's left wall (-X), so the turn is a real quarter turn.
+            start_point_a: Some(cap(0, Vec3::Z)),
+            end_point_a: Some(cap(1, -Vec3::X)),
+            start_point_b: None,
+            end_point_b: None,
+            start_point_c: None,
+            end_point_c: None,
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            instance_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            face_flip: flip,
+            face_spin: spin.to_string(),
+            rx: String::new(),
+            ry: String::new(),
+            rz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+        };
+
+        // A's top cap centre (5, 5, 5) lands on B's left wall centre (40, 5, 2.5).
+        let target = Vec3::new(40.0, 5.0, 2.5);
+        let m = move_op_transform(&doc, &op(false, "")).expect("a placement");
+        let mate = m.transform_point3(Vec3::new(5.0, 5.0, 5.0));
+        assert!((mate - target).length() < 1e-3, "{mate:?}");
+        // The moving face's +Z normal now **opposes** the target's -X, so the surfaces touch.
+        let n = m.transform_vector3(Vec3::Z).normalize_or_zero();
+        assert!((n - Vec3::X).length() < 1e-3, "the surfaces touch: {n:?}");
+
+        // Flipped, the normals point the same way instead and the part sits behind the face.
+        let flipped = move_op_transform(&doc, &op(true, "")).expect("a placement");
+        let n = flipped.transform_vector3(Vec3::Z).normalize_or_zero();
+        assert!((n - -Vec3::X).length() < 1e-3, "flipped: {n:?}");
+
+        // The spin turns about the target's normal, through the mate point — which stays put.
+        let spun = move_op_transform(&doc, &op(false, "90")).expect("a placement");
+        let mate = spun.transform_point3(Vec3::new(5.0, 5.0, 5.0));
+        assert!((mate - target).length() < 1e-3, "the mate point holds: {mate:?}");
+        let plain = m.transform_point3(Vec3::ZERO);
+        let turned = spun.transform_point3(Vec3::ZERO);
+        assert!((plain - turned).length() > 1.0, "a 90° spin moves the far corner");
+    }
+
     /// #1076: Free mode grows a rotation — X/Y/Z turns typed alongside the X/Y/Z amounts —
     /// and it acts about the moving part's **own centre**, so typing a turn spins the part
     /// where it stands rather than swinging it around the world origin. And In place is the
@@ -9925,6 +10087,8 @@ mod tests {
             rz: rz.to_string(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         };
 
         // No turn typed: a plain translation, exactly as before (#648).

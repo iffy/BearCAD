@@ -825,6 +825,15 @@ struct TextRotationDrag {
     start_rotation: f32,
 }
 
+/// A drag on Face Snap's spin ring (#1077): the turn of the moving face about the target
+/// face's normal, dragged rather than typed.
+#[derive(Clone, Copy, Debug)]
+struct FaceSpinDrag {
+    start_cursor_angle: f32,
+    /// The spin (degrees) when the grab started.
+    start_spin: f32,
+}
+
 /// A drag on the Move tool's in-sketch selection gizmo (#306): the centred handle moves the
 /// selection freely; the horizontal/vertical arrows constrain the move to that sketch axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3034,6 +3043,8 @@ struct App {
     plane_resize_drag: Option<PlaneResizeDrag>,
     /// In-flight sketch-text rotation drag on the Move tool's ring (#286).
     text_rotation_drag: Option<TextRotationDrag>,
+    /// An in-flight drag of Face Snap's spin ring (#1077).
+    face_spin_drag: Option<FaceSpinDrag>,
     /// In-flight in-sketch selection move on the Move tool's gizmo (#306).
     sketch_move_drag: Option<SketchMoveDrag>,
     launch_maximize_frames_remaining: u8,
@@ -4171,6 +4182,7 @@ impl App {
             move_gizmo_drag: None,
             plane_resize_drag: None,
             text_rotation_drag: None,
+            face_spin_drag: None,
             sketch_move_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
@@ -7669,6 +7681,31 @@ impl App {
         Some((index, center, frame.normal, radius))
     }
 
+    /// Face Snap's spin ring (#1077): centred on the **mate point**, normal to the target
+    /// face, so dragging it turns the moving face exactly where the mate happens. `None`
+    /// until both faces are picked and both resolve.
+    fn face_spin_ring_geom(&self) -> Option<(Vec3, Vec3, f32)> {
+        if self.state.tool != Tool::Move || self.state.sketch_session.is_some() {
+            return None;
+        }
+        let cm = self.state.creating_move.as_ref()?;
+        if cm.translate_mode != model::MoveTranslateMode::FaceSnap {
+            return None;
+        }
+        let end = cm.end_point_a.as_ref()?;
+        let axis = extrude::move_point_face_normal(&self.state.doc, end)?;
+        extrude::move_point_face_normal(&self.state.doc, cm.start_point_a.as_ref()?)?;
+        let center = extrude::move_point_world(&self.state.doc, end)?;
+        // Sized to the moving bodies, so the ring reads against what it turns.
+        let mut reach: f32 = 0.0;
+        for &body in &cm.targets {
+            if let Some((lo, hi)) = extrude::body_solid_mesh(&self.state.doc, body).and_then(|m| m.bounds()) {
+                reach = reach.max((hi - lo).length() * 0.5);
+            }
+        }
+        Some((center, axis, reach.max(5.0)))
+    }
+
     /// The in-sketch Move gizmo (#306): centred at the selected geometry's bbox centre on the
     /// active sketch plane. Returns `(centre_uv, frame)` when the Move tool is active in a
     /// sketch with a movable selection. The gizmo has a free-drag centre plus u/v arrows.
@@ -7878,6 +7915,51 @@ impl App {
             self.text_rotation_drag = None;
         }
 
+        // Face Snap's spin ring (#1077): the same grab-and-drag as the text ring, writing the
+        // Turn field live so the typed value and the drag are the one control.
+        if let Some((center, axis, radius)) = self.face_spin_ring_geom() {
+            let cursor_angle =
+                |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
+            let sign = if axis.dot(cam.eye() - center) > 0.0 { -1.0 } else { 1.0 };
+            if let Some(drag) = self.face_spin_drag {
+                if ui.input(|i| i.pointer.primary_down()) {
+                    if let Some(angle) = pointer_screen.and_then(cursor_angle) {
+                        let spin = drag.start_spin
+                            + sign * (angle - drag.start_cursor_angle).to_degrees();
+                        if let Some(cm) = self.state.creating_move.as_mut() {
+                            cm.face_spin = format!("{spin:.1}");
+                        }
+                    }
+                } else {
+                    self.face_spin_drag = None;
+                }
+                return;
+            }
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                if let Some(pp) = pointer_screen {
+                    if rotation_ring_hit(pp, &project, center, axis, radius) {
+                        if let Some(angle) = cursor_angle(pp) {
+                            let start_spin = self
+                                .state
+                                .creating_move
+                                .as_ref()
+                                .and_then(|cm| crate::value::eval_angle_rad_in_doc(
+                                    &cm.face_spin,
+                                    &self.state.doc,
+                                ))
+                                .unwrap_or(0.0)
+                                .to_degrees();
+                            self.face_spin_drag =
+                                Some(FaceSpinDrag { start_cursor_angle: angle, start_spin });
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if self.face_spin_drag.is_some() {
+            self.face_spin_drag = None;
+        }
+
         if self.state.sketch_session.is_some() {
             return;
         }
@@ -7985,10 +8067,20 @@ impl App {
                     body,
                     p: hierarchy::quantize_body_point(world),
                 });
-            match candidate
-                .or_else(|| self.pick_move_point(pp, project, pick_occlusion, side))
-                .filter(|point| reachable(self, point))
-            {
+            // Face Snap (#1077) takes the exact spot on the face under the cursor, not the
+            // nearest corner: "put this bit of this face on that bit of that one" is the whole
+            // gesture, and a click already says both which face and where on it.
+            let face_snap = self
+                .state
+                .creating_move
+                .as_ref()
+                .is_some_and(|c| c.translate_mode == model::MoveTranslateMode::FaceSnap);
+            let picked = if face_snap {
+                self.pick_move_face_point(pp, project, cam, viewport, vp, pick_occlusion, side)
+            } else {
+                candidate.or_else(|| self.pick_move_point(pp, project, pick_occlusion, side))
+            };
+            match picked.filter(|point| reachable(self, point)) {
                 Some(point) => {
                     let label = self.move_point_label(&point);
                     if let Some(cm) = self.state.creating_move.as_mut() {
@@ -8277,6 +8369,8 @@ impl App {
                         rx: String::new(),
                         ry: String::new(),
                         rz: String::new(),
+                        face_flip: false,
+                        face_spin: String::new(),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
@@ -9598,6 +9692,50 @@ impl App {
             centroid: hierarchy::quantize_body_point(extrude::face_group_center(triangles)),
             normal: hierarchy::quantize_body_point(*normal),
             uv: [0, 0],
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Face Snap's pick (#1077): the **exact spot** on the planar face under the cursor, as a
+    /// [`model::MovePointRef::OnFace`]. Unlike [`Self::pick_move_point`] it never falls back to
+    /// a corner or an edge midpoint — a Face Snap click means "here, on this face", and
+    /// snapping it to the nearest corner would quietly change which mate you asked for.
+    fn pick_move_face_point(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+        moving: Option<bool>,
+    ) -> Option<model::MovePointRef> {
+        let targets: Vec<model::BodyKey> = self
+            .state
+            .creating_move
+            .as_ref()
+            .map(|cm| cm.targets.clone())
+            .unwrap_or_default();
+        let kind = crate::face::pick_body_face(pp, project, &self.state.doc, self.state.cam.eye())
+            .filter(|kind| pick_occlusion.is_none_or(|occ| occ.pickable(&self.state.doc, kind)))?;
+        let construction::PickTargetKind::BodyFace { body, triangles, normal } = &kind else {
+            return None;
+        };
+        if moving.is_some_and(|m| targets.contains(body) != m) {
+            return None;
+        }
+        // Where the cursor's ray meets the face's own plane; if that misses (a ray parallel to
+        // the face), fall back to its centre, which is always on it.
+        let centre = extrude::face_group_center(triangles);
+        let uv = cam
+            .ray_plane_hit(pp, viewport, vp, centre, *normal)
+            .map(|world| extrude::face_world_uv(triangles, world))
+            .unwrap_or([0, 0]);
+        Some(model::MovePointRef::OnFace {
+            body: *body,
+            centroid: hierarchy::quantize_body_point(centre),
+            normal: hierarchy::quantize_body_point(*normal),
+            uv,
         })
     }
 
@@ -12379,6 +12517,8 @@ impl eframe::App for App {
                     rx: cm.map(|c| c.rx.clone()).unwrap_or_default(),
                     ry: cm.map(|c| c.ry.clone()).unwrap_or_default(),
                     rz: cm.map(|c| c.rz.clone()).unwrap_or_default(),
+                    face_flip: cm.map(|c| c.face_flip).unwrap_or(false),
+                    face_spin: cm.map(|c| c.face_spin.clone()).unwrap_or_default(),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: cm
                         .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
@@ -13386,6 +13526,8 @@ impl eframe::App for App {
                             context::MoveEdit::Rx(v) => cm.rx = v,
                             context::MoveEdit::Ry(v) => cm.ry = v,
                             context::MoveEdit::Rz(v) => cm.rz = v,
+                            context::MoveEdit::FaceFlip(v) => cm.face_flip = v,
+                            context::MoveEdit::FaceSpin(v) => cm.face_spin = v,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearStartA => cm.start_point_a = None,
                             context::MoveEdit::ClearEndA => cm.end_point_a = None,
@@ -14186,7 +14328,9 @@ impl eframe::App for App {
                     }
                     // The Move tool's point pickers (#958): the pane's own rows drive
                     // focus and clearing through `MoveEdit`, so nothing routes here.
-                    context::PickerTarget::MoveStartA
+                    context::PickerTarget::MoveFaceMoving
+                    | context::PickerTarget::MoveFaceFixed
+                    | context::PickerTarget::MoveStartA
                     | context::PickerTarget::MoveEndA
                     | context::PickerTarget::MoveStartB
                     | context::PickerTarget::MoveEndB
@@ -15298,6 +15442,8 @@ fn move_ghost_target_transform(
         rx: cm.rx.clone(),
         ry: cm.ry.clone(),
         rz: cm.rz.clone(),
+        face_flip: cm.face_flip,
+        face_spin: cm.face_spin.clone(),
         outputs: Vec::new(),
         name: None,
     };
@@ -15572,6 +15718,8 @@ impl SnapPreviewPoints {
             rz: String::new(),
             outputs: Vec::new(),
             name: None,
+            face_flip: false,
+            face_spin: String::new(),
         }
     }
 
@@ -15649,6 +15797,10 @@ fn move_focus_chain(cm: &actions::CreatingMove) -> FocusChain<MoveFocus> {
         (MoveFocus::Bodies, !cm.targets.is_empty()),
         (MoveFocus::StartPointA, cm.start_point_a.is_some()),
     ];
+    // Face Snap needs only the pair (#1077); Point Snap goes on to the B and C pairs.
+    if cm.translate_mode == model::MoveTranslateMode::FaceSnap {
+        chain.push((MoveFocus::EndPointA, cm.end_point_a.is_some()));
+    }
     if cm.translate_mode == model::MoveTranslateMode::PointSnap {
         chain.extend([
             (MoveFocus::EndPointA, cm.end_point_a.is_some()),
@@ -24847,9 +24999,25 @@ impl App {
                 });
             }
         }
-        // Rotation-ring gizmo (#216/#286): a selected sketch text turns about its origin. The
+        // Rotation-ring gizmo (#216/#286): a selected sketch text turns about its origin, and
+        // Face Snap's spin turns the moving face about the target's normal (#1077). The
         // body-rotation ring is gone with the Move tool's rotation half (#663).
         let move_rotation_gizmo = None
+            .or_else(|| {
+                self.face_spin_ring_geom().map(|(center, axis, radius)| {
+                    let hovered = self.face_spin_drag.is_some()
+                        || pointer_screen.is_some_and(|pp| {
+                            rotation_ring_hit(pp, &project, center, axis, radius)
+                        });
+                    gpu_viewport::MoveRotationGizmo {
+                        center,
+                        axis,
+                        radius,
+                        color: col::PREVIEW,
+                        hovered,
+                    }
+                })
+            })
             .or_else(|| {
                 (self.state.tool == Tool::Move)
                     .then(|| self.text_rotation_geom())
@@ -29630,6 +29798,19 @@ mod tests {
         assert_eq!(focus(&free), MoveFocus::StartPointA);
         free.start_point_a = Some(point(bkey(0)));
         assert_eq!(focus(&free), MoveFocus::Bodies);
+
+        // Face Snap (#1077) needs only the pair, and stops there — the B and C pairs are
+        // Point Snap's way of setting a turn; Face Snap's comes from the faces themselves.
+        let mut face = actions::CreatingMove {
+            targets: vec![bkey(0)],
+            translate_mode: MoveTranslateMode::FaceSnap,
+            ..Default::default()
+        };
+        assert_eq!(focus(&face), MoveFocus::StartPointA);
+        face.start_point_a = Some(point(bkey(0)));
+        assert_eq!(focus(&face), MoveFocus::EndPointA);
+        face.end_point_a = Some(point(bkey(1)));
+        assert_eq!(focus(&face), MoveFocus::Bodies, "both faces picked, and that is all");
 
         // A hand-picked focus wins until it's satisfied, then hands the chain back (#658).
         let held = Some(MoveFocus::EndPointA);
