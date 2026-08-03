@@ -2800,9 +2800,8 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
             }
             // Sketches placed on this extrusion's cap or side-wall faces.
-            for (si, sketch) in doc.sketches.iter().enumerate() {
-                if !sketch.deleted
-                    && matches!(sketch.face,
+            for (si, sketch) in doc.sketches.iter() {
+                if matches!(sketch.face,
                         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. }
                         if extrusion == index)
                 {
@@ -3387,10 +3386,8 @@ pub fn unit_child_rows(doc: &Document, instance: crate::model::UnitInstanceKey) 
             rows.push((IconId::Plane, node_label(inner, HierarchyNode::ConstructionPlane(i))));
         }
     }
-    for (i, sketch) in inner.sketches.iter().enumerate() {
-        if !sketch.deleted {
-            rows.push((IconId::Sketch, node_label(inner, HierarchyNode::Sketch(i))));
-        }
+    for (i, _sketch) in inner.sketches.iter() {
+        rows.push((IconId::Sketch, node_label(inner, HierarchyNode::Sketch(i))));
     }
     for (i, body) in inner.bodies.iter() {
         // A unit's own materialized instance bodies show as nested-unit rows below.
@@ -3714,9 +3711,8 @@ fn build_sketch_extrusions(
                     children: Vec::new(),
                 })
                 .collect();
-            for (si, sk) in doc.sketches.iter().enumerate() {
-                if !sk.deleted
-                    && matches!(sk.face,
+            for (si, sk) in doc.sketches.iter() {
+                if matches!(sk.face,
                         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. }
                         if extrusion == ei)
                 {
@@ -5460,6 +5456,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
@@ -5695,7 +5692,7 @@ mod tests {
     /// chains resolve downward.
     #[test]
     fn graph_layering_enforcement_keeps_inputs_above_consumers() {
-        let a = HierarchyNode::Sketch(0);
+        let a = HierarchyNode::Sketch(skey(0));
         let b = HierarchyNode::Extrusion(xkey(0));
         let c = HierarchyNode::Body(bkey(0));
         let edges = vec![(a, b), (b, c)];
@@ -5768,7 +5765,7 @@ mod tests {
     /// stops rather than sliding the graph off the top.
     #[test]
     fn graph_layering_stops_a_drag_once_its_inputs_hit_the_top() {
-        let a = HierarchyNode::Sketch(0);
+        let a = HierarchyNode::Sketch(skey(0));
         let b = HierarchyNode::Extrusion(xkey(0));
         let c = HierarchyNode::Body(bkey(0));
         let edges = vec![(a, b), (b, c)];
@@ -5791,8 +5788,8 @@ mod tests {
     /// cycle still terminates.
     #[test]
     fn input_chain_depth_uses_the_longest_chain() {
-        let a = HierarchyNode::Sketch(0);
-        let b = HierarchyNode::Sketch(1);
+        let a = HierarchyNode::Sketch(skey(0));
+        let b = HierarchyNode::Sketch(skey(1));
         let c = HierarchyNode::Extrusion(xkey(0));
         let d = HierarchyNode::Body(bkey(0));
         // a → c → d and b → d: d's longest chain is a → c → d, i.e. 2 above it.
@@ -6199,7 +6196,7 @@ label_hidden: false,
         assert!(f.sketches && f.bodies && f.drawings);
         assert!(!f.planes && !f.operations && !f.sketch_geometry && !f.images);
         assert!(f.shows(HierarchyNode::Body(bkey(0))));
-        assert!(f.shows(HierarchyNode::Sketch(0)));
+        assert!(f.shows(HierarchyNode::Sketch(skey(0))));
         assert!(f.shows(HierarchyNode::Document), "the root is always shown");
         assert!(f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
         assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
@@ -6435,8 +6432,8 @@ label_hidden: false,
         assert_eq!(list.len(), 4);
         assert_eq!(list[0], HierarchyNode::Document);
         assert_eq!(list[1], HierarchyNode::ConstructionPlane(0));
-        assert_eq!(list[2], HierarchyNode::Sketch(0));
-        assert_eq!(list[3], HierarchyNode::Sketch(1));
+        assert_eq!(list[2], HierarchyNode::Sketch(skey(0)));
+        assert_eq!(list[3], HierarchyNode::Sketch(skey(1)));
     }
 
     #[test]
@@ -6475,9 +6472,9 @@ label_hidden: false,
             vec![
                 HierarchyNode::Document,
                 HierarchyNode::ConstructionPlane(0),
-                HierarchyNode::Sketch(0),
+                HierarchyNode::Sketch(skey(0)),
                 HierarchyNode::Circle(0),
-                HierarchyNode::Sketch(1),
+                HierarchyNode::Sketch(skey(1)),
             ]
         );
         let _ = s1;
@@ -6513,7 +6510,7 @@ label_hidden: false,
             vec![
                 HierarchyNode::Document,
                 HierarchyNode::ConstructionPlane(0),
-                HierarchyNode::Sketch(0),
+                HierarchyNode::Sketch(skey(0)),
                 HierarchyNode::ConstructionPlane(1),
             ]
         );
@@ -6580,7 +6577,7 @@ label_hidden: false,
     fn sketch_offset_op_surfaces_at_root_when_its_sketch_is_gone() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.sketches[sketch].deleted = true;
+        doc.sketches.remove(sketch);
         doc.sketch_offset_ops.insert(crate::model::SketchOffsetOperation {
             sketch,
             line_targets: Vec::new(),
@@ -6686,7 +6683,7 @@ label_hidden: false,
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selection,
-            SceneElement::Sketch(0),
+            SceneElement::Sketch(skey(0)),
             false,
         );
         let context = selection_context_elements(&doc, &selection);
@@ -6697,7 +6694,7 @@ label_hidden: false,
         let health = DocumentHealth::default();
         assert_eq!(
             row_style(
-                SceneElement::Sketch(0),
+                SceneElement::Sketch(skey(0)),
                 &selection,
                 &context,
                 &related_constraints,
@@ -6723,7 +6720,7 @@ label_hidden: false,
         );
         assert_eq!(
             row_style(
-                SceneElement::Sketch(1),
+                SceneElement::Sketch(skey(1)),
                 &selection,
                 &context,
                 &related_constraints,
@@ -6967,9 +6964,9 @@ label_hidden: false,
     #[test]
     fn toggle_visibility_flips_state() {
         let mut vis = ElementVisibility::default();
-        assert!(vis.is_visible(SceneElement::Sketch(0)));
-        assert!(!vis.toggle(SceneElement::Sketch(0)));
-        assert!(!vis.is_visible(SceneElement::Sketch(0)));
+        assert!(vis.is_visible(SceneElement::Sketch(skey(0))));
+        assert!(!vis.toggle(SceneElement::Sketch(skey(0))));
+        assert!(!vis.is_visible(SceneElement::Sketch(skey(0))));
     }
 
     #[test]
@@ -7012,7 +7009,7 @@ label_hidden: false,
         assert_eq!(body_before.len(), 1);
         assert!(body_before.contains(&SceneElement::Body(bkey(0))));
         // An unknown / non-graph marker suppresses nothing.
-        assert!(rolled_back_elements(&doc, &here(SceneElement::Sketch(99))).is_empty());
+        assert!(rolled_back_elements(&doc, &here(SceneElement::Sketch(skey(99)))).is_empty());
         assert!(rolled_back_elements(&doc, &here(SceneElement::Origin)).is_empty());
     }
 
@@ -7312,9 +7309,9 @@ label_hidden: false,
         let mut doc = Document::default();
         let loft_key = doc.lofts.insert(Loft {
             sections: vec![
-                LoftSection { sketch: 0, face: ExtrudeFace::Circle(0) },
-                LoftSection { sketch: 1, face: ExtrudeFace::Circle(1) },
-                LoftSection { sketch: 2, face: ExtrudeFace::Circle(2) },
+                LoftSection { sketch: skey(0), face: ExtrudeFace::Circle(0) },
+                LoftSection { sketch: skey(1), face: ExtrudeFace::Circle(1) },
+                LoftSection { sketch: skey(2), face: ExtrudeFace::Circle(2) },
             ],
             mode: crate::model::LoftMode::NewBody,
             name: None,
@@ -7338,10 +7335,10 @@ label_hidden: false,
         );
         // The three section sketches feed the loft as dependency inputs.
         let deps = graph_dependency_edges(&doc);
-        for si in 0..3 {
+        for si in doc.sketches.keys() {
             assert!(
                 deps.contains(&(HierarchyNode::Sketch(si), HierarchyNode::Loft(loft_key))),
-                "sketch {si} feeds the loft"
+                "sketch {si:?} feeds the loft"
             );
         }
     }
@@ -7459,7 +7456,7 @@ label_hidden: false,
         use crate::model::{Body, BodySource, Revolution, RevolveAxis, RevolveMode};
         let mut doc = Document::default();
         let rev_key = doc.revolutions.insert(Revolution {
-            sketch: 0,
+            sketch: skey(0),
             faces: Vec::new(),
             axis: RevolveAxis::X,
             angle_deg: 360.0,

@@ -518,7 +518,7 @@ pub struct RepeatControl {
     /// Picked construction planes to repeat as offset copies (#221).
     pub plane_targets: Vec<usize>,
     /// Picked sketches to repeat as offset copies (#231/#234).
-    pub sketch_targets: Vec<usize>,
+    pub sketch_targets: Vec<crate::model::SketchId>,
     /// Picked cut/add extrusions whose effect is replayed at each offset (#220/#235).
     pub extrusion_targets: Vec<crate::model::ExtrusionKey>,
     /// The picked path (#439/#955): a straight reference, or a circle to ride round (#840).
@@ -7387,6 +7387,7 @@ fn orientation_pick_to_drawing(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
@@ -7735,7 +7736,7 @@ mod tests {
         let content = context_pane_content(&ContextInput {
             tool: Tool::Dimension,
             in_sketch: true,
-            open_sketch: Some(0),
+            open_sketch: Some(skey(0)),
             sketch_axis_screen_dirs: None,
             ..input(&doc, &selection)
         });
@@ -7988,7 +7989,7 @@ mod tests {
         let input = ContextInput {
             tool: Tool::Constraint,
             in_sketch: true,
-            open_sketch: Some(0),
+            open_sketch: Some(skey(0)),
             sketch_axis_screen_dirs: None,
             in_drawing_workbench: false,
             open_drawing: None,
@@ -8404,7 +8405,7 @@ mod tests {
                 let input = ContextInput {
                     tool,
                     in_sketch,
-                    open_sketch: in_sketch.then_some(0),
+                    open_sketch: in_sketch.then_some(skey(0)),
                     slice_op: (tool == Tool::Slice).then_some(SliceControl {
                         targets: vec![bkey(1)],
                         cutters: vec![crate::model::FaceId::ConstructionPlane(0)],
@@ -8432,11 +8433,11 @@ mod tests {
                         .then_some(vec![crate::model::ExtrudeFace::Circle(0)]),
                     loft_sections: (tool == Tool::Loft).then_some(vec![
                         crate::model::LoftSection {
-                            sketch: 0,
+                            sketch: skey(0),
                             face: crate::model::ExtrudeFace::Circle(0),
                         },
                         crate::model::LoftSection {
-                            sketch: 0,
+                            sketch: skey(0),
                             face: crate::model::ExtrudeFace::Circle(1),
                         },
                     ]),
@@ -9013,7 +9014,7 @@ mod tests {
             draw_line_curve_mode: Some(true),
             draw_line_tangent_constraint: Some(false),
             in_sketch: true,
-            open_sketch: Some(0),
+            open_sketch: Some(skey(0)),
             sketch_axis_screen_dirs: None,
             snapping_enabled: true,
             extrude_merge_candidate: None,

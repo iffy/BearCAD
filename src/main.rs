@@ -11830,7 +11830,7 @@ impl eframe::App for App {
                         .unwrap_or_default();
                     // With sketch children hidden in the pane, the owning sketch row
                     // still shows where the parameter is used (#633).
-                    let owner_sketches: Vec<usize> = highlight_elements
+                    let owner_sketches: Vec<model::SketchId> = highlight_elements
                         .iter()
                         .filter_map(|e| match e {
                             SceneElement::Line(i) => {
@@ -27685,33 +27685,33 @@ mod tests {
     fn sketch_isolation_filters_selection_picks() {
         use crate::model::{ConstraintLine, ConstraintPoint, LineEnd, SketchAxis};
         let mut doc = model::Document::default();
-        doc.lines.push(model::Line::from_local_endpoints(0, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(model::Line::from_local_endpoints(1, 0.0, 0.0, 5.0, 5.0));
-        assert!(element_in_sketch(&doc, 0, &SceneElement::Line(0)));
-        assert!(!element_in_sketch(&doc, 0, &SceneElement::Line(1)));
+        doc.lines.push(model::Line::from_local_endpoints(model::sketch_key_for_slot(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(model::Line::from_local_endpoints(model::sketch_key_for_slot(1), 0.0, 0.0, 5.0, 5.0));
+        assert!(element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Line(0)));
+        assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Line(1)));
         assert!(element_in_sketch(
             &doc,
-            0,
+            model::sketch_key_for_slot(0),
             &SceneElement::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start })
         ));
         assert!(!element_in_sketch(
             &doc,
-            0,
+            model::sketch_key_for_slot(0),
             &SceneElement::Point(ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End })
         ));
-        assert!(element_in_sketch(&doc, 0, &SceneElement::Origin));
+        assert!(element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Origin));
         assert!(element_in_sketch(
             &doc,
-            0,
+            model::sketch_key_for_slot(0),
             &SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X))
         ));
-        assert!(!element_in_sketch(&doc, 0, &SceneElement::Body(bkey(0))));
+        assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Body(bkey(0))));
         assert!(!element_in_sketch(
             &doc,
-            0,
+            model::sketch_key_for_slot(0),
             &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
-        assert!(!element_in_sketch(&doc, 0, &SceneElement::BodyVertex { body: bkey(0), p: [0; 3] }));
+        assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::BodyVertex { body: bkey(0), p: [0; 3] }));
     }
 
     /// Auto-zoom's selection watch keys off an order-independent fingerprint of the
@@ -31030,8 +31030,8 @@ fn pick_sketch_region(
     viewport: egui::Rect,
     vp: &glam::Mat4,
 ) -> Option<model::ExtrudeFace> {
-    for sketch in 0..doc.sketches.len() {
-        if doc.sketches.get(sketch).is_none_or(|s| s.deleted)
+    for sketch in doc.sketches.keys().collect::<Vec<_>>() {
+        if doc.sketches.get(sketch).is_none()
             || doc.sketch_face(sketch).as_ref() != Some(host)
         {
             continue;

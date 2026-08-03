@@ -11,7 +11,7 @@ use crate::command_palette::{best_match, commands_for_state, PaletteOutcome};
 use crate::constraints::add_distance_constraint;
 use crate::hierarchy::SceneElement;
 use crate::model::{
-    ConstraintLine, ConstraintPoint, DistanceTarget, ExtrudeFace, FaceId, SketchId,
+    ConstraintLine, ConstraintPoint, DistanceTarget, ExtrudeFace, FaceId,
     VertexTreatmentKind,
 };
 use crate::value::{AngleUnit, LengthUnit};
@@ -155,7 +155,7 @@ pub enum Instruction {
     Undo,
     Tool(Tool),
     BeginSketch { face: FaceId },
-    OpenSketch { sketch: SketchId },
+    OpenSketch { sketch: usize },
     ExitSketch,
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
     /// `width_expr`/`height_expr` (#402) lock the dimension to a parameter expression instead
@@ -205,7 +205,7 @@ pub enum Instruction {
     },
     /// Extrude coplanar sketch faces into a solid.
     Extrude {
-        sketch: SketchId,
+        sketch: usize,
         faces: Vec<crate::model::ExtrudeFace>,
         distance: f32,
         /// How the extrusion attaches to bodies (#32/#35): new body, add to the extruded
@@ -561,7 +561,7 @@ pub enum Instruction {
     SetDocumentUnits { length: LengthUnit, angle: AngleUnit },
     /// Set (or clear, via `None`) a per-sketch length/angle unit override (#52).
     SetSketchUnits {
-        sketch: SketchId,
+        sketch: usize,
         length: Option<LengthUnit>,
         angle: Option<AngleUnit>,
     },
@@ -1870,9 +1870,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The sketch's arena slot, not its ordinal (#1070).
         SceneElement::Sketch(i) => ElementScriptTokens {
             kind: "sketch",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::Line(i) => ElementScriptTokens {
@@ -2136,6 +2137,16 @@ fn extrusion_key(
     ordinal: usize,
 ) -> Option<crate::model::ExtrusionKey> {
     doc.extrusions.keys().nth(ordinal)
+}
+
+/// A sketch's ordinal among the live ones — what a script writes (#1055).
+fn sketch_ordinal(doc: &crate::model::Document, key: crate::model::SketchId) -> Option<usize> {
+    doc.sketches.keys().position(|k| k == key)
+}
+
+/// The sketch an ordinal names — the inverse of [`sketch_ordinal`].
+fn sketch_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::SketchId> {
+    doc.sketches.keys().nth(ordinal)
 }
 
 /// A unit's ordinal among the live ones — what a script writes (#1055).
@@ -2616,7 +2627,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         Action::FocusPlaneDim { dim } => Some(Instruction::FocusPlaneDim(*dim)),
         Action::BeginSketch { face, .. } => Some(Instruction::BeginSketch { face: face.clone() }),
-        Action::OpenSketch { sketch, .. } => Some(Instruction::OpenSketch { sketch: *sketch }),
+        Action::OpenSketch { sketch, .. } => Some(Instruction::OpenSketch {
+            sketch: sketch_ordinal(doc, *sketch)?,
+        }),
         Action::ExitSketch => Some(Instruction::ExitSketch),
         Action::SetElementVisible { element, visible } => Some(Instruction::SetElementVisible {
             element: element.clone(),
@@ -2755,7 +2768,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::SetSketchUnits { sketch, length, angle } => Some(Instruction::SetSketchUnits {
-            sketch: *sketch,
+            sketch: sketch_ordinal(doc, *sketch)?,
             length: *length,
             angle: *angle,
         }),
@@ -2844,7 +2857,7 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
         _ => crate::actions::ExtrudeBodyChoice::New,
     };
     Some(Instruction::Extrude {
-        sketch: extrusion.sketch,
+        sketch: sketch_ordinal(doc, extrusion.sketch)?,
         faces: extrusion.faces.clone(),
         distance: extrusion.distance,
         body,
@@ -3426,8 +3439,7 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
             format!("{{text_glyph = {{text = {}, glyph = {glyph}}}}}", text.index())
         }
         // A plane region (#993) names its sketch and the seed point that picks it out.
-        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
-            "{{region = {{sketch = {sketch}, u = {}, v = {}}}}}",
+        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!("{{region = {{sketch = {}, u = {}, v = {}}}}}", sketch.index(),
             *seed_u as f32 / crate::model::SKETCH_REGION_SEED_SCALE,
             *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
         ),
@@ -3841,7 +3853,8 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
             boolean_face_lua_table(*op, a, b)
         ),
         ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
-            "profile = \"region\", profile_index = {sketch}, seed = {{{}, {}}}",
+            "profile = \"region\", profile_index = {}, seed = {{{}, {}}}",
+            sketch.index(),
             *seed_u as f32 / crate::model::SKETCH_REGION_SEED_SCALE,
             *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
         ),
@@ -4906,6 +4919,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::OpenSketch { sketch } => {
+                let Some(sketch) = sketch_key(&state.doc, sketch) else {
+                    self.last_action_error = Some(format!("Unknown sketch {sketch}"));
+                    return StepResult::Continue;
+                };
                 state.apply(Action::OpenSketch {
                     sketch,
                     viewport,
@@ -5032,6 +5049,10 @@ impl ScriptRunner {
                         self.record_action_error(crate::actions::ActionResult::Err(e));
                         return StepResult::Continue;
                     }
+                };
+                let Some(sketch) = sketch_key(&state.doc, sketch) else {
+                    self.last_action_error = Some(format!("Unknown sketch {sketch}"));
+                    return StepResult::Continue;
                 };
                 let result = state.apply(Action::CreateExtrusion {
                     sketch,
@@ -5172,6 +5193,10 @@ impl ScriptRunner {
             } => {
                 let Some(drawing) = drawing_key(&state.doc, drawing) else {
                     self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let Some(sketch) = sketch_key(&state.doc, sketch) else {
+                    self.last_action_error = Some(format!("Unknown sketch {sketch}"));
                     return StepResult::Continue;
                 };
                 let result = state.apply(Action::AddDrawingSketchView {
@@ -5780,6 +5805,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SetSketchUnits { sketch, length, angle } => {
+                let Some(sketch) = sketch_key(&state.doc, sketch) else {
+                    self.last_action_error = Some(format!("Unknown sketch {sketch}"));
+                    return StepResult::Continue;
+                };
                 let _ = state.apply(Action::SetSketchUnits { sketch, length, angle });
                 StepResult::Continue
             }
@@ -6726,6 +6755,7 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::ConstraintLine;
@@ -7069,7 +7099,8 @@ mod tests {
             "bearcad.set_units{ sketch = 2, length = \"cm\" }"
         );
 
-        let sketch_inherit = Instruction::SetSketchUnits { sketch: 0, length: None, angle: None };
+        let sketch_inherit =
+            Instruction::SetSketchUnits { sketch: 0, length: None, angle: None };
         assert_eq!(sketch_inherit.as_lua(), "bearcad.set_units{ sketch = 0 }");
     }
 
@@ -7243,7 +7274,7 @@ mod tests {
         let mut doc = crate::model::Document::default();
         for _ in 0..3 {
             doc.extrusions.insert(crate::model::Extrusion {
-                sketch: 0,
+                sketch: skey(0),
                 faces: Vec::new(),
                 distance: 1.0,
                 target: None,

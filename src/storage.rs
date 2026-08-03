@@ -72,7 +72,7 @@ fn ensure_construction_plane_indices(doc: &mut Document) {
     }
     let max_index = doc
         .sketches
-        .iter()
+        .values()
         .filter_map(|sketch| match sketch.face {
             FaceId::ConstructionPlane(index) => Some(index),
             _ => None,
@@ -230,7 +230,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
         .map_err(|e| e.to_string())?;
 
     let mut row_id = 0i64;
-    save_indexed_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;
+    save_arena_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;
     save_indexed_nodes(&tx, &mut row_id, "line", &doc.lines)?;
     save_indexed_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
     save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
@@ -454,7 +454,7 @@ fn load_legacy_document_nodes(
     conn: &Connection,
 ) -> Result<(
     crate::arena::Arena<Parameter>,
-    Vec<Sketch>,
+    crate::arena::Arena<Sketch>,
     Vec<Line>,
     Vec<Circle>,
     crate::arena::Arena<Constraint>,
@@ -474,7 +474,7 @@ fn load_legacy_document_nodes(
         .map_err(|e| e.to_string())?;
 
     let mut parameters = crate::arena::Arena::new();
-    let mut sketches = Vec::new();
+    let mut sketches = crate::arena::Arena::new();
     let mut lines = Vec::new();
     let mut circles = Vec::new();
     let mut constraints = crate::arena::Arena::new();
@@ -485,7 +485,7 @@ fn load_legacy_document_nodes(
         match kind.as_str() {
             "sketch" => {
                 let sketch: Sketch = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                sketches.push(sketch);
+                sketches.insert(sketch);
                 shape_order.push(ShapeKind::Sketch);
             }
             "line" => {
@@ -552,7 +552,7 @@ pub fn open(path: &str) -> Result<Document> {
         shape_order,
     ) = if let Some(shape_order) = load_shape_order_meta(&conn) {
         let parameters = load_arena_entities(&conn, "parameter")?;
-        let sketches = load_indexed_entities(&conn, "sketch")?;
+        let sketches = load_arena_entities(&conn, "sketch")?;
         let lines = load_indexed_entities(&conn, "line")?;
         let circles = load_indexed_entities(&conn, "circle")?;
         let constraints = load_arena_entities(&conn, "constraint")?;
@@ -655,6 +655,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
@@ -665,7 +666,7 @@ mod tests {
     use super::*;
     use crate::model::{Circle, FaceId};
 
-    fn plane_sketch(doc: &mut Document) -> usize {
+    fn plane_sketch(doc: &mut Document) -> crate::model::SketchId {
         doc.add_sketch(FaceId::ConstructionPlane(0))
     }
 
@@ -914,12 +915,56 @@ mod tests {
         }
     }
 
+    /// #1055: sketches keep their keys across a save, and so does everything that names one
+    /// — a line, a circle, a constraint, an extrusion.
+    #[test]
+    fn sketch_keys_survive_a_save_and_reload() {
+        let mut doc = Document::default();
+        let doomed = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let kept = doc.add_sketch(crate::model::FaceId::Circle(3));
+        assert!(doc.sketches.remove(doomed).is_some());
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(kept, 0.0, 0.0, 10.0, 0.0));
+        let extrusion = doc.extrusions.insert(crate::model::Extrusion {
+            sketch: kept,
+            faces: Vec::new(),
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            edge_treatments: Vec::new(),
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_sketch_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.sketches.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.sketches.get(kept).map(|s| s.face.clone()),
+                Some(crate::model::FaceId::Circle(3)),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(loaded.lines[0].sketch, kept, "{suffix}: its line still names it");
+            assert_eq!(
+                loaded.extrusions.get(extrusion).map(|e| e.sketch),
+                Some(kept),
+                "{suffix}: the extrusion still names its host sketch"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: constraints keep their keys across a save, and so do the in-sketch operations
     /// that name the stitch coincidences they generated.
     #[test]
     fn constraint_keys_survive_a_save_and_reload() {
         let coincident = |line: usize| crate::model::Constraint {
-            sketch: 0,
+            sketch: skey(0),
             kind: crate::model::ConstraintKind::Coincident {
                 a: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(line)),
                 b: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(
@@ -935,7 +980,7 @@ mod tests {
         let kept = doc.constraints.insert(coincident(4));
         assert!(doc.constraints.remove(doomed).is_some());
         let op = doc.sketch_slice_ops.insert(crate::model::SketchSliceOperation {
-            sketch: 0,
+            sketch: skey(0),
             line_targets: Vec::new(),
             cutter_lines: Vec::new(),
             circle_targets: Vec::new(),
@@ -972,7 +1017,7 @@ mod tests {
     #[test]
     fn sketch_text_keys_survive_a_save_and_reload() {
         let text = |content: &str| crate::model::SketchText {
-            sketch: 0,
+            sketch: skey(0),
             text: content.to_string(),
             font_family: "Helvetica".to_string(),
             bold: false,
@@ -994,7 +1039,7 @@ mod tests {
         let kept = doc.sketch_texts.insert(text("kept"));
         assert!(doc.sketch_texts.remove(doomed).is_some());
         doc.constraints.insert(crate::model::Constraint {
-            sketch: 0,
+            sketch: skey(0),
             kind: crate::model::ConstraintKind::Coincident {
                 a: crate::model::ConstraintEntity::Point(
                     crate::model::ConstraintPoint::TextAnchor {
@@ -1045,7 +1090,7 @@ mod tests {
     #[test]
     fn extrusion_keys_survive_a_save_and_reload() {
         let extrusion = |name: &str| crate::model::Extrusion {
-            sketch: 0,
+            sketch: skey(0),
             faces: vec![crate::model::ExtrudeFace::Circle(0)],
             distance: 5.0,
             target: None,
@@ -1065,14 +1110,13 @@ mod tests {
             name: None,
             shadow: false,
         });
-        doc.sketches.push(crate::model::Sketch {
+        doc.sketches.insert(crate::model::Sketch {
             face: crate::model::FaceId::ExtrudeCap {
                 extrusion: kept,
                 profile: crate::model::ExtrudeFace::Circle(0),
                 top: true,
             },
             name: None,
-            deleted: false,
             length_unit: None,
             angle_unit: None,
         });
@@ -1096,7 +1140,7 @@ mod tests {
                 "{suffix}: the body still names both"
             );
             assert_eq!(
-                loaded.sketches[0].face,
+                loaded.sketches[skey(0)].face,
                 crate::model::FaceId::ExtrudeCap {
                     extrusion: kept,
                     profile: crate::model::ExtrudeFace::Circle(0),
@@ -1423,7 +1467,7 @@ mod tests {
     #[test]
     fn sweep_keys_survive_a_save_and_reload() {
         let sweep = |path: Vec<usize>| crate::model::Sweep {
-            sketch: 0,
+            sketch: skey(0),
             faces: Vec::new(),
             path,
             mode: crate::model::SweepMode::NewBody,
@@ -1468,7 +1512,7 @@ mod tests {
     #[test]
     fn revolution_keys_survive_a_save_and_reload() {
         let revolution = |angle: f32| crate::model::Revolution {
-            sketch: 0,
+            sketch: skey(0),
             faces: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             angle_deg: angle,
@@ -1511,8 +1555,8 @@ mod tests {
                 "{suffix}: its body still points at it"
             );
             assert_eq!(
-                loaded.sketches[0].face,
-                doc.sketches[0].face,
+                loaded.sketches[skey(0)].face,
+                doc.sketches[skey(0)].face,
                 "{suffix}: and so does the sketch hosted on its cap"
             );
             let _ = std::fs::remove_file(&path);
@@ -1959,7 +2003,7 @@ mod tests {
         assert_eq!(loaded.construction_planes.len(), 2);
         assert_eq!(loaded.construction_planes[1], offset_plane);
         assert_eq!(
-            loaded.sketches[0].face,
+            loaded.sketches[skey(0)].face,
             FaceId::ConstructionPlane(1),
             "sketch should stay on the offset plane"
         );
@@ -2034,8 +2078,8 @@ mod tests {
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.sketches.len(), 2);
-        assert_eq!(loaded.sketches[0].face, FaceId::ConstructionPlane(0));
-        assert_eq!(loaded.sketches[1].face, FaceId::ConstructionPlane(0));
+        assert_eq!(loaded.sketches[skey(0)].face, FaceId::ConstructionPlane(0));
+        assert_eq!(loaded.sketches[skey(1)].face, FaceId::ConstructionPlane(0));
         assert_eq!(loaded.lines[0].sketch, s0);
         let _ = s1;
 

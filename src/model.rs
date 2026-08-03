@@ -109,7 +109,7 @@ impl FaceId {
 }
 
 /// Index into [`Document::sketches`].
-pub type SketchId = usize;
+pub type SketchId = crate::arena::Key<Sketch>;
 
 /// Geometry that drives a read-only parameter value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,8 +181,6 @@ pub struct Sketch {
     /// User-visible label in the Elements pane; empty uses the default.
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
     /// Default length unit override for this sketch; `None` inherits [`Document::default_length_unit`] (#52).
     #[serde(default)]
     pub length_unit: Option<LengthUnit>,
@@ -1707,6 +1705,12 @@ pub fn joint_key_for_slot(n: usize) -> JointKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for a sketch (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn sketch_key_for_slot(n: usize) -> SketchId {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a constraint (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn constraint_key_for_slot(n: usize) -> ConstraintKey {
@@ -2781,14 +2785,14 @@ pub struct RepeatOperation {
     /// keep their plane-local coords and step by the offset in world. Restricted to
     /// construction-plane-hosted sketches.
     #[serde(default)]
-    pub sketch_targets: Vec<usize>,
+    pub sketch_targets: Vec<SketchId>,
     /// Generated host-plane indices for the sketch copies (#226), instance-major then target.
     #[serde(default)]
     pub sketch_plane_outputs: Vec<usize>,
     /// Generated copy-sketch indices (#226), instance-major then target. Each copy's lines and
     /// circles are found by sketch membership (not tracked separately).
     #[serde(default)]
-    pub sketch_outputs: Vec<usize>,
+    pub sketch_outputs: Vec<SketchId>,
     pub axis: RevolveAxis,
     /// A **circle** used as the path (#840): the copies ride around its circumference,
     /// keeping their orientation. When set it wins over `axis`.
@@ -4042,7 +4046,7 @@ pub fn validate_units(doc: &Document, own_path: Option<&std::path::Path>) -> Res
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub parameters: crate::arena::Arena<Parameter>,
-    pub sketches: Vec<Sketch>,
+    pub sketches: crate::arena::Arena<Sketch>,
     pub lines: Vec<Line>,
     pub circles: Vec<Circle>,
     pub constraints: crate::arena::Arena<Constraint>,
@@ -4318,7 +4322,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             parameters: crate::arena::Arena::new(),
-            sketches: Vec::new(),
+            sketches: crate::arena::Arena::new(),
             lines: Vec::new(),
             circles: Vec::new(),
             constraints: crate::arena::Arena::new(),
@@ -4367,7 +4371,6 @@ impl Document {
     pub fn sketches_on_face(&self, face: FaceId) -> impl Iterator<Item = SketchId> + '_ {
         self.sketches
             .iter()
-            .enumerate()
             .filter_map(move |(i, s)| (s.face == face).then_some(i))
     }
 
@@ -4379,15 +4382,13 @@ impl Document {
 
     #[allow(dead_code)] // query helper; now exercised only by tests
     pub fn has_children(&self, face: &FaceId) -> bool {
-        self.sketches.iter().any(|s| &s.face == face)
+        self.sketches.values().any(|s| &s.face == face)
     }
 
     pub fn add_sketch(&mut self, face: FaceId) -> SketchId {
-        let id = self.sketches.len();
-        self.sketches.push(Sketch {
+        let id = self.sketches.insert(Sketch {
             face,
             name: None,
-            deleted: false,
             length_unit: None,
             angle_unit: None,
         });
@@ -4690,7 +4691,7 @@ mod tests {
         // The arc center sits on the inward bisector, equidistant (by `radius`) from both p1/p2.
         let center = (3.0, 3.0);
         let mut line =
-            Line::from_local_endpoints(0, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
+            Line::from_local_endpoints(sketch_key_for_slot(0), geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
         line.bezier = Some(bezier);
         for (x, y) in line.sample_local(BEZIER_SEGMENTS) {
             let dist = ((x - center.0).powi(2) + (y - center.1).powi(2)).sqrt();
@@ -4719,7 +4720,7 @@ mod tests {
             bisector_len * bisector_angle.sin(),
         );
         let mut line =
-            Line::from_local_endpoints(0, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
+            Line::from_local_endpoints(sketch_key_for_slot(0), geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
         line.bezier = Some(bezier);
         for (x, y) in line.sample_local(BEZIER_SEGMENTS) {
             let dist = ((x - center.0).powi(2) + (y - center.1).powi(2)).sqrt();
@@ -4797,7 +4798,7 @@ mod tests {
         let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
         assert_ne!(s0, s1);
         let on_plane: Vec<_> = doc.sketches_on_face(FaceId::ConstructionPlane(0)).collect();
-        assert_eq!(on_plane, vec![0, 1]);
+        assert_eq!(on_plane, vec![s0, s1]);
     }
 
     #[test]
@@ -4860,8 +4861,9 @@ mod tests {
     #[test]
     fn effective_units_for_missing_sketch_fall_back_to_document_default() {
         let doc = Document::default();
-        assert_eq!(effective_length_unit(&doc, 99), LengthUnit::Mm);
-        assert_eq!(effective_angle_unit(&doc, 99), AngleUnit::Deg);
+        let missing = sketch_key_for_slot(99);
+        assert_eq!(effective_length_unit(&doc, missing), LengthUnit::Mm);
+        assert_eq!(effective_angle_unit(&doc, missing), AngleUnit::Deg);
     }
 }
 /// Scale for [`ExtrudeFace::SketchRegion`]'s seed point: thousandths of a sketch unit, which

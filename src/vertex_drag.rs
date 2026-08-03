@@ -320,7 +320,7 @@ fn validate_line_drag_target(
                 .get(index)
                 .ok_or_else(|| format!("Line {index} not found"))?;
             if line.sketch != sketch {
-                return Err(format!("Line {index} is not in sketch {sketch}"));
+                return Err(format!("Line {index} is not in sketch {}", sketch.index()));
             }
         }
         // Fixed by the body's own geometry — never a valid line-drag target.

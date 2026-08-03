@@ -6441,6 +6441,7 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
@@ -8995,7 +8996,7 @@ mod tests {
     fn loft_section_scene_elements_covers_circle_and_polygon() {
         use crate::hierarchy::SceneElement;
         let circle = crate::model::LoftSection {
-            sketch: 0,
+            sketch: skey(0),
             face: ExtrudeFace::Circle(3),
         };
         assert_eq!(
@@ -9003,7 +9004,7 @@ mod tests {
             vec![SceneElement::Circle(3)]
         );
         let polygon = crate::model::LoftSection {
-            sketch: 0,
+            sketch: skey(0),
             face: ExtrudeFace::Polygon(vec![4, 5, 6]),
         };
         assert_eq!(

@@ -787,7 +787,7 @@ pub struct CreatingRepeat {
     /// Picked cut extrusions whose effect is replayed at each offset (#220).
     pub extrusion_targets: Vec<crate::model::ExtrusionKey>,
     /// Picked source sketches to repeat as offset copies (#226).
-    pub sketch_targets: Vec<usize>,
+    pub sketch_targets: Vec<crate::model::SketchId>,
     /// `None` until picked (#439): the path picker starts empty and focused.
     pub axis: Option<crate::model::RevolveAxis>,
     /// A picked **circle** as the path (#840); wins over `axis` while set.
@@ -2073,7 +2073,7 @@ pub enum Action {
     /// Add a sketch projection to a drawing (#278).
     AddDrawingSketchView {
         drawing: crate::model::DrawingKey,
-        sketch: usize,
+        sketch: crate::model::SketchId,
         orientation: crate::model::DrawingOrientation,
     },
     /// Drag a placed view to a new page position (fraction 0..1) (#274).
@@ -2378,7 +2378,7 @@ pub enum Action {
         targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<crate::model::ExtrusionKey>,
-        sketch_targets: Vec<usize>,
+        sketch_targets: Vec<crate::model::SketchId>,
         axis: crate::model::RevolveAxis,
         /// A circle used as the path (#840); wins over `axis`.
         path_circle: Option<usize>,
@@ -2399,7 +2399,7 @@ pub enum Action {
         targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<crate::model::ExtrusionKey>,
-        sketch_targets: Vec<usize>,
+        sketch_targets: Vec<crate::model::SketchId>,
         axis: crate::model::RevolveAxis,
         path_circle: Option<usize>,
         around_axis: bool,
@@ -2413,7 +2413,7 @@ pub enum Action {
     /// Create a 2D in-sketch linear repeat (#222): duplicate the given sketch entities along the
     /// plane-local direction `(dir_u, dir_v)`, grouped under a `SketchRepeatOperation`.
     CreateSketchRepeatOperation {
-        sketch: usize,
+        sketch: crate::model::SketchId,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
         dir_u: f32,
@@ -2451,7 +2451,7 @@ pub enum Action {
     /// End the running tutorial.
     EndTutorial,
     CreateSketchOffsetOperation {
-        sketch: usize,
+        sketch: crate::model::SketchId,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
         distance: String,
@@ -2468,7 +2468,7 @@ pub enum Action {
     /// Create a 2D in-sketch slice (#224): split the target lines where the cutter lines cross
     /// them, shadowing the originals and grouping the fragments under a `SketchSliceOperation`.
     CreateSketchSliceOperation {
-        sketch: usize,
+        sketch: crate::model::SketchId,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
         #[allow(dead_code)]
@@ -2478,7 +2478,7 @@ pub enum Action {
     /// Place a text element in a sketch (#282): bakes the glyph outlines from the selected system
     /// font and embeds the font bytes for portability.
     CreateSketchText {
-        sketch: usize,
+        sketch: crate::model::SketchId,
         text: String,
         font_family: String,
         bold: bool,
@@ -5737,12 +5737,12 @@ fn validate_mirror_inputs(
 /// every target a live entity that actually belongs to that sketch (no duplicates).
 fn validate_sketch_repeat_inputs(
     doc: &Document,
-    sketch: usize,
+    sketch: crate::model::SketchId,
     line_targets: &[usize],
     circle_targets: &[usize],
 ) -> Result<(), String> {
-    if doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
-        return Err(format!("Sketch {sketch} not found"));
+    if doc.sketches.get(sketch).is_none() {
+        return Err(format!("Sketch {} not found", sketch.index()));
     }
     if line_targets.is_empty() && circle_targets.is_empty() {
         return Err("Pick at least one line or circle to repeat".to_string());
@@ -5753,7 +5753,7 @@ fn validate_sketch_repeat_inputs(
             return Err(format!("Line {li} not found"));
         };
         if line.sketch != sketch {
-            return Err(format!("Line {li} is not in sketch {sketch}"));
+            return Err(format!("Line {li} is not in sketch {}", sketch.index()));
         }
         if !seen_lines.insert(li) {
             return Err(format!("Line {li} is picked twice"));
@@ -5765,7 +5765,7 @@ fn validate_sketch_repeat_inputs(
             return Err(format!("Circle {ci} not found"));
         };
         if circle.sketch != sketch {
-            return Err(format!("Circle {ci} is not in sketch {sketch}"));
+            return Err(format!("Circle {ci} is not in sketch {}", sketch.index()));
         }
         if !seen_circles.insert(ci) {
             return Err(format!("Circle {ci} is picked twice"));
@@ -5798,14 +5798,14 @@ fn validate_sketch_mirror_inputs(
 /// line, all live and belonging to that sketch.
 fn validate_sketch_slice_inputs(
     doc: &Document,
-    sketch: usize,
+    sketch: crate::model::SketchId,
     line_targets: &[usize],
     circle_targets: &[usize],
     face_targets: &[Vec<usize>],
     cutter_lines: &[usize],
 ) -> Result<(), String> {
-    if doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
-        return Err(format!("Sketch {sketch} not found"));
+    if doc.sketches.get(sketch).is_none() {
+        return Err(format!("Sketch {} not found", sketch.index()));
     }
     if line_targets.is_empty() && circle_targets.is_empty() && face_targets.is_empty() {
         return Err("Pick at least one line, circle, or face to slice".to_string());
@@ -5816,7 +5816,7 @@ fn validate_sketch_slice_inputs(
                 return Err(format!("Face boundary line {li} not found"));
             };
             if line.sketch != sketch {
-                return Err(format!("Face boundary line {li} is not in sketch {sketch}"));
+                return Err(format!("Face boundary line {li} is not in sketch {}", sketch.index()));
             }
         }
     }
@@ -5829,7 +5829,7 @@ fn validate_sketch_slice_inputs(
                 return Err(format!("{label} {li} not found"));
             };
             if line.sketch != sketch {
-                return Err(format!("{label} {li} is not in sketch {sketch}"));
+                return Err(format!("{label} {li} is not in sketch {}", sketch.index()));
             }
         }
     }
@@ -5838,7 +5838,7 @@ fn validate_sketch_slice_inputs(
             return Err(format!("Circle {ci} not found"));
         };
         if circle.sketch != sketch {
-            return Err(format!("Circle {ci} is not in sketch {sketch}"));
+            return Err(format!("Circle {ci} is not in sketch {}", sketch.index()));
         }
     }
     Ok(())
@@ -5849,7 +5849,7 @@ fn validate_repeat_inputs(
     targets: &[crate::model::BodyKey],
     plane_targets: &[usize],
     extrusion_targets: &[crate::model::ExtrusionKey],
-    sketch_targets: &[usize],
+    sketch_targets: &[crate::model::SketchId],
 ) -> Result<(), String> {
     if targets.is_empty()
         && plane_targets.is_empty()
@@ -5864,8 +5864,8 @@ fn validate_repeat_inputs(
         }
     }
     for &si in sketch_targets {
-        if doc.sketches.get(si).filter(|s| !s.deleted).is_none() {
-            return Err(format!("Sketch {si} not found"));
+        if doc.sketches.get(si).is_none() {
+            return Err(format!("Sketch {} not found", si.index()));
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -5967,7 +5967,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
-        SceneElement::Sketch(i) => format!("Sketch {i}"),
+        SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),
         SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
@@ -6096,11 +6096,17 @@ impl AppState {
         } else {
             DimEditTarget::New(target.clone())
         };
-        let sketch = self.sketch_session.map(|s| s.sketch).unwrap_or_default();
-        let text = match &edit_target {
-            DimEditTarget::Constraint(id) => committed_dim_expression(&self.doc, *id)
+        // Only an open sketch has a unit context to default the text in (#1055).
+        let text = match (self.sketch_session.map(|s| s.sketch), &edit_target) {
+            (Some(sketch), DimEditTarget::Constraint(id)) => committed_dim_expression(&self.doc, *id)
                 .unwrap_or_else(|| default_dimension_expression(&self.doc, sketch, target.clone())),
-            DimEditTarget::New(_) => default_dimension_expression(&self.doc, sketch, target.clone()),
+            (Some(sketch), DimEditTarget::New(_)) => {
+                default_dimension_expression(&self.doc, sketch, target.clone())
+            }
+            (None, DimEditTarget::Constraint(id)) => {
+                committed_dim_expression(&self.doc, *id).unwrap_or_default()
+            }
+            (None, DimEditTarget::New(_)) => String::new(),
         };
         let kind_label = match target {
             DimensionTarget::Distance(_) => "length",
@@ -6411,8 +6417,7 @@ impl AppState {
             let alive = self
                 .doc
                 .sketches
-                .get(session.sketch)
-                .is_some_and(|s| !s.deleted);
+                .contains(session.sketch);
             if !alive {
                 self.sketch_session = None;
             }
@@ -7145,7 +7150,7 @@ impl AppState {
                                 cr.plane_targets.push(pi);
                             }
                             crate::hierarchy::SceneElement::Sketch(si)
-                                if self.doc.sketches.get(si).is_some_and(|s| !s.deleted) =>
+                                if self.doc.sketches.contains(si) =>
                             {
                                 cr.sketch_targets.push(si);
                             }
@@ -7547,7 +7552,7 @@ impl AppState {
             }
             Action::OpenSketch { sketch, viewport } => {
                 if self.doc.sketches.get(sketch).is_none() {
-                    return ActionResult::Err(format!("Unknown sketch {sketch}"));
+                    return ActionResult::Err(format!("Unknown sketch {}", sketch.index()));
                 }
                 self.enter_sketch(sketch, viewport, Some(SKETCH_EDIT_FRAME_PADDING_PX))
             }
@@ -10091,8 +10096,8 @@ label_hidden: false,
                 ActionResult::Ok
             }
             Action::AddDrawingSketchView { drawing, sketch, orientation } => {
-                if self.doc.sketches.get(sketch).is_none_or(|s| s.deleted) {
-                    return ActionResult::Err(format!("No sketch {sketch}"));
+                if self.doc.sketches.get(sketch).is_none() {
+                    return ActionResult::Err(format!("No sketch {}", sketch.index()));
                 }
                 if self.doc.drawings.get(drawing).is_none() {
                     return ActionResult::Err(format!("No drawing {}", drawing.index()));
@@ -10123,7 +10128,7 @@ label_hidden: false,
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
-                self.status = format!("Added sketch {sketch} to drawing {}", drawing.index());
+                self.status = format!("Added sketch {} to drawing {}", sketch.index(), drawing.index());
                 ActionResult::Ok
             }
             Action::AddAlignedDrawingView { drawing, parent, dir, pos } => {
@@ -11184,8 +11189,8 @@ label_hidden: false,
                 rotation,
                 wrap_width,
             } => {
-                if self.doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
-                    let e = format!("Sketch {sketch} not found");
+                if self.doc.sketches.get(sketch).is_none() {
+                    let e = format!("Sketch {} not found", sketch.index());
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -13140,7 +13145,7 @@ label_hidden: false,
             }
             Action::SetSketchUnits { sketch, length, angle } => {
                 let Some(s) = self.doc.sketches.get_mut(sketch) else {
-                    return ActionResult::Err(format!("Sketch {sketch} not found"));
+                    return ActionResult::Err(format!("Sketch {} not found", sketch.index()));
                 };
                 s.length_unit = length;
                 s.angle_unit = angle;
@@ -15038,9 +15043,7 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
         for c in doc.circles.iter_mut().filter(|c| c.sketch == si) {
             c.deleted = true;
         }
-        if let Some(s) = doc.sketches.get_mut(si) {
-            s.deleted = true;
-        }
+        doc.sketches.remove(si);
     }
     for &pi in &op.sketch_plane_outputs {
         if let Some(p) = doc.construction_planes.get_mut(pi) {
@@ -15060,7 +15063,7 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
     for instance in 1..=offsets.len() {
         let off = offsets[instance - 1];
         for &src in &op.sketch_targets {
-            let Some(face) = doc.sketches.get(src).filter(|s| !s.deleted).map(|s| s.face.clone())
+            let Some(face) = doc.sketches.get(src).map(|s| s.face.clone())
             else {
                 continue;
             };
@@ -15095,11 +15098,9 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
                 .get(src)
                 .map(|s| (s.length_unit, s.angle_unit))
                 .unwrap_or((None, None));
-            let sketch_idx = doc.sketches.len();
-            doc.sketches.push(crate::model::Sketch {
+            let sketch_idx = doc.sketches.insert(crate::model::Sketch {
                 face: crate::model::FaceId::ConstructionPlane(plane_idx),
                 name: None,
-                deleted: false,
                 length_unit: lu,
                 angle_unit: au,
             });
@@ -15928,6 +15929,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -17918,7 +17920,7 @@ mod tests {
             expression: format!("{first}.width * 2"),
         });
         state.doc.extrusions.insert(crate::model::Extrusion {
-            sketch: 0,
+            sketch: skey(0),
             faces: Vec::new(),
             distance: 10.0,
             target: None,
@@ -18767,7 +18769,7 @@ mod tests {
     fn set_sketch_units_errors_for_missing_sketch() {
         let mut state = AppState::default();
         let result = state.apply(Action::SetSketchUnits {
-            sketch: 42,
+            sketch: skey(42),
             length: Some(LengthUnit::Mm),
             angle: None,
         });
@@ -21730,7 +21732,7 @@ mod tests {
     #[test]
     fn add_view_tool_click_places_and_selects_a_projection() {
         let mut state = two_box_state(false);
-        let sketch = state.doc.sketches.len() - 1;
+        let sketch = state.doc.sketches.keys().last().unwrap();
         state.apply(Action::ExitSketch);
         state.apply(Action::CreateDrawing { name: None });
         state.apply(Action::EditDrawing { drawing: Some(dkey(0)) });
@@ -21831,7 +21833,7 @@ mod tests {
     fn sketch_repeat_pickers_drop_entities_and_move_the_lock() {
         use crate::hierarchy::SceneElement;
         use crate::model::{RepeatMode, RepeatVar};
-        let mut cr = CreatingSketchRepeat::new(0);
+        let mut cr = CreatingSketchRepeat::new(skey(0));
         cr.line_targets = vec![2, 5];
         cr.circle_targets = vec![1];
 
@@ -22580,11 +22582,11 @@ mod tests {
         };
         state.apply(Action::ExtrudeBodyFace { face_id });
         let sketch = state.creating_extrusion.as_ref().unwrap().sketch;
-        assert!(!state.doc.sketches[sketch].deleted);
+        assert!(state.doc.sketches.contains(sketch));
         state.apply(Action::CancelOperation);
         assert!(
-            state.doc.sketches[sketch].deleted,
-            "orphan body-face sketch should be tombstoned on cancel"
+            !state.doc.sketches.contains(sketch),
+            "orphan body-face sketch should be removed on cancel"
         );
         assert!(state.creating_extrusion.is_none());
     }
@@ -24422,7 +24424,7 @@ mod tests {
         let end = cl.end_point(&frame, &doc);
         let (u0, v0) = world_to_local(&frame, cl.origin);
         let (u1, v1) = world_to_local(&frame, end);
-        let line = Line::from_local_endpoints(0, u0, v0, u1, v1);
+        let line = Line::from_local_endpoints(skey(0), u0, v0, u1, v1);
         assert!((line.length() - 53.3).abs() < 1e-2);
     }
 
@@ -24464,7 +24466,7 @@ mod tests {
         let end = cl.end_point(&frame, &doc);
         let (u0, v0) = world_to_local(&frame, cl.origin);
         let (u1, v1) = world_to_local(&frame, end);
-        let line = Line::from_local_endpoints(0, u0, v0, u1, v1);
+        let line = Line::from_local_endpoints(skey(0), u0, v0, u1, v1);
         assert!((line.length() - 5.0).abs() < 1e-4);
     }
 
@@ -24808,14 +24810,14 @@ mod tests {
         let mut state = AppState::default();
         begin_default_sketch(&mut state);
         let second = begin_default_sketch(&mut state);
-        assert_eq!(second, 1);
+        assert_eq!(second, state.doc.sketches.keys().last().unwrap());
         assert_eq!(state.doc.sketches.len(), 2);
         assert_eq!(
-            state.doc.sketches[0].face,
+            state.doc.sketches[skey(0)].face,
             FaceId::ConstructionPlane(0)
         );
         assert_eq!(
-            state.doc.sketches[1].face,
+            state.doc.sketches[skey(1)].face,
             FaceId::ConstructionPlane(0)
         );
     }
@@ -24837,7 +24839,7 @@ mod tests {
             ActionResult::Ok
         ));
         assert_eq!(state.doc.sketches.len(), 2);
-        assert_eq!(state.doc.sketches[1].face, FaceId::Circle(0));
+        assert_eq!(state.doc.sketches[skey(1)].face, FaceId::Circle(0));
         assert!(state.sketch_session.is_some());
     }
 
@@ -25161,8 +25163,8 @@ mod tests {
     #[test]
     fn toggle_element_visibility() {
         let mut state = AppState::default();
-        state.apply(Action::ToggleElementVisibility(SceneElement::Sketch(0)));
-        assert!(!state.element_visibility.is_visible(SceneElement::Sketch(0)));
+        state.apply(Action::ToggleElementVisibility(SceneElement::Sketch(skey(0))));
+        assert!(!state.element_visibility.is_visible(SceneElement::Sketch(skey(0))));
     }
 
     #[test]

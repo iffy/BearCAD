@@ -346,10 +346,7 @@ fn mark_broken_joints(doc: &Document, health: &mut DocumentHealth) {
 /// longer resolves — the instance was deleted, or a re-sync removed the face — rather
 /// than silently landing somewhere wrong.
 fn mark_orphaned_unit_face_sketches(doc: &Document, health: &mut DocumentHealth) {
-    for (si, sketch) in doc.sketches.iter().enumerate() {
-        if sketch.deleted {
-            continue;
-        }
+    for (si, sketch) in doc.sketches.iter() {
         if !matches!(sketch.face, crate::model::FaceId::UnitFace { .. }) {
             continue;
         }
@@ -807,7 +804,7 @@ mod tests {
     #[test]
     fn unrelated_geometry_in_sketch_stays_healthy_when_partner_unstable() {
         let (mut doc, line_a, line_b) = parallel_lines_doc();
-        let sketch = 0;
+        let sketch = doc.sketches.keys().next().unwrap();
         doc.lines
             .push(Line::from_local_endpoints(sketch, 20.0, 0.0, 30.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);

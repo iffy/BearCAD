@@ -1235,6 +1235,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::component_key_for_slot as ckey;
@@ -1847,7 +1848,7 @@ mod tests {
         for element in [
             SceneElement::ConstructionPlane(0),
             SceneElement::Image(crate::arena::Key::from_bits(0)),
-            SceneElement::Sketch(0),
+            SceneElement::Sketch(skey(0)),
             SceneElement::Line(0),
             SceneElement::Circle(0),
             SceneElement::Origin,
@@ -1921,7 +1922,7 @@ mod tests {
         // "exactly one picker has focus" already says.
         let p = ElementPicker::select_everything();
         assert!(p.is_focused());
-        assert!(p.accepts(&Document::default(), &SceneElement::Sketch(0)));
+        assert!(p.accepts(&Document::default(), &SceneElement::Sketch(skey(0))));
         assert!(p.accepts(&Document::default(), &SceneElement::Body(bkey(0))));
     }
 

@@ -7,7 +7,7 @@ use crate::geometric_constraints::GeometricConstraintType;
 use crate::hierarchy::SceneElement;
 use crate::model::{
     ConstraintKind, ConstraintLine, ConstraintPoint, DistanceTarget, ExtrusionEdgeRef, FaceId,
-    LineEnd, SketchId, VertexTreatmentKind,
+    LineEnd, VertexTreatmentKind,
 };
 use crate::names::find_element_by_name;
 use crate::script::{parse_key, Instruction, ScreenshotRegion, ScriptRunner, SyntheticInput};
@@ -203,10 +203,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
             doc.edge_treatment_ops.keys().position(|k| k == key).unwrap_or(0)
         }
         SceneElement::ConstructionPlane(i)
-        | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         => i,
+        SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Constraint(key) => {
             doc.constraints.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -265,7 +265,7 @@ pub fn scene_element_from_kind(
         "plane" | "construction_plane" | "constructionplane" => {
             Some(SceneElement::ConstructionPlane(index))
         }
-        "sketch" => Some(SceneElement::Sketch(index)),
+        "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
@@ -363,6 +363,15 @@ fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.body_at(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
+}
+
+/// The sketch a script ordinal names (#1055) — sketches are keyed, scripts count.
+fn sketch_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model::SketchId> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.sketches.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no sketch {ordinal}")))
 }
 
 /// The sketch text a script ordinal names (#1055) — texts are keyed, scripts count.
@@ -1468,7 +1477,7 @@ fn parse_slice_op_args(
 /// `(sketch, mirror_line, lines, circles)` (#523/#528).
 fn parse_sketch_mirror_op_args(
     opts: &Table,
-) -> mlua::Result<(crate::model::SketchId, usize, Vec<usize>, Vec<usize>)> {
+) -> mlua::Result<(usize, usize, Vec<usize>, Vec<usize>)> {
     let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
     let line: usize = opts
         .get::<Option<usize>>("line")?
@@ -2098,7 +2107,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "open_sketch",
-        lua.create_function(|lua, sketch: SketchId| {
+        lua.create_function(|lua, sketch: usize| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::OpenSketch { sketch }) }
         })?,
@@ -2187,7 +2196,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 unsafe {
                     tick.exec(Instruction::SetComponentUnits { component, length, angle })
                 }
-            } else if let Some(sketch) = opts.get::<Option<SketchId>>("sketch")? {
+            } else if let Some(sketch) = opts.get::<Option<usize>>("sketch")? {
                 unsafe { tick.exec(Instruction::SetSketchUnits { sketch, length, angle }) }
             } else {
                 let doc = unsafe { &tick.state().doc };
@@ -2463,14 +2472,23 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "sketch_conflicts",
-        lua.create_function(|lua, sketch: Option<SketchId>| {
+        lua.create_function(|lua, sketch: Option<usize>| {
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let state = unsafe { tick.state() };
-            let sketch = sketch
-                .or_else(|| state.sketch_session.map(|session| session.sketch))
-                .ok_or_else(|| mlua::Error::external("no active sketch"))?;
+            let sketch = match sketch {
+                Some(ordinal) => state
+                    .doc
+                    .sketches
+                    .keys()
+                    .nth(ordinal)
+                    .ok_or_else(|| mlua::Error::external(format!("no sketch {ordinal}")))?,
+                None => state
+                    .sketch_session
+                    .map(|session| session.sketch)
+                    .ok_or_else(|| mlua::Error::external("no active sketch"))?,
+            };
             let conflicts =
                 crate::constraints::sketch_conflicting_constraints(&state.doc, sketch)
                     .map_err(mlua::Error::external)?;
@@ -2486,14 +2504,23 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "sketch_dof",
-        lua.create_function(|lua, sketch: Option<SketchId>| {
+        lua.create_function(|lua, sketch: Option<usize>| {
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let state = unsafe { tick.state() };
-            let sketch = sketch
-                .or_else(|| state.sketch_session.map(|session| session.sketch))
-                .ok_or_else(|| mlua::Error::external("no active sketch"))?;
+            let sketch = match sketch {
+                Some(ordinal) => state
+                    .doc
+                    .sketches
+                    .keys()
+                    .nth(ordinal)
+                    .ok_or_else(|| mlua::Error::external(format!("no sketch {ordinal}")))?,
+                None => state
+                    .sketch_session
+                    .map(|session| session.sketch)
+                    .ok_or_else(|| mlua::Error::external("no active sketch"))?,
+            };
             crate::constraints::sketch_degrees_of_freedom(&state.doc, sketch)
                 .map_err(mlua::Error::external)
         })?,
@@ -2512,7 +2539,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let count = match kind.to_ascii_lowercase().as_str() {
                 "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
                 "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
-                "sketch" => doc.sketches.iter().filter(|e| !e.deleted).count(),
+                "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
@@ -2574,7 +2601,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     if let Some(name) = &line.name {
                         t.set("name", name.as_str())?;
                     }
-                    t.set("sketch", line.sketch)?;
+                    t.set("sketch", doc.sketches.keys().position(|k| k == line.sketch))?;
                 }
                 "circle" => {
                     let Some(circle) = doc.circles.get(index).filter(|e| !e.deleted) else {
@@ -2588,10 +2615,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     if let Some(name) = &circle.name {
                         t.set("name", name.as_str())?;
                     }
-                    t.set("sketch", circle.sketch)?;
+                    t.set("sketch", doc.sketches.keys().position(|k| k == circle.sketch))?;
                 }
                 "sketch" => {
-                    let Some(sketch) = doc.sketches.get(index).filter(|e| !e.deleted) else {
+                    // The script's `index` is the sketch's ordinal (#1055).
+                    let Some(sketch) = doc.sketches.keys().nth(index).map(|k| &doc.sketches[k])
+                    else {
                         return Ok(Value::Nil);
                     };
                     t.set("face", face_kind_name(&sketch.face))?;
@@ -2611,7 +2640,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     if let Some(name) = &constraint.name {
                         t.set("name", name.as_str())?;
                     }
-                    t.set("sketch", constraint.sketch)?;
+                    t.set(
+                        "sketch",
+                        doc.sketches.keys().position(|k| k == constraint.sketch),
+                    )?;
                 }
                 "construction_plane" | "plane" => {
                     let Some(plane) =
@@ -2641,7 +2673,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         return Ok(Value::Nil);
                     };
                     t.set("distance", extrusion.distance)?;
-                    t.set("sketch", extrusion.sketch)?;
+                    t.set(
+                        "sketch",
+                        doc.sketches.keys().position(|k| k == extrusion.sketch),
+                    )?;
                     t.set("faces", extrusion.faces.len())?;
                     if let Some(name) = &extrusion.name {
                         t.set("name", name.as_str())?;
@@ -4259,6 +4294,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 crate::actions::extrude_face_sketch(doc, &faces[0])
             }
             .ok_or_else(|| mlua::Error::external("extrude face does not exist"))?;
+            // The instruction names the sketch by its ordinal (#1055).
+            let sketch = unsafe {
+                tick.state().doc.sketches.keys().position(|k| k == sketch)
+            }
+            .ok_or_else(|| mlua::Error::external("extrude face does not exist"))?;
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             unsafe {
                 tick.exec(Instruction::Extrude {
@@ -4408,6 +4448,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let (sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
+            let sketch = sketch_key_from_ordinal(lua, sketch)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchRepeatOperation {
                     sketch,
@@ -4482,6 +4523,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let (sketch, lines, circles, distance, construction) =
                 parse_sketch_offset_op_args(&opts)?;
+            let sketch = sketch_key_from_ordinal(lua, sketch)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchOffsetOperation {
                     sketch,
@@ -4540,6 +4582,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(&opts, "mirror_sketch", &["sketch", "line", "lines", "circles"])?;
             let (sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
+            let sketch = sketch_key_from_ordinal(lua, sketch)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchMirrorOperation {
                     sketch,
@@ -4633,7 +4676,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "repeat_sketches",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let sketches: Vec<usize> = opts.get::<Option<Vec<usize>>>("sketches")?.unwrap_or_default();
+            let sketches = opts
+                .get::<Option<Vec<usize>>>("sketches")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|ordinal| sketch_key_from_ordinal(lua, ordinal))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let (_targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(lua, &opts)?;
             let result = unsafe {
@@ -4671,7 +4719,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "slice_sketch",
                 &["sketch", "lines", "circles", "faces", "cutters"],
             )?;
-            let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
+            let sketch = sketch_key_from_ordinal(lua, opts.get::<Option<usize>>("sketch")?.unwrap_or(0))?;
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
             let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
             let face_targets: Vec<Vec<usize>> =
@@ -5682,6 +5730,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::drawing_key_for_slot as dkey;
@@ -6068,7 +6117,7 @@ mod tests {
             "#,
         );
         assert!(!state.doc.bodies.is_empty(), "inner offset face extruded a body");
-        let loops = crate::polygon::closed_line_loops(&state.doc, 0);
+        let loops = crate::polygon::closed_line_loops(&state.doc, skey(0));
         assert!(
             loops.len() >= 2,
             "outer + inner loops expected, got {}",
@@ -6271,20 +6320,19 @@ mod tests {
     #[test]
     fn sketch_slice_shadow_line_is_excluded_from_faces() {
         let mut doc = crate::model::Document::default();
-        doc.sketches.push(crate::model::Sketch {
+        doc.sketches.insert(crate::model::Sketch {
             face: crate::model::FaceId::ConstructionPlane(0),
             name: None,
-            deleted: false,
             length_unit: None,
             angle_unit: None,
         });
         // A closed square: 4 lines forming one loop.
-        crate::construction::add_line_rectangle(&mut doc, 0, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        assert_eq!(crate::polygon::closed_line_loops(&doc, 0).len(), 1);
+        crate::construction::add_line_rectangle(&mut doc, skey(0), 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        assert_eq!(crate::polygon::closed_line_loops(&doc, skey(0)).len(), 1);
         // Shadow the bottom edge (line 0): the original loop is no longer detected.
         doc.lines[0].shadow = true;
         assert_eq!(
-            crate::polygon::closed_line_loops(&doc, 0).len(),
+            crate::polygon::closed_line_loops(&doc, skey(0)).len(),
             0,
             "a shadow edge breaks the loop until its fragments replace it"
         );
@@ -7570,7 +7618,7 @@ mod tests {
         let loop_lines = vec![4usize, 6, 5, 2, 3];
         let profile = crate::model::ExtrudeFace::Polygon(loop_lines.clone());
         assert_eq!(crate::extrude::side_face_count(&profile), loop_lines.len());
-        let frame = crate::face::sketch_geometry_frame(&state.doc, 0).unwrap();
+        let frame = crate::face::sketch_geometry_frame(&state.doc, skey(0)).unwrap();
         for (edge, &li) in loop_lines.iter().enumerate() {
             let line = &state.doc.lines[li];
             let quad = crate::extrude::side_quad_world(&state.doc, xkey(0), &profile, edge);
@@ -7696,8 +7744,8 @@ mod tests {
             bearcad.set_units{ sketch = 0, length = "ft" }
         "#,
         );
-        assert_eq!(state.doc.sketches[0].length_unit, Some(LengthUnit::Ft));
-        assert_eq!(state.doc.sketches[0].angle_unit, None);
+        assert_eq!(state.doc.sketches[skey(0)].length_unit, Some(LengthUnit::Ft));
+        assert_eq!(state.doc.sketches[skey(0)].angle_unit, None);
 
         let state = run_lua(
             r#"
@@ -7708,7 +7756,7 @@ mod tests {
         "#,
         );
         assert_eq!(
-            state.doc.sketches[0].length_unit, None,
+            state.doc.sketches[skey(0)].length_unit, None,
             "omitting length on a sketch call clears the override back to inherit"
         );
     }

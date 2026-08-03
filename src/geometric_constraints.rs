@@ -578,7 +578,7 @@ fn validate_line_ref(doc: &Document, sketch: SketchId, line: &ConstraintLine) ->
                 .get(*index)
                 .ok_or_else(|| format!("Line {index} not found"))?;
             if entity.sketch != sketch {
-                return Err(format!("Line {index} is not in sketch {sketch}"));
+                return Err(format!("Line {index} is not in sketch {}", sketch.index()));
             }
         }
         // A face's own edge has no owning sketch — it's valid for any sketch, as long as the
@@ -609,7 +609,7 @@ fn validate_entity_ref(
                 .get(*circle)
                 .ok_or_else(|| format!("Circle {circle} not found"))?;
             if entity.sketch != sketch {
-                return Err(format!("Circle {circle} is not in sketch {sketch}"));
+                return Err(format!("Circle {circle} is not in sketch {}", sketch.index()));
             }
             Ok(())
         }
@@ -626,7 +626,7 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
                 .get(*line)
                 .ok_or_else(|| format!("Line {line} not found"))?;
             if entity.sketch != sketch {
-                return Err(format!("Line {line} is not in sketch {sketch}"));
+                return Err(format!("Line {line} is not in sketch {}", sketch.index()));
             }
         }
         ConstraintPoint::CircleCenter(circle) => {
@@ -635,7 +635,7 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
                 .get(*circle)
                 .ok_or_else(|| format!("Circle {circle} not found"))?;
             if entity.sketch != sketch {
-                return Err(format!("Circle {circle} is not in sketch {sketch}"));
+                return Err(format!("Circle {circle} is not in sketch {}", sketch.index()));
             }
         }
         // A face's own vertex has no owning sketch — valid for any sketch as long as the
@@ -651,7 +651,7 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
                 .get(*text)
                 .ok_or_else(|| format!("Text {} not found", text.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Text {} is not in sketch {sketch}", text.index()));
+                return Err(format!("Text {} is not in sketch {}", sketch.index(), text.index()));
             }
         }
         // Valid only in sketches hosted on the image's own plane (#425).
@@ -665,7 +665,7 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
             }
             if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
             {
-                return Err(format!("Image {image:?} is not on sketch {sketch}'s plane"));
+                return Err(format!("Image {image:?} is not on sketch {}'s plane", sketch.index()));
             }
         }
     }

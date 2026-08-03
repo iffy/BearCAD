@@ -628,7 +628,7 @@ fn validate_line_in_sketch(
                 .get(index)
                 .ok_or_else(|| format!("Line {index} not found"))?;
             if entity.sketch != sketch {
-                return Err(format!("Line {index} is not in sketch {sketch}"));
+                return Err(format!("Line {index} is not in sketch {}", sketch.index()));
             }
         }
         // A face's own edge has no owning sketch — valid for any sketch as long as the
@@ -662,7 +662,7 @@ fn validate_point_in_sketch(
                 .get(circle)
                 .ok_or_else(|| format!("Circle {circle} not found"))?;
             if entity.sketch != sketch {
-                return Err(format!("Circle {circle} is not in sketch {sketch}"));
+                return Err(format!("Circle {circle} is not in sketch {}", sketch.index()));
             }
             Ok(())
         }
@@ -678,7 +678,7 @@ fn validate_point_in_sketch(
                 .get(text)
                 .ok_or_else(|| format!("Text {} not found", text.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Text {} is not in sketch {sketch}", text.index()));
+                return Err(format!("Text {} is not in sketch {}", sketch.index(), text.index()));
             }
             Ok(())
         }
@@ -692,7 +692,7 @@ fn validate_point_in_sketch(
             }
             if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
             {
-                return Err(format!("Image {image:?} is not on sketch {sketch}'s plane"));
+                return Err(format!("Image {image:?} is not on sketch {}'s plane", sketch.index()));
             }
             Ok(())
         }
@@ -873,7 +873,7 @@ pub fn validate_distance_target(
                 .get(i)
                 .ok_or_else(|| format!("Line {i} not found"))?;
             if line.sketch != sketch {
-                return Err(format!("Line {i} is not in sketch {sketch}"));
+                return Err(format!("Line {i} is not in sketch {}", sketch.index()));
             }
         }
         DistanceTarget::CircleDiameter(i) => {
@@ -882,7 +882,7 @@ pub fn validate_distance_target(
                 .get(i)
                 .ok_or_else(|| format!("Circle {i} not found"))?;
             if circle.sketch != sketch {
-                return Err(format!("Circle {i} is not in sketch {sketch}"));
+                return Err(format!("Circle {i} is not in sketch {}", sketch.index()));
             }
         }
         DistanceTarget::LineLineDistance {
@@ -1436,6 +1436,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line, ShapeKind};
@@ -1724,7 +1725,7 @@ mod tests {
             distance_target_from_pick(&doc, sketch, &kind),
             Some(DistanceTarget::LineLength(0))
         );
-        assert_eq!(distance_target_from_pick(&doc, sketch + 1, &kind), None);
+        assert_eq!(distance_target_from_pick(&doc, skey(9), &kind), None);
     }
 
     #[test]

@@ -739,7 +739,7 @@ pub fn sketch_label(doc: &Document, sketch: SketchId) -> String {
         .sketch_face(sketch)
         .map(|face| face_label(doc, face))
         .unwrap_or_else(|| "unknown face".to_string());
-    format!("Sketch {sketch} on {face}")
+    format!("Sketch {} on {face}", sketch.index())
 }
 
 pub fn face_label(_doc: &Document, face: FaceId) -> String {
@@ -962,7 +962,7 @@ pub fn pick_sketch_face(
     }
 
     // Closed loops of plain lines (#66).
-    for sketch in (0..doc.sketches.len()).rev() {
+    for sketch in doc.sketches.keys().collect::<Vec<_>>().into_iter().rev() {
         for lines in crate::polygon::closed_line_loops(doc, sketch) {
             if let Some((poly, _)) = crate::extrude::face_profile_world(
                 doc,
@@ -1147,7 +1147,7 @@ pub fn sketch_faces_near(
             push(FaceId::Circle(i), c, dist);
         }
     }
-    for sketch in 0..doc.sketches.len() {
+    for sketch in doc.sketches.keys().collect::<Vec<_>>() {
         for lines in crate::polygon::closed_line_loops(doc, sketch) {
             if let Some((poly, _)) = crate::extrude::face_profile_world(
                 doc,
@@ -2161,10 +2161,9 @@ mod tests {
     fn has_children_detects_dependents() {
         let mut doc = Document::default();
         assert!(!doc.has_children(&FaceId::ConstructionPlane(0)));
-        doc.sketches.push(Sketch {
+        doc.sketches.insert(Sketch {
             face: FaceId::ConstructionPlane(0),
             name: None,
-            deleted: false,
             length_unit: None,
             angle_unit: None,
         });

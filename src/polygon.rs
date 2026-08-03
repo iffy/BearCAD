@@ -648,6 +648,7 @@ pub fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use super::*;
     use crate::model::{Constraint, ConstraintEntity, ConstraintKind, Line};
 
@@ -773,26 +774,26 @@ mod tests {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         // Three lines, each one's end coincident with the next one's start, closing back.
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(0, 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(line(0, 5.0, 8.0, 0.0, 0.0));
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
+        doc.lines.push(line(skey(0), 5.0, 8.0, 0.0, 0.0));
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(0, LineEnd::End),
             point(1, LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(1, LineEnd::End),
             point(2, LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(2, LineEnd::End),
             point(0, LineEnd::Start),
         ));
 
-        let loops = closed_line_loops(&doc, 0);
+        let loops = closed_line_loops(&doc, skey(0));
         assert_eq!(loops.len(), 1);
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
@@ -808,13 +809,13 @@ mod tests {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         // Triangle 1: P0(0,0) P1(10,0) V(5,5).
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0)); // 0
-        doc.lines.push(line(0, 10.0, 0.0, 5.0, 5.0)); // 1
-        doc.lines.push(line(0, 5.0, 5.0, 0.0, 0.0)); // 2
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // 0
+        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 5.0)); // 1
+        doc.lines.push(line(skey(0), 5.0, 5.0, 0.0, 0.0)); // 2
         // Triangle 2: V(5,5) P3(10,10) P4(0,10).
-        doc.lines.push(line(0, 5.0, 5.0, 10.0, 10.0)); // 3
-        doc.lines.push(line(0, 10.0, 10.0, 0.0, 10.0)); // 4
-        doc.lines.push(line(0, 0.0, 10.0, 5.0, 5.0)); // 5
+        doc.lines.push(line(skey(0), 5.0, 5.0, 10.0, 10.0)); // 3
+        doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0)); // 4
+        doc.lines.push(line(skey(0), 0.0, 10.0, 5.0, 5.0)); // 5
         let joins = [
             (0, LineEnd::End, 1, LineEnd::Start),
             (1, LineEnd::End, 2, LineEnd::Start),
@@ -827,9 +828,9 @@ mod tests {
             (2, LineEnd::Start, 5, LineEnd::End),
         ];
         for (la, ea, lb, eb) in joins {
-            doc.constraints.insert(coincident(0, point(la, ea), point(lb, eb)));
+            doc.constraints.insert(coincident(skey(0), point(la, ea), point(lb, eb)));
         }
-        let loops = closed_line_loops(&doc, 0);
+        let loops = closed_line_loops(&doc, skey(0));
         assert_eq!(loops.len(), 2, "bowtie is two faces, got {loops:?}");
     }
 
@@ -837,72 +838,72 @@ mod tests {
     fn open_chain_of_lines_has_no_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(0, 10.0, 0.0, 5.0, 8.0));
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(0, LineEnd::End),
             point(1, LineEnd::Start),
         ));
 
-        assert!(closed_line_loops(&doc, 0).is_empty());
+        assert!(closed_line_loops(&doc, skey(0)).is_empty());
     }
 
     #[test]
     fn unconnected_lines_form_no_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(0, 100.0, 0.0, 110.0, 0.0));
-        doc.lines.push(line(0, 200.0, 0.0, 210.0, 0.0));
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(line(skey(0), 100.0, 0.0, 110.0, 0.0));
+        doc.lines.push(line(skey(0), 200.0, 0.0, 210.0, 0.0));
 
-        assert!(closed_line_loops(&doc, 0).is_empty());
+        assert!(closed_line_loops(&doc, skey(0)).is_empty());
     }
 
     #[test]
     fn deleted_line_does_not_participate_in_a_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(0, 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(line(0, 5.0, 8.0, 0.0, 0.0));
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
+        doc.lines.push(line(skey(0), 5.0, 8.0, 0.0, 0.0));
         doc.lines[2].deleted = true;
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(0, LineEnd::End),
             point(1, LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(1, LineEnd::End),
             point(2, LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
-            0,
+            skey(0),
             point(2, LineEnd::End),
             point(0, LineEnd::Start),
         ));
 
-        assert!(closed_line_loops(&doc, 0).is_empty());
+        assert!(closed_line_loops(&doc, skey(0)).is_empty());
     }
 
     #[test]
     fn four_lines_closed_into_a_quad_form_one_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(0, 10.0, 0.0, 10.0, 10.0));
-        doc.lines.push(line(0, 10.0, 10.0, 0.0, 10.0));
-        doc.lines.push(line(0, 0.0, 10.0, 0.0, 0.0));
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(line(skey(0), 10.0, 0.0, 10.0, 10.0));
+        doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0));
+        doc.lines.push(line(skey(0), 0.0, 10.0, 0.0, 0.0));
         for i in 0..4 {
             doc.constraints.insert(coincident(
-                0,
+                skey(0),
                 point(i, LineEnd::End),
                 point((i + 1) % 4, LineEnd::Start),
             ));
         }
 
-        let loops = closed_line_loops(&doc, 0);
+        let loops = closed_line_loops(&doc, skey(0));
         assert_eq!(loops.len(), 1);
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
@@ -945,32 +946,32 @@ mod tests {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         // Outer quad edges 0..3
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0)); // A-B
-        doc.lines.push(line(0, 10.0, 0.0, 10.0, 10.0)); // B-C
-        doc.lines.push(line(0, 10.0, 10.0, 0.0, 10.0)); // C-D
-        doc.lines.push(line(0, 0.0, 10.0, 0.0, 0.0)); // D-A
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // A-B
+        doc.lines.push(line(skey(0), 10.0, 0.0, 10.0, 10.0)); // B-C
+        doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0)); // C-D
+        doc.lines.push(line(skey(0), 0.0, 10.0, 0.0, 0.0)); // D-A
         // Inner concave loop edges 4..7
-        doc.lines.push(line(0, 0.0, 0.0, 10.0, 5.0)); // A-P
-        doc.lines.push(line(0, 10.0, 5.0, 6.0, 8.0)); // P-E
-        doc.lines.push(line(0, 6.0, 8.0, 2.0, 6.0)); // E-F
-        doc.lines.push(line(0, 2.0, 6.0, 0.0, 0.0)); // F-A
-        doc.constraints.insert(coincident(0, point(0, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(1, LineEnd::End), point(2, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(2, LineEnd::End), point(3, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(3, LineEnd::End), point(0, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(4, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(4, LineEnd::Start), point(0, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(5, LineEnd::End), point(6, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(6, LineEnd::End), point(7, LineEnd::Start)));
-        doc.constraints.insert(coincident(0, point(7, LineEnd::End), point(4, LineEnd::Start)));
+        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 5.0)); // A-P
+        doc.lines.push(line(skey(0), 10.0, 5.0, 6.0, 8.0)); // P-E
+        doc.lines.push(line(skey(0), 6.0, 8.0, 2.0, 6.0)); // E-F
+        doc.lines.push(line(skey(0), 2.0, 6.0, 0.0, 0.0)); // F-A
+        doc.constraints.insert(coincident(skey(0), point(0, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(1, LineEnd::End), point(2, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(2, LineEnd::End), point(3, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(3, LineEnd::End), point(0, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(4, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(4, LineEnd::Start), point(0, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(5, LineEnd::End), point(6, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(6, LineEnd::End), point(7, LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(7, LineEnd::End), point(4, LineEnd::Start)));
 
-        let loops = closed_line_loops(&doc, 0);
+        let loops = closed_line_loops(&doc, skey(0));
         assert!(loops.len() >= 2, "expected outer and inner loops, got {loops:?}");
         let inner = loops
             .iter()
             .find(|l| l.len() == 4 && l.contains(&4))
             .expect("inner concave loop");
-        let uv = loop_vertices_uv(&doc, 0, inner).unwrap();
+        let uv = loop_vertices_uv(&doc, skey(0), inner).unwrap();
         assert_eq!(uv.len(), 4);
         let tris = triangulate_uv(&uv);
         assert_eq!(tris.len(), 2);

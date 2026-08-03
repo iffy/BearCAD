@@ -872,6 +872,7 @@ fn show_argument_prompt(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use super::*;
     use crate::actions::SketchSession;
 
@@ -1003,7 +1004,7 @@ mod tests {
                 .iter()
                 .any(|c| c.id == PaletteCommandId::ExitSketch)
         );
-        state.sketch_session = Some(SketchSession { sketch: 0 });
+        state.sketch_session = Some(SketchSession { sketch: skey(0) });
         assert!(
             commands_for_state(&state)
                 .iter()

@@ -462,6 +462,7 @@ pub fn contour_signed_area(contour: &[(f32, f32)]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use super::*;
 
     /// #356/#359: the nine anchor points sit on the text's bounding-box corners/midpoints/centre.
@@ -470,7 +471,7 @@ mod tests {
         use crate::model::TextAnchor as A;
         // A synthetic text whose "contours" bound the box [2,20]×[0,10].
         let mut text = crate::model::SketchText {
-            sketch: 0,
+            sketch: skey(0),
             text: "x".into(),
             font_family: String::new(),
             bold: false,

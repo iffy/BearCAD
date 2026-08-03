@@ -754,7 +754,7 @@ impl ViewportScene {
         }
 
         // Closed loops of plain lines (#66) — fill them the same way a rect/circle face is.
-        for sketch in 0..input.doc.sketches.len() {
+        for sketch in input.doc.sketches.keys().collect::<Vec<_>>() {
             for lines in crate::polygon::closed_line_loops(input.doc, sketch) {
                 let visible = lines.iter().all(|&li| {
                     line_alive(input.doc, li)

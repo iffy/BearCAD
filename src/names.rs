@@ -77,7 +77,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::ConstructionPlane(index));
         }
     }
-    for (index, sketch) in doc.sketches.iter().enumerate() {
+    for (index, sketch) in doc.sketches.iter() {
         if name_matches(sketch.name.as_deref(), query) {
             return Some(SceneElement::Sketch(index));
         }
@@ -218,7 +218,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let sketch = doc
                 .sketches
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch {index} not found"))?;
+                .ok_or_else(|| format!("sketch {} not found", index.index()))?;
             sketch.name = stored;
         }
         SceneElement::Line(index) => {
@@ -470,7 +470,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 format!("Construction plane {i}")
             }
         }
-        HierarchyNode::Sketch(i) => format!("Sketch {i}"),
+        HierarchyNode::Sketch(i) => format!("Sketch {}", i.index()),
         HierarchyNode::Line(i) => {
             let line = &doc.lines[i];
             let len = line.length();
@@ -699,7 +699,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         }
         SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit {}", i.index()),
-        SceneElement::Sketch(i) => format!("Sketch {i}"),
+        SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),
         SceneElement::Origin => "Origin".to_string(),

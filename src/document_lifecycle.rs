@@ -9,7 +9,7 @@ use crate::selection::SceneSelection;
 use std::collections::HashSet;
 
 pub fn sketch_alive(doc: &Document, sketch: SketchId) -> bool {
-    doc.sketches.get(sketch).is_some_and(|s| !s.deleted)
+    doc.sketches.contains(sketch)
 }
 
 pub fn line_alive(doc: &Document, index: usize) -> bool {
@@ -298,9 +298,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         for c in doc.circles.iter_mut().filter(|c| c.sketch == si) {
                             c.deleted = true;
                         }
-                        if let Some(s) = doc.sketches.get_mut(si) {
-                            s.deleted = true;
-                        }
+                        doc.sketches.remove(si);
                     }
                     changed = true;
                 }
@@ -645,14 +643,13 @@ fn tombstone_construction_plane(doc: &mut Document, index: usize) -> bool {
 }
 
 fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
-    let Some(entry) = doc.sketches.get_mut(sketch) else {
+    // The history-tape marker to drop is the one for this sketch's place among the live
+    // ones, read before the removal (#1055).
+    let Some(ordinal) = doc.sketches.keys().position(|k| k == sketch) else {
         return false;
     };
-    if entry.deleted {
-        return false;
-    }
-    entry.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Sketch, sketch);
+    doc.sketches.remove(sketch);
+    remove_shape_order_entry(doc, ShapeKind::Sketch, ordinal);
 
     let lines: Vec<usize> = doc
         .lines

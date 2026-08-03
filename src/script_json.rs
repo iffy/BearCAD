@@ -67,7 +67,7 @@ pub fn scene_element_from_kind(
         "plane" | "construction_plane" | "constructionplane" => {
             Some(SceneElement::ConstructionPlane(index))
         }
-        "sketch" => Some(SceneElement::Sketch(index)),
+        "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
@@ -204,9 +204,9 @@ pub fn scene_element_selection_index(
             crate::construction::GlobalAxis::Z => 2,
         }),
         SceneElement::ConstructionPlane(i)
-        | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i) => Some(*i),
+        SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == *key),
         SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
         SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
         SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
@@ -940,7 +940,9 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 );
             }
             let body = body_choice(o);
+            // The instruction names the sketch by its ordinal (#1055).
             let sketch = crate::actions::extrude_face_sketch(doc, &faces[0])
+                .and_then(|key| doc.sketches.keys().position(|k| k == key))
                 .ok_or("extrude face does not exist")?;
             let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
             Ok(Instruction::Extrude {
@@ -1759,7 +1761,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
             let n = match kind.to_ascii_lowercase().as_str() {
                 "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
                 "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
-                "sketch" => doc.sketches.iter().filter(|e| !e.deleted).count(),
+                "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
@@ -1828,7 +1830,10 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             if let Some(name) = &line.name {
                 t.insert("name".into(), json!(name));
             }
-            t.insert("sketch".into(), json!(line.sketch));
+            t.insert(
+                "sketch".into(),
+                json!(doc.sketches.keys().position(|k| k == line.sketch)),
+            );
         }
         "circle" => {
             let Some(circle) = doc.circles.get(index).filter(|e| !e.deleted) else {
@@ -1842,10 +1847,14 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             if let Some(name) = &circle.name {
                 t.insert("name".into(), json!(name));
             }
-            t.insert("sketch".into(), json!(circle.sketch));
+            t.insert(
+                "sketch".into(),
+                json!(doc.sketches.keys().position(|k| k == circle.sketch)),
+            );
         }
         "sketch" => {
-            let Some(sketch) = doc.sketches.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the sketch's ordinal (#1055).
+            let Some(sketch) = doc.sketches.keys().nth(index).map(|k| &doc.sketches[k]) else {
                 return Ok(Value::Null);
             };
             t.insert("face".into(), json!(face_kind_name(&sketch.face)));
@@ -2218,6 +2227,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -2859,6 +2869,7 @@ mod tests {
         // actually hold that many.
         let mut doc = Document::default();
         for _ in 0..5 {
+            doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
             doc.bodies.insert(crate::model::Body {
                 source: crate::model::BodySource::Extrusion(xkey(0)),
                 name: None,
@@ -2866,7 +2877,7 @@ mod tests {
                 shadow: false,
             });
             doc.extrusions.insert(crate::model::Extrusion {
-                sketch: 0,
+                sketch: skey(0),
                 faces: Vec::new(),
                 distance: 1.0,
                 target: None,
@@ -2878,7 +2889,7 @@ mod tests {
         }
         for _ in 0..4 {
             doc.constraints.insert(crate::model::Constraint {
-                sketch: 0,
+                sketch: skey(0),
                 kind: crate::model::ConstraintKind::Coincident {
                     a: crate::model::ConstraintEntity::Line(
                         crate::model::ConstraintLine::Line(0),
@@ -3162,10 +3173,27 @@ mod tests {
         );
     }
 
+    /// A document with two sketches, and lines/circles named by their **ordinal** in the
+    /// `sketch` field — a key serializes as a `[slot, generation]` pair (#1055), which is not
+    /// something a test fixture should have to spell.
     fn doc_with(lines: Value, circles: Value) -> Document {
         let mut doc = Document::default();
-        doc.lines = serde_json::from_value(lines).unwrap();
-        doc.circles = serde_json::from_value(circles).unwrap();
+        for _ in 0..2 {
+            doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        }
+        let keys: Vec<_> = doc.sketches.keys().collect();
+        let resolve = |mut v: Value| -> Value {
+            if let Some(list) = v.as_array_mut() {
+                for entry in list {
+                    if let Some(ordinal) = entry.get("sketch").and_then(Value::as_u64) {
+                        entry["sketch"] = json!(keys[ordinal as usize]);
+                    }
+                }
+            }
+            v
+        };
+        doc.lines = serde_json::from_value(resolve(lines)).unwrap();
+        doc.circles = serde_json::from_value(resolve(circles)).unwrap();
         doc
     }
 
@@ -3267,7 +3295,7 @@ mod tests {
         // The cap cutter below names an extrusion by ordinal (#1055).
         let mut doc = Document::default();
         doc.extrusions.insert(crate::model::Extrusion {
-            sketch: 0,
+            sketch: skey(0),
             faces: Vec::new(),
             distance: 1.0,
             target: None,

@@ -3689,7 +3689,7 @@ mod tests {
         );
     }
 
-    fn doc_with_plane_sketch() -> (Document, usize) {
+    fn doc_with_plane_sketch() -> (Document, crate::model::SketchId) {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
