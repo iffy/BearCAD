@@ -159,6 +159,11 @@ features in dependency order.
   inches under feet, then tens of feet for imperial ones. As the camera zooms in the
   next-finer rung **fades in** continuously (8→32 px screen spacing), and every line
   sits on a fixed world multiple of its step, so zooming never pops or slides lines.
+- **The origin axes are widened on screen (#1072).** Each axis quad's corners carry both of
+  the segment's world endpoints and a signed half-width in **pixels**; `vs_axis` projects
+  both, then steps the corner sideways in screen space. A fixed-world-width quad is only the
+  right thickness at one depth, so under perspective an axis used to swell at the near end
+  and thin away at the far one.
 - **The grid is a fragment shader (#1073).** The ground is one quad covering the visible
   footprint, and every line is worked out per pixel from the screen-space derivative of the
   world position (`fs_grid` in `shader.wgsl`, fed by `ViewportGrid`). Widths are therefore

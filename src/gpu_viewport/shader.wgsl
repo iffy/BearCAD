@@ -12,6 +12,9 @@ struct Uniforms {
     grid_fine_color: vec4f,
     grid_coarse_color: vec4f,
     grid_axis_color: vec4f,
+    // xy: the render target's size in pixels, for the screen-space line widening in
+    // `vs_axis` (#1072). zw: unused.
+    viewport_px: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -140,6 +143,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
         + vec3f(REALISTIC_SPECULAR * specular);
     let lit = linear_to_srgb(tonemap(shaded));
     return vec4f(lit * alpha, alpha);
+}
+
+// ---- Origin axes (#1072) ----
+//
+// A quad of fixed *world* width is only the right thickness at one depth: under perspective
+// the near end of an axis swells and the far end thins away. So each corner arrives with its
+// own world endpoint in `position`, the segment's other endpoint in `normal.xyz`, and a
+// signed half-width in **pixels** in `normal.w`. Both ends are projected here and the corner
+// steps sideways in screen space, which is the only place a pixel means anything.
+
+@vertex
+fn vs_axis(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let own = uniforms.view_proj * vec4f(input.position, 1.0);
+    let other = uniforms.view_proj * vec4f(input.normal.xyz, 1.0);
+    let px = max(uniforms.viewport_px.xy, vec2f(1.0));
+
+    // Screen positions in pixels. `abs(w)` rather than `w` so a vertex that has crossed
+    // behind the camera still yields a usable direction instead of a mirrored one; the
+    // rasterizer clips what is actually off-screen.
+    let own_px = own.xy / max(abs(own.w), 1e-6) * px;
+    let other_px = other.xy / max(abs(other.w), 1e-6) * px;
+    var dir = other_px - own_px;
+    if (length(dir) < 1e-6) {
+        dir = vec2f(1.0, 0.0);
+    }
+    dir = normalize(dir);
+    let side = vec2f(-dir.y, dir.x) * input.normal.w;
+
+    // Back to clip space. NDC spans 2 across the viewport, so a pixel is 2/px of NDC, and
+    // multiplying by w undoes the perspective divide the rasterizer is about to apply.
+    out.clip_position = vec4f(own.xy + side / px * 2.0 * own.w, own.z, own.w);
+    out.color = input.color;
+    out.normal = vec3f(0.0, 0.0, 1.0);
+    out.world_pos = input.position;
+    out.mode = MODE_UNLIT;
+    return out;
 }
 
 // ---- Ground grid (#1073) ----

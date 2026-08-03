@@ -32,6 +32,9 @@ struct GpuUniforms {
     grid_fine_color: [f32; 4],
     grid_coarse_color: [f32; 4],
     grid_axis_color: [f32; 4],
+    /// Render-target size in pixels (xy), for the screen-space line widening in `vs_axis`
+    /// (#1072); zw is padding.
+    viewport_px: [f32; 4],
 }
 
 impl GpuUniforms {
@@ -79,6 +82,12 @@ pub struct ViewportGpuResources {
     /// two triangles, which never change.
     grid_vertex_buffer: wgpu::Buffer,
     grid_index_buffer: wgpu::Buffer,
+    /// The origin axes (#1072), whose vertices carry both endpoints and a pixel half-width.
+    axis_pipeline: wgpu::RenderPipeline,
+    axis_vertex_buffer: wgpu::Buffer,
+    axis_index_buffer: wgpu::Buffer,
+    axis_vertex_capacity: u64,
+    axis_index_capacity: u64,
     text_pipeline: wgpu::RenderPipeline,
     /// Tracing-image quads (#170): the text pipeline's layout with a full-color fragment.
     image_pipeline: wgpu::RenderPipeline,
@@ -189,6 +198,7 @@ impl ViewportGpuResources {
                 grid_fine_color: [0.0; 4],
                 grid_coarse_color: [0.0; 4],
                 grid_axis_color: [0.0; 4],
+                viewport_px: [1.0, 1.0, 0.0, 0.0],
             }),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
         });
@@ -697,6 +707,49 @@ impl ViewportGpuResources {
             cache: None,
         });
 
+        // Origin-axis pipeline (#1072): the scene pipeline's fragment shader, with a vertex
+        // shader that widens the quad in screen space so an axis holds its pixel width at
+        // any depth.
+        let axis_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_axis_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_axis"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: VIEWPORT_DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: multisample_state(msaa_sample_count),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("bearcad_viewport_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -728,6 +781,18 @@ impl ViewportGpuResources {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let axis_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bearcad_viewport_axis_vertices"),
+            size: 4096,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let axis_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bearcad_viewport_axis_indices"),
+            size: 4096,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let grid_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("bearcad_viewport_grid_indices"),
             contents: bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3]),
@@ -757,6 +822,11 @@ impl ViewportGpuResources {
             grid_pipeline,
             grid_vertex_buffer,
             grid_index_buffer,
+            axis_pipeline,
+            axis_vertex_buffer,
+            axis_index_buffer,
+            axis_vertex_capacity: 4096,
+            axis_index_capacity: 4096,
             text_pipeline,
             image_pipeline,
             image_textures: Mutex::new(std::collections::HashMap::new()),
@@ -1029,6 +1099,7 @@ impl ViewportGpuResources {
                 grid_fine_color: scene.grid.map(|g| g.fine_color).unwrap_or_default(),
                 grid_coarse_color: scene.grid.map(|g| g.coarse_color).unwrap_or_default(),
                 grid_axis_color: scene.grid.map(|g| g.axis_color).unwrap_or_default(),
+                viewport_px: [width.max(1) as f32, height.max(1) as f32, 0.0, 0.0],
             }),
         );
         if !scene.vertices.is_empty() {
@@ -1050,6 +1121,40 @@ impl ViewportGpuResources {
                 &self.index_buffer,
                 0,
                 bytemuck::cast_slice(&combined_indices),
+            );
+        }
+        // The origin axes (#1072): a handful of vertices, but they grow if anything else
+        // ever uses the screen-widened line, so the buffers resize like the scene's.
+        if !scene.axis_vertices.is_empty() {
+            let bytes = (scene.axis_vertices.len() * std::mem::size_of::<GpuVertex>()) as u64;
+            if bytes > self.axis_vertex_capacity {
+                self.axis_vertex_capacity = bytes.next_power_of_two().max(4096);
+                self.axis_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bearcad_viewport_axis_vertices"),
+                    size: self.axis_vertex_capacity,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            let index_bytes = (scene.axis_indices.len() * std::mem::size_of::<u32>()) as u64;
+            if index_bytes > self.axis_index_capacity {
+                self.axis_index_capacity = index_bytes.next_power_of_two().max(4096);
+                self.axis_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bearcad_viewport_axis_indices"),
+                    size: self.axis_index_capacity,
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            queue.write_buffer(
+                &self.axis_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&scene.axis_vertices),
+            );
+            queue.write_buffer(
+                &self.axis_index_buffer,
+                0,
+                bytemuck::cast_slice(&scene.axis_indices),
             );
         }
         // The grid's four footprint corners (#1073). Colour and normal are unused by
@@ -1217,6 +1322,15 @@ impl ViewportGpuResources {
                 pass.set_vertex_buffer(0, self.grid_vertex_buffer.slice(..));
                 pass.set_index_buffer(self.grid_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..6, 0, 0..1);
+            }
+            // The origin axes, after the grid but before the scene, so bodies occlude them
+            // the way they always did (#1072).
+            if !scene.axis_indices.is_empty() {
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_pipeline(&self.axis_pipeline);
+                pass.set_vertex_buffer(0, self.axis_vertex_buffer.slice(..));
+                pass.set_index_buffer(self.axis_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..scene.axis_indices.len() as u32, 0, 0..1);
             }
             if total_index_count > 0 {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);

@@ -190,6 +190,8 @@ pub const PREVIEW_FILL_DEPTH_BIAS: f32 = 0.2;
 /// (reduced depth-buffer precision), which is why it showed up as the ground grid appearing to
 /// slice through the middle of a body when orbiting below the ground and zooming out (#78).
 pub const GRID_DEPTH_BIAS: f32 = -0.05;
+/// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
+pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
 pub const STROKE_DEPTH_BIAS: f32 = 0.10;
 /// Lift construction-plane hover fills above the plane surface (avoids z-fighting).
@@ -284,6 +286,13 @@ pub struct ViewportScene {
     /// Tracing images (#170): textured world-space quads, drawn after the opaque scene
     /// (depth-tested, no depth write) so bodies in front occlude them.
     pub images: Vec<ViewportImageQuad>,
+    /// The world origin axes (#1072): screen-space-widened quads. `position` is the corner's
+    /// own world endpoint, `normal.xyz` the segment's other endpoint, and `normal.w` the
+    /// signed half-width in **pixels** — the vertex shader projects both ends and steps
+    /// sideways by that many pixels, so an axis is the same width however far away and
+    /// however steeply it recedes. Drawn with `vs_axis`/`fs_axis`.
+    pub axis_vertices: Vec<GpuVertex>,
+    pub axis_indices: Vec<u32>,
     /// The ground grid (#1073), when one is showing: a single footprint quad whose fragment
     /// shader draws the lattice. Thick world-space line quads could not stay thin — one
     /// viewed edge-on foreshortens into a wedge and one viewed close up swells — so the
@@ -2255,36 +2264,59 @@ impl<'a> SceneMesh<'a> {
                 axis_color: color32_to_gpu(sketch_ground_color(palette.grid_axis, dim)),
             });
         }
-        self.push_line_segment_with_bias(
-            Vec3::ZERO,
-            Vec3::new(axis_len, 0.0, 0.0),
-            sketch_ground_color(palette.x_axis, dim),
-            2.0,
-            cam,
-            viewport,
-            view_proj,
-            GRID_DEPTH_BIAS,
-        );
-        self.push_line_segment_with_bias(
-            Vec3::ZERO,
-            Vec3::new(0.0, axis_len, 0.0),
-            sketch_ground_color(palette.y_axis, dim),
-            2.0,
-            cam,
-            viewport,
-            view_proj,
-            GRID_DEPTH_BIAS,
-        );
-        self.push_line_segment_with_bias(
-            Vec3::ZERO,
-            Vec3::new(0.0, 0.0, axis_len),
-            sketch_ground_color(palette.z_axis, dim),
-            2.0,
-            cam,
-            viewport,
-            view_proj,
-            GRID_DEPTH_BIAS,
-        );
+        // The origin triad, widened on screen rather than in the world (#1072): a
+        // fixed-world-width quad is only ever the right thickness at one depth, so under
+        // perspective the near end of an axis swelled while the far end thinned away.
+        for (end, color) in [
+            (Vec3::new(axis_len, 0.0, 0.0), palette.x_axis),
+            (Vec3::new(0.0, axis_len, 0.0), palette.y_axis),
+            (Vec3::new(0.0, 0.0, axis_len), palette.z_axis),
+        ] {
+            self.push_screen_width_segment(
+                Vec3::ZERO,
+                end,
+                sketch_ground_color(color, dim),
+                ORIGIN_AXIS_WIDTH_PX,
+                cam.eye(),
+                GRID_DEPTH_BIAS,
+            );
+        }
+    }
+
+    /// A line whose width is measured in **pixels by the vertex shader** (#1072), not in
+    /// world units here. Each corner carries its own endpoint, the segment's other endpoint,
+    /// and a signed half-width; `vs_axis` projects both and steps sideways on screen.
+    fn push_screen_width_segment(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        color: Color32,
+        width_px: f32,
+        eye: Vec3,
+        depth_bias: f32,
+    ) {
+        let (a, b) = offset_segment_toward_camera(a, b, eye, depth_bias);
+        if (b - a).length_squared() < 1e-12 {
+            return;
+        }
+        let gpu = color32_to_gpu(color);
+        let half = width_px * 0.5;
+        let base = self.scene.axis_vertices.len() as u32;
+        // Corner order matches the quad the old world-space path emitted: a+, a-, b-, b+.
+        for (own, other, side) in [(a, b, half), (a, b, -half), (b, a, half), (b, a, -half)] {
+            self.scene.axis_vertices.push(GpuVertex {
+                position: own.to_array(),
+                color: gpu,
+                // `vs_axis` takes its screen direction as (other - own), which points the
+                // opposite way at the far end — so the same signed half-width lands the far
+                // corners on the opposite sides, giving the cyclic order a+, a-, b-, b+ the
+                // indices below assume.
+                normal: [other.x, other.y, other.z, side],
+            });
+        }
+        self.scene
+            .axis_indices
+            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
     /// Draw the rectangle tool's live drag-preview (translucent quad + closed edge strokes).
@@ -5197,8 +5229,8 @@ mod tests {
         // Every entry point the renderer names must exist.
         let entries: Vec<&str> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
         for name in [
-            "vs_main", "fs_main", "vs_grid", "fs_grid", "vs_blit", "fs_blit", "vs_text",
-            "fs_text", "fs_image",
+            "vs_main", "fs_main", "vs_axis", "vs_grid", "fs_grid", "vs_blit", "fs_blit",
+            "vs_text", "fs_text", "fs_image",
         ] {
             assert!(entries.contains(&name), "shader.wgsl has no `{name}`: {entries:?}");
         }
@@ -6406,10 +6438,10 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-        assert!(!scene.vertices.is_empty());
-        // The world axes are still line quads; the grid itself is a shader (#1073).
-        assert!(!scene.indices.is_empty());
+        // Both the grid (#1073) and the origin axes (#1072) are shader-drawn now, so they
+        // live in their own buffers rather than the scene's index layers.
         let grid = scene.grid.expect("the ground grid");
+        assert_eq!(scene.axis_indices.len(), 3 * 6, "one quad per origin axis");
         assert!(grid.coarse_step > grid.fine_step, "{grid:?}");
         // Widths are pixels, not world units — that is what keeps a line one pixel across
         // whether it is under the camera or at the horizon.
@@ -6432,6 +6464,30 @@ mod tests {
                     && (v.color[2] - gpu[2]).abs() < 0.02
             })
             .count()
+    }
+
+    /// #1072: an axis quad's corners carry both endpoints and a signed pixel half-width, so
+    /// the vertex shader can widen it on screen. Check the packing, since nothing else can.
+    #[test]
+    fn origin_axes_carry_both_endpoints_and_a_pixel_half_width() {
+        let scene = build_scene_for_doc(&AppState::default());
+        assert_eq!(scene.axis_vertices.len(), 3 * 4, "one quad per axis");
+        for quad in scene.axis_vertices.chunks_exact(4) {
+            // Corners come in the cyclic order a+, a-, b-, b+: the two ends, each twice.
+            assert_eq!(quad[0].position, quad[1].position);
+            assert_eq!(quad[2].position, quad[3].position);
+            assert_ne!(quad[0].position, quad[2].position);
+            for v in quad {
+                // `normal.xyz` is the *other* end, so each corner can find the screen
+                // direction on its own.
+                let other = [v.normal[0], v.normal[1], v.normal[2]];
+                assert_ne!(other, v.position, "a corner must name the far end, not itself");
+                assert_eq!(v.normal[3].abs(), ORIGIN_AXIS_WIDTH_PX / 2.0, "half-width, in pixels");
+            }
+            // Each end straddles the line: one corner to each side.
+            assert!(quad[0].normal[3] > 0.0 && quad[1].normal[3] < 0.0);
+            assert!(quad[2].normal[3] > 0.0 && quad[3].normal[3] < 0.0);
+        }
     }
 
     /// #1073: the ground modes each ask for the right thing — a shader grid, a solid fill
@@ -7131,7 +7187,9 @@ mod tests {
             constraint_connector_color: None,
         });
         assert!(scene.vertices.len() >= 8);
-        assert!(scene.indices.len() >= 18);
+        // The three origin axes are 18 indices, but they moved to their own buffer when they
+        // became shader-widened (#1072) — the sketch's own geometry is what is left here.
+        assert!(scene.indices.len() + scene.overlay_indices.len() >= 18);
     }
 
     #[test]
