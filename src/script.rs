@@ -387,9 +387,11 @@ pub enum Instruction {
         rz: String,
         /// Point Snap's third pair set as an angle instead of a target point (#1078).
         roll_angle: String,
-        /// Face Snap's side flip and its turn about the target normal (#1077).
+        /// Face Snap's side flip, its turn about the target normal (#1077), and its gap
+        /// off that face (#1079).
         face_flip: bool,
         face_spin: String,
+        face_offset: String,
         /// Snap-translate points (#649/#650): with both set the move snaps `source` onto
         /// `target` and the tx/ty/tz expressions are ignored.
         start_point_a: Option<crate::model::MovePointRef>,
@@ -414,9 +416,11 @@ pub enum Instruction {
         rz: String,
         /// Point Snap's third pair set as an angle instead of a target point (#1078).
         roll_angle: String,
-        /// Face Snap's side flip and its turn about the target normal (#1077).
+        /// Face Snap's side flip, its turn about the target normal (#1077), and its gap
+        /// off that face (#1079).
         face_flip: bool,
         face_spin: String,
+        face_offset: String,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
         /// The optional B pair (#669), which adds the rotation.
@@ -440,9 +444,11 @@ pub enum Instruction {
         rz: String,
         /// Point Snap's third pair set as an angle instead of a target point (#1078).
         roll_angle: String,
-        /// Face Snap's side flip and its turn about the target normal (#1077).
+        /// Face Snap's side flip, its turn about the target normal (#1077), and its gap
+        /// off that face (#1079).
         face_flip: bool,
         face_spin: String,
+        face_offset: String,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
         start_point_b: Option<crate::model::MovePointRef>,
@@ -1258,14 +1264,14 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.begin_move", None, targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.begin_move", None, targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::CreateJointOp { members, base, kind, mate, frame, position, position2, position3, limits } => {
                 joint_op_lua("bearcad.joint", None, members, *base, kind, mate, frame, position, position2, position3, limits)
@@ -2423,7 +2429,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
+        Action::CreateMoveOperation { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: body_ordinals(doc, targets)?,
                 tx: tx.clone(),
@@ -2435,6 +2441,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 roll_angle: roll_angle.clone(),
                 face_flip: *face_flip,
                 face_spin: face_spin.clone(),
+                face_offset: face_offset.clone(),
                 start_point_a: *start_point_a,
                 end_point_a: *end_point_a,
                 start_point_b: *start_point_b,
@@ -2443,7 +2450,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 end_point_c: *end_point_c,
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
+        Action::EditMoveOperation { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c, .. } => {
             Some(Instruction::EditMoveOp {
                 op: move_op_ordinal(doc, *op)?,
                 targets: body_ordinals(doc, targets)?,
@@ -2456,6 +2463,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 roll_angle: roll_angle.clone(),
                 face_flip: *face_flip,
                 face_spin: face_spin.clone(),
+                face_offset: face_offset.clone(),
                 start_point_a: *start_point_a,
                 end_point_a: *end_point_a,
                 start_point_b: *start_point_b,
@@ -3151,6 +3159,7 @@ fn move_op_lua(
     roll_angle: &str,
     face_flip: bool,
     face_spin: &str,
+    face_offset: &str,
     start_point_a: &Option<crate::model::MovePointRef>,
     end_point_a: &Option<crate::model::MovePointRef>,
     start_point_b: &Option<crate::model::MovePointRef>,
@@ -3191,6 +3200,7 @@ fn move_op_lua(
         ("rz", rz),
         ("roll", roll_angle),
         ("spin", face_spin),
+        ("gap", face_offset),
     ] {
         if !value.trim().is_empty() {
             parts.push(format!("{name} = \"{value}\""));
@@ -5644,7 +5654,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a, &start_point_b),
@@ -5667,11 +5677,12 @@ impl ScriptRunner {
                     roll_angle,
                     face_flip,
                     face_spin,
+                    face_offset,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
                 let Some(op) = move_op_key(&state.doc, op) else {
                     self.last_action_error = Some(format!("Move operation {op} not found"));
@@ -5699,11 +5710,12 @@ impl ScriptRunner {
                     roll_angle,
                     face_flip,
                     face_spin,
+                    face_offset,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
+            Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 let targets = body_keys(&state.doc, &targets);
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Move));
                 state.creating_move = Some(crate::actions::CreatingMove {
@@ -5727,6 +5739,7 @@ impl ScriptRunner {
                     roll_angle,
                     face_flip,
                     face_spin,
+                    face_offset,
                     editing: None,
                 });
                 StepResult::Continue

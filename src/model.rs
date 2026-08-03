@@ -2423,6 +2423,11 @@ pub struct MoveOperation {
     /// the mate point. A degree expression; empty = 0.
     #[serde(default)]
     pub face_spin: String,
+    /// Face Snap (#1079): a gap held along the target face's normal, an mm expression. Empty
+    /// is flush — the surfaces touching, which is the usual answer; a joint that needs a
+    /// washer's worth of clearance says so here.
+    #[serde(default)]
+    pub face_offset: String,
     /// Free-mode turns about the world X/Y/Z axes (#1076), degree expressions; empty = 0.
     /// Applied about the moving bodies' own centre, in X-then-Y-then-Z order, before the
     /// translation — so typing a turn spins the part where it stands rather than swinging it

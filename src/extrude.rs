@@ -1423,8 +1423,16 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
             return Some(translation);
         };
         let pivot = move_point_world(doc, op.end_point_a.as_ref()?)?;
+        // A gap held along the target face's normal (#1079), after the turn — so it is
+        // clearance off the surface, whichever way round the part ended up.
+        let gap = if op.face_offset.trim().is_empty() {
+            glam::Mat4::IDENTITY
+        } else {
+            let n = move_point_face_normal(doc, op.end_point_a.as_ref()?)?;
+            glam::Mat4::from_translation(n * crate::value::eval_length_mm_in_doc(&op.face_offset, doc)?)
+        };
         return Some(
-            glam::Mat4::from_translation(pivot)
+            gap * glam::Mat4::from_translation(pivot)
                 * glam::Mat4::from_mat3(rot)
                 * glam::Mat4::from_translation(-pivot)
                 * translation,
@@ -7000,6 +7008,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
         assert!(op.has_snap_rotation());
         let m = move_op_transform(&doc, &op).expect("transform");
@@ -7093,6 +7102,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
         assert!(base.has_snap_rotation() && !base.has_snap_roll());
         // With B alone, +10Z stays put — the spin is undecided, so nothing turns.
@@ -7251,6 +7261,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
         let (axis, angle) = move_snap_rotation_axis_angle(&doc, &op).unwrap();
         assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "quarter turn, got {angle}");
@@ -7334,6 +7345,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
         assert!(!base.has_snap_translation());
         assert_eq!(
@@ -7453,6 +7465,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
         assert!(op.has_snap_translation());
         assert_eq!(
@@ -7574,6 +7587,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         });
 
         let d = descendant_bodies(&doc, &[bkey(0)]);
@@ -7935,6 +7949,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         });
         doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Moved { op: mopkey(0), target: 0 },
@@ -8528,6 +8543,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         });
         doc.bodies.insert(Body {
             source: BodySource::Moved { op: mopkey(0), target: 0 },
@@ -10059,6 +10075,7 @@ mod tests {
             outputs: Vec::new(),
             name: None,
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
 
         // A's top cap centre (5, 5, 5) lands on B's left wall centre (40, 5, 2.5).
@@ -10074,6 +10091,17 @@ mod tests {
         let flipped = move_op_transform(&doc, &op(true, "")).expect("a placement");
         let n = flipped.transform_vector3(Vec3::Z).normalize_or_zero();
         assert!((n - -Vec3::X).length() < 1e-3, "flipped: {n:?}");
+
+        // A gap (#1079) holds the part off along the target's normal — clearance, whichever
+        // way round it ended up.
+        let gapped = move_op_transform(&doc, &MoveOperation {
+            face_offset: "3".to_string(),
+            ..op(false, "")
+        })
+        .expect("a placement");
+        let mate = gapped.transform_point3(Vec3::new(5.0, 5.0, 5.0));
+        // The fixed face's normal is -X, so 3 mm of gap sits 3 mm along -X of the target.
+        assert!((mate - (target - Vec3::X * 3.0)).length() < 1e-3, "{mate:?}");
 
         // The spin turns about the target's normal, through the mate point — which stays put.
         let spun = move_op_transform(&doc, &op(false, "90")).expect("a placement");
@@ -10122,6 +10150,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         };
 
         // No turn typed: a plain translation, exactly as before (#648).

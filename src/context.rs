@@ -288,10 +288,11 @@ pub struct MoveControl {
     pub rz: String,
     /// Point Snap's third pair set as an angle instead of a target point (#1078).
     pub roll_angle: String,
-    /// Face Snap (#1077): which side of the target face to land on, and the turn about its
-    /// normal through the mate point.
+    /// Face Snap (#1077/#1079): which side of the target face to land on, the turn about its
+    /// normal through the mate point, and a gap held off it.
     pub face_flip: bool,
     pub face_spin: String,
+    pub face_offset: String,
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
     /// other pickers is armed.
     pub bodies_focused: bool,
@@ -337,9 +338,10 @@ pub enum MoveEdit {
     Rz(String),
     /// Point Snap's third pair set as an angle instead of a target point (#1078).
     RollAngle(String),
-    /// Face Snap's side flip and its turn about the target normal (#1077).
+    /// Face Snap's side flip, its turn about the target normal (#1077), and its gap (#1079).
     FaceFlip(bool),
     FaceSpin(String),
+    FaceOffset(String),
     /// Arm / clear the source-point picker (#649).
     StartAFocus,
     ClearStartA,
@@ -5280,6 +5282,18 @@ pub fn show_pane(
                     face_edit = Some(MoveEdit::FaceFlip(flip));
                 }
             });
+            labeled_row(ui, "Gap", |ui| {
+                let mut text = control.face_offset.clone();
+                crate::expression_input::ValueInput::new(
+                    "move_face_offset",
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if text != control.face_offset {
+                    face_edit = Some(MoveEdit::FaceOffset(text));
+                }
+            });
             labeled_row(ui, "Turn", |ui| {
                 let mut text = control.face_spin.clone();
                 crate::expression_input::ValueInput::new(
@@ -8404,6 +8418,7 @@ mod tests {
                 roll_angle: String::new(),
                 face_flip: false,
                 face_spin: String::new(),
+                face_offset: String::new(),
                 editing: false,
                 can_commit: true,
             }),

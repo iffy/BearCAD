@@ -1039,6 +1039,7 @@ fn parse_move_op_args(
     String,
     bool,
     String,
+    String,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
@@ -1068,6 +1069,7 @@ fn parse_move_op_args(
     // Face Snap's side flip and its turn about the target normal (#1077).
     let face_flip = opts.get::<Option<bool>>("flip")?.unwrap_or(false);
     let face_spin = expr("spin")?;
+    let face_offset = expr("gap")?;
     // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
     // `from` exactly on `to`, and x/y/z are ignored.
     let start_point_a = parse_move_point(lua, opts.get::<Value>("from")?, "from")?;
@@ -1089,6 +1091,7 @@ fn parse_move_op_args(
         roll_angle,
         face_flip,
         face_spin,
+        face_offset,
         start_point_a,
         end_point_a,
         start_point_b,
@@ -4993,14 +4996,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                 end_point_c) =
+                 face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
                     targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                    start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                    end_point_c,
+                    face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                    start_point_c, end_point_c,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -5023,14 +5026,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                 end_point_c) =
+                 face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::BeginMoveOp {
                     targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                    start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                    end_point_c,
+                    face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                    start_point_c, end_point_c,
                 })?;
             }
             Ok(())
@@ -5043,14 +5046,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                 end_point_c) =
+                 face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) =
                 parse_move_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
                     op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                    start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                    end_point_c,
+                    face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                    start_point_c, end_point_c,
                 })?;
             }
             Ok(())

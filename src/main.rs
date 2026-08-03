@@ -8405,6 +8405,7 @@ impl App {
                         face_flip: false,
                         face_spin: String::new(),
                         roll_angle: String::new(),
+                        face_offset: String::new(),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
@@ -12555,6 +12556,7 @@ impl eframe::App for App {
                     roll_angle: cm.map(|c| c.roll_angle.clone()).unwrap_or_default(),
                     face_flip: cm.map(|c| c.face_flip).unwrap_or(false),
                     face_spin: cm.map(|c| c.face_spin.clone()).unwrap_or_default(),
+                    face_offset: cm.map(|c| c.face_offset.clone()).unwrap_or_default(),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: cm
                         .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
@@ -13571,6 +13573,7 @@ impl eframe::App for App {
                             context::MoveEdit::RollAngle(v) => cm.roll_angle = v,
                             context::MoveEdit::FaceFlip(v) => cm.face_flip = v,
                             context::MoveEdit::FaceSpin(v) => cm.face_spin = v,
+                            context::MoveEdit::FaceOffset(v) => cm.face_offset = v,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearStartA => cm.start_point_a = None,
                             context::MoveEdit::ClearEndA => cm.end_point_a = None,
@@ -15510,9 +15513,10 @@ fn move_ghost_target_transform(
         rz: cm.rz.clone(),
         face_flip: cm.face_flip,
         face_spin: cm.face_spin.clone(),
+        face_offset: cm.face_offset.clone(),
+        roll_angle: cm.roll_angle.clone(),
         outputs: Vec::new(),
         name: None,
-        roll_angle: String::new(),
     };
     extrude::move_op_transform(doc, &probe).filter(|m| *m != glam::Mat4::IDENTITY)
 }
@@ -15788,6 +15792,7 @@ impl SnapPreviewPoints {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         }
     }
 

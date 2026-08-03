@@ -1043,6 +1043,7 @@ mod tests {
             name: None,
             face_flip: true,
             face_spin: "45 deg".to_string(),
+            face_offset: String::new(),
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -1688,6 +1689,7 @@ mod tests {
             face_flip: false,
             face_spin: String::new(),
             roll_angle: String::new(),
+            face_offset: String::new(),
         });
         doc.joints.insert(crate::model::Joint {
             members: vec![

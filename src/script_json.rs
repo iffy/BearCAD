@@ -513,10 +513,10 @@ pub fn instruction_from_json(
         }
         "move_bodies" => {
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                 end_point_c) =
+                 face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) =
                 move_op_args(doc, o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
             let (members, base, kind, mate, frame, position, position2, position3, limits) =
@@ -543,18 +543,18 @@ pub fn instruction_from_json(
         }
         "begin_move" => {
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                 end_point_c) =
+                 face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) =
                 move_op_args(doc, o)?;
-            Ok(Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+            Ok(Instruction::BeginMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
-                 start_point_a, end_point_a, start_point_b, end_point_b, start_point_c,
-                 end_point_c) =
+                 face_offset, start_point_a, end_point_a, start_point_b, end_point_b,
+                 start_point_c, end_point_c) =
                 move_op_args(doc, o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(doc, o)?;
@@ -1333,6 +1333,7 @@ fn move_op_args(
         String,
         bool,
         String,
+        String,
         Option<crate::model::MovePointRef>,
         Option<crate::model::MovePointRef>,
         Option<crate::model::MovePointRef>,
@@ -1357,6 +1358,7 @@ fn move_op_args(
         // Face Snap's side flip and its turn about the target normal (#1077).
         o.get("flip").and_then(Value::as_bool).unwrap_or(false),
         expr_arg(o, "spin")?,
+        expr_arg(o, "gap")?,
         // Naming both points makes the translation a snap (#648/#649/#650).
         move_point_from_json(doc, o.get("from"), "from")?,
         move_point_from_json(doc, o.get("to"), "to")?,
@@ -2838,6 +2840,7 @@ mod tests {
                 face_flip: false,
                 face_spin: String::new(),
                 roll_angle: String::new(),
+                face_offset: String::new(),
             })
         );
         // Omitted expression fields become empty strings.
@@ -2861,6 +2864,7 @@ mod tests {
                 face_flip: false,
                 face_spin: String::new(),
                 roll_angle: String::new(),
+                face_offset: String::new(),
             })
         );
     }
