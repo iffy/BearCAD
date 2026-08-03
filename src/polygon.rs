@@ -9,7 +9,12 @@ use crate::vertex_drag::coincident_group;
 /// Canonical id for the vertex group a line endpoint belongs to: the lexicographically
 /// smallest `(line, is_end)` among every `LineEndpoint` transitively coincident with it
 /// (via `Coincident` constraints). Two endpoints share a vertex iff this key matches.
-fn vertex_key(doc: &Document, sketch: SketchId, line: usize, end: LineEnd) -> (usize, bool) {
+fn vertex_key(
+    doc: &Document,
+    sketch: SketchId,
+    line: crate::model::LineKey,
+    end: LineEnd,
+) -> (crate::model::LineKey, bool) {
     coincident_group(doc, sketch, ConstraintPoint::LineEndpoint { line, end })
         .into_iter()
         .filter_map(|p| match p {
@@ -29,14 +34,13 @@ fn vertex_key(doc: &Document, sketch: SketchId, line: usize, end: LineEnd) -> (u
 /// (so the same polygon found by walking it in either direction, or starting from a
 /// different line, is reported once), and returned in a deterministic order: sorted by
 /// their lowest-numbered line, then by length.
-pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
-    let lines: Vec<usize> = doc
+pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<crate::model::LineKey>> {
+    let lines: Vec<crate::model::LineKey> = doc
         .lines
         .iter()
-        .enumerate()
         // Shadow lines (#224, consumed by an in-sketch slice) keep existing for editing but no
         // longer form faces — their split fragments do.
-        .filter(|(i, l)| l.sketch == sketch && !l.shadow && line_alive(doc, *i))
+        .filter(|(_, l)| l.sketch == sketch && !l.shadow)
         .map(|(i, _)| i)
         .collect();
     if lines.len() < 3 {
@@ -44,7 +48,7 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
     }
 
     // For each line, the vertex key at its start and end.
-    let endpoints: std::collections::HashMap<usize, ((usize, bool), (usize, bool))> = lines
+    let endpoints: std::collections::HashMap<crate::model::LineKey, ((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
         .iter()
         .map(|&i| {
             (
@@ -58,20 +62,21 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
         .collect();
 
     // Lines incident to each vertex key, paired with which of their own endpoints sits there.
-    let mut incident: std::collections::HashMap<(usize, bool), Vec<(usize, bool)>> =
+    let mut incident: std::collections::HashMap<(crate::model::LineKey, bool), Vec<(crate::model::LineKey, bool)>> =
         std::collections::HashMap::new();
     for (&line, &(start_key, end_key)) in &endpoints {
         incident.entry(start_key).or_default().push((line, false));
         incident.entry(end_key).or_default().push((line, true));
     }
 
-    let mut found: Vec<Vec<usize>> = Vec::new();
-    let mut seen_sets: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
+    let mut found: Vec<Vec<crate::model::LineKey>> = Vec::new();
+    let mut seen_sets: std::collections::HashSet<Vec<crate::model::LineKey>> = std::collections::HashSet::new();
 
     for &start_line in &lines {
         // Walk from `start_line`'s end vertex, looking for a path back to its start vertex.
         let mut path = vec![start_line];
-        let mut used: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut used: std::collections::HashSet<crate::model::LineKey> =
+            std::collections::HashSet::new();
         used.insert(start_line);
         let (_, first_end_key) = endpoints[&start_line];
         walk(
@@ -94,7 +99,7 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
     //     relative to the reconstructed outer boundary, so the un-split perimeter is rejected in
     //     favour of the two half-faces. A disjoint nested shape shares no vertices with the outer
     //     loop, so it never triggers this — nested faces still resolve normally.
-    let ordered: Vec<Option<Vec<(usize, bool)>>> = found
+    let ordered: Vec<Option<Vec<(crate::model::LineKey, bool)>>> = found
         .iter()
         .map(|lines| loop_shared_vertices(doc, sketch, lines))
         .collect();
@@ -123,13 +128,13 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
 fn loop_shared_vertices(
     doc: &Document,
     sketch: SketchId,
-    lines: &[usize],
-) -> Option<Vec<(usize, bool)>> {
+    lines: &[crate::model::LineKey],
+) -> Option<Vec<(crate::model::LineKey, bool)>> {
     let n = lines.len();
     if n < 3 {
         return None;
     }
-    let keys: Vec<((usize, bool), (usize, bool))> = lines
+    let keys: Vec<((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
         .iter()
         .map(|&i| {
             (
@@ -165,14 +170,14 @@ fn loop_shared_vertices(
 fn loop_is_minimal_face(
     doc: &Document,
     sketch: SketchId,
-    lines: &[usize],
-    verts: &[(usize, bool)],
+    lines: &[crate::model::LineKey],
+    verts: &[(crate::model::LineKey, bool)],
 ) -> bool {
     let n = verts.len();
-    let pos: std::collections::HashMap<(usize, bool), usize> =
+    let pos: std::collections::HashMap<(crate::model::LineKey, bool), usize> =
         verts.iter().enumerate().map(|(i, &v)| (v, i)).collect();
-    for (li, l) in doc.lines.iter().enumerate() {
-        if l.sketch != sketch || l.deleted || l.shadow || lines.contains(&li) {
+    for (li, l) in doc.lines.iter() {
+        if l.sketch != sketch || l.shadow || lines.contains(&li) {
             continue;
         }
         let a = vertex_key(doc, sketch, li, LineEnd::Start);
@@ -190,13 +195,13 @@ fn loop_is_minimal_face(
 }
 
 fn walk(
-    incident: &std::collections::HashMap<(usize, bool), Vec<(usize, bool)>>,
-    endpoints: &std::collections::HashMap<usize, ((usize, bool), (usize, bool))>,
-    current: (usize, bool),
-    path: &mut Vec<usize>,
-    used: &mut std::collections::HashSet<usize>,
-    found: &mut Vec<Vec<usize>>,
-    seen_sets: &mut std::collections::HashSet<Vec<usize>>,
+    incident: &std::collections::HashMap<(crate::model::LineKey, bool), Vec<(crate::model::LineKey, bool)>>,
+    endpoints: &std::collections::HashMap<crate::model::LineKey, ((crate::model::LineKey, bool), (crate::model::LineKey, bool))>,
+    current: (crate::model::LineKey, bool),
+    path: &mut Vec<crate::model::LineKey>,
+    used: &mut std::collections::HashSet<crate::model::LineKey>,
+    found: &mut Vec<Vec<crate::model::LineKey>>,
+    seen_sets: &mut std::collections::HashSet<Vec<crate::model::LineKey>>,
 ) {
     if path.len() > 64 {
         // Defensive bound against pathological inputs; real sketches are tiny.
@@ -212,7 +217,7 @@ fn walk(
         if next_line == path[0] {
             // Back to the start: only a real loop once we've used at least 3 lines.
             if path.len() >= 3 {
-                let mut set: Vec<usize> = path.clone();
+                let mut set: Vec<crate::model::LineKey> = path.clone();
                 set.sort_unstable();
                 if seen_sets.insert(set) {
                     found.push(path.clone());
@@ -244,11 +249,15 @@ fn walk(
 ///
 /// Returns `None` if the lines don't actually form a closed loop (consecutive lines, with
 /// wraparound, must share a vertex via a `Coincident` constraint).
-pub fn loop_vertices_uv(doc: &Document, sketch: SketchId, lines: &[usize]) -> Option<Vec<(f32, f32)>> {
+pub fn loop_vertices_uv(
+    doc: &Document,
+    sketch: SketchId,
+    lines: &[crate::model::LineKey],
+) -> Option<Vec<(f32, f32)>> {
     if lines.len() < 3 {
         return None;
     }
-    let keys: Vec<((usize, bool), (usize, bool))> = lines
+    let keys: Vec<((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
         .iter()
         .map(|&i| {
             (
@@ -289,12 +298,12 @@ pub fn loop_vertices_uv(doc: &Document, sketch: SketchId, lines: &[usize]) -> Op
 pub fn loop_corner_vertices_uv(
     doc: &Document,
     sketch: SketchId,
-    lines: &[usize],
+    lines: &[crate::model::LineKey],
 ) -> Option<Vec<(f32, f32)>> {
     if lines.len() < 3 {
         return None;
     }
-    let keys: Vec<((usize, bool), (usize, bool))> = lines
+    let keys: Vec<((crate::model::LineKey, bool), (crate::model::LineKey, bool))> = lines
         .iter()
         .map(|&i| {
             (
@@ -648,6 +657,7 @@ pub fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::sketch_key_for_slot as skey;
     use super::*;
@@ -766,7 +776,7 @@ mod tests {
         Line::from_local_endpoints(sketch, x0, y0, x1, y1)
     }
 
-    fn point(line: usize, end: LineEnd) -> ConstraintPoint {
+    fn point(line: crate::model::LineKey, end: LineEnd) -> ConstraintPoint {
         ConstraintPoint::LineEndpoint { line, end }
     }
 
@@ -775,30 +785,30 @@ mod tests {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Three lines, each one's end coincident with the next one's start, closing back.
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(line(skey(0), 5.0, 8.0, 0.0, 0.0));
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(line(skey(0), 10.0, 0.0, 5.0, 8.0));
+        doc.lines.insert(line(skey(0), 5.0, 8.0, 0.0, 0.0));
         doc.constraints.insert(coincident(
             skey(0),
-            point(0, LineEnd::End),
-            point(1, LineEnd::Start),
+            point(lkey(0), LineEnd::End),
+            point(lkey(1), LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
             skey(0),
-            point(1, LineEnd::End),
-            point(2, LineEnd::Start),
+            point(lkey(1), LineEnd::End),
+            point(lkey(2), LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
             skey(0),
-            point(2, LineEnd::End),
-            point(0, LineEnd::Start),
+            point(lkey(2), LineEnd::End),
+            point(lkey(0), LineEnd::Start),
         ));
 
         let loops = closed_line_loops(&doc, skey(0));
         assert_eq!(loops.len(), 1);
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
-        assert_eq!(sorted, vec![0, 1, 2]);
+        assert_eq!(sorted, vec![lkey(0), lkey(1), lkey(2)]);
     }
 
     /// #238: two triangles meeting at a single shared vertex (a bowtie) are two faces, not three —
@@ -810,26 +820,27 @@ mod tests {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Triangle 1: P0(0,0) P1(10,0) V(5,5).
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // 0
-        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 5.0)); // 1
-        doc.lines.push(line(skey(0), 5.0, 5.0, 0.0, 0.0)); // 2
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // 0
+        doc.lines.insert(line(skey(0), 10.0, 0.0, 5.0, 5.0)); // 1
+        doc.lines.insert(line(skey(0), 5.0, 5.0, 0.0, 0.0)); // 2
         // Triangle 2: V(5,5) P3(10,10) P4(0,10).
-        doc.lines.push(line(skey(0), 5.0, 5.0, 10.0, 10.0)); // 3
-        doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0)); // 4
-        doc.lines.push(line(skey(0), 0.0, 10.0, 5.0, 5.0)); // 5
+        doc.lines.insert(line(skey(0), 5.0, 5.0, 10.0, 10.0)); // 3
+        doc.lines.insert(line(skey(0), 10.0, 10.0, 0.0, 10.0)); // 4
+        doc.lines.insert(line(skey(0), 0.0, 10.0, 5.0, 5.0)); // 5
         let joins = [
-            (0, LineEnd::End, 1, LineEnd::Start),
-            (1, LineEnd::End, 2, LineEnd::Start),
-            (2, LineEnd::End, 0, LineEnd::Start),
-            (3, LineEnd::End, 4, LineEnd::Start),
-            (4, LineEnd::End, 5, LineEnd::Start),
-            (5, LineEnd::End, 3, LineEnd::Start),
+            (lkey(0), LineEnd::End, lkey(1), LineEnd::Start),
+            (lkey(1), LineEnd::End, lkey(2), LineEnd::Start),
+            (lkey(2), LineEnd::End, lkey(0), LineEnd::Start),
+            (lkey(3), LineEnd::End, lkey(4), LineEnd::Start),
+            (lkey(4), LineEnd::End, lkey(5), LineEnd::Start),
+            (lkey(5), LineEnd::End, lkey(3), LineEnd::Start),
             // Glue the four endpoints that all sit at the shared apex V.
-            (1, LineEnd::End, 3, LineEnd::Start),
-            (2, LineEnd::Start, 5, LineEnd::End),
+            (lkey(1), LineEnd::End, lkey(3), LineEnd::Start),
+            (lkey(2), LineEnd::Start, lkey(5), LineEnd::End),
         ];
         for (la, ea, lb, eb) in joins {
-            doc.constraints.insert(coincident(skey(0), point(la, ea), point(lb, eb)));
+            doc.constraints
+                .insert(coincident(skey(0), point(la, ea), point(lb, eb)));
         }
         let loops = closed_line_loops(&doc, skey(0));
         assert_eq!(loops.len(), 2, "bowtie is two faces, got {loops:?}");
@@ -839,12 +850,12 @@ mod tests {
     fn open_chain_of_lines_has_no_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(line(skey(0), 10.0, 0.0, 5.0, 8.0));
         doc.constraints.insert(coincident(
             skey(0),
-            point(0, LineEnd::End),
-            point(1, LineEnd::Start),
+            point(lkey(0), LineEnd::End),
+            point(lkey(1), LineEnd::Start),
         ));
 
         assert!(closed_line_loops(&doc, skey(0)).is_empty());
@@ -854,9 +865,9 @@ mod tests {
     fn unconnected_lines_form_no_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(skey(0), 100.0, 0.0, 110.0, 0.0));
-        doc.lines.push(line(skey(0), 200.0, 0.0, 210.0, 0.0));
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(line(skey(0), 100.0, 0.0, 110.0, 0.0));
+        doc.lines.insert(line(skey(0), 200.0, 0.0, 210.0, 0.0));
 
         assert!(closed_line_loops(&doc, skey(0)).is_empty());
     }
@@ -865,24 +876,24 @@ mod tests {
     fn deleted_line_does_not_participate_in_a_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(skey(0), 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(line(skey(0), 5.0, 8.0, 0.0, 0.0));
-        doc.lines[2].deleted = true;
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(line(skey(0), 10.0, 0.0, 5.0, 8.0));
+        doc.lines.insert(line(skey(0), 5.0, 8.0, 0.0, 0.0));
+        doc.lines.remove(lkey(2));
         doc.constraints.insert(coincident(
             skey(0),
-            point(0, LineEnd::End),
-            point(1, LineEnd::Start),
+            point(lkey(0), LineEnd::End),
+            point(lkey(1), LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
             skey(0),
-            point(1, LineEnd::End),
-            point(2, LineEnd::Start),
+            point(lkey(1), LineEnd::End),
+            point(lkey(2), LineEnd::Start),
         ));
         doc.constraints.insert(coincident(
             skey(0),
-            point(2, LineEnd::End),
-            point(0, LineEnd::Start),
+            point(lkey(2), LineEnd::End),
+            point(lkey(0), LineEnd::Start),
         ));
 
         assert!(closed_line_loops(&doc, skey(0)).is_empty());
@@ -892,15 +903,15 @@ mod tests {
     fn four_lines_closed_into_a_quad_form_one_loop() {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(line(skey(0), 10.0, 0.0, 10.0, 10.0));
-        doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0));
-        doc.lines.push(line(skey(0), 0.0, 10.0, 0.0, 0.0));
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(line(skey(0), 10.0, 0.0, 10.0, 10.0));
+        doc.lines.insert(line(skey(0), 10.0, 10.0, 0.0, 10.0));
+        doc.lines.insert(line(skey(0), 0.0, 10.0, 0.0, 0.0));
         for i in 0..4 {
             doc.constraints.insert(coincident(
                 skey(0),
-                point(i, LineEnd::End),
-                point((i + 1) % 4, LineEnd::Start),
+                point(lkey(i), LineEnd::End),
+                point(lkey((i + 1) % 4), LineEnd::Start),
             ));
         }
 
@@ -908,7 +919,7 @@ mod tests {
         assert_eq!(loops.len(), 1);
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
-        assert_eq!(sorted, vec![0, 1, 2, 3]);
+        assert_eq!(sorted, vec![lkey(0), lkey(1), lkey(2), lkey(3)]);
     }
 
     #[test]
@@ -947,30 +958,30 @@ mod tests {
         let mut doc = Document::default();
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // Outer quad edges 0..3
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // A-B
-        doc.lines.push(line(skey(0), 10.0, 0.0, 10.0, 10.0)); // B-C
-        doc.lines.push(line(skey(0), 10.0, 10.0, 0.0, 10.0)); // C-D
-        doc.lines.push(line(skey(0), 0.0, 10.0, 0.0, 0.0)); // D-A
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 0.0)); // A-B
+        doc.lines.insert(line(skey(0), 10.0, 0.0, 10.0, 10.0)); // B-C
+        doc.lines.insert(line(skey(0), 10.0, 10.0, 0.0, 10.0)); // C-D
+        doc.lines.insert(line(skey(0), 0.0, 10.0, 0.0, 0.0)); // D-A
         // Inner concave loop edges 4..7
-        doc.lines.push(line(skey(0), 0.0, 0.0, 10.0, 5.0)); // A-P
-        doc.lines.push(line(skey(0), 10.0, 5.0, 6.0, 8.0)); // P-E
-        doc.lines.push(line(skey(0), 6.0, 8.0, 2.0, 6.0)); // E-F
-        doc.lines.push(line(skey(0), 2.0, 6.0, 0.0, 0.0)); // F-A
-        doc.constraints.insert(coincident(skey(0), point(0, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(1, LineEnd::End), point(2, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(2, LineEnd::End), point(3, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(3, LineEnd::End), point(0, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(4, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(4, LineEnd::Start), point(0, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(5, LineEnd::End), point(6, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(6, LineEnd::End), point(7, LineEnd::Start)));
-        doc.constraints.insert(coincident(skey(0), point(7, LineEnd::End), point(4, LineEnd::Start)));
+        doc.lines.insert(line(skey(0), 0.0, 0.0, 10.0, 5.0)); // A-P
+        doc.lines.insert(line(skey(0), 10.0, 5.0, 6.0, 8.0)); // P-E
+        doc.lines.insert(line(skey(0), 6.0, 8.0, 2.0, 6.0)); // E-F
+        doc.lines.insert(line(skey(0), 2.0, 6.0, 0.0, 0.0)); // F-A
+        doc.constraints.insert(coincident(skey(0), point(lkey(0), LineEnd::End), point(lkey(1), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(1), LineEnd::End), point(lkey(2), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(2), LineEnd::End), point(lkey(3), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(3), LineEnd::End), point(lkey(0), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(4), LineEnd::End), point(lkey(1), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(4), LineEnd::Start), point(lkey(0), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(5), LineEnd::End), point(lkey(6), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(6), LineEnd::End), point(lkey(7), LineEnd::Start)));
+        doc.constraints.insert(coincident(skey(0), point(lkey(7), LineEnd::End), point(lkey(4), LineEnd::Start)));
 
         let loops = closed_line_loops(&doc, skey(0));
         assert!(loops.len() >= 2, "expected outer and inner loops, got {loops:?}");
         let inner = loops
             .iter()
-            .find(|l| l.len() == 4 && l.contains(&4))
+            .find(|l| l.len() == 4 && l.contains(&lkey(4)))
             .expect("inner concave loop");
         let uv = loop_vertices_uv(&doc, skey(0), inner).unwrap();
         assert_eq!(uv.len(), 4);
@@ -1029,7 +1040,7 @@ pub fn sketch_plane_regions(doc: &Document, sketch: SketchId) -> Vec<Vec<(f32, f
     // The sketch's own lines, curves sampled to polylines so a bend bounds a region like
     // anything else.
     let mut cutters = 0usize;
-    for (li, line) in doc.lines.iter().enumerate() {
+    for (li, line) in doc.lines.iter() {
         if line.sketch != sketch || line.construction || line.shadow || !line_alive(doc, li) {
             continue;
         }

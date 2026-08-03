@@ -137,6 +137,7 @@ pub fn click_scene_selection_many(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::circle_key_for_slot as rkey;
     use super::*;
 
@@ -160,7 +161,7 @@ mod tests {
         assert_eq!(sel.single(), None);
         click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), false);
         assert_eq!(sel.single(), Some(SceneElement::Circle(rkey(0))));
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         assert_eq!(sel.single(), None);
     }
 
@@ -169,8 +170,8 @@ mod tests {
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), false);
         assert_eq!(selection_single(&sel), Some(SceneElement::Circle(rkey(0))));
-        click_scene_selection(&mut sel, SceneElement::Line(1), false);
-        assert_eq!(selection_single(&sel), Some(SceneElement::Line(1)));
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), false);
+        assert_eq!(selection_single(&sel), Some(SceneElement::Line(lkey(1))));
     }
 
     #[test]
@@ -185,7 +186,7 @@ mod tests {
     /// converges on fully selected rather than toggling its members piecewise.
     #[test]
     fn a_run_selects_and_deselects_as_one_unit() {
-        let run = || vec![SceneElement::Line(0), SceneElement::Line(1), SceneElement::Line(2)];
+        let run = || vec![SceneElement::Line(lkey(0)), SceneElement::Line(lkey(1)), SceneElement::Line(lkey(2))];
         let mut sel = SceneSelection::default();
         click_scene_selection_many(&mut sel, run(), false);
         assert_eq!(selection_count(&sel), 3);
@@ -193,7 +194,7 @@ mod tests {
         click_scene_selection_many(&mut sel, run(), false);
         assert!(sel.is_empty());
         // Partly selected: the click completes the run rather than removing what's there.
-        click_scene_selection(&mut sel, SceneElement::Line(1), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), false);
         click_scene_selection_many(&mut sel, run(), true);
         assert_eq!(selection_count(&sel), 3);
     }
@@ -205,7 +206,7 @@ mod tests {
         click_scene_selection(&mut sel, SceneElement::Circle(rkey(9)), false);
         click_scene_selection_many(
             &mut sel,
-            vec![SceneElement::Line(0), SceneElement::Line(1)],
+            vec![SceneElement::Line(lkey(0)), SceneElement::Line(lkey(1))],
             false,
         );
         assert_eq!(selection_count(&sel), 2);
@@ -218,19 +219,19 @@ mod tests {
     fn additive_click_builds_multi_selection() {
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         assert_eq!(selection_count(&sel), 2);
         assert!(sel.is_selected(SceneElement::Circle(rkey(0))));
-        assert!(sel.is_selected(SceneElement::Line(1)));
+        assert!(sel.is_selected(SceneElement::Line(lkey(1))));
     }
 
     #[test]
     fn additive_click_selected_deselects_one() {
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), true);
-        assert_eq!(selection_single(&sel), Some(SceneElement::Line(1)));
+        assert_eq!(selection_single(&sel), Some(SceneElement::Line(lkey(1))));
     }
 
     /// #984: Shift is the additive modifier on every platform, and ⌘/Ctrl is not — which is

@@ -94,11 +94,9 @@ pub fn project_world_point_into_sketch(
 /// `recompute_document_geometry` so projections track their sources through any edit.
 /// Unresolvable sources leave the line untouched (static fallback).
 pub fn refresh_projections(doc: &mut Document) {
-    let updates: Vec<(usize, (f32, f32), (f32, f32))> = doc
+    let updates: Vec<(crate::model::LineKey, (f32, f32), (f32, f32))> = doc
         .lines
         .iter()
-        .enumerate()
-        .filter(|(_, line)| !line.deleted)
         .filter_map(|(li, line)| {
             let source = line.projection.as_ref()?;
             let (wa, wb) = resolve_projection_source(doc, line.sketch, source)?;

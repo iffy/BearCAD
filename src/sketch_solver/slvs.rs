@@ -880,7 +880,7 @@ fn line_endpoints_uv(
 ) -> Option<((f32, f32), (f32, f32))> {
     match line {
         ConstraintLine::Line(index) => {
-            let l = doc.lines.get(*index).filter(|l| !l.deleted)?;
+            let l = doc.lines.get(*index)?;
             Some(((l.x0, l.y0), (l.x1, l.y1)))
         }
         ConstraintLine::FaceEdge { face, index } => {
@@ -935,8 +935,8 @@ pub fn solve_sketch(
 
     // Seed every sketch point so under-constrained geometry still round-trips (and so a
     // pin can reference a point no constraint mentions).
-    for (index, line) in doc.lines.iter().enumerate() {
-        if line.deleted || line.sketch != sketch {
+    for (index, line) in doc.lines.iter() {
+        if line.sketch != sketch {
             continue;
         }
         for end in [LineEnd::Start, LineEnd::End] {

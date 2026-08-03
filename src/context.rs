@@ -182,7 +182,7 @@ pub struct SweepControl {
     /// The picked profile faces and the path lines they sweep along (#955), rendered through
     /// real [`ElementPicker`]s rather than as label rows.
     pub faces: Vec<crate::model::ExtrudeFace>,
-    pub path: Vec<usize>,
+    pub path: Vec<crate::model::LineKey>,
     /// Which picker shows the focus ring: Profile until a face is picked, then Path
     /// until a line is picked, then back to Profile.
     pub path_focused: bool,
@@ -641,7 +641,7 @@ pub enum SketchOffsetEdit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchMirrorControl {
     /// The picked mirror line's index, or `None` until one is chosen.
-    pub line: Option<usize>,
+    pub line: Option<crate::model::LineKey>,
     /// Lines/circles currently in the reflected set, for the element picker.
     pub picked: Vec<SceneElement>,
     pub editing: bool,
@@ -720,7 +720,7 @@ pub struct SketchSliceControl {
     /// The sketch entities being sliced and the lines doing the slicing (#955). Targets are
     /// listed lines-then-circles-then-faces, which is the order the removal handler unpacks.
     pub targets: Vec<crate::hierarchy::SceneElement>,
-    pub cutters: Vec<usize>,
+    pub cutters: Vec<crate::model::LineKey>,
     /// `true` while the cutter picker is active (the next viewport click adds a cutter line).
     pub picking_cutter: bool,
     pub editing: bool,
@@ -3188,7 +3188,7 @@ pub fn construction_targets_from_selection(selection: &SceneSelection) -> Vec<Sc
 
 fn scene_element_sort_key(element: SceneElement) -> (u8, usize, u8) {
     match element {
-        SceneElement::Line(i) => (0, i, 0),
+        SceneElement::Line(i) => (0, i.index() as usize, 0),
         SceneElement::Circle(i) => (1, i.index() as usize, 0),
         _ => (2, 0, 0),
     }
@@ -3250,7 +3250,7 @@ pub fn set_edge_construction(
             let line = doc
                 .lines
                 .get_mut(index)
-                .ok_or_else(|| format!("Line {index} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", index.index()))?;
             line.construction = construction;
             Ok(())
         }
@@ -7387,6 +7387,7 @@ fn orientation_pick_to_drawing(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
@@ -7404,12 +7405,12 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let selection = crate::selection::SceneSelection::default();
 
         let open = selection_picker_for(&doc, Tool::Select, Some(sketch), &selection)
             .expect("Select always has its picker");
-        assert!(open.accepts(&doc, &SceneElement::Line(0)));
+        assert!(open.accepts(&doc, &SceneElement::Line(lkey(0))));
         assert!(!open.accepts(&doc, &SceneElement::ConstructionPlane(pkey(1))));
         assert!(!open.accepts(&doc, &SceneElement::Body(bkey(0))));
 
@@ -7731,10 +7732,10 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         let mut selection = SceneSelection::default();
-        click_scene_selection(&mut selection, SceneElement::Line(0), false);
+        click_scene_selection(&mut selection, SceneElement::Line(lkey(0)), false);
         let content = context_pane_content(&ContextInput {
             tool: Tool::Dimension,
             in_sketch: true,
@@ -7746,7 +7747,7 @@ mod tests {
             .selection_picker
             .expect("Dimension tool should show a selection picker");
         assert!(
-            picker.picked().iter().any(|e| *e == SceneElement::Line(0)),
+            picker.picked().iter().any(|e| *e == SceneElement::Line(lkey(0))),
             "pre-selected line should appear in the Dimension picker"
         );
     }
@@ -7764,7 +7765,7 @@ mod tests {
             open_drawing: None,
             extrude_faces: Some(vec![
                 crate::model::ExtrudeFace::Circle(rkey(0)),
-                crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+                crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
             ]),
             ..input(&doc, &selection)
         });
@@ -7777,7 +7778,7 @@ mod tests {
             picker.picker.picked(),
             &[
                 SceneElement::SketchFace(crate::model::FaceId::Circle(rkey(0))),
-                SceneElement::SketchFace(crate::model::FaceId::Polygon(vec![0, 1, 2, 3])),
+                SceneElement::SketchFace(crate::model::FaceId::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])),
             ],
             "profiles keep their analytic-face identity (#955)"
         );
@@ -7892,7 +7893,7 @@ mod tests {
         use crate::hierarchy::SceneElement;
         let doc = Document::default();
         let mut selection = SceneSelection::default();
-        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(lkey(0)), true);
         crate::selection::click_scene_selection(&mut selection, SceneElement::Circle(rkey(1)), true);
         let input = ContextInput {
             doc: &doc,
@@ -7966,7 +7967,7 @@ mod tests {
         // what the ✕ needed and what the debug-string sort used to fake.
         assert_eq!(
             picker.picked(),
-            &[SceneElement::Line(0), SceneElement::Circle(rkey(1))]
+            &[SceneElement::Line(lkey(0)), SceneElement::Circle(rkey(1))]
         );
         assert!(picker.is_focused(), "the selection picker is the Select tool's only one");
         assert!(picker.accepts(&doc, &SceneElement::Body(bkey(0))), "Select accepts everything");
@@ -7986,7 +7987,7 @@ mod tests {
         let doc = doc_with_a_sketch();
         let mut selection = SceneSelection::default();
         // A constrainable line plus a body (which the constraint picker should reject).
-        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(lkey(0)), true);
         crate::selection::click_scene_selection(&mut selection, SceneElement::Body(bkey(3)), true);
         let input = ContextInput {
             tool: Tool::Constraint,
@@ -8000,7 +8001,7 @@ mod tests {
         let picker = context_pane_content(&input)
             .selection_picker
             .expect("constraint picker");
-        assert_eq!(picker.picked(), &[SceneElement::Line(0)], "body filtered out");
+        assert_eq!(picker.picked(), &[SceneElement::Line(lkey(0))], "body filtered out");
         assert!(picker.is_focused(), "active tool's picker is focused");
         assert!(!picker.accepts(&doc, &SceneElement::Body(bkey(0))));
     }
@@ -8039,7 +8040,7 @@ mod tests {
         );
         // Body-only filter, and the red "cut" highlight override in place of the default.
         assert!(view.picker.accepts(&doc, &SceneElement::Body(bkey(0))));
-        assert!(!view.picker.accepts(&doc, &SceneElement::Line(0)));
+        assert!(!view.picker.accepts(&doc, &SceneElement::Line(lkey(0))));
         assert_eq!(
             view.picker.selected_color(crate::theme::FOCUS_ACCENT),
             crate::theme::CUT_ACCENT
@@ -8120,7 +8121,7 @@ mod tests {
         assert_eq!(control.current, Some(Some(unobtainium)));
 
         // A non-body in the selection takes the picker away.
-        selection.insert(SceneElement::Line(0));
+        selection.insert(SceneElement::Line(lkey(0)));
         assert!(context_pane_content(&input(&doc, &selection)).material.is_none());
 
         // And so does running a tool (#934): the pane is that tool's controls then.
@@ -8189,7 +8190,7 @@ mod tests {
             pickers[0].picker.picked(),
             &[SceneElement::Body(bkey(1)), SceneElement::Body(bkey(4))]
         );
-        assert!(!pickers[0].picker.accepts(&doc, &SceneElement::Line(0)));
+        assert!(!pickers[0].picker.accepts(&doc, &SceneElement::Line(lkey(0))));
         // Move doesn't consume its bodies, so it keeps the default (non-red) highlight.
         assert_eq!(
             pickers[0].picker.selected_color(crate::theme::FOCUS_ACCENT),
@@ -8529,7 +8530,7 @@ mod tests {
         let doc = doc_with_a_sketch();
         let selection = SceneSelection::default();
         let point = SceneElement::Origin;
-        let line = SceneElement::Line(0);
+        let line = SceneElement::Line(lkey(0));
         let plane_input = ContextInput {
             tool: Tool::ConstructionPlane,
             plane_tool: Some(PlaneToolControl {
@@ -8574,7 +8575,7 @@ mod tests {
         let revolve_input = ContextInput {
             tool: Tool::Revolve,
             revolve: Some(RevolveControl {
-                faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+                faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
                 axis: Some(crate::model::RevolveAxis::Z),
                 axis_focused: false,
                 symmetric: false,
@@ -8591,7 +8592,10 @@ mod tests {
         assert_eq!(
             profile.picker.picked(),
             &[SceneElement::SketchFace(crate::model::FaceId::Polygon(vec![
-                0, 1, 2, 3
+                lkey(0),
+                lkey(1),
+                lkey(2),
+                lkey(3)
             ]))],
             "the profile keeps its analytic-face identity"
         );
@@ -8605,7 +8609,7 @@ mod tests {
         );
         assert!(matches!(axis.picker.limit(), PickLimit::Finite(1)), "one axis");
         assert!(
-            axis.picker.accepts(&doc, &SceneElement::Line(0)),
+            axis.picker.accepts(&doc, &SceneElement::Line(lkey(0))),
             "a straight sketch line is a valid axis"
         );
         assert!(
@@ -9074,9 +9078,9 @@ mod tests {
     fn shows_name_when_single_element_selected() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         assert_eq!(
             context_pane_content(&input(&doc, &sel)),
             ContextPaneContent {
@@ -9086,7 +9090,7 @@ mod tests {
             dimension_edit: None,
             treatment: None,
                 name: Some(NameControl {
-                    element: SceneElement::Line(0),
+                    element: SceneElement::Line(lkey(0)),
                 }),
                 curve_mode: None,
             rect_anchor: None,
@@ -9104,14 +9108,14 @@ mod tests {
                 // #213: the Select tool surfaces the selection through the unified element picker.
                 selection_picker: Some({
                     let mut p = ElementPicker::select_everything();
-                    p.set_picked(&doc, [SceneElement::Line(0)]);
+                    p.set_picked(&doc, [SceneElement::Line(lkey(0))]);
                     p
                 }),
                 tool_pickers: vec![ToolPickerView {
                     heading: "Selection",
                     picker: {
                         let mut p = ElementPicker::select_everything();
-                        p.set_picked(&doc, [SceneElement::Line(0)]);
+                        p.set_picked(&doc, [SceneElement::Line(lkey(0))]);
                         p
                     },
                     target: PickerTarget::Selection,
@@ -9209,9 +9213,9 @@ mod tests {
     fn hides_units_control_when_non_sketch_element_selected() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         assert_eq!(context_pane_content(&input(&doc, &sel)).units, None);
     }
 
@@ -9292,9 +9296,9 @@ mod tests {
     fn draw_mode_takes_precedence_over_selection() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         let content = context_pane_content(&ContextInput {
             doc: &doc,
             selection: &sel,
@@ -9368,7 +9372,7 @@ mod tests {
             dimension_edit: None,
             treatment: None,
                 name: Some(NameControl {
-                    element: SceneElement::Line(0),
+                    element: SceneElement::Line(lkey(0)),
                 }),
                 curve_mode: None,
             rect_anchor: None,
@@ -9387,14 +9391,14 @@ mod tests {
                 // picker like every other tool (#958).
                 selection_picker: Some({
                     let mut p = ElementPicker::select_everything();
-                    p.set_picked(&doc, [SceneElement::Line(0)]);
+                    p.set_picked(&doc, [SceneElement::Line(lkey(0))]);
                     p
                 }),
             tool_pickers: vec![ToolPickerView {
                 heading: "Selection",
                 picker: {
                     let mut p = ElementPicker::select_everything();
-                    p.set_picked(&doc, [SceneElement::Line(0)]);
+                    p.set_picked(&doc, [SceneElement::Line(lkey(0))]);
                     p
                 },
                 target: PickerTarget::Selection,

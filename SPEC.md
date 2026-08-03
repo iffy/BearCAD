@@ -201,6 +201,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   extruded profile on it reads as gone rather than moving onto the next circle. A script
   names a circle by its **ordinal** among the live ones, resolved to a key at the boundary —
   which is also why `FaceId::from_script` now takes the document.
+- **Line identity (#1055):** `Document::lines` is an `arena::Arena`, and a line is named by a
+  `LineKey` — `SceneElement`/`HierarchyNode::Line`, `FaceId::Polygon`, `ExtrudeFace::Polygon`,
+  `ConstraintLine::Line`, `ConstraintPoint::LineEndpoint`, `DistanceTarget::LineLength`,
+  `RevolveAxis::Line`, `ParameterSource::LineLength`/`LineDistance`/`LineAngle`, a sweep's
+  path, a bridging line's `chamfer_fillet_parent`, and the in-sketch operations' line targets,
+  cutters, and outputs. Deleting a line removes it, so a length dimension, a mirror target, or
+  a polygon profile that named it reads as gone rather than sliding onto the next line. A
+  script names a line by its **ordinal** among the live ones, resolved to a key at the
+  boundary.
 - **Sketch identity (#1055):** `Document::sketches` is an `arena::Arena` and `model::SketchId`
   *is* its key — so every line, circle, constraint, sketch text, extrusion, in-sketch
   operation, drawing view, and open-sketch session names its sketch by key. Deleting a sketch

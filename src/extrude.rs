@@ -182,7 +182,7 @@ pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
     }
     // Construction geometry is scaffolding, not "the model" — zoom-to-fit (#164) frames
     // only real geometry.
-    for line in doc.lines.iter().filter(|l| !l.deleted && !l.construction) {
+    for line in doc.lines.values().filter(|l| !l.construction) {
         if let Some(frame) = sketch_geometry_frame(doc, line.sketch) {
             for (u, v) in line.sample_local(crate::model::BEZIER_SEGMENTS) {
                 extend(local_to_world(&frame, u, v));
@@ -1674,7 +1674,7 @@ pub fn sketch_repeat_extent(
         max_p = max_p.max(p);
     };
     for &li in &op.line_targets {
-        let l = doc.lines.get(li).filter(|l| !l.deleted)?;
+        let l = doc.lines.get(li)?;
         extend(l.x0 * du + l.y0 * dv);
         extend(l.x1 * du + l.y1 * dv);
     }
@@ -3230,7 +3230,7 @@ pub fn loft_section_from_element(
             })
         }
         SceneElement::Line(li) => {
-            let line = doc.lines.get(li).filter(|l| !l.deleted && !l.construction)?;
+            let line = doc.lines.get(li).filter(|l| !l.construction)?;
             crate::polygon::closed_line_loops(doc, line.sketch)
                 .into_iter()
                 .find(|lines| lines.contains(&li))
@@ -3516,7 +3516,7 @@ pub fn selection_world_bounds(
                 if let Some((line, frame)) = doc
                     .lines
                     .get(li)
-                    .filter(|l| !l.deleted)
+                    
                     .and_then(|l| Some((l, sketch_geometry_frame(doc, l.sketch)?)))
                 {
                     for (u, v) in line.sample_local(crate::model::BEZIER_SEGMENTS) {
@@ -5188,7 +5188,7 @@ pub fn extrude_face_uv_loop(
         }
         ExtrudeFace::Polygon(lines) => {
             let first = doc.lines.get(*lines.first()?)?;
-            if first.deleted || first.sketch != sketch {
+            if first.sketch != sketch {
                 return None;
             }
             crate::polygon::loop_vertices_uv(doc, sketch, lines)
@@ -5378,9 +5378,9 @@ pub fn resolve_boolean_click(
 
 /// World-space boundary loop and outward normal of a closed polygon, given its ordered
 /// line indices (#66). `None` if any line is missing/deleted or the loop isn't closed.
-fn polygon_profile_world(doc: &Document, lines: &[usize]) -> Option<(Vec<Vec3>, Vec3)> {
+fn polygon_profile_world(doc: &Document, lines: &[crate::model::LineKey]) -> Option<(Vec<Vec3>, Vec3)> {
     let first = doc.lines.get(*lines.first()?)?;
-    if first.deleted || lines.iter().any(|&li| doc.lines.get(li).is_none_or(|l| l.deleted)) {
+    if lines.iter().any(|&li| !doc.lines.contains(li)) {
         return None;
     }
     let frame = sketch_geometry_frame(doc, first.sketch)?;
@@ -6437,6 +6437,7 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
@@ -7267,7 +7268,7 @@ mod tests {
         assert!((anchor.y - 2.0).abs() < 1e-4, "centroid across the axis, got {anchor:?}");
         // No targets, or an axis that can't resolve, gives no gizmo.
         assert!(repeat_gizmo_anchor(&doc, &[], crate::model::RevolveAxis::X).is_none());
-        assert!(repeat_gizmo_anchor(&doc, &[bkey(0)], crate::model::RevolveAxis::Line(9)).is_none());
+        assert!(repeat_gizmo_anchor(&doc, &[bkey(0)], crate::model::RevolveAxis::Line(lkey(9))).is_none());
     }
 
     /// #643: a body feature edge resolves as an axis (origin `a`, unit direction `a → b`) and
@@ -7366,9 +7367,9 @@ mod tests {
         use crate::model::{Line, RepeatMode, RepeatOperation, RevolveAxis};
         let (mut doc, sketch) = sketch_doc();
         // A quarter-circle-ish bend from (0,0) to (40,40).
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 40.0));
-        doc.lines[0].bezier = Some([(40.0, 0.0), (40.0, 0.0)]);
-        assert!(doc.lines[0].is_curved());
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 40.0));
+        doc.lines[lkey(0)].bezier = Some([(40.0, 0.0), (40.0, 0.0)]);
+        assert!(doc.lines[lkey(0)].is_curved());
         let op = RepeatOperation {
             targets: Vec::new(),
             plane_targets: vec![pkey(0)],
@@ -7376,7 +7377,7 @@ mod tests {
             sketch_targets: Vec::new(),
             sketch_plane_outputs: Vec::new(),
             sketch_outputs: Vec::new(),
-            axis: RevolveAxis::Line(0),
+            axis: RevolveAxis::Line(lkey(0)),
             path_circle: None,
             around_axis: false,
             flip: false,
@@ -7414,8 +7415,8 @@ mod tests {
         assert_eq!(repeat_offsets(&doc, &turned), repeat_offsets(&doc, &op));
 
         // A straight line is not a path polyline — it keeps the along-the-axis maths.
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        assert!(repeat_path_polyline(&doc, RevolveAxis::Line(1)).is_none());
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        assert!(repeat_path_polyline(&doc, RevolveAxis::Line(lkey(1))).is_none());
         assert!(repeat_path_polyline(&doc, RevolveAxis::Z).is_none());
 
         // A circle is a path too (#840): the copies ride round its circumference.
@@ -7496,12 +7497,12 @@ mod tests {
 
         // A curved path is followed from the other end rather than stepped backwards off its
         // start — so the copies stay on the path either way.
-        doc.lines.push(Line {
+        doc.lines.insert(Line {
             bezier: Some([(20.0, 0.0), (40.0, 20.0)]),
             ..Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 40.0)
         });
         let curved = |doc: &Document, flip: bool| {
-            let mut o = op(RevolveAxis::Line(0), false, flip);
+            let mut o = op(RevolveAxis::Line(lkey(0)), false, flip);
             o.spacing = "15".to_string();
             step1(doc, &o)
         };
@@ -7630,12 +7631,12 @@ mod tests {
     fn sketch_repeat_extent_spans_the_picked_entities_along_the_direction() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.circles
             .insert(crate::model::Circle::from_local_center_radius(sketch, 20.0, 0.0, 3.0, 0.0));
         let op = |dir_u: f32,
                   dir_v: f32,
-                  lines: Vec<usize>,
+                  lines: Vec<crate::model::LineKey>,
                   circles: Vec<crate::model::CircleKey>| {
             crate::model::SketchRepeatOperation {
                 sketch,
@@ -7653,20 +7654,20 @@ mod tests {
             }
         };
         // Along U the line spans 0..10.
-        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![0], Vec::new())).unwrap();
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![lkey(0)], Vec::new())).unwrap();
         assert!((e - 10.0).abs() < 1e-3, "got {e}");
         // Along V it's edge-on: no extent.
-        let e = sketch_repeat_extent(&doc, &op(0.0, 1.0, vec![0], Vec::new())).unwrap();
+        let e = sketch_repeat_extent(&doc, &op(0.0, 1.0, vec![lkey(0)], Vec::new())).unwrap();
         assert!(e.abs() < 1e-3, "got {e}");
         // The circle contributes its radius either side of its centre.
         let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), vec![rkey(0)])).unwrap();
         assert!((e - 6.0).abs() < 1e-3, "got {e}");
         // Both together span 0..23.
-        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![0], vec![rkey(0)])).unwrap();
+        let e = sketch_repeat_extent(&doc, &op(1.0, 0.0, vec![lkey(0)], vec![rkey(0)])).unwrap();
         assert!((e - 23.0).abs() < 1e-3, "got {e}");
         // Nothing picked, or a degenerate direction, has no extent to measure.
         assert!(sketch_repeat_extent(&doc, &op(1.0, 0.0, Vec::new(), Vec::new())).is_none());
-        assert!(sketch_repeat_extent(&doc, &op(0.0, 0.0, vec![0], Vec::new())).is_none());
+        assert!(sketch_repeat_extent(&doc, &op(0.0, 0.0, vec![lkey(0)], Vec::new())).is_none());
     }
 
     /// #260: the live-edit descendant preview relies on [`body_solid_mesh_uncached_pub`] being a
@@ -8744,11 +8745,11 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let path_sketch = vertical_path_sketch(&mut doc);
-        doc.lines.push(Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 30.0));
+        doc.lines.insert(Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 30.0));
         let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
-            path: vec![doc.lines.len() - 1],
+            path: vec![*doc.lines.keys().collect::<Vec<_>>().iter().rev().nth(0).unwrap()],
             mode: crate::model::SweepMode::NewBody,
             name: None,
         };
@@ -8766,12 +8767,15 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
-        doc.lines.push(Line::from_local_endpoints(ps, 0.0, 20.0, 15.0, 20.0));
-        doc.lines.push(Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
+        doc.lines.insert(Line::from_local_endpoints(ps, 0.0, 20.0, 15.0, 20.0));
+        doc.lines.insert(Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
         let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
-            path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
+            path: vec![
+                *doc.lines.keys().collect::<Vec<_>>().iter().rev().nth(1).unwrap(),
+                doc.lines.keys().last().unwrap(),
+            ],
             mode: crate::model::SweepMode::NewBody,
             name: None,
         };
@@ -8797,12 +8801,15 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
-        doc.lines.push(Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
-        doc.lines.push(Line::from_local_endpoints(ps, 40.0, 0.0, 40.0, 20.0));
+        doc.lines.insert(Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
+        doc.lines.insert(Line::from_local_endpoints(ps, 40.0, 0.0, 40.0, 20.0));
         let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
-            path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
+            path: vec![
+                *doc.lines.keys().collect::<Vec<_>>().iter().rev().nth(1).unwrap(),
+                doc.lines.keys().last().unwrap(),
+            ],
             mode: crate::model::SweepMode::NewBody,
             name: None,
         };
@@ -8826,11 +8833,11 @@ mod tests {
         // Cut tool: a 4x4 profile swept straight through the plate (z -10..10).
         let bit = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
-        doc.lines.push(Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
+        doc.lines.insert(Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
         doc.sweeps.insert(crate::model::Sweep {
             sketch,
             faces: vec![bit],
-            path: vec![doc.lines.len() - 1],
+            path: vec![*doc.lines.keys().collect::<Vec<_>>().iter().rev().nth(0).unwrap()],
             mode: crate::model::SweepMode::Cut(vec![bkey(0)]),
             name: None,
         });
@@ -9006,14 +9013,14 @@ mod tests {
         );
         let polygon = crate::model::LoftSection {
             sketch: skey(0),
-            face: ExtrudeFace::Polygon(vec![4, 5, 6]),
+            face: ExtrudeFace::Polygon(vec![lkey(4), lkey(5), lkey(6)]),
         };
         assert_eq!(
             loft_section_scene_elements(&polygon),
             vec![
-                SceneElement::Line(4),
-                SceneElement::Line(5),
-                SceneElement::Line(6),
+                SceneElement::Line(lkey(4)),
+                SceneElement::Line(lkey(5)),
+                SceneElement::Line(lkey(6)),
             ]
         );
     }
@@ -9156,9 +9163,9 @@ mod tests {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
 
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
         let coincident = |a, b| Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
@@ -9170,9 +9177,9 @@ mod tests {
             name: None,
         };
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        doc.constraints.insert(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.insert(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
-        doc.constraints.insert(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        doc.constraints.insert(coincident(point(lkey(0), LineEnd::End), point(lkey(1), LineEnd::Start)));
+        doc.constraints.insert(coincident(point(lkey(1), LineEnd::End), point(lkey(2), LineEnd::Start)));
+        doc.constraints.insert(coincident(point(lkey(2), LineEnd::End), point(lkey(0), LineEnd::Start)));
 
         let loops = crate::polygon::closed_line_loops(&doc, sketch);
         assert_eq!(loops.len(), 1);
@@ -9199,7 +9206,10 @@ mod tests {
     /// closed into one loop with `Coincident` constraints. Returns the closed loop's ordered
     /// line indices. Shape must match `segs[]` in the script (the script also rotates it into
     /// the sketch's (u, v) for the top view, which doesn't change area/volume).
-    fn push_letter_b_outline(doc: &mut Document, sketch: crate::model::SketchId) -> Vec<usize> {
+    fn push_letter_b_outline(
+        doc: &mut Document,
+        sketch: crate::model::SketchId,
+    ) -> Vec<crate::model::LineKey> {
         use crate::model::{
             Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd,
         };
@@ -9212,18 +9222,19 @@ mod tests {
             ((14.0, 0.0), (0.0, 0.0), None),
         ];
         let n = segs.len();
+        let mut keys = Vec::new();
         for (a, b, bez) in segs {
             let mut line = Line::from_local_endpoints(sketch, a.0, a.1, b.0, b.1);
             line.bezier = bez;
-            doc.lines.push(line);
+            keys.push(doc.lines.insert(line));
         }
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
         for i in 0..n {
             doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
-                    a: ConstraintEntity::Point(point(i, LineEnd::End)),
-                    b: ConstraintEntity::Point(point((i + 1) % n, LineEnd::Start)),
+                    a: ConstraintEntity::Point(point(keys[i], LineEnd::End)),
+                    b: ConstraintEntity::Point(point(keys[(i + 1) % n], LineEnd::Start)),
                 },
                 expression: String::new(),
                 dim_offset: None,
@@ -9260,19 +9271,20 @@ mod tests {
             ((lx, ty), (rx, cy), Some([(lx + kx, ty), (rx, cy + ky)])), // top-right arc
             ((rx, cy), (lx, by), Some([(rx, cy - ky), (lx + kx, by)])), // bottom-right arc
         ];
-        let base = doc.lines.len();
+        let mut keys = Vec::new();
         for (p0, p1, bez) in parts {
             let mut line = Line::from_local_endpoints(sketch, p0.0, p0.1, p1.0, p1.1);
             line.bezier = bez;
-            doc.lines.push(line);
+            keys.push(doc.lines.insert(line));
         }
+        let base = keys[0];
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
         for k in 0..3 {
             doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
-                    a: ConstraintEntity::Point(point(base + k, LineEnd::End)),
-                    b: ConstraintEntity::Point(point(base + (k + 1) % 3, LineEnd::Start)),
+                    a: ConstraintEntity::Point(point(keys[k], LineEnd::End)),
+                    b: ConstraintEntity::Point(point(keys[(k + 1) % 3], LineEnd::Start)),
                 },
                 expression: String::new(),
                 dim_offset: None,

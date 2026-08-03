@@ -222,7 +222,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
 
     let mut row_id = 0i64;
     save_arena_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;
-    save_indexed_nodes(&tx, &mut row_id, "line", &doc.lines)?;
+    save_arena_nodes(&tx, &mut row_id, "line", &doc.lines)?;
     save_arena_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
     save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
     save_arena_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
@@ -300,25 +300,6 @@ fn load_arena_entities<T: serde::de::DeserializeOwned>(
         entries.push(serde_json::from_str(&payload).map_err(|e| e.to_string())?);
     }
     Ok(crate::arena::Arena::from_keyed(entries))
-}
-
-fn save_indexed_nodes<T: serde::Serialize>(
-    tx: &rusqlite::Transaction<'_>,
-    row_id: &mut i64,
-    kind: &str,
-    entities: &[T],
-) -> Result<()> {
-    for (index, entity) in entities.iter().enumerate() {
-        let payload = serde_json::to_string(entity).map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO dag_nodes (id, component_id, kind, payload)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![*row_id, index as i64, kind, payload],
-        )
-        .map_err(|e| e.to_string())?;
-        *row_id += 1;
-    }
-    Ok(())
 }
 
 fn load_shape_order_meta(conn: &Connection) -> Option<Vec<ShapeKind>> {
@@ -445,7 +426,7 @@ fn load_legacy_document_nodes(
 ) -> Result<(
     crate::arena::Arena<Parameter>,
     crate::arena::Arena<Sketch>,
-    Vec<Line>,
+    crate::arena::Arena<Line>,
     crate::arena::Arena<Circle>,
     crate::arena::Arena<Constraint>,
     Vec<ConstructionPlane>,
@@ -465,7 +446,7 @@ fn load_legacy_document_nodes(
 
     let mut parameters = crate::arena::Arena::new();
     let mut sketches = crate::arena::Arena::new();
-    let mut lines = Vec::new();
+    let mut lines = crate::arena::Arena::new();
     let mut circles = crate::arena::Arena::new();
     let mut constraints = crate::arena::Arena::new();
     let mut construction_planes = Vec::new();
@@ -480,7 +461,7 @@ fn load_legacy_document_nodes(
             }
             "line" => {
                 let line: Line = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                lines.push(line);
+                lines.insert(line);
                 shape_order.push(ShapeKind::Line);
             }
             "circle" => {
@@ -543,7 +524,7 @@ pub fn open(path: &str) -> Result<Document> {
     ) = if let Some(shape_order) = load_shape_order_meta(&conn) {
         let parameters = load_arena_entities(&conn, "parameter")?;
         let sketches = load_arena_entities(&conn, "sketch")?;
-        let lines = load_indexed_entities(&conn, "line")?;
+        let lines = load_arena_entities(&conn, "line")?;
         let circles = load_arena_entities(&conn, "circle")?;
         let constraints = load_arena_entities(&conn, "constraint")?;
         let dag_planes = load_indexed_entities(&conn, "construction_plane")?;
@@ -645,6 +626,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
@@ -670,7 +652,7 @@ mod tests {
         let mut doc = Document::default();
         let sketch = plane_sketch(&mut doc);
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
         doc.sketch_texts.insert(crate::model::SketchText {
             sketch,
             text: "Hi".to_string(),
@@ -688,7 +670,7 @@ mod tests {
             font_bytes: Vec::new(),
             pin: Some((
                 crate::model::ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: crate::model::LineEnd::Start,
                 },
                 crate::model::TextAnchor::Center,
@@ -745,7 +727,7 @@ mod tests {
         for circle in doc.circles.values() {
             anchors.push(crate::face::circle_world_center(doc, circle).unwrap());
         }
-        for line in doc.lines.iter() {
+        for line in doc.lines.values() {
             let (a, b) = crate::face::line_world_endpoints(doc, line).unwrap();
             anchors.push(a);
             anchors.push(b);
@@ -764,10 +746,10 @@ mod tests {
         let sketch = plane_sketch(&mut doc);
         crate::construction::add_line_rectangle(&mut doc, sketch, 1.0, 2.0, 4.0, 6.0, [false; 4]);
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 1.0, 1.0, 1.0, 6.0));
+            .insert(Line::from_local_endpoints(sketch, 1.0, 1.0, 1.0, 6.0));
         doc.shape_order.push(ShapeKind::Line);
 
         save(&path, &doc).unwrap();
@@ -1020,6 +1002,76 @@ mod tests {
         }
     }
 
+    /// #1055: lines keep their keys across a save, and so does everything that names one — a
+    /// constraint on its endpoint, a length dimension, an extruded polygon profile, and the
+    /// bridging line that records it as its chamfer parent.
+    #[test]
+    fn line_keys_survive_a_save_and_reload() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let line = |y: f32| crate::model::Line::from_local_endpoints(sketch, 0.0, y, 10.0, y);
+        let doomed = doc.lines.insert(line(1.0));
+        let kept = doc.lines.insert(line(7.0));
+        assert!(doc.lines.remove(doomed).is_some());
+        let mut bridge = line(9.0);
+        bridge.chamfer_fillet_parent = Some(kept);
+        let bridge = doc.lines.insert(bridge);
+        doc.constraints.insert(crate::model::Constraint {
+            sketch,
+            kind: crate::model::ConstraintKind::Distance {
+                target: crate::model::DistanceTarget::LineLength(kept),
+            },
+            expression: "10".to_string(),
+            dim_offset: None,
+            name: None,
+        });
+        let extrusion = doc.extrusions.insert(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![kept, bridge])],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            edge_treatments: Vec::new(),
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_line_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.lines.len(), 2, "{suffix}");
+            assert_eq!(
+                loaded.lines.get(kept).map(|l| l.y0),
+                Some(7.0),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.lines.get(bridge).and_then(|l| l.chamfer_fillet_parent),
+                Some(kept),
+                "{suffix}: the bridge still names its chamfer parent"
+            );
+            assert!(
+                loaded.constraints.values().any(|c| matches!(
+                    &c.kind,
+                    crate::model::ConstraintKind::Distance {
+                        target: crate::model::DistanceTarget::LineLength(i)
+                    } if *i == kept
+                )),
+                "{suffix}: the length dimension still names it"
+            );
+            assert_eq!(
+                loaded.extrusions.get(extrusion).map(|e| e.faces.clone()),
+                Some(vec![crate::model::ExtrudeFace::Polygon(vec![kept, bridge])]),
+                "{suffix}: the extruded profile still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: sketches keep their keys across a save, and so does everything that names one
     /// — a line, a circle, a constraint, an extrusion.
     #[test]
@@ -1029,7 +1081,7 @@ mod tests {
         let kept = doc.add_sketch(crate::model::FaceId::Circle(rkey(3)));
         assert!(doc.sketches.remove(doomed).is_some());
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(kept, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(kept, 0.0, 0.0, 10.0, 0.0));
         let extrusion = doc.extrusions.insert(crate::model::Extrusion {
             sketch: kept,
             faces: Vec::new(),
@@ -1054,7 +1106,7 @@ mod tests {
                 Some(crate::model::FaceId::Circle(rkey(3))),
                 "{suffix}: the survivor did not shift into the hole"
             );
-            assert_eq!(loaded.lines[0].sketch, kept, "{suffix}: its line still names it");
+            assert_eq!(loaded.lines[lkey(0)].sketch, kept, "{suffix}: its line still names it");
             assert_eq!(
                 loaded.extrusions.get(extrusion).map(|e| e.sketch),
                 Some(kept),
@@ -1071,10 +1123,12 @@ mod tests {
         let coincident = |line: usize| crate::model::Constraint {
             sketch: skey(0),
             kind: crate::model::ConstraintKind::Coincident {
-                a: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(line)),
-                b: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(
+                a: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(lkey(
+                    line,
+                ))),
+                b: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(lkey(
                     line + 1,
-                )),
+                ))),
             },
             expression: String::new(),
             dim_offset: None,
@@ -1574,7 +1628,7 @@ mod tests {
         let sweep = |path: Vec<usize>| crate::model::Sweep {
             sketch: skey(0),
             faces: Vec::new(),
-            path,
+            path: path.into_iter().map(lkey).collect(),
             mode: crate::model::SweepMode::NewBody,
             name: None,
         };
@@ -1599,7 +1653,7 @@ mod tests {
             assert_eq!(loaded.sweeps.len(), 1, "{suffix}");
             assert_eq!(
                 loaded.sweeps.get(kept).map(|s| s.path.clone()),
-                Some(vec![1, 2]),
+                Some(vec![lkey(1), lkey(2)]),
                 "{suffix}: the surviving sweep did not shift into the hole"
             );
             assert_eq!(
@@ -2014,7 +2068,7 @@ mod tests {
         let s1 = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         crate::construction::add_line_rectangle(&mut doc, s1, 3.0, 4.0, 10.0, 10.0, [false; 4]);
         doc.lines
-            .push(Line::from_local_endpoints(s1, -2.0, 1.0, 8.0, 6.0));
+            .insert(Line::from_local_endpoints(s1, -2.0, 1.0, 8.0, 6.0));
         doc.shape_order.push(ShapeKind::Line);
 
         let before = element_world_anchors(&doc);
@@ -2024,7 +2078,7 @@ mod tests {
         assert_world_anchors_match(&before, &after);
 
         // A rectangle edge on the offset plane should keep its world height.
-        let (a, _) = crate::face::line_world_endpoints(&loaded, &loaded.lines[0]).unwrap();
+        let (a, _) = crate::face::line_world_endpoints(&loaded, &loaded.lines[lkey(0)]).unwrap();
         assert!(
             (a.z - 25.0).abs() < 1e-3,
             "geometry on the offset plane should keep its world height"
@@ -2112,7 +2166,7 @@ mod tests {
             FaceId::ConstructionPlane(pkey(1)),
             "sketch should stay on the offset plane"
         );
-        let (a, _) = crate::face::line_world_endpoints(&loaded, &loaded.lines[0]).unwrap();
+        let (a, _) = crate::face::line_world_endpoints(&loaded, &loaded.lines[lkey(0)]).unwrap();
         assert!(
             (a.z - 25.0).abs() < 1e-3,
             "loaded geometry should keep its offset-plane world position"
@@ -2154,7 +2208,7 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
         doc.shape_order.push(ShapeKind::Line);
 
         save(&path, &doc).unwrap();
@@ -2163,7 +2217,7 @@ mod tests {
             loaded.construction_planes.len() >= 2,
             "legacy sketch references to plane 1 should not crash on load"
         );
-        assert!(crate::face::line_world_endpoints(&loaded, &loaded.lines[0]).is_some());
+        assert!(crate::face::line_world_endpoints(&loaded, &loaded.lines[lkey(0)]).is_some());
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -2185,7 +2239,7 @@ mod tests {
         assert_eq!(loaded.sketches.len(), 2);
         assert_eq!(loaded.sketches[skey(0)].face, FaceId::ConstructionPlane(pkey(0)));
         assert_eq!(loaded.sketches[skey(1)].face, FaceId::ConstructionPlane(pkey(0)));
-        assert_eq!(loaded.lines[0].sketch, s0);
+        assert_eq!(loaded.lines[lkey(0)].sketch, s0);
         let _ = s1;
 
         std::fs::remove_file(&path).unwrap();
@@ -2380,7 +2434,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_tombstoned_entities() {
+    fn round_trips_removed_entities() {
         let dir = std::env::temp_dir();
         let path = dir.join("bearcad_tombstone_roundtrip.bearcad");
         let path = path.to_string_lossy().to_string();
@@ -2388,9 +2442,9 @@ mod tests {
 
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.lines[0].deleted = true;
+        doc.lines.remove(lkey(0));
         // A parameter that was removed for real (#1055): the file must not bring it back,
         // and its key must not come back to life either.
         let gone = doc.parameters.insert(Parameter {
@@ -2411,8 +2465,8 @@ mod tests {
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
-        assert!(loaded.lines[0].deleted);
-        assert_eq!(loaded.lines.len(), 1);
+        assert!(!loaded.lines.contains(lkey(0)));
+        assert_eq!(loaded.lines.len(), 0);
         assert_eq!(loaded.parameters.len(), 1);
         assert_eq!(
             loaded.parameters.get(kept).map(|p| p.name.as_str()),
@@ -2436,27 +2490,27 @@ mod tests {
 
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         doc.shape_order.push(ShapeKind::Line);
         let mut bridge = Line::from_local_endpoints(sketch, 7.0, 0.0, 10.0, 3.0);
-        bridge.chamfer_fillet_parent = Some(0);
-        doc.lines.push(bridge);
+        bridge.chamfer_fillet_parent = Some(lkey(0));
+        doc.lines.insert(bridge);
         doc.shape_order.push(ShapeKind::Line);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.lines.len(), 3);
-        assert_eq!(loaded.lines[0].chamfer_fillet_parent, None);
-        assert_eq!(loaded.lines[1].chamfer_fillet_parent, None);
-        assert_eq!(loaded.lines[2].chamfer_fillet_parent, Some(0));
+        assert_eq!(loaded.lines[lkey(0)].chamfer_fillet_parent, None);
+        assert_eq!(loaded.lines[lkey(1)].chamfer_fillet_parent, None);
+        assert_eq!(loaded.lines[lkey(2)].chamfer_fillet_parent, Some(lkey(0)));
 
         std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
-    fn round_trips_tombstoned_line_with_alive_sibling() {
+    fn round_trips_a_deleted_line_with_an_alive_sibling() {
         use crate::document_lifecycle::tombstone_element;
         use crate::hierarchy::SceneElement;
         use crate::model::{Constraint, ConstraintKind, ConstraintLine};
@@ -2468,32 +2522,32 @@ mod tests {
 
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
             expression: String::new(),
             dim_offset: None,
             name: None,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        tombstone_element(&mut doc, SceneElement::Line(0));
+        tombstone_element(&mut doc, SceneElement::Line(lkey(0)));
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
-        assert_eq!(loaded.lines.len(), 2);
-        assert!(loaded.lines[0].deleted);
-        assert!(!loaded.lines[1].deleted);
+        assert_eq!(loaded.lines.len(), 1);
+        assert!(!loaded.lines.contains(lkey(0)));
+        assert!(loaded.lines.contains(lkey(1)));
         assert_eq!(loaded.constraints.len(), 1);
         let health = crate::document_health::recompute_document_health(&loaded);
         assert_eq!(
-            health.element_status(SceneElement::Line(1)),
+            health.element_status(SceneElement::Line(lkey(1))),
             crate::document_health::HealthStatus::Unstable
         );
 
@@ -2581,7 +2635,7 @@ mod tests {
         doc.shape_order.push(ShapeKind::Parameter);
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc
     }

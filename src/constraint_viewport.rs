@@ -356,6 +356,7 @@ pub fn draw_constraint_icons(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
@@ -366,15 +367,15 @@ mod tests {
     fn doc_with_parallel_lines() -> (Document, crate::model::ConstraintKey) {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         let key = doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
             expression: String::new(),
             dim_offset: None,
@@ -397,19 +398,19 @@ mod tests {
     fn coincident_constraint_places_single_icon() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 5.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         let key = doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: crate::model::LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: crate::model::LineEnd::Start,
                 }),
             },
@@ -430,7 +431,7 @@ mod tests {
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selection,
-            SceneElement::Line(0),
+            SceneElement::Line(lkey(0)),
             false,
         );
         let graphics =

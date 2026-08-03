@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub enum FaceId {
     Circle(CircleKey),
     /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
-    Polygon(Vec<usize>),
+    Polygon(Vec<LineKey>),
     ConstructionPlane(ConstructionPlaneKey),
     /// A planar cap face of an extruded body: one profile face of an extrusion,
     /// at either the base (`top = false`) or offset (`top = true`) end.
@@ -120,13 +120,13 @@ pub type SketchId = crate::arena::Key<Sketch>;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParameterSource {
-    LineLength(usize),
+    LineLength(LineKey),
     /// Distance between two points (#432), measured in world space (2D or 3D).
     PointDistance(ConstraintPoint, ConstraintPoint),
     /// Distance between two parallel lines (#432).
-    LineDistance(usize, usize),
+    LineDistance(LineKey, LineKey),
     /// Angle between two non-parallel lines in the same sketch (#432), stored in degrees.
-    LineAngle(usize, usize),
+    LineAngle(LineKey, LineKey),
     /// Length of a **body's feature edge** (#647), keyed the way
     /// [`crate::hierarchy::SceneElement::BodyEdge`] is: the body plus the edge's quantized
     /// world endpoints. Re-resolved against the body's live mesh, so it reads the current
@@ -222,17 +222,15 @@ pub struct Line {
     /// User-visible label in the Elements pane; empty uses the default.
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
     /// Cubic-bezier tangent handles in face-local coords: `[near (x0,y0), near (x1,y1)]`.
     /// `None` means a straight segment (the common case).
     #[serde(default)]
     pub bezier: Option<[(f32, f32); 2]>,
     /// Set when this line is the bridging line created by a chamfer/fillet vertex treatment
-    /// (#37/#38): the index of the (lower-index) trimmed line it nests under in the Elements
-    /// pane (see [`crate::hierarchy`], #76). `None` for an ordinary line.
+    /// (#37/#38): the trimmed line it nests under in the Elements pane (see
+    /// [`crate::hierarchy`], #76). `None` for an ordinary line.
     #[serde(default)]
-    pub chamfer_fillet_parent: Option<usize>,
+    pub chamfer_fillet_parent: Option<LineKey>,
     /// Set when this line is an **associative projection** of external 3D geometry into its
     /// sketch (#140): each geometry recompute re-resolves the source and rewrites the
     /// endpoints (see `crate::projection`). Projected lines render dashed in their own color
@@ -241,6 +239,9 @@ pub struct Line {
     #[serde(default)]
     pub projection: Option<ProjectionSource>,
 }
+
+/// A line's identity (#1055): stable across deletions of other lines.
+pub type LineKey = crate::arena::Key<Line>;
 
 /// Source geometry an associative projection tracks (#140). Body mesh edges are identified
 /// by their quantized endpoints (the same geometry-keyed identity 3D selection uses, #156):
@@ -291,7 +292,6 @@ impl Line {
             construction: false,
             shadow: false,
             name: None,
-            deleted: false,
             bezier: None,
             chamfer_fillet_parent: None,
             projection: None,
@@ -496,12 +496,11 @@ pub fn vertex_treatment_geometry(
 /// effective radius follows the new corner angle).
 pub fn refit_fillet_arc_handles(doc: &mut Document, sketch: SketchId) {
     const EPS: f32 = 1e-3;
-    let arcs: Vec<usize> = doc
+    let arcs: Vec<crate::model::LineKey> = doc
         .lines
         .iter()
-        .enumerate()
         .filter(|(_, l)| {
-            !l.deleted && l.sketch == sketch && l.chamfer_fillet_parent.is_some() && l.is_curved()
+            l.sketch == sketch && l.chamfer_fillet_parent.is_some() && l.is_curved()
         })
         .map(|(i, _)| i)
         .collect();
@@ -514,8 +513,8 @@ pub fn refit_fillet_arc_handles(doc: &mut Document, sketch: SketchId) {
         // pointing from its far end toward the shared endpoint (i.e. toward the trimmed-away
         // virtual corner beyond the arc).
         let tangent_at = |doc: &Document, p: (f32, f32)| -> Option<(f32, f32)> {
-            for (j, l) in doc.lines.iter().enumerate() {
-                if j == arc || l.deleted || l.sketch != sketch || l.construction || l.is_curved()
+            for (j, l) in doc.lines.iter() {
+                if j == arc || l.sketch != sketch || l.construction || l.is_curved()
                 {
                     continue;
                 }
@@ -871,7 +870,7 @@ impl TextAnchor {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintPoint {
-    LineEndpoint { line: usize, end: LineEnd },
+    LineEndpoint { line: LineKey, end: LineEnd },
     CircleCenter(CircleKey),
     /// A corner of an extrusion-backed face's own boundary loop (#26/#27): index into
     /// [`crate::extrude::face_boundary_loop_world`]'s ordered vertex list. Scoped to
@@ -906,7 +905,7 @@ pub fn image_calibration_point_uv(img: &TracingImage, index: usize) -> Option<(f
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintLine {
-    Line(usize),
+    Line(LineKey),
     /// An edge of an extrusion-backed face's own boundary loop (#26/#27): runs from
     /// `boundary_loop[index]` to `boundary_loop[(index + 1) % boundary_loop.len()]`. Same
     /// scope and fixed-geometry treatment as [`ConstraintPoint::FaceVertex`].
@@ -937,7 +936,7 @@ pub fn default_constraint_sign() -> ConstraintSign {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DistanceTarget {
-    LineLength(usize),
+    LineLength(LineKey),
     CircleDiameter(CircleKey),
     /// Spacing between parallel lines. `side` is the sign of the movable line's
     /// perpendicular offset from the reference line (+1 = positive perpendicular side).
@@ -1124,7 +1123,7 @@ pub enum BooleanOp {
 pub enum ExtrudeFace {
     Circle(CircleKey),
     /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
-    Polygon(Vec<usize>),
+    Polygon(Vec<LineKey>),
     /// A boolean-combined region of two other faces (#16/#62), computed on demand via
     /// [`crate::polygon_boolean::polygon_boolean`] rather than stored as its own geometry.
     /// Recursive (`a`/`b` can themselves be `Boolean`) so the data model stays general, even
@@ -1725,6 +1724,12 @@ pub fn retain_ground_plane_only(doc: &mut Document) {
     doc.construction_planes.insert(ground);
 }
 
+/// The same for a line (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn line_key_for_slot(n: usize) -> LineKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a construction plane (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn plane_key_for_slot(n: usize) -> ConstructionPlaneKey {
@@ -1916,7 +1921,7 @@ pub struct LoftSection {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevolveAxis {
-    Line(usize),
+    Line(LineKey),
     /// One feature edge of a body's solid mesh, by its world-space endpoints (#643) — the same
     /// identity [`crate::construction::PickTargetKind::BodyEdge`] carries. Only the direction
     /// `a → b` matters to a linear repeat; a revolve/rotation also uses `a` as the pivot.
@@ -2083,7 +2088,7 @@ pub struct Sweep {
     pub faces: Vec<ExtrudeFace>,
     /// Path segments as `Document::lines` indices; chained tip-to-tail on evaluation
     /// (pick order doesn't matter).
-    pub path: Vec<usize>,
+    pub path: Vec<LineKey>,
     /// How the solid lands (new body / fuse into bodies / cut bodies).
     pub mode: SweepMode,
     #[serde(default)]
@@ -2975,7 +2980,7 @@ pub struct SketchRepeatOperation {
     pub sketch: SketchId,
     /// Source line indices to duplicate.
     #[serde(default)]
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<LineKey>,
     /// Source circle indices to duplicate.
     #[serde(default)]
     pub circle_targets: Vec<CircleKey>,
@@ -2993,7 +2998,7 @@ pub struct SketchRepeatOperation {
     /// Generated line-copy indices, instance-major then target (instance 1 of each target, then
     /// instance 2 of each target, …) — the same layout [`RepeatOperation::outputs`] uses.
     #[serde(default)]
-    pub line_outputs: Vec<usize>,
+    pub line_outputs: Vec<LineKey>,
     /// Generated circle-copy indices, instance-major then target.
     #[serde(default)]
     pub circle_outputs: Vec<CircleKey>,
@@ -3014,7 +3019,7 @@ pub struct SketchOffsetOperation {
     pub sketch: SketchId,
     /// Source line indices to offset.
     #[serde(default)]
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<LineKey>,
     /// Source circle indices to offset.
     #[serde(default)]
     pub circle_targets: Vec<CircleKey>,
@@ -3027,7 +3032,7 @@ pub struct SketchOffsetOperation {
     pub construction: bool,
     /// Generated line indices, aligned with `line_targets`.
     #[serde(default)]
-    pub line_outputs: Vec<usize>,
+    pub line_outputs: Vec<LineKey>,
     /// Generated circle indices, aligned with `circle_targets`.
     #[serde(default)]
     pub circle_outputs: Vec<CircleKey>,
@@ -3046,16 +3051,16 @@ pub struct SketchMirrorOperation {
     /// The sketch the sources live in; outputs land in the same sketch.
     pub sketch: SketchId,
     /// The mirror line: a straight sketch line whose infinite extension is the mirror axis.
-    pub line: usize,
+    pub line: LineKey,
     /// Source line indices to reflect.
     #[serde(default)]
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<LineKey>,
     /// Source circle indices to reflect.
     #[serde(default)]
     pub circle_targets: Vec<CircleKey>,
     /// Generated line indices, aligned with `line_targets`.
     #[serde(default)]
-    pub line_outputs: Vec<usize>,
+    pub line_outputs: Vec<LineKey>,
     /// Generated circle indices, aligned with `circle_targets`.
     #[serde(default)]
     pub circle_outputs: Vec<CircleKey>,
@@ -3082,10 +3087,10 @@ pub struct SketchSliceOperation {
     pub sketch: SketchId,
     /// Target line indices (the A side); each is split where the cutters cross it.
     #[serde(default)]
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<LineKey>,
     /// Cutter line indices (the B side); interior crossings with these divide each target.
     #[serde(default)]
-    pub cutter_lines: Vec<usize>,
+    pub cutter_lines: Vec<LineKey>,
     /// Target circle indices (#237); each is split into arcs where the cutters cross it. The arcs
     /// are emitted as curved (bezier) fragment lines, the source circle is shadowed.
     #[serde(default)]
@@ -3095,12 +3100,12 @@ pub struct SketchSliceOperation {
     /// boundary edges are split, a cut **chord** is emitted between the crossings, and coincidence
     /// constraints are generated so the loop resolves into two faces (see `rebuild_sketch_slice`).
     #[serde(default)]
-    pub face_targets: Vec<Vec<usize>>,
+    pub face_targets: Vec<Vec<LineKey>>,
     /// Generated fragment-line indices, target-major (all fragments of target 0, then target 1…).
     /// Both split lines *and* split-circle arcs land here (arcs are bezier `Line`s); face-slice
     /// boundary fragments and cut chords land here too.
     #[serde(default)]
-    pub line_outputs: Vec<usize>,
+    pub line_outputs: Vec<LineKey>,
     /// Generated coincidence-constraint indices (#238) that stitch a face slice's fragments into
     /// two loops. Tombstoned and regenerated on every rebuild, like `line_outputs`.
     #[serde(default)]
@@ -3137,16 +3142,16 @@ pub struct SketchVertexTreatmentOperation {
     pub sketch: SketchId,
     /// Source edge indices (shadowed), deduped; corners reference these by position.
     #[serde(default)]
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<LineKey>,
     #[serde(default)]
     pub corners: Vec<SketchVertexTreatmentCorner>,
     /// Generated trimmed copies, index-aligned with `line_targets` (output i is the trimmed
     /// copy of source line_targets[i]). Regenerated each rebuild; reuse slots when possible.
     #[serde(default)]
-    pub line_outputs: Vec<usize>,
+    pub line_outputs: Vec<LineKey>,
     /// Generated bridge lines, index-aligned with `corners`.
     #[serde(default)]
-    pub bridge_outputs: Vec<usize>,
+    pub bridge_outputs: Vec<LineKey>,
     /// Generated stitch coincidence constraints; tombstoned+regenerated each rebuild.
     #[serde(default)]
     pub constraint_outputs: Vec<ConstraintKey>,
@@ -4085,7 +4090,7 @@ pub fn validate_units(doc: &Document, own_path: Option<&std::path::Path>) -> Res
 pub struct Document {
     pub parameters: crate::arena::Arena<Parameter>,
     pub sketches: crate::arena::Arena<Sketch>,
-    pub lines: Vec<Line>,
+    pub lines: crate::arena::Arena<Line>,
     pub circles: crate::arena::Arena<Circle>,
     pub constraints: crate::arena::Arena<Constraint>,
     pub construction_planes: crate::arena::Arena<ConstructionPlane>,
@@ -4361,7 +4366,7 @@ impl Default for Document {
         Self {
             parameters: crate::arena::Arena::new(),
             sketches: crate::arena::Arena::new(),
-            lines: Vec::new(),
+            lines: crate::arena::Arena::new(),
             circles: crate::arena::Arena::new(),
             constraints: crate::arena::Arena::new(),
             construction_planes: crate::face::default_datum_planes(),
@@ -4414,7 +4419,7 @@ impl Document {
 
     #[allow(dead_code)] // query helper; now exercised only by tests since undo went snapshot-based (#194)
     pub fn sketch_has_geometry(&self, sketch: SketchId) -> bool {
-        self.lines.iter().any(|l| l.sketch == sketch)
+        self.lines.values().any(|l| l.sketch == sketch)
             || self.circles.values().any(|c| c.sketch == sketch)
     }
 
@@ -4470,6 +4475,7 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
 
     /// #921: repeated J walks the joint kinds in the dropdown's order and comes back round.
@@ -4543,27 +4549,27 @@ mod tests {
         // #577/#580: old documents storing `horizontal`/`vertical` constraint tags load by mapping
         // them to Parallel against the X/Y sketch axis.
         let horizontal: ConstraintKind =
-            serde_json::from_str(r#"{"horizontal":{"line":{"line":3}}}"#).unwrap();
+            serde_json::from_str(r#"{"horizontal":{"line":{"line":[3,0]}}}"#).unwrap();
         assert_eq!(
             horizontal,
             ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(3),
+                line_a: ConstraintLine::Line(lkey(3)),
                 line_b: ConstraintLine::OriginAxis(SketchAxis::X),
             }
         );
         let vertical: ConstraintKind =
-            serde_json::from_str(r#"{"vertical":{"line":{"line":7}}}"#).unwrap();
+            serde_json::from_str(r#"{"vertical":{"line":{"line":[7,0]}}}"#).unwrap();
         assert_eq!(
             vertical,
             ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(7),
+                line_a: ConstraintLine::Line(lkey(7)),
                 line_b: ConstraintLine::OriginAxis(SketchAxis::Y),
             }
         );
         // A normal constraint still round-trips unchanged.
         let parallel = ConstraintKind::Parallel {
-            line_a: ConstraintLine::Line(0),
-            line_b: ConstraintLine::Line(1),
+            line_a: ConstraintLine::Line(lkey(0)),
+            line_b: ConstraintLine::Line(lkey(1)),
         };
         let json = serde_json::to_string(&parallel).unwrap();
         assert!(!json.contains("horizontal") && !json.contains("vertical"));
@@ -4854,7 +4860,7 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         assert!(!doc.sketch_has_geometry(sketch));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 1.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 1.0));
         assert!(doc.sketch_has_geometry(sketch));
     }
 

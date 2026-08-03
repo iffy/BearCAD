@@ -417,10 +417,10 @@ pub enum ViewportHoverHighlight {
 /// one of its endpoints is selected or hovered, or one of its handles is being manipulated.
 /// Keeps handles from cluttering and obscuring every curve in the sketch at rest.
 pub(crate) fn bezier_handles_relevant(
-    li: usize,
+    li: crate::model::LineKey,
     selection: &SceneSelection,
     hover: &Option<ViewportHoverHighlight>,
-    highlighted_handles: &[(usize, bool)],
+    highlighted_handles: &[(crate::model::LineKey, bool)],
 ) -> bool {
     use crate::hierarchy::SceneElement;
     use crate::model::ConstraintPoint;
@@ -622,7 +622,7 @@ pub struct ViewportSceneInput<'a> {
     pub preview_replacement: PreviewReplacement,
     /// Bezier tangent handles to draw in the gold pick-highlight color (#472): the
     /// hovered, dragged, and/or selected `(line, near_start)` handles.
-    pub highlighted_bezier_handles: Vec<(usize, bool)>,
+    pub highlighted_bezier_handles: Vec<(crate::model::LineKey, bool)>,
     pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
@@ -792,7 +792,7 @@ impl ViewportScene {
                         input.document_health.element_status(element),
                     ),
                     all_construction,
-                    shape_fill_depth_bias_laned(lines[0], 2),
+                    shape_fill_depth_bias_laned(lines[0].index() as usize, 2),
                 );
                 mesh.set_index_layer(MeshIndexLayer::Base);
             }
@@ -1112,7 +1112,7 @@ impl ViewportScene {
         // Fully-constrained lines (#172) draw in their own color; the set is memoized per
         // document state inside the solver bridge.
         let constrained_lines = crate::sketch_solver::fully_constrained_lines(input.doc);
-        for (li, line) in input.doc.lines.iter().enumerate() {
+        for (li, line) in input.doc.lines.iter() {
             if !line_alive(input.doc, li)
                 || !input
                     .element_visibility
@@ -1247,8 +1247,8 @@ impl ViewportScene {
             // the gold pick-highlight color and grows a little (#472).
             let handle_color = input.palette.rect_line;
             let highlight_color = crate::construction::PICK_HOVER_RGBA;
-            for (li, line) in input.doc.lines.iter().enumerate() {
-                if line.deleted || line.sketch != session.sketch {
+            for (li, line) in input.doc.lines.iter() {
+                if line.sketch != session.sketch {
                     continue;
                 }
                 let Some([c0, c1]) = line.bezier else {
@@ -3333,7 +3333,7 @@ impl<'a> SceneMesh<'a> {
             }
             // A sketch highlights as all of its entities.
             SceneElement::Sketch(sketch) => {
-                for (li, line) in doc.lines.iter().enumerate() {
+                for (li, line) in doc.lines.iter() {
                     if line.sketch == sketch {
                         self.push_pick_target_highlight(
                             doc,
@@ -4983,6 +4983,7 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
     use crate::model::constraint_key_for_slot as nkey;
@@ -5750,27 +5751,27 @@ mod tests {
 
         let empty = SceneSelection::default();
         // At rest: nothing selected or hovered → no handles.
-        assert!(!bezier_handles_relevant(0, &empty, &None, &[]));
+        assert!(!bezier_handles_relevant(lkey(0), &empty, &None, &[]));
         // A dragged/selected handle keeps its curve's handles up.
-        assert!(bezier_handles_relevant(0, &empty, &None, &[(0, true)]));
-        assert!(!bezier_handles_relevant(1, &empty, &None, &[(0, true)]));
+        assert!(bezier_handles_relevant(lkey(0), &empty, &None, &[(lkey(0), true)]));
+        assert!(!bezier_handles_relevant(lkey(1), &empty, &None, &[(lkey(0), true)]));
         // The curve selected.
         let mut sel = SceneSelection::default();
-        sel.insert(SceneElement::Line(0));
-        assert!(bezier_handles_relevant(0, &sel, &None, &[]));
-        assert!(!bezier_handles_relevant(1, &sel, &None, &[]));
+        sel.insert(SceneElement::Line(lkey(0)));
+        assert!(bezier_handles_relevant(lkey(0), &sel, &None, &[]));
+        assert!(!bezier_handles_relevant(lkey(1), &sel, &None, &[]));
         // One of its endpoints selected.
         let mut sel_pt = SceneSelection::default();
         sel_pt.insert(SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 2,
+            line: lkey(2),
             end: LineEnd::End,
         }));
-        assert!(bezier_handles_relevant(2, &sel_pt, &None, &[]));
-        assert!(!bezier_handles_relevant(3, &sel_pt, &None, &[]));
+        assert!(bezier_handles_relevant(lkey(2), &sel_pt, &None, &[]));
+        assert!(!bezier_handles_relevant(lkey(3), &sel_pt, &None, &[]));
         // Hovering the curve (as a pick target).
-        let hover = Some(ViewportHoverHighlight::PickTarget(PickTargetKind::Line(4)));
-        assert!(bezier_handles_relevant(4, &empty, &hover, &[]));
-        assert!(!bezier_handles_relevant(5, &empty, &hover, &[]));
+        let hover = Some(ViewportHoverHighlight::PickTarget(PickTargetKind::Line(lkey(4))));
+        assert!(bezier_handles_relevant(lkey(4), &empty, &hover, &[]));
+        assert!(!bezier_handles_relevant(lkey(5), &empty, &hover, &[]));
     }
 
     /// How many overlay indices a hover highlight adds — 0 means it drew nothing.
@@ -5931,7 +5932,7 @@ mod tests {
             SceneElement::Component(ckey(0)),
             SceneElement::Joint(jkey(0)),
             SceneElement::Image(image),
-            SceneElement::Line(0),
+            SceneElement::Line(lkey(0)),
             SceneElement::Sketch(sketch),
             SceneElement::ConstructionPlane(pkey(0)),
         ] {
@@ -5963,7 +5964,7 @@ mod tests {
         let solid = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("body mesh");
         let tri = solid.triangles.first().copied().expect("a triangle");
         let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
-        let line = *state.doc.lines.iter().position(|l| !l.deleted).get_or_insert(0);
+        let line = state.doc.lines.keys().next().expect("a line");
 
         let drawn = |kind: PickTargetKind| {
             hover_overlay_indices(&state, ViewportHoverHighlight::PickTarget(kind))
@@ -6533,9 +6534,9 @@ mod tests {
             name: None,
         };
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        state.doc.constraints.insert(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
-        state.doc.constraints.insert(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
-        state.doc.constraints.insert(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(lkey(0), LineEnd::End), point(lkey(1), LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(lkey(1), LineEnd::End), point(lkey(2), LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(lkey(2), LineEnd::End), point(lkey(0), LineEnd::Start)));
     }
 
     /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
@@ -6576,7 +6577,7 @@ mod tests {
         commit_test_rectangle(&mut state);
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ToggleExtrudeFace {
-            face: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+            face: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
         });
         state.apply(Action::SetExtrudeDistance { distance: 7.0 });
         state.apply(Action::CommitExtrusion);
@@ -6646,13 +6647,13 @@ mod tests {
     fn extruded_body_adds_solid_triangles() {
         let mut state = AppState::default();
         commit_test_rectangle(&mut state);
-        let sketch = state.doc.lines[0].sketch;
+        let sketch = state.doc.lines[lkey(0)].sketch;
         let before = build_scene_for_doc(&state).vertices.len();
 
         state.apply(crate::actions::Action::CreateExtrusion {
             expression: None,
             sketch,
-            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
             distance: 8.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
@@ -6674,7 +6675,7 @@ mod tests {
         let mut state = AppState::default();
         retain_ground_plane_only(&mut state.doc);
         commit_test_rectangle(&mut state);
-        let sketch = state.doc.lines[0].sketch;
+        let sketch = state.doc.lines[lkey(0)].sketch;
 
         let plane_origin = Vec3::new(0.0, 0.0, 12.0);
         let plane_normal = Vec3::new(0.0, 0.4, 1.0).normalize();
@@ -6686,7 +6687,7 @@ mod tests {
         state.apply(crate::actions::Action::CreateExtrusion {
             expression: None,
             sketch,
-            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
@@ -6752,7 +6753,7 @@ mod tests {
         let mut state = AppState::default();
         retain_ground_plane_only(&mut state.doc);
         commit_test_rectangle(&mut state);
-        let sketch = state.doc.lines[0].sketch;
+        let sketch = state.doc.lines[lkey(0)].sketch;
 
         let plane_origin = Vec3::new(0.0, 0.0, 12.0);
         let plane_normal = Vec3::new(0.0, 0.4, 1.0).normalize();
@@ -6763,7 +6764,7 @@ mod tests {
 
         let preview = crate::model::Extrusion {
             sketch,
-            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
             distance: 6.0,
             target: Some(crate::model::ExtrudeTarget::Plane(pkey(1))),
             expression: String::new(),
@@ -6848,7 +6849,7 @@ mod tests {
         let scene = build_scene_for_doc(&state);
         let cam = Camera::default();
         let eye = cam.eye();
-        let sketch = state.doc.lines[0].sketch;
+        let sketch = state.doc.lines[lkey(0)].sketch;
         let frame = crate::face::sketch_geometry_frame(&state.doc, sketch).expect("sketch frame");
         let overlap = Vec3::new(40.0, 25.0, 0.0);
         // The rectangle is a `Polygon` whose fill uses lane 2 keyed by its first line index;
@@ -6894,7 +6895,7 @@ mod tests {
             "committed rect + circle fills should populate the stencil-masked layer"
         );
         let frame =
-            crate::face::sketch_geometry_frame(&state.doc, state.doc.lines[0].sketch).unwrap();
+            crate::face::sketch_geometry_frame(&state.doc, state.doc.lines[lkey(0)].sketch).unwrap();
         let cam = Camera::default();
         let overlap = offset_toward_camera(
             Vec3::new(40.0, 25.0, 0.0),
@@ -6946,7 +6947,10 @@ mod tests {
             revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: Some(ViewportHoverHighlight::SketchFace(FaceId::Polygon(vec![
-                0, 1, 2, 3,
+                lkey(0),
+                lkey(1),
+                lkey(2),
+                lkey(3),
             ]))),
             extra_pick_highlights: Vec::new(),
             colored_pick_highlights: Vec::new(),
@@ -7264,7 +7268,7 @@ mod tests {
 
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
 
         let palette = ViewportPalette::default();
@@ -7274,7 +7278,7 @@ mod tests {
         let mut selected = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selected,
-            SceneElement::Line(0),
+            SceneElement::Line(lkey(0)),
             false,
         );
 
@@ -7583,10 +7587,10 @@ mod tests {
     #[test]
     fn construction_geometry_draws_only_inside_its_own_sketch() {
         let mut state = state_with_one_body();
-        let sketch = state.doc.lines[0].sketch;
+        let sketch = state.doc.lines[lkey(0)].sketch;
         // One construction line and one solid line, both in the same sketch.
         let construction = state.doc.lines.len();
-        state.doc.lines.push(crate::model::Line {
+        state.doc.lines.insert(crate::model::Line {
             construction: true,
             ..crate::model::Line::from_local_endpoints(sketch, 0.0, 2.0, 10.0, 2.0)
         });
@@ -7594,7 +7598,7 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 3.0, 10.0, 3.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 3.0, 10.0, 3.0));
         // …and a construction circle, which follows the same rule.
         state.doc.circles.insert(crate::model::Circle {
             construction: true,
@@ -7942,15 +7946,15 @@ mod tests {
 
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
             expression: String::new(),
             dim_offset: None,
@@ -7959,7 +7963,7 @@ mod tests {
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selection,
-            SceneElement::Line(0),
+            SceneElement::Line(lkey(0)),
             false,
         );
         let graphics = viewport_constraints_for_selection(
@@ -8363,9 +8367,9 @@ mod tests {
         let cam = state.cam.clone();
         let viewport = test_viewport();
         let mut dashed_doc = state.doc.clone();
-        dashed_doc.lines = vec![construction];
+        dashed_doc.lines.insert(construction);
         let mut solid_doc = state.doc.clone();
-        solid_doc.lines = vec![solid];
+        solid_doc.lines.insert(solid);
         let scene_fields = (
             &cam,
             viewport,

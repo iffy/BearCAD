@@ -28,7 +28,7 @@ pub struct LineDragSession {
 #[derive(Clone)]
 pub struct SelectionDragSession {
     /// Line indices whose chord length must survive the solve (the #243 stretch guard).
-    pub line_indices: Vec<usize>,
+    pub line_indices: Vec<crate::model::LineKey>,
     pub anchor_uv: (f32, f32),
     /// Drag-start position of every point in the selection's coincident closure.
     pub initial_positions: HashMap<ConstraintPoint, (f32, f32)>,
@@ -51,7 +51,7 @@ pub fn begin_selection_drag_session(
     for element in elements {
         match element {
             SceneElement::Line(li) => {
-                if doc.lines.get(*li).is_some_and(|l| !l.deleted && l.sketch == sketch) {
+                if doc.lines.get(*li).is_some_and(|l| l.sketch == sketch) {
                     line_indices.push(*li);
                     seeds.extend(line_drag_seed_points(ConstraintLine::Line(*li)));
                 }
@@ -113,7 +113,7 @@ pub fn drag_selection(
     let dv = current_uv.1 - session.anchor_uv.1;
     let lines_before = doc.lines.clone();
     let circles_before = doc.circles.clone();
-    let len_before: Vec<(usize, f32)> = session
+    let len_before: Vec<(crate::model::LineKey, f32)> = session
         .line_indices
         .iter()
         .filter_map(|&i| doc.lines.get(i).map(|l| (i, l.chord_length())))
@@ -318,9 +318,13 @@ fn validate_line_drag_target(
             let line = doc
                 .lines
                 .get(index)
-                .ok_or_else(|| format!("Line {index} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", index.index()))?;
             if line.sketch != sketch {
-                return Err(format!("Line {index} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Line {} is not in sketch {}",
+                    index.index(),
+                    sketch.index()
+                ));
             }
         }
         // Fixed by the body's own geometry — never a valid line-drag target.
@@ -357,7 +361,7 @@ fn collect_line_drag_positions(
 
 fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
     match point {
-        ConstraintPoint::LineEndpoint { line, end } => (0, line, end as u8, 0),
+        ConstraintPoint::LineEndpoint { line, end } => (0, line.index() as usize, end as u8, 0),
         ConstraintPoint::CircleCenter(circle) => (2, circle.index() as usize, 0, 0),
         ConstraintPoint::FaceVertex { index, .. } => (3, index, 0, 0),
         ConstraintPoint::TextAnchor { text, anchor } => (4, text.index() as usize, anchor as u8, 0),
@@ -682,7 +686,7 @@ fn project_point_onto_line_uv(
 
 /// The unit direction a line's `start -> end` must have because of a direction constraint
 /// (parallel/perpendicular/angle), oriented to match the line's current direction.
-fn constrained_line_direction(doc: &Document, line_index: usize) -> Option<(f32, f32)> {
+fn constrained_line_direction(doc: &Document, line_index: crate::model::LineKey) -> Option<(f32, f32)> {
     let this = ConstraintLine::Line(line_index);
     let sketch = doc.lines.get(line_index)?.sketch;
     let (cur_du, cur_dv) = line_direction_uv(doc, sketch, this.clone())?;
@@ -753,7 +757,7 @@ fn direction_reference(
 fn project_endpoint_onto_direction(
     doc: &Document,
     sketch: SketchId,
-    line_index: usize,
+    line_index: crate::model::LineKey,
     end: LineEnd,
     u: f32,
     v: f32,
@@ -823,8 +827,8 @@ pub fn incident_two_lines(
     doc: &Document,
     sketch: SketchId,
     point: ConstraintPoint,
-) -> Option<[(usize, LineEnd); 2]> {
-    let mut endpoints: Vec<(usize, LineEnd)> = coincident_group(doc, sketch, point)
+) -> Option<[(crate::model::LineKey, LineEnd); 2]> {
+    let mut endpoints: Vec<(crate::model::LineKey, LineEnd)> = coincident_group(doc, sketch, point)
         .into_iter()
         .filter_map(|p| match p {
             ConstraintPoint::LineEndpoint { line, end } => Some((line, end)),
@@ -851,9 +855,9 @@ pub fn incident_two_lines(
 /// commit-time chamfer/fillet (#37/#38), and the chamfer/fillet gizmo anchor/live-preview (#76).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VertexTreatmentCorner {
-    pub line1: usize,
+    pub line1: crate::model::LineKey,
     pub end1: LineEnd,
-    pub line2: usize,
+    pub line2: crate::model::LineKey,
     pub end2: LineEnd,
     /// Shared vertex, in sketch-local UV coords.
     pub v: (f32, f32),
@@ -924,7 +928,7 @@ fn apply_length_constraints_for_drag(
         let line = doc
             .lines
             .get(line_index)
-            .ok_or_else(|| format!("Line {line_index} not found"))?;
+            .ok_or_else(|| format!("Line {} not found", line_index.index()))?;
         let start_in_group = group.contains(&ConstraintPoint::LineEndpoint {
             line: line_index,
             end: LineEnd::Start,
@@ -968,7 +972,7 @@ fn apply_length_constraints_for_drag(
         let entity = doc
             .lines
             .get_mut(line_index)
-            .ok_or_else(|| format!("Line {line_index} not found"))?;
+            .ok_or_else(|| format!("Line {} not found", line_index.index()))?;
         if move_start {
             entity.x0 = nu;
             entity.y0 = nv;
@@ -997,6 +1001,7 @@ fn project_endpoint_with_length(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use super::*;
@@ -1090,14 +1095,18 @@ mod tests {
 
         // Every edge kept its length; the text origin shifted by the same delta.
         for (&li, &l0) in lines.iter().zip(&len0) {
-            assert!((doc.lines[li].chord_length() - l0).abs() < 1e-3, "edge {li} resized");
+            assert!(
+                (doc.lines[li].chord_length() - l0).abs() < 1e-3,
+                "edge {} resized",
+                li.index()
+            );
         }
         assert!((doc.sketch_texts[tkey(0)].origin.0 - 9.0).abs() < 1e-3);
         assert!((doc.sketch_texts[tkey(0)].origin.1 - (-1.0)).abs() < 1e-3);
         // The bottom-left corner rode along too (0,0) -> (7,-3).
         let bl = doc
             .lines
-            .iter()
+            .values()
             .flat_map(|l| [(l.x0, l.y0), (l.x1, l.y1)])
             .find(|&(x, y)| (x - 7.0).abs() < 1e-2 && (y + 3.0).abs() < 1e-2);
         assert!(bl.is_some(), "a corner translated to the drag target");
@@ -1107,19 +1116,19 @@ mod tests {
     fn drag_line_endpoint_moves_to_target() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         drag_point(
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             },
             20.0,
             5.0,
         )
         .unwrap();
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!((line.x1 - 20.0).abs() < 1e-3);
         assert!((line.y1 - 5.0).abs() < 1e-3);
     }
@@ -1128,16 +1137,16 @@ mod tests {
     fn drag_line_translates_both_endpoints() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let session = begin_line_drag_session(
             &doc,
             sketch,
-            ConstraintLine::Line(0),
+            ConstraintLine::Line(lkey(0)),
             (0.0, 0.0),
         )
         .unwrap();
         drag_line(&mut doc, sketch, &session, (5.0, 3.0)).unwrap();
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!((line.x0 - 5.0).abs() < EPS);
         assert!((line.y0 - 3.0).abs() < EPS);
         assert!((line.x1 - 15.0).abs() < EPS);
@@ -1148,33 +1157,33 @@ mod tests {
     fn drag_line_with_length_constraint_keeps_length() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
         let session = begin_line_drag_session(
             &doc,
             sketch,
-            ConstraintLine::Line(0),
+            ConstraintLine::Line(lkey(0)),
             (0.0, 0.0),
         )
         .unwrap();
         drag_line(&mut doc, sketch, &session, (4.0, 0.0)).unwrap();
-        assert!((doc.lines[0].length() - 10.0).abs() < EPS);
-        assert!((doc.lines[0].x0 - 4.0).abs() < EPS);
+        assert!((doc.lines[lkey(0)].length() - 10.0).abs() < EPS);
+        assert!((doc.lines[lkey(0)].x0 - 4.0).abs() < EPS);
     }
 
     #[test]
     fn drag_line_with_horizontal_constraint_stays_horizontal() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         click_scene_selection(
             &mut sel,
             SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
@@ -1190,12 +1199,12 @@ mod tests {
         let session = begin_line_drag_session(
             &doc,
             sketch,
-            ConstraintLine::Line(0),
+            ConstraintLine::Line(lkey(0)),
             (0.0, 0.0),
         )
         .unwrap();
         drag_line(&mut doc, sketch, &session, (0.0, 7.0)).unwrap();
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!((line.y0 - line.y1).abs() < EPS);
         assert!((line.y0 - 7.0).abs() < EPS);
     }
@@ -1204,11 +1213,11 @@ mod tests {
     fn drag_with_length_constraint_maintains_length() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
@@ -1216,14 +1225,14 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             },
             0.0,
             10.0,
         )
         .unwrap();
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!((line.length() - 10.0).abs() < 1e-2, "length was {}", line.length());
         assert!((line.x0).abs() < 1e-3 && (line.y0).abs() < 1e-3);
     }
@@ -1235,16 +1244,16 @@ mod tests {
     fn drag_vertex_translates_horizontal_dimensioned_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "50mm".to_string(),
         )
         .unwrap();
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         click_scene_selection(
             &mut sel,
             SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
@@ -1262,14 +1271,14 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             },
             50.0,
             20.0,
         )
         .unwrap();
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!(
             (line.chord_length() - 50.0).abs() < 0.5,
             "length must stay 50, got {}",
@@ -1294,9 +1303,9 @@ mod tests {
     fn drag_vertex_translates_free_horizontal_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         click_scene_selection(
             &mut sel,
             SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
@@ -1314,14 +1323,14 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             },
             50.0,
             20.0,
         )
         .unwrap();
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!((line.y0 - line.y1).abs() < 0.5, "must stay horizontal");
         assert!(
             line.y1.abs() > 5.0,
@@ -1334,14 +1343,14 @@ mod tests {
     fn drag_coincident_point_moves_partner() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 8.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             }),
             false,
@@ -1349,7 +1358,7 @@ mod tests {
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
             true,
@@ -1366,7 +1375,7 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             },
             5.0,
@@ -1374,8 +1383,8 @@ mod tests {
         )
         .unwrap();
 
-        let line0 = &doc.lines[0];
-        let line1 = &doc.lines[1];
+        let line0 = &doc.lines[lkey(0)];
+        let line1 = &doc.lines[lkey(1)];
         assert!((line0.x1 - 5.0).abs() < 1e-2);
         assert!((line0.y1 - 5.0).abs() < 1e-2);
         assert!((line1.x0 - 5.0).abs() < 1e-2);
@@ -1386,14 +1395,14 @@ mod tests {
     fn drag_line_moves_coincident_endpoint_partner() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 8.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             }),
             false,
@@ -1401,7 +1410,7 @@ mod tests {
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
             true,
@@ -1417,16 +1426,16 @@ mod tests {
         let session = begin_line_drag_session(
             &doc,
             sketch,
-            ConstraintLine::Line(0),
+            ConstraintLine::Line(lkey(0)),
             (0.0, 0.0),
         )
         .unwrap();
         drag_line(&mut doc, sketch, &session, (3.0, 4.0)).unwrap();
 
-        assert!((doc.lines[0].x1 - 13.0).abs() < EPS);
-        assert!((doc.lines[0].y1 - 4.0).abs() < EPS);
-        assert!((doc.lines[1].x0 - 13.0).abs() < EPS);
-        assert!((doc.lines[1].y0 - 4.0).abs() < EPS);
+        assert!((doc.lines[lkey(0)].x1 - 13.0).abs() < EPS);
+        assert!((doc.lines[lkey(0)].y1 - 4.0).abs() < EPS);
+        assert!((doc.lines[lkey(1)].x0 - 13.0).abs() < EPS);
+        assert!((doc.lines[lkey(1)].y0 - 4.0).abs() < EPS);
     }
 
     fn measured_angle_between_lines(
@@ -1474,29 +1483,29 @@ mod tests {
         };
 
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 5.0, 50.0, 18.0));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 5.0, 50.0, 18.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 30.0, 50.0, 43.0));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 30.0, 50.0, 43.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
 
         let rotation_sign =
-            angle_constraint_natural_sign(doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .ok_or_else(|| "Lines do not intersect".to_string())?;
         add_angle_constraint_with_sign(
             doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
             "16.7".to_string(),
         )?;
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(1), false);
-        click_scene_selection(&mut sel, SceneElement::Line(2), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(2)), true);
         add_geometric_constraint_from_selection(
             doc,
             sketch,
@@ -1507,8 +1516,8 @@ mod tests {
             doc,
             sketch,
             DistanceTarget::LineLineDistance {
-                line_a: ConstraintLine::Line(1),
-                line_b: ConstraintLine::Line(2),
+                line_a: ConstraintLine::Line(lkey(1)),
+                line_b: ConstraintLine::Line(lkey(2)),
                 side: 1,
             },
             "15mm".to_string(),
@@ -1525,7 +1534,7 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             },
             25.0,
@@ -1536,8 +1545,8 @@ mod tests {
         let angle = measured_angle_between_lines(
             &doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
         )
         .unwrap();
         assert!(
@@ -1549,14 +1558,14 @@ mod tests {
         let spacing = measured_line_line_distance(
             &doc,
             sketch,
-            ConstraintLine::Line(1),
-            ConstraintLine::Line(2),
+            ConstraintLine::Line(lkey(1)),
+            ConstraintLine::Line(lkey(2)),
         )
         .unwrap();
         assert!((spacing - 15.0).abs() < 0.5, "spacing={spacing}");
 
-        let (bdu, bdv) = line_direction_uv(&doc, sketch, ConstraintLine::Line(1)).unwrap();
-        let (cdu, cdv) = line_direction_uv(&doc, sketch, ConstraintLine::Line(2)).unwrap();
+        let (bdu, bdv) = line_direction_uv(&doc, sketch, ConstraintLine::Line(lkey(1))).unwrap();
+        let (cdu, cdv) = line_direction_uv(&doc, sketch, ConstraintLine::Line(lkey(2))).unwrap();
         let parallel_dot = (bdu * cdu + bdv * cdv).clamp(-1.0, 1.0);
         assert!((parallel_dot - 1.0).abs() < 0.01, "parallel_dot={parallel_dot}");
     }
@@ -1576,18 +1585,18 @@ mod tests {
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(1),
+            DistanceTarget::LineLength(lkey(1)),
             "40mm".to_string(),
         )
         .unwrap();
 
         let point = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         // Dimensioned but positionally free: still draggable.
         assert!(can_drag_point(&doc, sketch, point.clone()));
-        assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
+        assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(lkey(1))));
 
         // Pin its start to the origin and fix its direction: now truly rigid.
         doc.constraints.insert(crate::model::Constraint {
@@ -1603,7 +1612,7 @@ mod tests {
         doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(1)),
                 line_b: ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
             },
             expression: String::new(),
@@ -1611,7 +1620,7 @@ mod tests {
             name: None,
         });
         assert!(!can_drag_point(&doc, sketch, point));
-        assert!(!can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
+        assert!(!can_drag_line(&doc, sketch, ConstraintLine::Line(lkey(1))));
     }
 
     #[test]
@@ -1620,11 +1629,11 @@ mod tests {
         setup_angle_parallel_spacing_lines(&mut doc, sketch).unwrap();
 
         let point = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         assert!(can_drag_point(&doc, sketch, point));
-        assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
+        assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(lkey(1))));
     }
 
     fn setup_rect_parallel_perpendicular_point_line_distance(
@@ -1633,23 +1642,23 @@ mod tests {
     ) -> Result<(ConstraintPoint, ConstraintLine, ConstraintLine), String> {
         // line 0 (line_a): horizontal reference line
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         // line 1 (line_b): vertical line whose Start is used for the point-line distance
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 30.0, 55.0, 30.0, 85.0));
+            .insert(Line::from_local_endpoints(sketch, 30.0, 55.0, 30.0, 85.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         // rect as 4 lines (corners (20,10)-(70,40) => x=20,y=10,w=50,h=30); top edge is rect_lines[2]
         let rect_lines =
             crate::construction::add_line_rectangle(doc, sketch, 20.0, 10.0, 50.0, 30.0, [false; 4]);
 
-        let line_a = ConstraintLine::Line(0);
-        let line_b = ConstraintLine::Line(1);
+        let line_a = ConstraintLine::Line(lkey(0));
+        let line_b = ConstraintLine::Line(lkey(1));
         let rect_top = ConstraintLine::Line(rect_lines[2]);
 
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(rect_lines[2]), false);
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         add_geometric_constraint_from_selection(
             doc,
             sketch,
@@ -1658,8 +1667,8 @@ mod tests {
         )?;
 
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         add_geometric_constraint_from_selection(
             doc,
             sketch,
@@ -1668,7 +1677,7 @@ mod tests {
         )?;
 
         let distance_point = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         add_distance_constraint(
@@ -1708,7 +1717,7 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::End,
             },
             45.0,
@@ -1734,9 +1743,9 @@ mod tests {
     fn drag_horizontal_line_endpoint_stays_horizontal() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         click_scene_selection(
             &mut sel,
             SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
@@ -1754,7 +1763,7 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             },
             15.0,
@@ -1762,7 +1771,7 @@ mod tests {
         )
         .unwrap();
 
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!((line.y0 - line.y1).abs() < 1e-3, "line should stay horizontal");
         assert!(line.x1 > 10.0);
     }
@@ -1773,18 +1782,18 @@ mod tests {
     fn deleted_coincident_constraint_no_longer_couples_vertices() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 8.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
 
         let p0 = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         };
         let p1 = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         let mut sel = SceneSelection::default();
@@ -1828,19 +1837,19 @@ mod tests {
     #[test]
     fn treatment_corner_resolves_shared_vertex_and_far_endpoints() {
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         push_coincident(
             &mut doc,
             sketch,
-            ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
-            ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::Start },
+            ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End },
+            ConstraintPoint::LineEndpoint { line: lkey(1), end: LineEnd::Start },
         );
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End };
         let corner = treatment_corner(&doc, sketch, point).unwrap();
-        assert_eq!(corner.line1, 0);
+        assert_eq!(corner.line1, lkey(0));
         assert_eq!(corner.end1, LineEnd::End);
-        assert_eq!(corner.line2, 1);
+        assert_eq!(corner.line2, lkey(1));
         assert_eq!(corner.end2, LineEnd::Start);
         assert_eq!(corner.v, (10.0, 0.0));
         assert_eq!(corner.a, (0.0, 0.0));
@@ -1850,8 +1859,8 @@ mod tests {
     #[test]
     fn treatment_corner_none_when_vertex_has_only_one_line() {
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start };
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start };
         assert!(treatment_corner(&doc, sketch, point).is_none());
     }
 }

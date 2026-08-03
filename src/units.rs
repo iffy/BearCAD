@@ -500,6 +500,7 @@ pub fn save_ping_stamp() -> Option<u128> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
@@ -521,7 +522,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,
-            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
             distance: 10.0,
             target: None,
             expression: "width".to_string(),

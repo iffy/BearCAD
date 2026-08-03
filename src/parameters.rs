@@ -349,14 +349,14 @@ fn unique_parameter_name(doc: &Document, base: &str) -> String {
 }
 
 /// Whether a line may drive a computed length parameter (alive, no length constraint).
-pub fn line_eligible_for_computed_length_parameter(doc: &Document, line_index: usize) -> bool {
+pub fn line_eligible_for_computed_length_parameter(doc: &Document, line_index: crate::model::LineKey) -> bool {
     crate::document_lifecycle::line_alive(doc, line_index)
         && find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_none()
 }
 
 pub fn computed_parameter_index_for_line(
     doc: &Document,
-    line_index: usize,
+    line_index: crate::model::LineKey,
 ) -> Option<ParameterKey> {
     doc.parameters.iter().find_map(|(key, param)| {
         matches!(
@@ -375,7 +375,8 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
     let gone = |alive: bool| if alive { "" } else { " (deleted)" };
     match param.source.as_ref()? {
         ParameterSource::LineLength(index) => Some(format!(
-            "Driven by line {index} length{}",
+            "Driven by line {} length{}",
+            index.index(),
             gone(crate::document_lifecycle::line_alive(doc, *index))
         )),
         ParameterSource::PointDistance(..) => Some(format!(
@@ -383,11 +384,15 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
         ParameterSource::LineDistance(a, b) => Some(format!(
-            "Driven by distance between lines {a} and {b}{}",
+            "Driven by distance between lines {} and {}{}",
+            a.index(),
+            b.index(),
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
         ParameterSource::LineAngle(a, b) => Some(format!(
-            "Driven by angle between lines {a} and {b}{}",
+            "Driven by angle between lines {} and {}{}",
+            a.index(),
+            b.index(),
             gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
         )),
         ParameterSource::BodyEdgeLength { body, .. } => Some(format!(
@@ -418,7 +423,7 @@ pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option
 pub fn derived_source_value(doc: &Document, source: &ParameterSource) -> Option<(f32, bool)> {
     match source {
         ParameterSource::LineLength(index) => {
-            let line = doc.lines.get(*index).filter(|l| !l.deleted)?;
+            let line = doc.lines.get(*index)?;
             Some((line.length(), false))
         }
         ParameterSource::PointDistance(a, b) => {
@@ -514,8 +519,11 @@ pub fn body_vertex_world_position(
         .find(|p| crate::hierarchy::quantize_body_point(*p) == key)
 }
 
-fn line_world_segment(doc: &Document, index: usize) -> Option<(glam::Vec3, glam::Vec3)> {
-    let line = doc.lines.get(index).filter(|l| !l.deleted)?;
+fn line_world_segment(
+    doc: &Document,
+    index: crate::model::LineKey,
+) -> Option<(glam::Vec3, glam::Vec3)> {
+    let line = doc.lines.get(index)?;
     let frame = crate::face::sketch_geometry_frame(doc, line.sketch)?;
     Some((
         crate::face::local_to_world(&frame, line.x0, line.y0),
@@ -531,10 +539,10 @@ pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) 
         ParameterSource::LineLength(line) => default_computed_parameter_name_for_line(doc, *line),
         ParameterSource::PointDistance(..) => unique_parameter_name(doc, "distance"),
         ParameterSource::LineDistance(a, b) => {
-            unique_parameter_name(doc, &format!("line{a}_line{b}_distance"))
+            unique_parameter_name(doc, &format!("line{}_line{}_distance", a.index(), b.index()))
         }
         ParameterSource::LineAngle(a, b) => {
-            unique_parameter_name(doc, &format!("line{a}_line{b}_angle"))
+            unique_parameter_name(doc, &format!("line{}_line{}_angle", a.index(), b.index()))
         }
         ParameterSource::BodyEdgeLength { body, .. } => {
             unique_parameter_name(doc, &format!("body{}_edge_length", body.index()))
@@ -548,8 +556,8 @@ pub fn default_derived_parameter_name(doc: &Document, source: &ParameterSource) 
     }
 }
 
-pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: usize) -> String {
-    unique_parameter_name(doc, &format!("line{line_index}_length"))
+pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: crate::model::LineKey) -> String {
+    unique_parameter_name(doc, &format!("line{}_length", line_index.index()))
 }
 
 /// Update read-only parameter expressions from their geometry sources.
@@ -593,11 +601,11 @@ pub fn require_parameter_value_editable(param: &Parameter) -> Result<(), String>
 
 pub fn add_computed_parameter_from_line_length(
     doc: &mut Document,
-    line_index: usize,
+    line_index: crate::model::LineKey,
     name: Option<String>,
 ) -> Result<ParameterKey, String> {
     if !crate::document_lifecycle::line_alive(doc, line_index) {
-        return Err(format!("Line {line_index} not found"));
+        return Err(format!("Line {} not found", line_index.index()));
     }
     if find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_some() {
         return Err("Line length is constrained".to_string());
@@ -767,7 +775,7 @@ pub fn derived_source_elements(
 pub fn line_for_computed_parameter_context_menu(
     doc: &Document,
     selection: &crate::selection::SceneSelection,
-) -> Option<usize> {
+) -> Option<crate::model::LineKey> {
     let element = selection.single()?;
     let crate::hierarchy::SceneElement::Line(index) = element else {
         return None;
@@ -782,7 +790,7 @@ pub fn show_computed_line_length_context_menu(
     response: &egui::Response,
     doc: &Document,
     selection: &crate::selection::SceneSelection,
-    on_create: &mut impl FnMut(usize),
+    on_create: &mut impl FnMut(crate::model::LineKey),
 ) {
     let Some(line_index) = line_for_computed_parameter_context_menu(doc, selection) else {
         return;
@@ -803,7 +811,7 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
     for param in doc.parameters.values_mut() {
         param.expression = substitute_parameter_name(&param.expression, old, new);
     }
-    for line in &mut doc.lines {
+    for line in doc.lines.values_mut() {
         if let Some(expr) = &mut line.length_expr {
             *expr = substitute_parameter_name(expr, old, new);
         }
@@ -1819,6 +1827,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
@@ -2316,19 +2325,19 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         add_parameter(&mut doc, "corner".to_string(), "16.7deg".to_string()).unwrap();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 100.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 100.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         let rotation_sign =
-            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .unwrap();
         add_angle_constraint_with_sign(
             &mut doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
             "corner".to_string(),
         )
@@ -2363,15 +2372,15 @@ mod tests {
         use crate::model::{FaceId, Line, ParameterSource, ShapeKind};
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.scene_selection.insert(SceneElement::Line(0));
+        state.scene_selection.insert(SceneElement::Line(lkey(0)));
         state.apply(Action::SetTool(Tool::Dimension));
         assert!(state.doc.parameters.is_empty(), "no auto-created parameter");
         assert!(!state.scene_selection.is_empty(), "selection carries into the tool");
         let source =
             derived_source_from_selection(&state.doc, &state.scene_selection).expect("source");
-        assert_eq!(source, ParameterSource::LineLength(0));
+        assert_eq!(source, ParameterSource::LineLength(lkey(0)));
         state.apply(Action::CreateDerivedParameter {
             source,
             name: Some("width".to_string()),
@@ -2380,17 +2389,18 @@ mod tests {
         assert_eq!(state.doc.parameters.values().next().unwrap().name, "width");
         assert_eq!(
             state.doc.parameters.values().next().unwrap().source,
-            Some(ParameterSource::LineLength(0))
+            Some(ParameterSource::LineLength(lkey(0)))
         );
     }
 
-    fn doc_with_unconstrained_line(length: f32) -> (Document, usize) {
+    fn doc_with_unconstrained_line(length: f32) -> (Document, crate::model::LineKey) {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, length, 0.0));
+        let line = doc
+            .lines
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, length, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        (doc, 0)
+        (doc, line)
     }
 
     /// #432: the selection classifies into a derived source, the derived value tracks
@@ -2401,16 +2411,16 @@ mod tests {
         use crate::model::{ConstraintPoint, FaceId, Line, LineEnd, ParameterSource};
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0)); // 0
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 10.0, 40.0, 10.0)); // 1 ∥ 0
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 30.0, 30.0)); // 2 diagonal
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0)); // 0
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 10.0, 40.0, 10.0)); // 1 ∥ 0
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 30.0, 30.0)); // 2 diagonal
         let mut sel = crate::selection::SceneSelection::default();
 
         // Two parallel lines → distance.
-        sel.insert(SceneElement::Line(0));
-        sel.insert(SceneElement::Line(1));
+        sel.insert(SceneElement::Line(lkey(0)));
+        sel.insert(SceneElement::Line(lkey(1)));
         let source = derived_source_from_selection(&doc, &sel).expect("parallel pair");
-        assert_eq!(source, ParameterSource::LineDistance(0, 1));
+        assert_eq!(source, ParameterSource::LineDistance(lkey(0), lkey(1)));
         let (value, is_angle) = derived_source_value(&doc, &source).unwrap();
         assert!(!is_angle);
         assert!((value - 10.0).abs() < 1e-3);
@@ -2421,10 +2431,10 @@ mod tests {
 
         // Two non-parallel same-sketch lines → angle (degrees).
         sel.clear();
-        sel.insert(SceneElement::Line(0));
-        sel.insert(SceneElement::Line(2));
+        sel.insert(SceneElement::Line(lkey(0)));
+        sel.insert(SceneElement::Line(lkey(2)));
         let source = derived_source_from_selection(&doc, &sel).expect("angle pair");
-        assert_eq!(source, ParameterSource::LineAngle(0, 2));
+        assert_eq!(source, ParameterSource::LineAngle(lkey(0), lkey(2)));
         let (value, is_angle) = derived_source_value(&doc, &source).unwrap();
         assert!(is_angle);
         assert!((value - 45.0).abs() < 0.1, "angle {value}");
@@ -2434,28 +2444,28 @@ mod tests {
         // Two points → distance; moving the geometry re-syncs the value.
         sel.clear();
         sel.insert(SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::Start,
         }));
         sel.insert(SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         }));
         let source = derived_source_from_selection(&doc, &sel).expect("point pair");
         let _ = add_derived_parameter(&mut doc, source.clone(), Some("span".into())).unwrap();
         assert!((crate::value::eval_length_mm_in_doc("span", &doc).unwrap() - 40.0).abs() < 1e-2);
-        doc.lines[0].x1 = 60.0;
+        doc.lines[lkey(0)].x1 = 60.0;
         sync_computed_parameters(&mut doc);
         assert!((crate::value::eval_length_mm_in_doc("span", &doc).unwrap() - 60.0).abs() < 1e-2);
 
         // The focused derived parameter highlights its defining elements.
         let highlighted = elements_using_parameter(&doc, "span");
         assert!(highlighted.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::Start,
         })));
         assert!(highlighted.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         })));
     }
@@ -2471,7 +2481,7 @@ mod tests {
         assert!(parameter_value_is_readonly(param));
         assert!(matches!(
             param.source,
-            Some(ParameterSource::LineLength(0))
+            Some(ParameterSource::LineLength(l)) if l == lkey(0)
         ));
     }
 
@@ -2479,7 +2489,7 @@ mod tests {
     fn computed_parameter_updates_when_line_length_changes() {
         let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
         add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
-        doc.lines[0].x1 = 25.0;
+        doc.lines[lkey(0)].x1 = 25.0;
         recompute_document_geometry(&mut doc).unwrap();
         assert_eq!(doc.parameters.values().next().unwrap().expression, "25.0 mm");
     }
@@ -2487,7 +2497,7 @@ mod tests {
     #[test]
     fn computed_parameter_rejects_constrained_line() {
         let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
-        let sketch = doc.lines[0].sketch;
+        let sketch = doc.lines[lkey(0)].sketch;
         add_distance_constraint(
             &mut doc,
             sketch,

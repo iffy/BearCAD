@@ -347,7 +347,7 @@ pub enum Instruction {
     /// inferred per face.
     Sweep {
         faces: Vec<crate::model::ExtrudeFace>,
-        path: Vec<usize>,
+        path: Vec<crate::model::LineKey>,
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
     },
@@ -978,6 +978,10 @@ impl Instruction {
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
                 };
+                // The lines' arena slots, not their ordinals (#1070).
+                let line_list = |lines: &[crate::model::LineKey]| -> String {
+                    lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ")
+                };
                 let mut circles = Vec::new();
                 let mut polygons = Vec::new();
                 for face in faces {
@@ -1000,7 +1004,7 @@ impl Instruction {
                         "polygons = {{{}}}",
                         polygons
                             .iter()
-                            .map(|lines| format!("{{{}}}", index_list(lines)))
+                            .map(|lines| format!("{{{}}}", line_list(lines)))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
@@ -1131,6 +1135,10 @@ impl Instruction {
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
                 };
+                // The lines' arena slots, not their ordinals (#1070).
+                let line_list = |lines: &[crate::model::LineKey]| -> String {
+                    lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ")
+                };
                 let mut parts = Vec::new();
                 let circles: Vec<usize> = faces
                     .iter()
@@ -1144,7 +1152,7 @@ impl Instruction {
                 }
                 for f in faces {
                     if let ExtrudeFace::Polygon(lines) = f {
-                        parts.push(format!("polygon = {{{}}}", index_list(lines)));
+                        parts.push(format!("polygon = {{{}}}", line_list(lines)));
                     }
                 }
                 parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
@@ -1172,6 +1180,10 @@ impl Instruction {
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
                 };
+                // The lines' arena slots, not their ordinals (#1070).
+                let line_list = |lines: &[crate::model::LineKey]| -> String {
+                    lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ")
+                };
                 let mut parts = Vec::new();
                 let circles: Vec<usize> = faces
                     .iter()
@@ -1185,10 +1197,10 @@ impl Instruction {
                 }
                 for f in faces {
                     if let ExtrudeFace::Polygon(lines) = f {
-                        parts.push(format!("polygon = {{{}}}", index_list(lines)));
+                        parts.push(format!("polygon = {{{}}}", line_list(lines)));
                     }
                 }
-                parts.push(format!("path = {{{}}}", index_list(path)));
+                parts.push(format!("path = {{{}}}", line_list(path)));
                 match body {
                     crate::actions::RevolveBodyChoice::NewBody => {}
                     crate::actions::RevolveBodyChoice::AddTouching => {
@@ -1598,16 +1610,24 @@ impl Instruction {
             Instruction::CreateDerivedParameter { source, name } => {
                 use crate::model::ParameterSource as PS;
                 let src = match source {
-                    PS::LineLength(i) => format!("kind = \"line_length\", a = {i}"),
+                    PS::LineLength(i) => {
+                        format!("kind = \"line_length\", a = {}", i.index())
+                    }
                     PS::PointDistance(a, b) => format!(
                         "kind = \"point_distance\", a = {{ {} }}, b = {{ {} }}",
                         point_lua_fields(a),
                         point_lua_fields(b)
                     ),
                     PS::LineDistance(a, b) => {
-                        format!("kind = \"line_distance\", a = {a}, b = {b}")
+                        format!(
+                            "kind = \"line_distance\", a = {}, b = {}",
+                            a.index(),
+                            b.index()
+                        )
                     }
-                    PS::LineAngle(a, b) => format!("kind = \"line_angle\", a = {a}, b = {b}"),
+                    PS::LineAngle(a, b) => {
+                        format!("kind = \"line_angle\", a = {}, b = {}", a.index(), b.index())
+                    }
                     // Body geometry (#647) is keyed on quantized world points; scripts spell
                     // them as plain **mm** coordinates, which the parser re-quantizes.
                     PS::BodyEdgeLength { body, a, b } => format!(
@@ -1877,9 +1897,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The line's arena slot, not its ordinal (#1070).
         SceneElement::Line(i) => ElementScriptTokens {
             kind: "line",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The circle's arena slot, not its ordinal (#1070).
@@ -2139,6 +2160,16 @@ fn extrusion_key(
     ordinal: usize,
 ) -> Option<crate::model::ExtrusionKey> {
     doc.extrusions.keys().nth(ordinal)
+}
+
+/// A line's ordinal among the live ones — what a script writes (#1055).
+fn line_ordinal(doc: &crate::model::Document, key: crate::model::LineKey) -> Option<usize> {
+    doc.lines.keys().position(|k| k == key)
+}
+
+/// The line an ordinal names — the inverse of [`line_ordinal`].
+fn line_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::LineKey> {
+    doc.lines.keys().nth(ordinal)
 }
 
 /// A construction plane's ordinal among the live ones — what a script writes (#1055).
@@ -2537,9 +2568,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         // A rectangle is now four plain lines (#66 polygon); reconstruct its origin/extent
         // from the bounding box of the four lines just appended by the commit.
         Action::CommitRectangle => {
-            let n = doc.lines.len();
+            let keys: Vec<_> = doc.lines.keys().collect();
+            let n = keys.len();
             (n >= 4).then(|| {
-                let rect_lines = &doc.lines[n - 4..];
+                let rect_keys = &keys[n - 4..];
+                let rect_lines: Vec<_> = rect_keys.iter().map(|&k| &doc.lines[k]).collect();
                 let mut min_x = f32::INFINITY;
                 let mut min_y = f32::INFINITY;
                 let mut max_x = f32::NEG_INFINITY;
@@ -2555,7 +2588,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 // Typed width/height land as LineLength dims on the bottom (n-4) and right
                 // (n-3) edges; carry their expressions so a parametric rect replays
                 // parametrically (#402).
-                let dim_expr = |line: usize| {
+                let dim_expr = |line: crate::model::LineKey| {
                     doc.constraints.values().collect::<Vec<_>>().into_iter().rev().find_map(|c| match &c.kind {
                         crate::model::ConstraintKind::Distance {
                             target: crate::model::DistanceTarget::LineLength(i),
@@ -2568,16 +2601,16 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                     y: min_y,
                     width: max_x - min_x,
                     height: max_y - min_y,
-                    width_expr: dim_expr(n - 4),
-                    height_expr: dim_expr(n - 3),
+                    width_expr: dim_expr(rect_keys[0]),
+                    height_expr: dim_expr(rect_keys[1]),
                 }
             })
         }
-        Action::CommitLine => doc.lines.last().map(|l| {
+        Action::CommitLine => doc.lines.keys().last().map(|index| {
+            let l = &doc.lines[index];
             // A typed-while-drawing length lands as a LineLength dim inside CommitLine;
             // carry its expression so replaying the log recreates the same constraint
             // (and click-drawn lines replay unconstrained, as drawn).
-            let index = doc.lines.len() - 1;
             let dimension = doc.constraints.values().collect::<Vec<_>>().into_iter().rev().find_map(|c| match &c.kind {
                 crate::model::ConstraintKind::Distance {
                     target: crate::model::DistanceTarget::LineLength(i),
@@ -2684,7 +2717,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::CreateParameterFromLineLength { line_index, name } => {
             Some(Instruction::CreateParameterFromLineLength {
-                line_index: *line_index,
+                line_index: line_ordinal(doc, *line_index)?,
                 name: name.clone(),
             })
         }
@@ -3415,7 +3448,9 @@ fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
         many => parts.push(format!("circles = {{{}}}", index_list(many))),
     }
     if let Some(lines) = polygon {
-        parts.push(format!("polygon = {{{}}}", index_list(lines)));
+        // The lines' arena slots, not their ordinals (#1070).
+        let idx = lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ");
+        parts.push(format!("polygon = {{{idx}}}"));
     }
     if let Some((op, a, b)) = boolean {
         parts.push(format!("boolean = {}", boolean_face_lua_table(op, a, b)));
@@ -3450,7 +3485,7 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
     match face {
         ExtrudeFace::Circle(i) => format!("{{circle = {}}}", i.index()),
         ExtrudeFace::Polygon(lines) => {
-            let idx = lines.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+            let idx = lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ");
             format!("{{polygon = {{{idx}}}}}")
         }
         ExtrudeFace::Boolean { op, a, b } => {
@@ -3630,7 +3665,10 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         FaceId::UnitFace { instance, .. } => ("unit_face", instance.index() as usize),
         // A polygon's full line list isn't expressible as a single index; same limitation
         // as cap/side faces above (#66).
-        FaceId::Polygon(lines) => ("polygon", *lines.first().unwrap_or(&0)),
+        FaceId::Polygon(lines) => (
+            "polygon",
+            lines.first().map(|l| l.index() as usize).unwrap_or(0),
+        ),
         // The revolve's arena slot, not its ordinal — this form has no document (#1070).
         FaceId::RevolveCap { revolution, .. } => ("revolve_cap", revolution.index() as usize),
         FaceId::RevolveSide { revolution, .. } => ("revolve_side", revolution.index() as usize),
@@ -3680,7 +3718,7 @@ fn element_lua_ref(element: &SceneElement) -> String {
                 return format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis));
             }
             ConstraintLine::Line(index) => {
-                return format!("{{ kind = \"line\", index = {index} }}");
+                return format!("{{ kind = \"line\", index = {} }}", index.index());
             }
         }
     }
@@ -3700,7 +3738,10 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
                 LineEnd::End => "end",
             };
             // `end` is a Lua reserved word, so it can't be a bareword table key; bracket it.
-            format!("kind = \"line\", index = {line}, [\"end\"] = \"{end_name}\"")
+            format!(
+                "kind = \"line\", index = {}, [\"end\"] = \"{end_name}\"",
+                line.index()
+            )
         }
         ConstraintPoint::CircleCenter(circle) => {
             format!("kind = \"circle\", index = {}", circle.index())
@@ -3726,7 +3767,9 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
 
 fn constraint_line_lua_ref(line: &ConstraintLine) -> String {
     match line {
-        ConstraintLine::Line(index) => format!("{{ kind = \"line\", index = {index} }}"),
+        ConstraintLine::Line(index) => {
+            format!("{{ kind = \"line\", index = {} }}", index.index())
+        }
         // #26/#27: mirrors `lua_script::parse_constraint_line_table`'s `"face"` shape.
         ConstraintLine::FaceEdge { face, index } => format!(
             "{{ kind = \"face\", face = {}, index = {index} }}",
@@ -3809,7 +3852,7 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
         crate::model::RevolveAxis::X => "\"x\"".to_string(),
         crate::model::RevolveAxis::Y => "\"y\"".to_string(),
         crate::model::RevolveAxis::Z => "\"z\"".to_string(),
-        crate::model::RevolveAxis::Line(li) => format!("{{ line = {li} }}"),
+        crate::model::RevolveAxis::Line(li) => format!("{{ line = {} }}", li.index()),
         crate::model::RevolveAxis::BodyEdge { body, a, b } => format!(
             "{{ body = {}, from = {{ {}, {}, {} }}, to = {{ {}, {}, {} }} }}",
             body.index(),
@@ -3829,7 +3872,7 @@ fn face_id_lua_ref(face: &FaceId) -> String {
         }
         FaceId::Polygon(lines) => format!(
             "{{ kind = \"polygon\", index = {} }}",
-            lines.first().copied().unwrap_or(0)
+            lines.first().map(|l| l.index() as usize).unwrap_or(0)
         ),
         FaceId::ExtrudeCap { extrusion, profile, top } => format!(
             "{{ kind = \"extrude_cap\", extrusion = {}, {}, top = {top} }}",
@@ -3869,7 +3912,7 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
         // (same limitation as `face_lua_parts`'s polygon case, #66).
         ExtrudeFace::Polygon(lines) => format!(
             "profile = \"polygon\", profile_index = {}",
-            lines.first().copied().unwrap_or(0)
+            lines.first().map(|l| l.index() as usize).unwrap_or(0)
         ),
         // Round-trippable since #406: `parse_face_id_table` accepts
         // `profile = "boolean", boolean = {...}`.
@@ -3910,7 +3953,7 @@ fn extrusion_edge_lua_ref(edge: crate::model::ExtrusionEdgeRef) -> String {
 fn distance_target_lua_ref(target: &DistanceTarget) -> String {
     match target {
         DistanceTarget::LineLength(index) => {
-            format!("{{ kind = \"line\", index = {index} }}")
+            format!("{{ kind = \"line\", index = {} }}", index.index())
         }
         DistanceTarget::CircleDiameter(index) => {
             format!("{{ kind = \"circle\", index = {} }}", index.index())
@@ -5929,6 +5972,12 @@ impl ScriptRunner {
                         self.record_action_error(crate::actions::ActionResult::Err(e));
                         return StepResult::Continue;
                     }
+                    let (Some(line_a), Some(line_b)) =
+                        (line_key(&state.doc, line_a), line_key(&state.doc, line_b))
+                    else {
+                        self.last_action_error = Some("No such line".to_string());
+                        return StepResult::Continue;
+                    };
                     let result = crate::constraints::apply_dimension_expression(
                         &mut state.doc,
                         session.sketch,
@@ -6282,6 +6331,10 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::CreateParameterFromLineLength { line_index, name } => {
+                let Some(line_index) = line_key(&state.doc, line_index) else {
+                    self.last_action_error = Some(format!("No line {line_index}"));
+                    return StepResult::Continue;
+                };
                 state.apply(Action::CreateParameterFromLineLength { line_index, name });
                 StepResult::Continue
             }
@@ -6795,6 +6848,7 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::sketch_key_for_slot as skey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -6901,13 +6955,13 @@ mod tests {
         let max_x = state
             .doc
             .lines
-            .iter()
+            .values()
             .flat_map(|l| [l.x0, l.x1])
             .fold(f32::MIN, f32::max);
         let min_x = state
             .doc
             .lines
-            .iter()
+            .values()
             .flat_map(|l| [l.x0, l.x1])
             .fold(f32::MAX, f32::min);
         assert!((max_x - min_x - 40.0).abs() < 1e-3, "width {}", max_x - min_x);
@@ -7200,7 +7254,7 @@ mod tests {
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let mut line = crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
-        doc.lines.push(line);
+        doc.lines.insert(line);
         let instruction = instruction_from_action(&Action::CommitLine, &doc).unwrap();
         assert_eq!(
             instruction,
@@ -7217,7 +7271,7 @@ mod tests {
 
     #[test]
     fn vertex_treatment_instruction_renders_as_the_matching_lua_call() {
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: crate::model::LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: crate::model::LineEnd::End };
         let chamfer = Instruction::VertexTreatment {
             point: point.clone(),
             kind: VertexTreatmentKind::Chamfer,
@@ -7251,7 +7305,7 @@ mod tests {
     #[test]
     fn instruction_from_action_maps_commit_vertex_treatment() {
         let doc = crate::model::Document::default();
-        let point = ConstraintPoint::LineEndpoint { line: 2, end: crate::model::LineEnd::Start };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(2), end: crate::model::LineEnd::Start };
         let action = Action::CommitVertexTreatment {
             point: point.clone(),
             kind: VertexTreatmentKind::Fillet,
@@ -7426,7 +7480,7 @@ mod tests {
             Instruction::Tool(Tool::Line),
             Instruction::Tool(Tool::Select),
             Instruction::DragLineSegment {
-                target: ConstraintLine::Line(0),
+                target: ConstraintLine::Line(lkey(0)),
                 anchor_u: 0.0,
                 anchor_v: 0.0,
                 u: 4.0,
@@ -7461,7 +7515,7 @@ mod tests {
                 &egui::Context::default(),
             );
         }
-        let line = &state.doc.lines[0];
+        let line = &state.doc.lines[lkey(0)];
         assert!((line.x0 - 4.0).abs() < 1e-2);
         assert!((line.y0).abs() < 1e-2);
         assert!((line.x1 - 14.0).abs() < 1e-2);
@@ -7491,13 +7545,13 @@ mod tests {
     fn script_delete_selection_tombstones_line() {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(crate::model::FaceId::default());
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 0.0, 5.0, 0.0,
         ));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::SelectSceneElement {
-                element: SceneElement::Line(0),
+                element: SceneElement::Line(lkey(0)),
                 additive: false,
             },
             Instruction::DeleteSelection,
@@ -7508,7 +7562,7 @@ mod tests {
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, None, &ctx);
         }
-        assert!(state.doc.lines[0].deleted);
+        assert!(!state.doc.lines.contains(lkey(0)));
     }
 
     #[test]

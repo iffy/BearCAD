@@ -82,10 +82,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Sketch(index));
         }
     }
-    for (index, line) in doc.lines.iter().enumerate() {
-        if line.deleted {
-            continue;
-        }
+    for (index, line) in doc.lines.iter() {
         if name_matches(line.name.as_deref(), query) {
             return Some(SceneElement::Line(index));
         }
@@ -127,7 +124,7 @@ pub fn revolve_axis_label(doc: &Document, axis: crate::model::RevolveAxis) -> St
     match axis {
         RevolveAxis::Line(li) => element_name(doc, SceneElement::Line(li))
             .map(|n| n.to_string())
-            .unwrap_or_else(|| format!("line {li}")),
+            .unwrap_or_else(|| format!("line {}", li.index())),
         RevolveAxis::BodyEdge { body, .. } => element_name(doc, SceneElement::Body(body))
             .map(|n| format!("an edge of {n}"))
             .unwrap_or_else(|| format!("an edge of body {}", body.index())),
@@ -222,7 +219,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let line = doc
                 .lines
                 .get_mut(index)
-                .ok_or_else(|| format!("line {index} not found"))?;
+                .ok_or_else(|| format!("line {} not found", index.index()))?;
             line.name = stored;
         }
         SceneElement::Circle(index) => {
@@ -479,9 +476,9 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             // is curved (a fillet always sets `bezier`; a chamfer's bridge is always straight).
             if line.chamfer_fillet_parent.is_some() {
                 let kind = if line.bezier.is_some() { "Fillet" } else { "Chamfer" };
-                format!("{kind} {i} ({len_label})")
+                format!("{kind} {} ({len_label})", i.index())
             } else {
-                format!("Line {i} ({len_label})")
+                format!("Line {} ({len_label})", i.index())
             }
         }
         HierarchyNode::Circle(i) => {
@@ -703,7 +700,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Component(i) => format!("Component {}", i.index()),
         SceneElement::UnitInstance(i) => format!("Unit {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
-        SceneElement::Line(i) => format!("Line {i}"),
+        SceneElement::Line(i) => format!("Line {}", i.index()),
         SceneElement::Circle(i) => format!("Circle {}", i.index()),
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
@@ -824,6 +821,7 @@ pub fn node_label(doc: &Document, node: HierarchyNode) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
@@ -834,31 +832,31 @@ mod tests {
     fn chamfer_fillet_bridge_line_gets_a_recognizable_default_label() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         // A straight bridge (chamfer): default label says "Chamfer", not "Line".
         let mut chamfer_bridge = Line::from_local_endpoints(sketch, 10.0, 0.0, 15.0, 5.0);
-        chamfer_bridge.chamfer_fillet_parent = Some(0);
-        doc.lines.push(chamfer_bridge);
-        assert!(node_label(&doc, HierarchyNode::Line(1)).starts_with("Chamfer 1"));
+        chamfer_bridge.chamfer_fillet_parent = Some(lkey(0));
+        doc.lines.insert(chamfer_bridge);
+        assert!(node_label(&doc, HierarchyNode::Line(lkey(1))).starts_with("Chamfer 1"));
         // A curved bridge (fillet): default label says "Fillet".
         let mut fillet_bridge = Line::from_local_endpoints(sketch, 10.0, 0.0, 15.0, 5.0);
-        fillet_bridge.chamfer_fillet_parent = Some(0);
+        fillet_bridge.chamfer_fillet_parent = Some(lkey(0));
         fillet_bridge.bezier = Some([(11.0, 0.0), (14.0, 4.0)]);
-        doc.lines.push(fillet_bridge);
-        assert!(node_label(&doc, HierarchyNode::Line(2)).starts_with("Fillet 2"));
+        doc.lines.insert(fillet_bridge);
+        assert!(node_label(&doc, HierarchyNode::Line(lkey(2))).starts_with("Fillet 2"));
         // An ordinary line (no chamfer/fillet parent) keeps the generic label.
-        assert!(node_label(&doc, HierarchyNode::Line(0)).starts_with("Line 0"));
+        assert!(node_label(&doc, HierarchyNode::Line(lkey(0))).starts_with("Line 0"));
     }
 
     #[test]
     fn custom_name_replaces_default_label() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        set_element_name(&mut doc, SceneElement::Line(0), "Guide".to_string()).unwrap();
-        assert_eq!(node_label(&doc, HierarchyNode::Line(0)), "Guide");
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        set_element_name(&mut doc, SceneElement::Line(lkey(0)), "Guide".to_string()).unwrap();
+        assert_eq!(node_label(&doc, HierarchyNode::Line(lkey(0))), "Guide");
         assert_eq!(
-            element_name(&doc, SceneElement::Line(0)),
+            element_name(&doc, SceneElement::Line(lkey(0))),
             Some("Guide")
         );
     }
@@ -867,11 +865,11 @@ mod tests {
     fn constraint_custom_name_shown_in_elements_pane() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            crate::model::DistanceTarget::LineLength(0),
+            crate::model::DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();

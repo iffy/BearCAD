@@ -258,7 +258,11 @@ fn run_command(
     if script_json::opens_sketch_when_none_active(name) && state.sketch_session.is_none() {
         exec(
             runner,
-            Instruction::BeginSketch { face: FaceId::ConstructionPlane(pkey(0)) },
+            Instruction::BeginSketch {
+                face: FaceId::ConstructionPlane(
+                    state.doc.ground_plane().ok_or("no ground plane")?,
+                ),
+            },
             state,
             synthetic,
             viewport,
@@ -343,8 +347,7 @@ fn run_parameter(
                 .get(1)
                 .and_then(Value::as_str)
                 .ok_or("parameter get requires a parameter name")?;
-            let Some(param) = state.doc.parameters.iter().find(|p| !p.deleted && p.name == name)
-            else {
+            let Some(param) = state.doc.parameters.values().find(|p| p.name == name) else {
                 return Ok(Value::Null);
             };
             if action == "get_expression" {
@@ -381,7 +384,7 @@ fn selection_json(state: &AppState) -> Value {
 
 /// The sketch a `sketch_dof`/`sketch_conflicts` call targets: an explicit index (positional
 /// `__args[0]` or a `sketch` field) or the active sketch session.
-fn arg_sketch(args: &Value, state: &AppState) -> Result<usize, String> {
+fn arg_sketch(args: &Value, state: &AppState) -> Result<crate::model::SketchId, String> {
     let explicit = args
         .get("__args")
         .and_then(Value::as_array)
@@ -389,7 +392,13 @@ fn arg_sketch(args: &Value, state: &AppState) -> Result<usize, String> {
         .and_then(Value::as_u64)
         .or_else(|| args.get("sketch").and_then(Value::as_u64));
     match explicit {
-        Some(n) => Ok(n as usize),
+        // A script names a sketch by its ordinal among the live ones (#1055).
+        Some(n) => state
+            .doc
+            .sketches
+            .keys()
+            .nth(n as usize)
+            .ok_or_else(|| format!("no sketch {n}")),
         None => state
             .sketch_session
             .map(|s| s.sketch)
@@ -455,7 +464,7 @@ fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
                 .get("index")
                 .and_then(Value::as_u64)
                 .ok_or("element requires an `index`")? as usize;
-            script_json::scene_element_from_kind(kind, index)
+            script_json::scene_element_from_kind(doc, kind, index)
                 .ok_or_else(|| format!("unknown element kind '{kind}'"))
         }
         _ => Err("expected an element (name string or {kind, index})".to_string()),

@@ -65,8 +65,8 @@ impl SketchBridge {
     }
 
     fn seed_entities(&mut self, doc: &Document) -> Result<(), String> {
-        for (index, line) in doc.lines.iter().enumerate() {
-            if line.deleted || line.sketch != self.sketch {
+        for (index, line) in doc.lines.iter() {
+            if line.sketch != self.sketch {
                 continue;
             }
             self.ensure_line_endpoint(doc, index, LineEnd::Start)?;
@@ -91,7 +91,7 @@ impl SketchBridge {
     fn ensure_line_endpoint(
         &mut self,
         doc: &Document,
-        line: usize,
+        line: crate::model::LineKey,
         end: LineEnd,
     ) -> Result<(), String> {
         let point = ConstraintPoint::LineEndpoint { line, end };
@@ -703,7 +703,7 @@ pub fn sketch_point_movable(
 pub fn sketch_line_vertex_drag_blocked(
     doc: &Document,
     sketch: SketchId,
-    line_index: usize,
+    line_index: crate::model::LineKey,
 ) -> Result<bool, String> {
     use crate::constraints::find_distance_constraint;
     if find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_none() {
@@ -738,12 +738,12 @@ pub fn sketch_line_vertex_drag_blocked(
 pub fn sketch_fully_constrained_lines(
     doc: &Document,
     sketch: SketchId,
-) -> Result<std::collections::HashSet<usize>, String> {
+) -> Result<std::collections::HashSet<crate::model::LineKey>, String> {
     use crate::constraints::find_distance_constraint;
     let mut bridge = SketchBridge::from_document(doc, sketch, false)?;
     let mut out = std::collections::HashSet::new();
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted || line.sketch != sketch {
+    for (li, line) in doc.lines.iter() {
+        if line.sketch != sketch {
             continue;
         }
         if find_distance_constraint(doc, DistanceTarget::LineLength(li)).is_none() {
@@ -767,7 +767,7 @@ pub fn sketch_fully_constrained_lines(
 /// All fully-constrained lines across every sketch (#172), memoized per document state —
 /// the DOF analysis builds a solver system per sketch, far too heavy to run per line per
 /// frame. Any change to sketch geometry or constraints invalidates the memo.
-pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<usize> {
+pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<crate::model::LineKey> {
     use std::hash::Hasher;
     struct HashWriter(std::collections::hash_map::DefaultHasher);
     impl std::io::Write for HashWriter {
@@ -788,7 +788,7 @@ pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<usiz
     let fingerprint = writer.0.finish();
 
     thread_local! {
-        static CONSTRAINED: std::cell::RefCell<(u64, std::collections::HashSet<usize>)> =
+        static CONSTRAINED: std::cell::RefCell<(u64, std::collections::HashSet<crate::model::LineKey>)> =
             std::cell::RefCell::new((0, std::collections::HashSet::new()));
     }
     CONSTRAINED.with(|cache| {
@@ -797,8 +797,7 @@ pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<usiz
             let mut all = std::collections::HashSet::new();
             let sketches: std::collections::HashSet<SketchId> = doc
                 .lines
-                .iter()
-                .filter(|l| !l.deleted)
+                .values()
                 .map(|l| l.sketch)
                 .collect();
             for sketch in sketches {
@@ -916,6 +915,7 @@ fn solve_one_sketch(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use super::*;
     use crate::constraints::add_distance_constraint;
@@ -945,8 +945,8 @@ mod tests {
         use crate::model::{ConstraintEntity, ConstraintPoint, DistanceTarget, LineEnd};
 
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(Line::from_local_endpoints(sketch, 30.0, 5.0, 42.0, 9.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 30.0, 5.0, 42.0, 9.0));
         let mut push = |kind: ConstraintKind| {
             doc.constraints.insert(Constraint {
                 sketch,
@@ -960,18 +960,18 @@ mod tests {
         push(ConstraintKind::Coincident {
             a: ConstraintEntity::Origin,
             b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::Start,
             }),
         });
         push(ConstraintKind::Parallel {
-            line_a: crate::model::ConstraintLine::Line(0),
+            line_a: crate::model::ConstraintLine::Line(lkey(0)),
             line_b: crate::model::ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
         });
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Distance {
-                target: DistanceTarget::LineLength(0),
+                target: DistanceTarget::LineLength(lkey(0)),
             },
             expression: "10".to_string(),
             dim_offset: None,
@@ -980,13 +980,13 @@ mod tests {
         solve_document_sketches(&mut doc, &[]).expect("solve");
 
         let set = sketch_fully_constrained_lines(&doc, sketch).expect("dof analysis");
-        assert!(set.contains(&0), "anchored+oriented+dimensioned line is fully constrained");
-        assert!(!set.contains(&1), "the free line still has freedom");
+        assert!(set.contains(&lkey(0)), "anchored+oriented+dimensioned line is fully constrained");
+        assert!(!set.contains(&lkey(1)), "the free line still has freedom");
 
         // The memoized document-wide wrapper agrees, and refreshes when the dimension is
         // removed (an undimensioned line never styles as fully constrained).
         let all = fully_constrained_lines(&doc);
-        assert!(all.contains(&0) && !all.contains(&1));
+        assert!(all.contains(&lkey(0)) && !all.contains(&lkey(1)));
         let dist = doc
             .constraints
             .iter()
@@ -995,7 +995,7 @@ mod tests {
         doc.constraints.remove(dist);
         solve_document_sketches(&mut doc, &[]).expect("solve");
         let all = fully_constrained_lines(&doc);
-        assert!(!all.contains(&0), "removing the dimension must drop the line from the set");
+        assert!(!all.contains(&lkey(0)), "removing the dimension must drop the line from the set");
     }
 
     /// #137: chaining relational constraints across a closed quad (two `Equal` pairs plus a
@@ -1054,14 +1054,14 @@ mod tests {
     fn drag_parallel_movable_does_not_move_reference() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 40.0, 100.0, 40.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 40.0, 100.0, 40.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1072,14 +1072,14 @@ mod tests {
 
         let pins = [(
             ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::End,
             },
             (100.0_f32, 80.0_f32),
         )];
         solve_document_sketches(&mut doc, &pins).unwrap();
 
-        let a = &doc.lines[0];
+        let a = &doc.lines[lkey(0)];
         assert!(
             a.x0.abs() < 0.5 && a.y0.abs() < 0.5 && (a.x1 - 100.0).abs() < 0.5 && a.y1.abs() < 0.5,
             "reference line A drifted to ({},{})-({},{})",
@@ -1094,11 +1094,11 @@ mod tests {
     fn bridge_conflicting_constraints_reports_largest_residuals() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Distance {
-                target: DistanceTarget::LineLength(0),
+                target: DistanceTarget::LineLength(lkey(0)),
             },
             expression: "10mm".to_string(),
             dim_offset: None,
@@ -1107,7 +1107,7 @@ mod tests {
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Distance {
-                target: DistanceTarget::LineLength(0),
+                target: DistanceTarget::LineLength(lkey(0)),
             },
             expression: "12mm".to_string(),
             dim_offset: None,
@@ -1128,7 +1128,7 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         for i in 0..50 {
             let y = i as f32 * 5.0;
-            doc.lines.push(Line::from_local_endpoints(
+            doc.lines.insert(Line::from_local_endpoints(
                 sketch,
                 0.0,
                 y,
@@ -1136,7 +1136,7 @@ mod tests {
                 y + 3.0,
             ));
         }
-        for index in 0..doc.lines.len() {
+        for index in doc.lines.keys().collect::<Vec<_>>() {
             add_distance_constraint(
                 &mut doc,
                 sketch,
@@ -1159,7 +1159,7 @@ mod tests {
     fn bridge_sketch_dof_remaining_reports_underconstrained_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         assert!(sketch_dof_remaining(&doc, sketch).unwrap() > 0);
     }
 
@@ -1167,17 +1167,17 @@ mod tests {
     fn bridge_round_trip_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
-        doc.lines[0].x1 = 7.0;
+        doc.lines[lkey(0)].x1 = 7.0;
         solve_bridge(&mut doc, sketch);
-        assert!((doc.lines[0].length() - 10.0).abs() < EPS);
+        assert!((doc.lines[lkey(0)].length() - 10.0).abs() < EPS);
     }
 
     #[test]
@@ -1185,14 +1185,14 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         // A horizontal line of length 10 and a horizontal line of length 4.
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 4.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 4.0, 5.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1202,10 +1202,10 @@ mod tests {
         .unwrap();
         solve_bridge(&mut doc, sketch);
         assert!(
-            (doc.lines[0].length() - doc.lines[1].length()).abs() < EPS,
+            (doc.lines[lkey(0)].length() - doc.lines[lkey(1)].length()).abs() < EPS,
             "lengths: {} vs {}",
-            doc.lines[0].length(),
-            doc.lines[1].length()
+            doc.lines[lkey(0)].length(),
+            doc.lines[lkey(1)].length()
         );
     }
 
@@ -1213,13 +1213,13 @@ mod tests {
     fn bridge_point_line_distance() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, -4.0, 6.0, -4.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, -4.0, 6.0, -4.0));
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
         let point = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         add_distance_constraint(
@@ -1227,7 +1227,7 @@ mod tests {
             sketch,
             DistanceTarget::PointLineDistance {
                 point: point.clone(),
-                line: ConstraintLine::Line(0),
+                line: ConstraintLine::Line(lkey(0)),
                 side: 1,
             },
             "3mm".to_string(),
@@ -1242,19 +1242,19 @@ mod tests {
     fn bridge_midpoint() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 4.0, 8.0, 5.0, 9.0));
+            .insert(Line::from_local_endpoints(sketch, 4.0, 8.0, 5.0, 9.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
             false,
         );
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1267,7 +1267,7 @@ mod tests {
             &doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             },
         )
@@ -1280,19 +1280,19 @@ mod tests {
     fn bridge_coincident_point_on_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 8.0, 6.0, 9.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 8.0, 6.0, 9.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
             false,
         );
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1305,7 +1305,7 @@ mod tests {
             &doc,
             sketch,
             ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             },
         )
@@ -1337,7 +1337,7 @@ mod tests {
         for i in 0..6 {
             let (x0, y0) = pts[i];
             let (x1, y1) = pts[(i + 1) % 6];
-            doc.lines.push(Line::from_local_endpoints(sketch, x0, y0, x1, y1));
+            doc.lines.insert(Line::from_local_endpoints(sketch, x0, y0, x1, y1));
         }
         let push = |doc: &mut Document, kind: ConstraintKind, expression: &str| {
             doc.constraints.insert(Constraint {
@@ -1348,36 +1348,36 @@ mod tests {
                 name: None,
             });
         };
-        let end = |line: usize| {
+        let end = |line: crate::model::LineKey| {
             ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line, end: LineEnd::End })
         };
-        let start = |line: usize| {
+        let start = |line: crate::model::LineKey| {
             ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line, end: LineEnd::Start })
         };
         for i in 0..6 {
-            push(&mut doc, ConstraintKind::Coincident { a: end(i), b: start((i + 1) % 6) }, "");
+            push(&mut doc, ConstraintKind::Coincident { a: end(lkey(i)), b: start(lkey((i + 1) % 6)) }, "");
         }
         let line = ConstraintLine::Line;
-        push(&mut doc, ConstraintKind::Parallel { line_a: line(0), line_b: ConstraintLine::OriginAxis(crate::model::SketchAxis::X) }, "");
-        push(&mut doc, ConstraintKind::Parallel { line_a: line(0), line_b: line(2) }, "");
-        push(&mut doc, ConstraintKind::Parallel { line_a: line(3), line_b: line(5) }, "");
-        push(&mut doc, ConstraintKind::Perpendicular { line_a: line(0), line_b: line(1) }, "");
-        push(&mut doc, ConstraintKind::Perpendicular { line_a: line(5), line_b: line(4) }, "");
+        push(&mut doc, ConstraintKind::Parallel { line_a: line(lkey(0)), line_b: ConstraintLine::OriginAxis(crate::model::SketchAxis::X) }, "");
+        push(&mut doc, ConstraintKind::Parallel { line_a: line(lkey(0)), line_b: line(lkey(2)) }, "");
+        push(&mut doc, ConstraintKind::Parallel { line_a: line(lkey(3)), line_b: line(lkey(5)) }, "");
+        push(&mut doc, ConstraintKind::Perpendicular { line_a: line(lkey(0)), line_b: line(lkey(1)) }, "");
+        push(&mut doc, ConstraintKind::Perpendicular { line_a: line(lkey(5)), line_b: line(lkey(4)) }, "");
         push(&mut doc, ConstraintKind::Angle {
-            line_a: line(0),
-            line_b: line(3),
+            line_a: line(lkey(0)),
+            line_b: line(lkey(3)),
             rotation_sign: 1 as ConstraintSign,
         }, "120");
         for (index, len) in [(0usize, "50"), (5, "50"), (1, "5"), (4, "5")] {
-            push(&mut doc, ConstraintKind::Distance { target: DistanceTarget::LineLength(index) }, len);
+            push(&mut doc, ConstraintKind::Distance { target: DistanceTarget::LineLength(lkey(index)) }, len);
         }
 
         solve_bridge(&mut doc, sketch);
 
         // Corners closed.
         for i in 0..6 {
-            let l = &doc.lines[i];
-            let n = &doc.lines[(i + 1) % 6];
+            let l = &doc.lines[lkey(i)];
+            let n = &doc.lines[lkey((i + 1) % 6)];
             assert!(
                 (l.x1 - n.x0).abs() < EPS && (l.y1 - n.y0).abs() < EPS,
                 "corner {i} open: ({}, {}) vs ({}, {})", l.x1, l.y1, n.x0, n.y0,
@@ -1385,7 +1385,7 @@ mod tests {
         }
         // Dimensioned lengths exact.
         let len = |i: usize| {
-            let l = &doc.lines[i];
+            let l = &doc.lines[lkey(i)];
             (l.x1 - l.x0).hypot(l.y1 - l.y0)
         };
         assert!((len(0) - 50.0).abs() < EPS, "L0 length {}", len(0));
@@ -1393,7 +1393,7 @@ mod tests {
         assert!((len(1) - 5.0).abs() < EPS, "L1 length {}", len(1));
         assert!((len(4) - 5.0).abs() < EPS, "L4 length {}", len(4));
         // The bend: line 3 at 120 degrees from the horizontal base.
-        let l3 = &doc.lines[3];
+        let l3 = &doc.lines[lkey(3)];
         let angle = (l3.y1 - l3.y0).atan2(l3.x1 - l3.x0).to_degrees();
         assert!((angle - 120.0).abs() < 0.05, "bend angle {angle}");
     }

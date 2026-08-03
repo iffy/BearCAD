@@ -418,8 +418,8 @@ fn next_profile_point(app: &AppState) -> Option<glam::Vec3> {
     let placed = app
         .doc
         .lines
-        .iter()
-        .filter(|l| !l.deleted && l.sketch == session.sketch && !l.construction)
+        .values()
+        .filter(|l| l.sketch == session.sketch && !l.construction)
         .count();
     let index = match placed {
         0 if app.creating_line.is_none() => 0,
@@ -432,7 +432,7 @@ fn next_profile_point(app: &AppState) -> Option<glam::Vec3> {
 }
 
 fn profile_drawn(app: &AppState) -> bool {
-    app.doc.lines.iter().filter(|l| !l.deleted && !l.construction).count() >= 6
+    app.doc.lines.values().filter(|l| !l.construction).count() >= 6
 }
 
 fn constraint_tool_active(app: &AppState) -> bool {
@@ -496,7 +496,7 @@ fn sketch_frame(app: &AppState) -> Option<crate::face::SketchFrame> {
 }
 
 /// Document indices of the open sketch's drawn lines, in creation order.
-fn profile_lines(app: &AppState) -> Vec<usize> {
+fn profile_lines(app: &AppState) -> Vec<crate::model::LineKey> {
     // Always the sketch the profile was drawn in — not whichever sketch happens to be open.
     // Later stages open *other* sketches (the screw holes) and still point at the profile
     // (#790/#796).
@@ -506,8 +506,7 @@ fn profile_lines(app: &AppState) -> Vec<usize> {
     app.doc
         .lines
         .iter()
-        .enumerate()
-        .filter(|(_, l)| !l.deleted && l.sketch == sketch && !l.construction)
+        .filter(|(_, l)| l.sketch == sketch && !l.construction)
         .map(|(i, _)| i)
         .collect()
 }
@@ -1136,8 +1135,8 @@ fn inner_bend_rounded(app: &AppState) -> bool {
 fn profile_sketch(app: &AppState) -> Option<crate::model::SketchId> {
     app.doc
         .lines
-        .iter()
-        .find(|l| !l.deleted && !l.construction)
+        .values()
+        .find(|l| !l.construction)
         .map(|l| l.sketch)
 }
 

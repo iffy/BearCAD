@@ -15,7 +15,7 @@ use glam::Vec2;
 /// independent parallel curves (#494), not chord-mitered as straight segments.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OffsetSource {
-    pub id: usize,
+    pub id: crate::model::LineKey,
     pub a: Vec2,
     pub b: Vec2,
     pub bezier: Option<[Vec2; 2]>,
@@ -24,7 +24,7 @@ pub struct OffsetSource {
 /// An offset output segment, in the same stored orientation as its source.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OffsetSegment {
-    pub id: usize,
+    pub id: crate::model::LineKey,
     pub a: Vec2,
     pub b: Vec2,
     pub bezier: Option<[Vec2; 2]>,
@@ -387,7 +387,9 @@ pub fn offset_segments(sources: &[OffsetSource], distance: f32) -> Vec<OffsetSeg
 mod tests {
     use super::*;
 
-    fn src(id: usize, a: (f32, f32), b: (f32, f32)) -> OffsetSource {
+    use crate::model::line_key_for_slot as lkey;
+
+    fn src(id: crate::model::LineKey, a: (f32, f32), b: (f32, f32)) -> OffsetSource {
         OffsetSource {
             id,
             a: Vec2::new(a.0, a.1),
@@ -397,7 +399,7 @@ mod tests {
     }
 
     fn src_curve(
-        id: usize,
+        id: crate::model::LineKey,
         a: (f32, f32),
         c0: (f32, f32),
         c1: (f32, f32),
@@ -417,10 +419,10 @@ mod tests {
 
     #[test]
     fn single_line_offsets_to_its_left() {
-        let out = offset_segments(&[src(0, (0.0, 0.0), (10.0, 0.0))], 2.0);
+        let out = offset_segments(&[src(lkey(0), (0.0, 0.0), (10.0, 0.0))], 2.0);
         assert_eq!(out.len(), 1);
         assert!(close(out[0].a, (0.0, 2.0)) && close(out[0].b, (10.0, 2.0)), "{out:?}");
-        let out = offset_segments(&[src(0, (0.0, 0.0), (10.0, 0.0))], -2.0);
+        let out = offset_segments(&[src(lkey(0), (0.0, 0.0), (10.0, 0.0))], -2.0);
         assert!(close(out[0].a, (0.0, -2.0)) && close(out[0].b, (10.0, -2.0)), "{out:?}");
     }
 
@@ -429,7 +431,7 @@ mod tests {
         // (0,0)→(10,0) then up to (10,10); positive = left of the first segment (+v),
         // mitered corner at the intersection of the two offset lines.
         let out = offset_segments(
-            &[src(0, (0.0, 0.0), (10.0, 0.0)), src(1, (10.0, 0.0), (10.0, 10.0))],
+            &[src(lkey(0), (0.0, 0.0), (10.0, 0.0)), src(lkey(1), (10.0, 0.0), (10.0, 10.0))],
             2.0,
         );
         assert_eq!(out.len(), 2);
@@ -443,7 +445,7 @@ mod tests {
         // Second line stored head-first; the chain still miters and the output keeps
         // the stored a/b order.
         let out = offset_segments(
-            &[src(0, (0.0, 0.0), (10.0, 0.0)), src(1, (10.0, 10.0), (10.0, 0.0))],
+            &[src(lkey(0), (0.0, 0.0), (10.0, 0.0)), src(lkey(1), (10.0, 10.0), (10.0, 0.0))],
             2.0,
         );
         assert!(close(out[1].a, (8.0, 10.0)) && close(out[1].b, (8.0, 2.0)), "{out:?}");
@@ -453,10 +455,10 @@ mod tests {
     fn closed_square_grows_outward_for_positive_distance() {
         // CCW square; positive must offset outward regardless of winding.
         let square = [
-            src(0, (0.0, 0.0), (10.0, 0.0)),
-            src(1, (10.0, 0.0), (10.0, 10.0)),
-            src(2, (10.0, 10.0), (0.0, 10.0)),
-            src(3, (0.0, 10.0), (0.0, 0.0)),
+            src(lkey(0), (0.0, 0.0), (10.0, 0.0)),
+            src(lkey(1), (10.0, 0.0), (10.0, 10.0)),
+            src(lkey(2), (10.0, 10.0), (0.0, 10.0)),
+            src(lkey(3), (0.0, 10.0), (0.0, 0.0)),
         ];
         let out = offset_segments(&square, 1.0);
         assert_eq!(out.len(), 4);
@@ -469,10 +471,10 @@ mod tests {
     #[test]
     fn clockwise_square_also_grows_outward_for_positive_distance() {
         let square = [
-            src(0, (0.0, 0.0), (0.0, 10.0)),
-            src(1, (0.0, 10.0), (10.0, 10.0)),
-            src(2, (10.0, 10.0), (10.0, 0.0)),
-            src(3, (10.0, 0.0), (0.0, 0.0)),
+            src(lkey(0), (0.0, 0.0), (0.0, 10.0)),
+            src(lkey(1), (0.0, 10.0), (10.0, 10.0)),
+            src(lkey(2), (10.0, 10.0), (10.0, 0.0)),
+            src(lkey(3), (10.0, 0.0), (0.0, 0.0)),
         ];
         let out = offset_segments(&square, 1.0);
         assert!(close(out[0].a, (-1.0, -1.0)) && close(out[0].b, (-1.0, 11.0)), "{out:?}");
@@ -483,9 +485,9 @@ mod tests {
         // Three segments meeting at (10,0): no miter there, everyone offsets flat.
         let out = offset_segments(
             &[
-                src(0, (0.0, 0.0), (10.0, 0.0)),
-                src(1, (10.0, 0.0), (20.0, 0.0)),
-                src(2, (10.0, 0.0), (10.0, 10.0)),
+                src(lkey(0), (0.0, 0.0), (10.0, 0.0)),
+                src(lkey(1), (10.0, 0.0), (20.0, 0.0)),
+                src(lkey(2), (10.0, 0.0), (10.0, 10.0)),
             ],
             2.0,
         );
@@ -512,40 +514,40 @@ mod tests {
         let r = 5.0;
         let sources = [
             // Bottom: (5,0) → (35,0)
-            src(0, (5.0, 0.0), (35.0, 0.0)),
+            src(lkey(0), (5.0, 0.0), (35.0, 0.0)),
             // Bottom-right fillet: (35,0) → (40,5), center (35,5)
             src_curve(
-                1,
+                lkey(1),
                 (35.0, 0.0),
                 (35.0 + k * r, 0.0),
                 (40.0, 5.0 - k * r),
                 (40.0, 5.0),
             ),
             // Right: (40,5) → (40,15)
-            src(2, (40.0, 5.0), (40.0, 15.0)),
+            src(lkey(2), (40.0, 5.0), (40.0, 15.0)),
             // Top-right fillet: (40,15) → (35,20), center (35,15)
             src_curve(
-                3,
+                lkey(3),
                 (40.0, 15.0),
                 (40.0, 15.0 + k * r),
                 (35.0 + k * r, 20.0),
                 (35.0, 20.0),
             ),
             // Top: (35,20) → (5,20)
-            src(4, (35.0, 20.0), (5.0, 20.0)),
+            src(lkey(4), (35.0, 20.0), (5.0, 20.0)),
             // Top-left fillet: (5,20) → (0,15), center (5,15)
             src_curve(
-                5,
+                lkey(5),
                 (5.0, 20.0),
                 (5.0 - k * r, 20.0),
                 (0.0, 15.0 + k * r),
                 (0.0, 15.0),
             ),
             // Left: (0,15) → (0,5)
-            src(6, (0.0, 15.0), (0.0, 5.0)),
+            src(lkey(6), (0.0, 15.0), (0.0, 5.0)),
             // Bottom-left fillet: (0,5) → (5,0), center (5,5)
             src_curve(
-                7,
+                lkey(7),
                 (0.0, 5.0),
                 (0.0, 5.0 - k * r),
                 (5.0 - k * r, 0.0),
@@ -556,14 +558,14 @@ mod tests {
         let out = offset_segments(&sources, d);
         assert_eq!(out.len(), 8);
         // Outer bottom should sit at y = -d.
-        let bottom = out.iter().find(|s| s.id == 0).unwrap();
+        let bottom = out.iter().find(|s| s.id == lkey(0)).unwrap();
         assert!(
             (bottom.a.y + d).abs() < 0.15 && (bottom.b.y + d).abs() < 0.15,
             "bottom offset y≈{}, got {bottom:?}",
             -d
         );
         // Fillet mid-sample should be ~r+d from the corner center (35,5).
-        let fillet = out.iter().find(|s| s.id == 1).unwrap();
+        let fillet = out.iter().find(|s| s.id == lkey(1)).unwrap();
         let bez = fillet.bezier.expect("fillet stays curved");
         let t = 0.5f32;
         let u = 1.0 - t;
@@ -593,7 +595,7 @@ mod tests {
     fn curved_line_offset_keeps_bezier_handles() {
         // Horizontal-ish S-curve: endpoints on y=0, handles pull up then down.
         let out = offset_segments(
-            &[src_curve(0, (0.0, 0.0), (10.0, 20.0), (30.0, 20.0), (40.0, 0.0))],
+            &[src_curve(lkey(0), (0.0, 0.0), (10.0, 20.0), (30.0, 20.0), (40.0, 0.0))],
             5.0,
         );
         assert_eq!(out.len(), 1);

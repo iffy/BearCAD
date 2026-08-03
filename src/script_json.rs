@@ -44,6 +44,28 @@ fn body_key_from_ordinal(
         .ok_or_else(|| format!("no body {ordinal}"))
 }
 
+/// The line at `ordinal` among the live ones (#1055).
+fn line_key_from_ordinal(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Result<crate::model::LineKey, String> {
+    doc.lines
+        .keys()
+        .nth(ordinal)
+        .ok_or_else(|| format!("no line {ordinal}"))
+}
+
+/// The lines named by a list of ordinals (#1055).
+fn line_keys_from_ordinals(
+    doc: &crate::model::Document,
+    ordinals: Vec<usize>,
+) -> Result<Vec<crate::model::LineKey>, String> {
+    ordinals
+        .into_iter()
+        .map(|o| line_key_from_ordinal(doc, o))
+        .collect()
+}
+
 /// The unit instance at `ordinal` among the live ones (#1055).
 fn unit_instance_key_from_ordinal(
     doc: &crate::model::Document,
@@ -68,7 +90,7 @@ pub fn scene_element_from_kind(
             SceneElement::ConstructionPlane(doc.construction_planes.keys().nth(index)?),
         ),
         "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
-        "line" => Some(SceneElement::Line(index)),
+        "line" => Some(SceneElement::Line(doc.lines.keys().nth(index)?)),
         "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
@@ -203,7 +225,7 @@ pub fn scene_element_selection_index(
             crate::construction::GlobalAxis::Y => 1,
             crate::construction::GlobalAxis::Z => 2,
         }),
-        SceneElement::Line(i) => Some(*i),
+        SceneElement::Line(key) => doc.lines.keys().position(|k| k == *key),
         SceneElement::ConstructionPlane(key) => {
             doc.construction_planes.keys().position(|k| k == *key)
         }
@@ -936,7 +958,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 faces.push(ExtrudeFace::Circle(circle_key(i)?));
             }
             if let Some(lines) = opt_usize_array(o, "polygon")? {
-                faces.push(ExtrudeFace::Polygon(lines));
+                faces.push(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?));
             }
             if let Some(b) = o.get("boolean") {
                 if !b.is_null() {
@@ -1076,7 +1098,7 @@ fn extrude_face_from_json(
         return Ok(ExtrudeFace::Circle(key));
     }
     if let Some(lines) = opt_usize_array(t, "polygon")? {
-        return Ok(ExtrudeFace::Polygon(lines));
+        return Ok(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?));
     }
     if let Some(b) = t.get("boolean") {
         if !b.is_null() {
@@ -1129,7 +1151,10 @@ fn constraint_point_from_json(
                 "end" | "1" => LineEnd::End,
                 other => return Err(format!("unknown line endpoint '{other}'")),
             };
-            Ok(ConstraintPoint::LineEndpoint { line: index, end })
+            Ok(ConstraintPoint::LineEndpoint {
+                line: line_key_from_ordinal(doc, index)?,
+                end,
+            })
         }
         "circle" => Ok(ConstraintPoint::CircleCenter(
             doc.circles
@@ -1212,7 +1237,7 @@ fn distance_target_from_json(
     let kind = req_str(t, "kind", "target")?;
     let index = req_usize(t, "index", "target")?;
     match kind.to_ascii_lowercase().as_str() {
-        "line" => Ok(DistanceTarget::LineLength(index)),
+        "line" => Ok(DistanceTarget::LineLength(line_key_from_ordinal(doc, index)?)),
         "circle" => Ok(DistanceTarget::CircleDiameter(
             doc.circles
                 .keys()
@@ -1260,11 +1285,11 @@ fn collect_profile_faces(
         faces.push(ExtrudeFace::Circle(circle_key(i)?));
     }
     if let Some(lines) = opt_usize_array(o, "polygon")? {
-        faces.push(ExtrudeFace::Polygon(lines));
+        faces.push(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?));
     }
     if allow_polygons {
         for lines in usize_array_list(o, "polygons")? {
-            faces.push(ExtrudeFace::Polygon(lines));
+            faces.push(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?));
         }
     }
     Ok(faces)
@@ -1695,7 +1720,10 @@ fn revolve_axis_from_value(
         },
         Value::Object(t) => {
             if t.contains_key("line") {
-                return Ok(RevolveAxis::Line(req_usize(t, "line", "axis")?));
+                return Ok(RevolveAxis::Line(line_key_from_ordinal(
+                    doc,
+                    req_usize(t, "line", "axis")?,
+                )?));
             }
             // A body feature edge (#643), by the body plus the edge's world endpoints in mm.
             let body = body_key_from_ordinal(doc, req_usize(t, "body", "axis")?)?;
@@ -1765,7 +1793,7 @@ fn face_id_from_json(doc: &crate::model::Document, v: &Value) -> Result<FaceId, 
                         None => opt_usize_array(t, "lines")?
                             .ok_or("polygon profile requires `profile_lines`")?,
                     };
-                    ExtrudeFace::Polygon(lines)
+                    ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?)
                 }
                 // A boolean-combined profile's cap (#406): same descriptor as `extrude`'s
                 // `boolean =`.
@@ -1814,7 +1842,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
         "count" => {
             let kind = req_str(o, "kind", "count")?;
             let n = match kind.to_ascii_lowercase().as_str() {
-                "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
+                "line" => doc.lines.len(),
                 "circle" => doc.circles.len(),
                 "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
@@ -1869,7 +1897,7 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
     let mut t = Map::new();
     match kind.to_ascii_lowercase().as_str() {
         "line" => {
-            let Some(line) = doc.lines.get(index).filter(|e| !e.deleted) else {
+            let Some(line) = doc.lines.keys().nth(index).and_then(|k| doc.lines.get(k)) else {
                 return Ok(Value::Null);
             };
             t.insert("x0".into(), json!(line.x0));
@@ -2292,6 +2320,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
@@ -2472,7 +2501,7 @@ mod tests {
         assert_eq!(
             instruction_from_json(&doc, "revolve", &json!({ "polygon": [0, 1, 2, 3], "axis": "y" })),
             Ok(Instruction::Revolve {
-                faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+                faces: vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
                 axis: RevolveAxis::Y,
                 angle_deg: 360.0,
                 symmetric: false,
@@ -2488,7 +2517,7 @@ mod tests {
             ),
             Ok(Instruction::Revolve {
                 faces: vec![ExtrudeFace::Circle(rkey(0))],
-                axis: RevolveAxis::Line(3),
+                axis: RevolveAxis::Line(lkey(3)),
                 angle_deg: 90.0,
                 symmetric: true,
                 body: RevolveBodyChoice::Cut,
@@ -2512,7 +2541,7 @@ mod tests {
                 faces: vec![
                     ExtrudeFace::Circle(rkey(0)),
                     ExtrudeFace::Circle(rkey(1)),
-                    ExtrudeFace::Polygon(vec![2, 3, 4, 5]),
+                    ExtrudeFace::Polygon(vec![lkey(2), lkey(3), lkey(4), lkey(5)]),
                 ],
                 body: RevolveBodyChoice::NewBody,
                 bodies: vec![],
@@ -2809,7 +2838,7 @@ mod tests {
                 &json!({ "target": { "kind": "line", "index": 0 }, "expression": "40" })
             ),
             Ok(Instruction::AddDistanceConstraint {
-                target: DistanceTarget::LineLength(0),
+                target: DistanceTarget::LineLength(lkey(0)),
                 expression: "40".into(),
             })
         );
@@ -2962,6 +2991,15 @@ mod tests {
                 edge_treatments: Vec::new(),
             });
         }
+        for i in 0..8 {
+            doc.lines.insert(crate::model::Line::from_local_endpoints(
+                doc.sketches.keys().next().unwrap(),
+                0.0,
+                i as f32,
+                10.0,
+                i as f32,
+            ));
+        }
         for i in 0..4 {
             doc.circles.insert(crate::model::Circle::from_local_center_radius(
                 doc.sketches.keys().next().unwrap(),
@@ -2974,10 +3012,10 @@ mod tests {
                 sketch: skey(0),
                 kind: crate::model::ConstraintKind::Coincident {
                     a: crate::model::ConstraintEntity::Line(
-                        crate::model::ConstraintLine::Line(0),
+                        crate::model::ConstraintLine::Line(lkey(0)),
                     ),
                     b: crate::model::ConstraintEntity::Line(
-                        crate::model::ConstraintLine::Line(1),
+                        crate::model::ConstraintLine::Line(lkey(1)),
                     ),
                 },
                 expression: String::new(),
@@ -3117,7 +3155,7 @@ mod tests {
                 &json!({ "point": { "kind": "line", "index": 0, "end": "start" }, "distance": 2 })
             ),
             Ok(Instruction::VertexTreatment {
-                point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start },
+                point: ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start },
                 kind: VertexTreatmentKind::Chamfer,
                 amount: "2".to_string(),
             })
@@ -3276,7 +3314,9 @@ mod tests {
             }
             v
         };
-        doc.lines = serde_json::from_value(resolve(lines)).unwrap();
+        for line in serde_json::from_value::<Vec<crate::model::Line>>(resolve(lines)).unwrap() {
+            doc.lines.insert(line);
+        }
         for circle in serde_json::from_value::<Vec<crate::model::Circle>>(resolve(circles)).unwrap()
         {
             doc.circles.insert(circle);
@@ -3284,7 +3324,8 @@ mod tests {
         doc
     }
 
-    /// A document holding `n` circles, for the verbs that name one by ordinal (#1055).
+    /// A document holding `n` circles plus a handful of lines, for the verbs that name either
+    /// by ordinal (#1055).
     fn doc_with_circles(n: usize) -> Document {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
@@ -3297,15 +3338,23 @@ mod tests {
                 0.0,
             ));
         }
+        for i in 0..8 {
+            doc.lines.insert(crate::model::Line::from_local_endpoints(
+                sketch,
+                0.0,
+                i as f32,
+                10.0,
+                i as f32,
+            ));
+        }
         doc
     }
 
     #[test]
-    fn count_ignores_deleted_entities() {
+    fn count_counts_the_live_entities() {
         let doc = doc_with(
             json!([
                 { "sketch": 0, "x0": 0, "y0": 0, "x1": 30, "y1": 0 },
-                { "sketch": 0, "x0": 0, "y0": 0, "x1": 0, "y1": 10, "deleted": true },
                 { "sketch": 0, "x0": 0, "y0": 10, "x1": 30, "y1": 10 },
             ]),
             json!([{ "sketch": 0, "cx": 5, "cy": 5, "r": 3 }]),
@@ -3395,8 +3444,18 @@ mod tests {
 
     #[test]
     fn slice_reads_plane_and_body_cutters() {
-        // The cap cutter below names an extrusion by ordinal (#1055).
+        // The cap cutter below names an extrusion and its profile lines by ordinal (#1055).
         let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        for i in 0..4 {
+            doc.lines.insert(crate::model::Line::from_local_endpoints(
+                sketch,
+                0.0,
+                i as f32,
+                10.0,
+                i as f32,
+            ));
+        }
         doc.extrusions.insert(crate::model::Extrusion {
             sketch: skey(0),
             faces: Vec::new(),
@@ -3431,7 +3490,7 @@ mod tests {
                 targets: vec![1],
                 cutters: vec![FaceId::ExtrudeCap {
                     extrusion: xkey(0),
-                    profile: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+                    profile: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
                     top: false,
                 }],
                 extend_infinite: false,

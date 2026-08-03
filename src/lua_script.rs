@@ -202,7 +202,7 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::EdgeTreatmentOp(key) => {
             doc.edge_treatment_ops.keys().position(|k| k == key).unwrap_or(0)
         }
-        SceneElement::Line(i) => i,
+        SceneElement::Line(key) => doc.lines.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::ConstructionPlane(key) => {
             doc.construction_planes.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -267,7 +267,7 @@ pub fn scene_element_from_kind(
             SceneElement::ConstructionPlane(doc.construction_planes.keys().nth(index)?),
         ),
         "sketch" => Some(SceneElement::Sketch(doc.sketches.keys().nth(index)?)),
-        "line" => Some(SceneElement::Line(index)),
+        "line" => Some(SceneElement::Line(doc.lines.keys().nth(index)?)),
         "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
@@ -376,6 +376,23 @@ fn plane_key_from_ordinal(
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.construction_planes.keys().nth(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no construction plane {ordinal}")))
+}
+
+/// The line a script ordinal names (#1055) — lines are keyed, scripts count.
+fn line_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model::LineKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.lines.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no line {ordinal}")))
+}
+
+/// Every line in a script's ordinal list (#1055).
+fn line_keys_from_ordinals(
+    lua: &Lua,
+    ordinals: Vec<usize>,
+) -> mlua::Result<Vec<crate::model::LineKey>> {
+    ordinals.into_iter().map(|o| line_key_from_ordinal(lua, o)).collect()
 }
 
 /// The circle a script ordinal names (#1055) — circles are keyed, scripts count.
@@ -560,7 +577,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                     let lines: Vec<usize> = table
                         .get("profile_lines")
                         .or_else(|_| table.get("lines"))?;
-                    crate::model::ExtrudeFace::Polygon(lines)
+                    crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?)
                 }
                 // A boolean-combined profile's cap (#406): `profile = "boolean",
                 // boolean = { op, a = <face spec>, b = <face spec> }` — the same
@@ -622,7 +639,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                     let lines: Vec<usize> = table
                         .get("profile_lines")
                         .or_else(|_| table.get("lines"))?;
-                    crate::model::ExtrudeFace::Polygon(lines)
+                    crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?)
                 }
                 "boolean" => {
                     let spec: Table = table.get("boolean")?;
@@ -673,7 +690,7 @@ fn parse_extrude_face_table(
         return Ok(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
     }
     if let Some(lines) = table.get::<Option<Vec<usize>>>("polygon")? {
-        return Ok(crate::model::ExtrudeFace::Polygon(lines));
+        return Ok(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
     }
     if let Some(boolean) = table.get::<Option<Table>>("boolean")? {
         return parse_boolean_face_table(lua, &boolean);
@@ -796,7 +813,7 @@ fn parse_constraint_line_table(lua: &Lua, table: Table) -> mlua::Result<Constrai
     }
     let index: usize = table.get("index")?;
     match kind.to_ascii_lowercase().as_str() {
-        "line" => Ok(ConstraintLine::Line(index)),
+        "line" => Ok(ConstraintLine::Line(line_key_from_ordinal(lua, index)?)),
         other => Err(mlua::Error::external(format!(
             "drag_line target must be line, not '{other}'"
         ))),
@@ -840,7 +857,10 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
                     )));
                 }
             };
-            Ok(ConstraintPoint::LineEndpoint { line: index, end })
+            Ok(ConstraintPoint::LineEndpoint {
+                line: line_key_from_ordinal(lua, index)?,
+                end,
+            })
         }
         "circle" => Ok(ConstraintPoint::CircleCenter(circle_key_from_ordinal(lua, index)?)),
         // A calibrated image's reference point (#425): `{ kind = "image", index = i,
@@ -970,7 +990,7 @@ fn parse_revolve_axis(
         },
         Value::Table(t) => {
             if let Some(li) = t.get::<Option<usize>>("line")? {
-                return Ok(crate::model::RevolveAxis::Line(li));
+                return Ok(crate::model::RevolveAxis::Line(line_key_from_ordinal(lua, li)?));
             }
             let ordinal: usize = t.get("body").map_err(|_| {
                 mlua::Error::external(format!("{what} `axis` table needs `line` or `body` ({SHAPES})"))
@@ -1559,7 +1579,10 @@ fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
 fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
-        "line" => Ok(DistanceTarget::LineLength(table.get("index")?)),
+        "line" => Ok(DistanceTarget::LineLength(line_key_from_ordinal(
+            lua,
+            table.get("index")?,
+        )?)),
         "circle" => Ok(DistanceTarget::CircleDiameter(circle_key_from_ordinal(
             lua,
             table.get("index")?,
@@ -2279,13 +2302,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 )))
             };
             let source = match kind.as_str() {
-                "line_length" => PS::LineLength(opts.get("a")?),
+                "line_length" => PS::LineLength(line_key_from_ordinal(lua, opts.get("a")?)?),
                 "point_distance" => PS::PointDistance(
                     parse_constraint_point_table(lua, opts.get("a")?)?,
                     parse_constraint_point_table(lua, opts.get("b")?)?,
                 ),
-                "line_distance" => PS::LineDistance(opts.get("a")?, opts.get("b")?),
-                "line_angle" => PS::LineAngle(opts.get("a")?, opts.get("b")?),
+                "line_distance" => PS::LineDistance(
+                    line_key_from_ordinal(lua, opts.get("a")?)?,
+                    line_key_from_ordinal(lua, opts.get("b")?)?,
+                ),
+                "line_angle" => PS::LineAngle(
+                    line_key_from_ordinal(lua, opts.get("a")?)?,
+                    line_key_from_ordinal(lua, opts.get("b")?)?,
+                ),
                 "body_edge_length" => PS::BodyEdgeLength {
                     body: body_key_from_ordinal(lua, opts.get("body")?)?,
                     a: mm_point("a")?,
@@ -2577,7 +2606,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
             let count = match kind.to_ascii_lowercase().as_str() {
-                "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
+                "line" => doc.lines.len(),
                 "circle" => doc.circles.len(),
                 "sketch" => doc.sketches.len(),
                 "constraint" => doc.constraints.len(),
@@ -2618,7 +2647,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let t = lua.create_table()?;
             match kind.to_ascii_lowercase().as_str() {
                 "line" => {
-                    let Some(line) = doc.lines.get(index).filter(|e| !e.deleted) else {
+                    // The script's `index` is the line's ordinal (#1055).
+                    let Some(line) = doc.lines.keys().nth(index).map(|k| &doc.lines[k]) else {
                         return Ok(Value::Nil);
                     };
                     t.set("x0", line.x0)?;
@@ -3106,8 +3136,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 } else {
                     crate::constraints::angle_constraint_natural_sign(
                         &tick.state().doc,
-                        crate::model::ConstraintLine::Line(line_a),
-                        crate::model::ConstraintLine::Line(line_b),
+                        crate::model::ConstraintLine::Line(line_key_from_ordinal(lua, line_a)?),
+                        crate::model::ConstraintLine::Line(line_key_from_ordinal(lua, line_b)?),
                     )
                     .unwrap_or(1)
                 };
@@ -3791,11 +3821,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, index: usize| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
+            // The script's `index` is the line's ordinal (#1055).
             let line = state
                 .doc
                 .lines
-                .get(index)
-                .filter(|l| !l.deleted)
+                .keys()
+                .nth(index)
+                .map(|k| &state.doc.lines[k])
                 .ok_or_else(|| mlua::Error::external(format!("no line {index}")))?;
             Ok((line.x0, line.y0, line.x1, line.y1))
         })?,
@@ -4051,9 +4083,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // A rectangle is now four plain lines (#66 polygon); return a handle to its bottom
             // edge (the first of the four lines just created).
+            // The rectangle's bottom edge: the first of the four lines just created (#1055).
             let element = {
-                let n = unsafe { tick.state().doc.lines.len() };
-                SceneElement::Line(n.saturating_sub(4))
+                let keys: Vec<_> = unsafe { tick.state().doc.lines.keys().collect() };
+                let Some(&first) = keys.iter().rev().nth(3) else {
+                    return Ok(());
+                };
+                SceneElement::Line(first)
             };
             apply_optional_name(lua, element, Some(opts))
         })?,
@@ -4119,9 +4155,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 tick.exec(Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension })?;
             }
-            let element =
-                SceneElement::Line(unsafe { tick.state().doc.lines.len().saturating_sub(1) });
-            apply_optional_name(lua, element, Some(opts))
+            // The line just committed (#1055): the newest live one.
+            let Some(key) = (unsafe { tick.state().doc.lines.keys().last() }) else {
+                return Ok(());
+            };
+            apply_optional_name(lua, SceneElement::Line(key), Some(opts))
         })?,
     )?;
 
@@ -4312,7 +4350,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             // `polygon = {line0, line1, ...}`: a single closed-loop face (#66).
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             // `text = index`: extrude/engrave a whole sketch text — every glyph region of it,
             // counters (letter holes) preserved (#285/#355).
@@ -4513,6 +4551,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
+            let lines = line_keys_from_ordinals(lua, lines)?;
             let circles = circles
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
@@ -4553,6 +4592,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
                 .collect::<mlua::Result<Vec<_>>>()?;
+            let lines = line_keys_from_ordinals(lua, lines)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchRepeatOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -4596,6 +4636,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (sketch, lines, circles, distance, construction) =
                 parse_sketch_offset_op_args(&opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
+            let lines = line_keys_from_ordinals(lua, lines)?;
             let circles = circles
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
@@ -4632,6 +4673,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
                 .collect::<mlua::Result<Vec<_>>>()?;
+            let lines = line_keys_from_ordinals(lua, lines)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchOffsetOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -4663,6 +4705,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(&opts, "mirror_sketch", &["sketch", "line", "lines", "circles"])?;
             let (sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
             let sketch = sketch_key_from_ordinal(lua, sketch)?;
+            let lines = line_keys_from_ordinals(lua, lines)?;
             let circles = circles
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
@@ -4670,7 +4713,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchMirrorOperation {
                     sketch,
-                    line,
+                    line: line_key_from_ordinal(lua, line)?,
                     line_targets: lines,
                     circle_targets: circles,
                 })
@@ -4697,6 +4740,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
                 .collect::<mlua::Result<Vec<_>>>()?;
+            let lines = line_keys_from_ordinals(lua, lines)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchMirrorOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -4707,7 +4751,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         .keys()
                         .nth(op)
                         .ok_or_else(|| mlua::Error::external(format!("no operation {op}")))?,
-                    line,
+                    line: line_key_from_ordinal(lua, line)?,
                     line_targets: lines,
                     circle_targets: circles,
                 })
@@ -4808,16 +4852,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &["sketch", "lines", "circles", "faces", "cutters"],
             )?;
             let sketch = sketch_key_from_ordinal(lua, opts.get::<Option<usize>>("sketch")?.unwrap_or(0))?;
-            let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+            let line_targets =
+                line_keys_from_ordinals(lua, opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default())?;
             let circle_targets = opts
                 .get::<Option<Vec<usize>>>("circles")?
                 .unwrap_or_default()
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
                 .collect::<mlua::Result<Vec<_>>>()?;
-            let face_targets: Vec<Vec<usize>> =
-                opts.get::<Option<Vec<Vec<usize>>>>("faces")?.unwrap_or_default();
-            let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
+            let face_targets = opts
+                .get::<Option<Vec<Vec<usize>>>>("faces")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|loop_lines| line_keys_from_ordinals(lua, loop_lines))
+                .collect::<mlua::Result<Vec<_>>>()?;
+            let cutter_lines = line_keys_from_ordinals(
+                lua,
+                opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default(),
+            )?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchSliceOperation {
                     sketch,
@@ -4844,16 +4896,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &["index", "lines", "circles", "faces", "cutters"],
             )?;
             let op: usize = opts.get("index")?;
-            let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+            let line_targets =
+                line_keys_from_ordinals(lua, opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default())?;
             let circle_targets = opts
                 .get::<Option<Vec<usize>>>("circles")?
                 .unwrap_or_default()
                 .into_iter()
                 .map(|o| circle_key_from_ordinal(lua, o))
                 .collect::<mlua::Result<Vec<_>>>()?;
-            let face_targets: Vec<Vec<usize>> =
-                opts.get::<Option<Vec<Vec<usize>>>>("faces")?.unwrap_or_default();
-            let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
+            let face_targets = opts
+                .get::<Option<Vec<Vec<usize>>>>("faces")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|loop_lines| line_keys_from_ordinals(lua, loop_lines))
+                .collect::<mlua::Result<Vec<_>>>()?;
+            let cutter_lines = line_keys_from_ordinals(
+                lua,
+                opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default(),
+            )?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchSliceOperation {
                     // A script names the op by its ordinal among the live ones (#1055).
@@ -5151,7 +5211,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
             }
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             if faces.is_empty() {
                 return Err(mlua::Error::external(
@@ -5273,14 +5333,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
             }
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             if faces.is_empty() {
                 return Err(mlua::Error::external(
                     "sweep requires a `circle`/`circles`/`polygon` face",
                 ));
             }
-            let path: Vec<usize> = opts.get::<Option<Vec<usize>>>("path")?.unwrap_or_default();
+            let path =
+                line_keys_from_ordinals(lua, opts.get::<Option<Vec<usize>>>("path")?.unwrap_or_default())?;
             if path.is_empty() {
                 return Err(mlua::Error::external(
                     "sweep requires `path` (a list of line indices)",
@@ -5321,10 +5382,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
             }
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
             }
             if let Some(loops) = opts.get::<Option<Vec<Vec<usize>>>>("polygons")? {
-                faces.extend(loops.into_iter().map(crate::model::ExtrudeFace::Polygon));
+                for loop_lines in loops {
+                    faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
+                        lua, loop_lines,
+                    )?));
+                }
             }
             if faces.len() < 2 {
                 return Err(mlua::Error::external(
@@ -5837,6 +5902,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
@@ -6167,7 +6233,8 @@ mod tests {
             assert_eq!(
                 count_nodes(&tree, &|n| matches!(n, HierarchyNode::Line(l) if *l == li)),
                 1,
-                "offset line {li} listed once"
+                "offset line {} listed once",
+                li.index()
             );
         }
 
@@ -6205,7 +6272,7 @@ mod tests {
         crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchOffsetOp(skop(0)));
         assert!(state.doc.sketch_offset_ops.is_empty(), "the op is removed, not tombstoned");
         for &li in &op.line_outputs {
-            assert!(state.doc.lines[li].deleted);
+            assert!(!state.doc.lines.contains(li));
         }
         assert!(!state.doc.circles.contains(op.circle_outputs[0]));
     }
@@ -6377,7 +6444,7 @@ mod tests {
             "#,
         );
         // The original is shadowed (kept, not face-forming); its two fragments are real lines.
-        assert!(state.doc.lines[0].shadow, "sliced original becomes a shadow line");
+        assert!(state.doc.lines[lkey(0)].shadow, "sliced original becomes a shadow line");
         let op = &state.doc.sketch_slice_ops.values().nth(0).unwrap();
         assert_eq!(op.line_outputs.len(), 2, "one crossing → two fragments");
         let frag = |i: usize| {
@@ -6404,7 +6471,7 @@ mod tests {
         );
         let op = state.doc.sketch_slice_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.line_outputs.len(), 2);
-        assert!(state.doc.lines[0].shadow);
+        assert!(state.doc.lines[lkey(0)].shadow);
         let tree = build_hierarchy(&state.doc, None);
         fn count_nodes(entries: &[crate::hierarchy::HierarchyEntry], f: &dyn Fn(&HierarchyNode) -> bool) -> usize {
             entries.iter().map(|e| f(&e.node) as usize + count_nodes(&e.children, f)).sum()
@@ -6414,13 +6481,14 @@ mod tests {
             assert_eq!(
                 count_nodes(&tree, &|n| matches!(n, HierarchyNode::Line(l) if *l == li)),
                 1,
-                "fragment line {li} listed once (under the op)"
+                "fragment line {} listed once (under the op)",
+                li.index()
             );
         }
         crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchSliceOp(skop(0)));
-        assert!(!state.doc.lines[0].shadow, "delete un-shadows the original");
+        assert!(!state.doc.lines[lkey(0)].shadow, "delete un-shadows the original");
         for &li in &op.line_outputs {
-            assert!(state.doc.lines[li].deleted, "fragment {li} removed");
+            assert!(!state.doc.lines.contains(li), "fragment {} removed", li.index());
         }
     }
 
@@ -6439,7 +6507,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut doc, skey(0), 0.0, 0.0, 10.0, 10.0, [false; 4]);
         assert_eq!(crate::polygon::closed_line_loops(&doc, skey(0)).len(), 1);
         // Shadow the bottom edge (line 0): the original loop is no longer detected.
-        doc.lines[0].shadow = true;
+        doc.lines[lkey(0)].shadow = true;
         assert_eq!(
             crate::polygon::closed_line_loops(&doc, skey(0)).len(),
             0,
@@ -6593,9 +6661,9 @@ mod tests {
         "#,
         );
         assert!(
-            state.doc.lines[0].y0.abs() < 1e-3,
+            state.doc.lines[lkey(0)].y0.abs() < 1e-3,
             "the start point should be pinned to the X axis (v = 0), got y0={}",
-            state.doc.lines[0].y0
+            state.doc.lines[lkey(0)].y0
         );
     }
 
@@ -6813,7 +6881,7 @@ mod tests {
                                      b = { kind = "line", index = 1 } }, "12mm")
         "#,
         );
-        let line = &state.doc.lines[1];
+        let line = &state.doc.lines[lkey(1)];
         assert!((line.y0 - 12.0).abs() < 0.1, "line spacing: y0={}", line.y0);
     }
 
@@ -6883,11 +6951,11 @@ mod tests {
         "#,
         );
         let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         });
         let start_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         });
         assert!(
@@ -6930,10 +6998,10 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.lines.len(), 1);
-        assert!((state.doc.lines[0].length() - 80.0).abs() < 1e-2);
+        assert!((state.doc.lines[lkey(0)].length() - 80.0).abs() < 1e-2);
         assert_eq!(
             find_element_by_name(&state.doc, "Guide"),
-            Some(SceneElement::Line(0))
+            Some(SceneElement::Line(lkey(0)))
         );
     }
 
@@ -6949,21 +7017,21 @@ mod tests {
         runner.verbose = false;
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 0.0, b_far.0, b_far.1));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 0.0, b_far.0, b_far.1));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -6999,7 +7067,7 @@ mod tests {
         // #538: two sources shadowed + two trimmed copies + one bridge = 5 lines.
         assert_eq!(state.doc.lines.len(), 5, "trimmed copies + a bridge should be added");
         assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
-        let bridge = state.doc.lines.last().unwrap();
+        let bridge = state.doc.lines.values().last().unwrap();
         assert!(!bridge.is_curved(), "chamfer bridges with a straight line");
     }
 
@@ -7015,7 +7083,7 @@ mod tests {
         );
         // #538: two sources shadowed + two trimmed copies + one bridge = 5 lines.
         assert_eq!(state.doc.lines.len(), 5, "trimmed copies + a bridge should be added");
-        let bridge = state.doc.lines.last().unwrap();
+        let bridge = state.doc.lines.values().last().unwrap();
         assert!(bridge.is_curved(), "fillet bridges with a curved line");
     }
 
@@ -7144,7 +7212,9 @@ mod tests {
                 polygon = {0, 1, 2, 99}, distance = 5, body = "merge",
             })
             assert(not ok, "extrude with a nonexistent line index should error")
-            assert(tostring(err):find("closed loop"), "unexpected error: " .. tostring(err))
+            -- The ordinal is resolved to a key at the script boundary (#1055), so a line that
+            -- isn't there is caught by name before the loop check ever runs.
+            assert(tostring(err):find("no line 99"), "unexpected error: " .. tostring(err))
             assert(bearcad.count("extrusion") == 0, "extrusion count must be unchanged")
         "#,
         );
@@ -7334,12 +7404,12 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.lines.len(), 1);
-        let line = &state.doc.lines[0];
+        let line = &state.doc.lines[lkey(0)];
         assert!(line.is_curved());
         assert_eq!(line.bezier, Some([(3.0, 4.0), (7.0, 4.0)]));
         assert_eq!(
             find_element_by_name(&state.doc, "Curve"),
-            Some(SceneElement::Line(0))
+            Some(SceneElement::Line(lkey(0)))
         );
     }
 
@@ -7620,7 +7690,7 @@ mod tests {
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(
             state.doc.extrusions[xkey(0)].faces,
-            vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2])]
+            vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2)])]
         );
     }
 
@@ -7724,7 +7794,7 @@ mod tests {
         "#,
         );
         // #538: the shadowed sources' trimmed copies are lines 4,5; the curved bridge is line 6.
-        let loop_lines = vec![4usize, 6, 5, 2, 3];
+        let loop_lines = vec![lkey(4), lkey(6), lkey(5), lkey(2), lkey(3)];
         let profile = crate::model::ExtrudeFace::Polygon(loop_lines.clone());
         assert_eq!(crate::extrude::side_face_count(&profile), loop_lines.len());
         let frame = crate::face::sketch_geometry_frame(&state.doc, skey(0)).unwrap();
@@ -7732,17 +7802,26 @@ mod tests {
             let line = &state.doc.lines[li];
             let quad = crate::extrude::side_quad_world(&state.doc, xkey(0), &profile, edge);
             if line.is_curved() {
-                assert!(quad.is_none(), "curved bridge (line {li}) is not a flat wall");
+                assert!(
+                    quad.is_none(),
+                    "curved bridge (line {}) is not a flat wall",
+                    li.index()
+                );
                 continue;
             }
-            let quad = quad.unwrap_or_else(|| panic!("straight line {li} has a flat wall"));
+            let quad =
+                quad.unwrap_or_else(|| panic!("straight line {} has a flat wall", li.index()));
             // The wall's base edge is line `li`'s two world endpoints (in some order).
             let ws = crate::face::local_to_world(&frame, line.x0, line.y0);
             let we = crate::face::local_to_world(&frame, line.x1, line.y1);
             let base = [quad[0], quad[1]];
             let matches = (base[0].distance(ws) < 1e-3 && base[1].distance(we) < 1e-3)
                 || (base[0].distance(we) < 1e-3 && base[1].distance(ws) < 1e-3);
-            assert!(matches, "edge {edge} wall base {base:?} != line {li} endpoints");
+            assert!(
+                matches,
+                "edge {edge} wall base {base:?} != line {} endpoints",
+                li.index()
+            );
         }
     }
 
@@ -7806,7 +7885,7 @@ mod tests {
         runner.verbose = false;
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 0.0, 10.0, 0.0,
         ));
         let mut synthetic = SyntheticInput::default();
@@ -7816,7 +7895,7 @@ mod tests {
         }
         assert_eq!(
             find_element_by_name(&state.doc, "Main box"),
-            Some(SceneElement::Line(0))
+            Some(SceneElement::Line(lkey(0)))
         );
     }
 
@@ -8058,7 +8137,7 @@ mod tests {
             "#,
         );
         // Geometry evaluated against the parameter.
-        let l = &state.doc.lines[0];
+        let l = &state.doc.lines[lkey(0)];
         let width = ((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)).sqrt();
         assert!((width - 24.0).abs() < 1e-3, "rect width, got {width}");
         assert!((state.doc.circles[rkey(0)].r - 6.0).abs() < 1e-3, "radius expr");
@@ -8085,7 +8164,7 @@ mod tests {
             bearcad.parameter("value", 0, "30")
             "#,
         );
-        let l = &state.doc.lines[0];
+        let l = &state.doc.lines[lkey(0)];
         let width = ((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)).sqrt();
         assert!((width - 30.0).abs() < 1e-3, "rect follows the parameter, got {width}");
         assert!(
@@ -9103,8 +9182,8 @@ mod tests {
                    string.format("endpoint at (%g, %g), want (15, 3)", l.x1, l.y1))
         "#,
         );
-        assert!((state.doc.lines[0].x1 - 15.0).abs() < 1e-3);
-        assert!((state.doc.lines[0].y1 - 3.0).abs() < 1e-3);
+        assert!((state.doc.lines[lkey(0)].x1 - 15.0).abs() < 1e-3);
+        assert!((state.doc.lines[lkey(0)].y1 - 3.0).abs() < 1e-3);
     }
 
     /// #114: the table form of `drag_line` translates the whole line by a delta.
@@ -9119,8 +9198,8 @@ mod tests {
                    string.format("line at y %g..%g, want 4..4", l.y0, l.y1))
         "#,
         );
-        assert!((state.doc.lines[0].y0 - 4.0).abs() < 1e-3);
-        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3);
+        assert!((state.doc.lines[lkey(0)].y0 - 4.0).abs() < 1e-3);
+        assert!((state.doc.lines[lkey(0)].x1 - 10.0).abs() < 1e-3);
     }
 
     /// #114: attempting to drag a fully constrained vertex raises a catchable error and
@@ -9147,7 +9226,7 @@ mod tests {
             assert(tostring(err):find("constrained"), "unexpected error: " .. tostring(err))
         "#,
         );
-        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3, "corner must not move");
+        assert!((state.doc.lines[lkey(0)].x1 - 10.0).abs() < 1e-3, "corner must not move");
     }
 
     /// #459 regression: a dimensioned-but-unpinned rect still drags — the whole
@@ -9165,7 +9244,7 @@ mod tests {
             }
         "#,
         );
-        let l0 = &state.doc.lines[0];
+        let l0 = &state.doc.lines[lkey(0)];
         let w = (l0.x1 - l0.x0).abs();
         assert!((w - 40.0).abs() < 1e-2, "width preserved, got {w}");
         assert!(
@@ -9784,8 +9863,8 @@ mod tests {
         let (cx, cy) = crate::text::sketch_text_anchor_uv(t, crate::model::TextAnchor::Center);
         assert!((cx - 30.0).abs() < 1e-2 && (cy - 40.0).abs() < 1e-2, "centre at ({cx}, {cy})");
         // The line stayed put — the text is the mover.
-        assert_eq!(state.doc.lines[0].x0, 30.0);
-        assert_eq!(state.doc.lines[0].y0, 40.0);
+        assert_eq!(state.doc.lines[lkey(0)].x0, 30.0);
+        assert_eq!(state.doc.lines[lkey(0)].y0, 40.0);
     }
 
     /// #355: `bearcad.extrude{ text = i }` extrudes a whole sketch text (all its glyphs), so a

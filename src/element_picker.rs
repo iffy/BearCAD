@@ -346,7 +346,7 @@ impl PickRule {
                 // sketch line — this sketch's own geometry, or another sketch's, which no
                 // projection source can track — is refused.
                 SceneElement::Line(li) => doc.lines.get(*li).is_some_and(|l| {
-                    !l.deleted && l.sketch == *sketch && l.projection.is_some()
+                    l.sketch == *sketch && l.projection.is_some()
                 }),
                 SceneElement::Body(_)
                 | SceneElement::BodyEdge { .. }
@@ -425,7 +425,7 @@ pub fn element_in_sketch(
     sketch: crate::model::SketchId,
     element: &SceneElement,
 ) -> bool {
-    let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
+    let line_in = |li: crate::model::LineKey| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
     let circle_in = |ci: crate::model::CircleKey| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
     let text_in = |ti: crate::model::SketchTextKey| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
     let host_face = doc.sketch_face(sketch);
@@ -460,16 +460,15 @@ pub fn element_in_sketch(
 /// chains use (#626) — so a straight line that breaks into a tangent curve and exits again as
 /// a tangent line reads as one line-curve-line run. Corners and junctions of 3+ ends break the
 /// chain. Only the line's own sketch participates; deleted and shadow lines don't.
-pub fn sketch_line_tangent_chain(doc: &Document, li: usize) -> Vec<usize> {
+pub fn sketch_line_tangent_chain(doc: &Document, li: crate::model::LineKey) -> Vec<crate::model::LineKey> {
     use glam::Vec3;
-    let Some(line) = doc.lines.get(li).filter(|l| !l.deleted && !l.shadow) else {
+    let Some(line) = doc.lines.get(li).filter(|l| !l.shadow) else {
         return vec![li];
     };
-    let lines: Vec<usize> = doc
+    let lines: Vec<crate::model::LineKey> = doc
         .lines
         .iter()
-        .enumerate()
-        .filter(|(_, l)| !l.deleted && !l.shadow && l.sketch == line.sketch)
+        .filter(|(_, l)| !l.shadow && l.sketch == line.sketch)
         .map(|(i, _)| i)
         .collect();
     // 0.001 sketch-unit precision, like the solid-mesh vertex key.
@@ -498,7 +497,7 @@ pub fn sketch_line_tangent_chain(doc: &Document, li: usize) -> Vec<usize> {
         })
         .collect();
     for chain in crate::gpu_viewport::chain_by_tangency(&ends) {
-        let mut members: Vec<usize> = chain.into_iter().map(|i| lines[i]).collect();
+        let mut members: Vec<crate::model::LineKey> = chain.into_iter().map(|i| lines[i]).collect();
         if members.contains(&li) {
             members.sort_unstable();
             return members;
@@ -1235,6 +1234,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
@@ -1252,13 +1252,13 @@ mod tests {
         SceneElement::Body(bkey(i))
     }
     fn line(i: usize) -> SceneElement {
-        SceneElement::Line(i)
+        SceneElement::Line(lkey(i))
     }
 
     #[test]
     fn kind_of_covers_operations_and_geometry() {
         assert_eq!(ElementKind::of(&SceneElement::Body(bkey(0))), ElementKind::Body);
-        assert_eq!(ElementKind::of(&SceneElement::Line(0)), ElementKind::Line);
+        assert_eq!(ElementKind::of(&SceneElement::Line(lkey(0))), ElementKind::Line);
         assert_eq!(ElementKind::of(&SceneElement::Origin), ElementKind::Vertex);
         assert_eq!(
             ElementKind::of(&SceneElement::BooleanOp(bopkey(0))),
@@ -1494,10 +1494,9 @@ mod tests {
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         // A curved line, so `Straight` has something to reject.
-        let curved = doc.lines.len();
-        doc.lines.push(crate::model::Line {
+        let curved = doc.lines.insert(crate::model::Line {
             bezier: Some([(1.0, 1.0), (2.0, 2.0)]),
-            ..doc.lines[0].clone()
+            ..doc.lines[lkey(0)].clone()
         });
         assert!(doc.lines[curved].bezier.is_some());
         for _ in 0..2 {
@@ -1571,12 +1570,12 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
         projected.projection = Some(crate::model::ProjectionSource::Plane {
             plane: doc.ground_plane().unwrap(),
         });
-        doc.lines.push(projected);
+        doc.lines.insert(projected);
 
         let rule = PickRule::ProjectableInto(sketch);
         assert!(!rule.allows(&doc, &line(0)), "the sketch's own drawn line is refused");
@@ -1698,7 +1697,7 @@ mod tests {
             ElementPicker::new(ElementFilter::kind(ElementKind::Edge), PickLimit::Infinite);
         // A sketch profile's boundary is its lines; an edges picker takes none of them, so it
         // gets nothing rather than something wrong.
-        let profile = SceneElement::from_face_id(crate::model::FaceId::Polygon(vec![0, 1, 2, 3]));
+        let profile = SceneElement::from_face_id(crate::model::FaceId::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]));
         assert!(expand_pick(&doc, &edges_only, &profile, false).is_empty());
 
         // A lines picker, though, gets exactly the profile's lines.
@@ -1707,10 +1706,10 @@ mod tests {
         assert_eq!(
             expand_pick(&doc, &lines_only, &profile, false),
             vec![
-                SceneElement::Line(0),
-                SceneElement::Line(1),
-                SceneElement::Line(2),
-                SceneElement::Line(3)
+                SceneElement::Line(lkey(0)),
+                SceneElement::Line(lkey(1)),
+                SceneElement::Line(lkey(2)),
+                SceneElement::Line(lkey(3))
             ]
         );
         // A circle profile is its circle.
@@ -1739,7 +1738,7 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let mut line = |x0: f32, y0: f32, x1: f32, y1: f32, bezier| {
-            doc.lines.push(crate::model::Line {
+            doc.lines.insert(crate::model::Line {
                 sketch,
                 x0,
                 y0,
@@ -1765,13 +1764,13 @@ mod tests {
         let doc = doc_with_a_tangent_run();
         for start in [0usize, 1, 2] {
             assert_eq!(
-                sketch_line_tangent_chain(&doc, start),
-                vec![0, 1, 2],
+                sketch_line_tangent_chain(&doc, lkey(start)),
+                vec![lkey(0), lkey(1), lkey(2)],
                 "line {start} should reach the whole run in both directions"
             );
         }
         // The 90° corner is a boundary: line 3 is its own run.
-        assert_eq!(sketch_line_tangent_chain(&doc, 3), vec![3]);
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(3)), vec![lkey(3)]);
     }
 
     #[test]
@@ -1779,19 +1778,19 @@ mod tests {
         // Three ends at one vertex is a junction, not a smooth continuation — even when two of
         // them are perfectly tangent, since there's no telling which one continues the curve.
         let mut doc = doc_with_a_tangent_run();
-        let sketch = doc.lines[0].sketch;
+        let sketch = doc.lines[lkey(0)].sketch;
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, -10.0));
-        assert_eq!(sketch_line_tangent_chain(&doc, 0), vec![0]);
-        assert_eq!(sketch_line_tangent_chain(&doc, 1), vec![1, 2]);
+            .insert(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, -10.0));
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(0)), vec![lkey(0)]);
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(1)), vec![lkey(1), lkey(2)]);
     }
 
     #[test]
     fn a_deleted_line_is_not_part_of_a_run() {
         let mut doc = doc_with_a_tangent_run();
-        doc.lines[1].deleted = true;
-        assert_eq!(sketch_line_tangent_chain(&doc, 0), vec![0]);
-        assert_eq!(sketch_line_tangent_chain(&doc, 2), vec![2]);
+        doc.lines.remove(lkey(1));
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(0)), vec![lkey(0)]);
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(2)), vec![lkey(2)]);
     }
 
     #[test]
@@ -1853,7 +1852,7 @@ mod tests {
             SceneElement::ConstructionPlane(pkey(0)),
             SceneElement::Image(crate::arena::Key::from_bits(0)),
             SceneElement::Sketch(skey(0)),
-            SceneElement::Line(0),
+            SceneElement::Line(lkey(0)),
             SceneElement::Circle(rkey(0)),
             SceneElement::Origin,
             SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] },

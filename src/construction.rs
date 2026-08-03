@@ -130,10 +130,10 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
 /// Straight edges alone are a complete plane-anchor set (line *in* the plane). A curve
 /// alone is not — it needs a point for the line+point set (#483): plane through the
 /// point, normal along the curve (tangent at an endpoint).
-pub fn sketch_line_is_curve(doc: &Document, line_index: usize) -> bool {
+pub fn sketch_line_is_curve(doc: &Document, line_index: crate::model::LineKey) -> bool {
     doc.lines
         .get(line_index)
-        .is_some_and(|l| !l.deleted && l.bezier.is_some())
+        .is_some_and(|l| l.bezier.is_some())
 }
 
 /// Outward world-space tangent of `line_index` at `point` when the point (or a
@@ -141,7 +141,7 @@ pub fn sketch_line_is_curve(doc: &Document, line_index: usize) -> bool {
 /// `None` when the point is not on this line's ends.
 pub fn line_outward_tangent_at_point(
     doc: &Document,
-    line_index: usize,
+    line_index: crate::model::LineKey,
     point: &crate::model::ConstraintPoint,
 ) -> Option<Vec3> {
     let sketch = point_sketch(doc, point.clone())?;
@@ -161,13 +161,10 @@ pub fn line_outward_tangent_at_point(
 
 fn line_outward_tangent_at_end(
     doc: &Document,
-    line_index: usize,
+    line_index: crate::model::LineKey,
     end: crate::model::LineEnd,
 ) -> Option<Vec3> {
     let line = doc.lines.get(line_index)?;
-    if line.deleted {
-        return None;
-    }
     let frame = crate::face::sketch_geometry_frame(doc, line.sketch)?;
     let (v, toward) = match end {
         crate::model::LineEnd::Start => {
@@ -189,7 +186,7 @@ fn line_outward_tangent_at_end(
 /// when the point is an endpoint of that line (curves included); otherwise `fallback_dir`.
 pub fn plane_normal_for_line_and_point(
     doc: &Document,
-    line_index: Option<usize>,
+    line_index: Option<crate::model::LineKey>,
     point: Option<&crate::model::ConstraintPoint>,
     fallback_dir: Vec3,
 ) -> Vec3 {
@@ -265,11 +262,17 @@ pub fn complement_plane_anchor(
     doc: &Document,
     source: PlaneAnchorSource,
     current: &PlaneReference,
-    axis_line: Option<usize>,
+    axis_line: Option<crate::model::LineKey>,
     anchor_point: Option<&crate::model::ConstraintPoint>,
     next_kind: &PickTargetKind,
     next_reference: &PlaneReference,
-) -> Option<(PlaneReference, PlaneAnchorSource, Vec<String>, Option<usize>, Option<crate::model::ConstraintPoint>)>
+) -> Option<(
+    PlaneReference,
+    PlaneAnchorSource,
+    Vec<String>,
+    Option<crate::model::LineKey>,
+    Option<crate::model::ConstraintPoint>,
+)>
 {
     let is_point = matches!(
         next_kind,
@@ -579,7 +582,7 @@ pub fn preview_plane_edit_dependents(
 
     let mut lines = Vec::new();
     for sketch in sketches {
-        for line in doc.lines.iter() {
+        for line in doc.lines.values() {
             if line.sketch != sketch {
                 continue;
             }
@@ -937,6 +940,7 @@ pub fn plane_extent_from_corner_drag(
 /// Live offset for a face reference from a world-space hover point.
 #[cfg(test)]
 mod pick_path_tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use super::*;
     use crate::model::{Document, FaceId, Line};
@@ -947,12 +951,12 @@ mod pick_path_tests {
     fn endpoint_picks_at_its_projected_position() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, -30.0, -20.0, 30.0, 20.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, -30.0, -20.0, 30.0, 20.0));
         let cam = crate::camera::Camera::default();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
         let vp = cam.view_proj(viewport);
         let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
-        let (a, _b) = crate::face::line_world_endpoints(&doc, &doc.lines[0]).unwrap();
+        let (a, _b) = crate::face::line_world_endpoints(&doc, &doc.lines[lkey(0)]).unwrap();
         let screen = project(a).expect("endpoint projects");
         let hit = nearest_sketch_point_in_sketch(screen, &project, &doc, sketch);
         assert!(hit.is_some(), "endpoint under the cursor must pick");
@@ -1304,7 +1308,7 @@ pub enum PickTargetKind {
     /// A sketch point (line endpoint, rect corner, or circle center).
     Point(ConstraintPoint),
     /// A standalone sketch line segment.
-    Line(usize),
+    Line(crate::model::LineKey),
     /// A sketch circle (picked on its perimeter).
     Circle(crate::model::CircleKey),
     /// One feature edge of a 3D body's solid mesh (#31) — a mesh boundary or crease between
@@ -1822,7 +1826,7 @@ pub fn vertex_normal_candidates(
     let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
         return Vec::new();
     };
-    let mut ends: Vec<(usize, crate::model::LineEnd)> =
+    let mut ends: Vec<(crate::model::LineKey, crate::model::LineEnd)> =
         crate::vertex_drag::coincident_group(doc, sketch, point.clone())
             .into_iter()
             .filter_map(|p| match p {
@@ -1835,9 +1839,6 @@ pub fn vertex_normal_candidates(
     let mut out = Vec::new();
     for (li, end) in ends {
         let Some(line) = doc.lines.get(li) else { continue };
-        if line.deleted {
-            continue;
-        }
         let (v, toward) = match end {
             crate::model::LineEnd::Start => {
                 let toward = line
@@ -1862,7 +1863,7 @@ pub fn vertex_normal_candidates(
         }
         let label = crate::names::element_name(doc, crate::hierarchy::SceneElement::Line(li))
             .map(|n| n.to_string())
-            .unwrap_or_else(|| format!("line {li}"));
+            .unwrap_or_else(|| format!("line {}", li.index()));
         out.push((label, dir));
     }
     out
@@ -2365,8 +2366,8 @@ pub fn nearest_sketch_point_in_sketch(
         }
     };
 
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted || line.sketch != sketch {
+    for (li, line) in doc.lines.iter() {
+        if line.sketch != sketch {
             continue;
         }
         let Some((a, b)) = line_world_endpoints(doc, line) else {
@@ -2478,8 +2479,8 @@ pub fn nearest_sketch_line_in_sketch(
         }
     };
 
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted || line.sketch != sketch {
+    for (li, line) in doc.lines.iter() {
+        if line.sketch != sketch {
             continue;
         }
         let Some(points) = line_world_polyline(doc, line) else {
@@ -2564,10 +2565,7 @@ fn nearest_sketch_point(
         }
     };
 
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted {
-            continue;
-        }
+    for (li, line) in doc.lines.iter() {
         let Some((a, b)) = line_world_endpoints(doc, line) else {
             continue;
         };
@@ -2643,10 +2641,7 @@ fn nearest_sketch_edge(
         }
     };
 
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted {
-            continue;
-        }
+    for (li, line) in doc.lines.iter() {
         let Some(points) = line_world_polyline(doc, line) else {
             continue;
         };
@@ -2914,10 +2909,7 @@ pub fn collect_pick_candidates(
     };
 
     // Sketch points: line endpoints, circle centres, text anchors, image calibration points.
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted {
-            continue;
-        }
+    for (li, line) in doc.lines.iter() {
         let Some((a, b)) = line_world_endpoints(doc, line) else {
             continue;
         };
@@ -2963,10 +2955,7 @@ pub fn collect_pick_candidates(
             raw.push((kind, anchor, dist));
         }
     };
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted {
-            continue;
-        }
+    for (li, line) in doc.lines.iter() {
         if let Some(points) = line_world_polyline(doc, line) {
             for pair in points.windows(2) {
                 push_edge(&mut raw, PickTargetKind::Line(li), pair[0], pair[1]);
@@ -3265,17 +3254,20 @@ fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
 /// an axis-aligned rectangle); `points.len()` must be at least 3.
 ///
 /// Returns the line indices in the same order as `points`.
-pub fn add_line_polygon(doc: &mut Document, sketch: SketchId, points: &[(f32, f32)]) -> Vec<usize> {
+pub fn add_line_polygon(
+    doc: &mut Document,
+    sketch: SketchId,
+    points: &[(f32, f32)],
+) -> Vec<crate::model::LineKey> {
     use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ShapeKind};
     let n = points.len();
-    let base = doc.lines.len();
+    let mut idx = Vec::with_capacity(n);
     for i in 0..n {
         let (u0, v0) = points[i];
         let (u1, v1) = points[(i + 1) % n];
-        doc.lines.push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
+        idx.push(doc.lines.insert(Line::from_local_endpoints(sketch, u0, v0, u1, v1)));
         doc.shape_order.push(ShapeKind::Line);
     }
-    let idx: Vec<usize> = (base..base + n).collect();
     for i in 0..n {
         doc.constraints.insert(Constraint {
             sketch,
@@ -3316,7 +3308,7 @@ pub fn add_line_rectangle(
     w: f32,
     h: f32,
     construction_edges: [bool; 4],
-) -> [usize; 4] {
+) -> [crate::model::LineKey; 4] {
     use crate::model::{
         Constraint, ConstraintEntity, ConstraintKind, ConstraintLine, ShapeKind,
     };
@@ -3326,16 +3318,16 @@ pub fn add_line_rectangle(
         (x + w, y + h),
         (x, y + h),
     ];
-    let base = doc.lines.len();
+    let mut keys = Vec::with_capacity(4);
     for i in 0..4 {
         let (u0, v0) = corners[i];
         let (u1, v1) = corners[(i + 1) % 4];
         let mut line = Line::from_local_endpoints(sketch, u0, v0, u1, v1);
         line.construction = construction_edges[i];
-        doc.lines.push(line);
+        keys.push(doc.lines.insert(line));
         doc.shape_order.push(ShapeKind::Line);
     }
-    let idx = [base, base + 1, base + 2, base + 3];
+    let idx: [crate::model::LineKey; 4] = [keys[0], keys[1], keys[2], keys[3]];
     let mut push = |kind: ConstraintKind| {
         doc.constraints.insert(Constraint {
             sketch,
@@ -3373,6 +3365,7 @@ pub fn add_line_rectangle(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
@@ -3638,22 +3631,24 @@ mod tests {
     fn collect_pick_candidates_returns_the_whole_crowd() {
         use crate::model::{ConstraintPoint, Line, LineEnd};
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0)); // line 1
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0)); // line 1
         // XY-plane sketch → world (x, y, 0); project drops z. The cursor sits on the shared corner.
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let cands = collect_pick_candidates(Pos2::new(0.0, 0.0), &project, &doc, Vec3::ZERO, None);
         let kinds: Vec<&PickTargetKind> = cands.iter().map(|c| &c.kind).collect();
         // Both segments and both coincident start endpoints are within the hitbox.
-        assert!(kinds.iter().any(|k| matches!(k, PickTargetKind::Line(0))), "{kinds:?}");
-        assert!(kinds.iter().any(|k| matches!(k, PickTargetKind::Line(1))), "{kinds:?}");
+        assert!(kinds.iter().any(|k| matches!(k, PickTargetKind::Line(l) if *l == lkey(0))), "{kinds:?}");
+        assert!(kinds.iter().any(|k| matches!(k, PickTargetKind::Line(l) if *l == lkey(1))), "{kinds:?}");
         assert!(kinds.iter().any(|k| matches!(
             k,
-            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start })
+            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line, end: LineEnd::Start })
+                if *line == lkey(0)
         )));
         assert!(kinds.iter().any(|k| matches!(
             k,
-            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::Start })
+            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line, end: LineEnd::Start })
+                if *line == lkey(1)
         )));
         assert!(cands.len() >= 4, "a crowd, not just the nearest: {}", cands.len());
         // No duplicates (deduped per thing).
@@ -3668,7 +3663,7 @@ mod tests {
     fn collect_pick_candidates_empty_away_from_geometry() {
         use crate::model::Line;
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         assert!(
             collect_pick_candidates(Pos2::new(500.0, 500.0), &project, &doc, Vec3::ZERO, None)
@@ -3685,9 +3680,9 @@ mod tests {
     #[test]
     fn parent_from_line_pick_is_owning_sketch() {
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         assert_eq!(
-            parent_from_pick_target(&doc, PickTargetKind::Line(0)),
+            parent_from_pick_target(&doc, PickTargetKind::Line(lkey(0))),
             ConstructionPlaneParent::Sketch(sketch)
         );
     }
@@ -3758,7 +3753,7 @@ mod tests {
             &point,
             None,
             None,
-            &PickTargetKind::Line(1),
+            &PickTargetKind::Line(lkey(1)),
             &line_ref,
         )
         .expect("point + line should complement");
@@ -3786,7 +3781,7 @@ mod tests {
         // Mid-segment direction along the chord is roughly +X/+Y — not the end tangent.
         let mut curve = Line::from_local_endpoints(sketch, 6.0, 4.0, 26.0, 14.0);
         curve.bezier = Some([(6.0, 12.0), (18.0, 14.0)]);
-        doc.lines.push(curve);
+        doc.lines.insert(curve);
 
         let mid_segment_dir = Vec3::new(1.0, 0.5, 0.0).normalize();
         let axis = PlaneReference::Axis {
@@ -3795,7 +3790,7 @@ mod tests {
             label: "Curve".to_string(),
         };
         let point = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::Start,
         };
         let point_ref = PlaneReference::Face {
@@ -3807,7 +3802,7 @@ mod tests {
             &doc,
             PlaneAnchorSource::Axis,
             &axis,
-            Some(0),
+            Some(lkey(0)),
             None,
             &PickTargetKind::Point(point),
             &point_ref,
@@ -3832,12 +3827,12 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut curve = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0);
         curve.bezier = Some([(0.0, 5.0), (5.0, 10.0)]);
-        doc.lines.push(curve);
-        assert!(!sketch_line_is_curve(&doc, 0));
-        assert!(sketch_line_is_curve(&doc, 1));
+        doc.lines.insert(curve);
+        assert!(!sketch_line_is_curve(&doc, lkey(0)));
+        assert!(sketch_line_is_curve(&doc, lkey(1)));
     }
 
     #[test]
@@ -3860,7 +3855,7 @@ mod tests {
             &face,
             None,
             None,
-            &PickTargetKind::Line(0),
+            &PickTargetKind::Line(lkey(0)),
             &line_ref,
         )
         .is_none());
@@ -3869,9 +3864,9 @@ mod tests {
     #[test]
     fn complemented_anchor_rows_stay_point_then_line() {
         let point = SceneElement::Origin;
-        let line = SceneElement::Line(3);
+        let line = SceneElement::Line(lkey(3));
         let other_point = SceneElement::Point(crate::model::ConstraintPoint::CircleCenter(rkey(1)));
-        let other_line = SceneElement::Line(9);
+        let other_line = SceneElement::Line(lkey(9));
 
         // A line held alone, completed by a point: the point leads.
         assert_eq!(
@@ -3921,19 +3916,19 @@ mod tests {
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A straight line along +X and a curve leaving the shared vertex along +Y
         // (its near handle sits at (10, 5) above the vertex (10, 0)).
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut curve = Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 10.0);
         curve.bezier = Some([(10.0, 5.0), (15.0, 10.0)]);
-        doc.lines.push(curve);
+        doc.lines.insert(curve);
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -3944,7 +3939,7 @@ mod tests {
 
         let candidates = vertex_normal_candidates(
             &doc,
-            &ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
+            &ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End },
         );
         assert_eq!(candidates.len(), 2, "one candidate per incident line");
         // Straight line 0: outward direction at its end is +X (away from (0,0)).
@@ -3956,7 +3951,7 @@ mod tests {
         // A lone endpoint (no coincidence) still yields its own line's direction.
         let solo = vertex_normal_candidates(
             &doc,
-            &ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End },
+            &ConstraintPoint::LineEndpoint { line: lkey(1), end: LineEnd::End },
         );
         assert_eq!(solo.len(), 1);
         // Outward at the curve's end = away from its near handle (15,10) -> (20,10): +X.
@@ -3966,7 +3961,7 @@ mod tests {
     #[test]
     fn pick_reference_prefers_line_over_ground() {
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let reference = resolve_pick_target(Pos2::new(50.0, 2.0), &project, Some(Vec3::ZERO), &doc, None)
             .map(|t| t.reference);
@@ -4059,7 +4054,7 @@ mod tests {
     #[test]
     fn occluded_line_is_not_picked() {
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines = vec![Line::from_local_endpoints(sketch, 20.0, 40.0, 60.0, 40.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 20.0, 40.0, 60.0, 40.0));
         // A blocker body (imported soup, so no kernel needed): its top face at z = 10
         // stands between the eye (z = +100) and the line (z = 0).
         let c = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
@@ -4095,14 +4090,14 @@ mod tests {
 
         // Without occlusion the line is picked (the old X-ray behavior).
         let picked = resolve_pick_target(cursor, &project, None, &doc, None);
-        assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(0))));
+        assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(l)) if l == lkey(0)));
 
         // Hiding the body restores pickability: an invisible body must not occlude.
         let mut visibility = crate::hierarchy::ElementVisibility::default();
         visibility.set_visible(crate::hierarchy::SceneElement::Body(bkey(0)), false);
         let occ = PickOcclusion::new(&doc, &visibility, eye);
         let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
-        assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(0))));
+        assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(l)) if l == lkey(0)));
     }
 
     /// #258: a hidden or shadow sketch line is neither selectable nor hoverable — it drops out
@@ -4110,7 +4105,7 @@ mod tests {
     #[test]
     fn hidden_or_shadow_line_is_not_picked() {
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines = vec![Line::from_local_endpoints(sketch, 20.0, 40.0, 60.0, 40.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 20.0, 40.0, 60.0, 40.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let eye = Vec3::new(40.0, 40.0, 100.0);
         let cursor = Pos2::new(40.0, 40.0);
@@ -4120,7 +4115,7 @@ mod tests {
         let occ = PickOcclusion::new(&doc, &vis, eye);
         assert!(matches!(
             resolve_pick_target(cursor, &project, None, &doc, Some(&occ)).map(|t| t.kind),
-            Some(PickTargetKind::Line(0))
+            Some(PickTargetKind::Line(l)) if l == lkey(0)
         ));
 
         // Hiding its sketch makes the line (and its endpoints) effectively hidden → not picked.
@@ -4130,19 +4125,19 @@ mod tests {
         assert!(
             !matches!(
                 resolve_pick_target(cursor, &project, None, &doc, Some(&occ)).map(|t| t.kind),
-                Some(PickTargetKind::Line(0)) | Some(PickTargetKind::Point(_))
+                Some(PickTargetKind::Line(_)) | Some(PickTargetKind::Point(_))
             ),
             "a hidden line and its endpoints must not be picked"
         );
 
         // A shadow line is not picked even while visible.
-        doc.lines[0].shadow = true;
+        doc.lines[lkey(0)].shadow = true;
         let vis = crate::hierarchy::ElementVisibility::default();
         let occ = PickOcclusion::new(&doc, &vis, eye);
         assert!(
             !matches!(
                 resolve_pick_target(cursor, &project, None, &doc, Some(&occ)).map(|t| t.kind),
-                Some(PickTargetKind::Line(0)) | Some(PickTargetKind::Point(_))
+                Some(PickTargetKind::Line(_)) | Some(PickTargetKind::Point(_))
             ),
             "a shadow line must not be picked"
         );
@@ -4378,7 +4373,7 @@ mod tests {
     #[test]
     fn line_picked_within_proximity_threshold() {
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(50.0, 8.0), &project, None, &doc, None);
         assert!(matches!(
@@ -4393,7 +4388,7 @@ mod tests {
     fn vertex_beats_a_closer_edge_within_its_pick_radius() {
         let (mut doc, sketch) = doc_with_plane_sketch();
         // Away from the world axes so only the line's vertex/edge compete.
-        doc.lines = vec![Line::from_local_endpoints(sketch, 50.0, 50.0, 150.0, 50.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 50.0, 50.0, 150.0, 50.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         // (52, 55): 5px from the line (edge), 5.39px from the (50,50) endpoint — edge is closer,
         // but the vertex is within its radius, so it must win.
@@ -4407,15 +4402,15 @@ mod tests {
     #[test]
     fn line_endpoint_picked_within_point_threshold() {
         let (mut doc, sketch) = doc_with_plane_sketch();
-        doc.lines = vec![Line::from_local_endpoints(sketch, 100.0, 50.0, 200.0, 50.0)];
+        doc.lines.insert(Line::from_local_endpoints(sketch, 100.0, 50.0, 200.0, 50.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(100.0, 59.0), &project, None, &doc, None);
         assert!(matches!(
             target.map(|t| t.kind),
             Some(PickTargetKind::Point(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line,
                 end: LineEnd::Start,
-            }))
+            })) if line == lkey(0)
         ));
     }
 
@@ -4562,7 +4557,7 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let child = plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
@@ -4610,7 +4605,7 @@ mod tests {
         let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         // Four plain lines forming a closed loop (bottom, right, top, left).
         assert_eq!(doc.lines.len(), 4);
-        assert_eq!(lines, [0, 1, 2, 3]);
+        assert_eq!(lines, [lkey(0), lkey(1), lkey(2), lkey(3)]);
         // #577: the edges are constrained parallel to the sketch axes (X for bottom/top, Y for
         // left/right) rather than the old Horizontal/Vertical constraints.
         let parallel_to = |axis: SketchAxis| {
@@ -4634,16 +4629,16 @@ mod tests {
         assert!(doc.constraints.values().any(|c| matches!(
             &c.kind,
             ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
+                line_a: ConstraintLine::Line(l),
                 line_b: ConstraintLine::OriginAxis(SketchAxis::X)
-            }
+            } if *l == lkey(0)
         )));
         assert!(doc.constraints.values().any(|c| matches!(
             &c.kind,
             ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(l),
                 line_b: ConstraintLine::OriginAxis(SketchAxis::Y)
-            }
+            } if *l == lkey(1)
         )));
     }
 
@@ -4657,7 +4652,7 @@ mod tests {
         assert_eq!(loops.len(), 1, "the four lines are one closed loop");
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
-        assert_eq!(sorted, vec![0, 1, 2, 3]);
+        assert_eq!(sorted, vec![lkey(0), lkey(1), lkey(2), lkey(3)]);
     }
 
     /// #465: the Plane tool's pick prefers a body face under the cursor over the ground

@@ -439,7 +439,7 @@ pub struct CreatingLine {
     pub tangent_constraint: bool,
     /// Index into `doc.lines` of the previous segment this one chains from (its end is this
     /// segment's start), if any. `None` for the first segment of a fresh chain.
-    pub chained_from: Option<usize>,
+    pub chained_from: Option<crate::model::LineKey>,
     /// Snapshot of `chained_from`'s line's `bezier` value taken the moment this segment
     /// started, before any live-preview smoothing touched it. Restored on cancel and used as
     /// the stable "existing far handle" baseline while curving the joint live (#73).
@@ -899,7 +899,7 @@ impl CreatingRepeat {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingSketchOffset {
     pub sketch: crate::model::SketchId,
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<crate::model::LineKey>,
     pub circle_targets: Vec<crate::model::CircleKey>,
     /// Signed distance expression: positive grows a closed loop/circle.
     pub distance: String,
@@ -937,7 +937,7 @@ impl CreatingSketchOffset {
                 .line_targets
                 .iter()
                 .filter_map(|&i| {
-                    let l = doc.lines.get(i).filter(|l| !l.deleted)?;
+                    let l = doc.lines.get(i)?;
                     Some(crate::offset::OffsetSource {
                         id: i,
                         a: glam::Vec2::new(l.x0, l.y0),
@@ -949,7 +949,7 @@ impl CreatingSketchOffset {
                 })
                 .collect();
             let probe = crate::offset::offset_segments(&sources, 1.0);
-            let src = doc.lines.get(li).filter(|l| !l.deleted)?;
+            let src = doc.lines.get(li)?;
             let mid = glam::Vec2::new((src.x0 + src.x1) * 0.5, (src.y0 + src.y1) * 0.5);
             let seg = probe.iter().find(|s| s.id == li)?;
             let normal = ((seg.a + seg.b) * 0.5 - mid).normalize_or_zero();
@@ -967,10 +967,10 @@ impl CreatingSketchOffset {
 
 pub struct CreatingSketchRepeat {
     pub sketch: crate::model::SketchId,
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<crate::model::LineKey>,
     pub circle_targets: Vec<crate::model::CircleKey>,
     /// A picked sketch line whose direction sets the repeat axis; `None` = the sketch U axis.
-    pub dir_line: Option<usize>,
+    pub dir_line: Option<crate::model::LineKey>,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     pub spacing: String,
@@ -1068,7 +1068,7 @@ impl CreatingSketchRepeat {
     /// the sketch U axis `(1, 0)` when no line is picked or it's degenerate.
     pub fn direction(&self, doc: &crate::model::Document) -> (f32, f32) {
         if let Some(li) = self.dir_line {
-            if let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) {
+            if let Some(l) = doc.lines.get(li) {
                 let (du, dv) = (l.x1 - l.x0, l.y1 - l.y0);
                 let len = (du * du + dv * dv).sqrt();
                 if len > 1e-6 {
@@ -1113,11 +1113,11 @@ impl Default for CreatingSlice {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingSketchSlice {
     pub sketch: SketchId,
-    pub line_targets: Vec<usize>,
+    pub line_targets: Vec<crate::model::LineKey>,
     pub circle_targets: Vec<crate::model::CircleKey>,
     /// Face targets as their boundary-loop line indices (#238).
-    pub face_targets: Vec<Vec<usize>>,
-    pub cutter_lines: Vec<usize>,
+    pub face_targets: Vec<Vec<crate::model::LineKey>>,
+    pub cutter_lines: Vec<crate::model::LineKey>,
     /// `false` = the next viewport click picks a target; `true` = it picks a cutter line.
     pub picking_cutter: bool,
     /// `Some(op)` while re-editing a committed in-sketch slice.
@@ -1287,8 +1287,8 @@ impl CreatingJoint {
 pub struct CreatingSketchMirror {
     pub sketch: crate::model::SketchId,
     /// The mirror line (a straight sketch line); `None` until picked.
-    pub line: Option<usize>,
-    pub line_targets: Vec<usize>,
+    pub line: Option<crate::model::LineKey>,
+    pub line_targets: Vec<crate::model::LineKey>,
     pub circle_targets: Vec<crate::model::CircleKey>,
     pub editing: Option<crate::model::SketchMirrorOpKey>,
 }
@@ -1393,7 +1393,7 @@ pub struct CreatingSweep {
     pub sketch: Option<SketchId>,
     pub faces: Vec<ExtrudeFace>,
     /// Picked path lines (`Document::lines` indices), chained tip-to-tail at commit.
-    pub path: Vec<usize>,
+    pub path: Vec<crate::model::LineKey>,
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
     pub cut_bodies: Vec<crate::model::BodyKey>,
@@ -1514,7 +1514,7 @@ pub struct CreatingConstructionPlane {
     /// needs the surviving half's frame to fall back to.
     pub anchor_refs: Vec<PlaneReference>,
     /// Sketch line index when the line half of a line/edge anchor is known (#483).
-    pub anchor_line: Option<usize>,
+    pub anchor_line: Option<crate::model::LineKey>,
     /// Point half of a line+point (or vertex) anchor, for endpoint-tangent normals.
     pub anchor_point: Option<crate::model::ConstraintPoint>,
 }
@@ -1525,7 +1525,7 @@ pub struct CreatingConstructionPlane {
 /// should be a point so the plane can sit through it with normal along the curve.
 #[derive(Clone, Debug)]
 pub struct PendingPlaneLine {
-    pub line_index: Option<usize>,
+    pub line_index: Option<crate::model::LineKey>,
     pub reference: PlaneReference,
     pub parent: ConstructionPlaneParent,
     pub label: String,
@@ -1800,7 +1800,7 @@ pub enum Action {
     /// first instance (the source file stem, uniquified) unless a name is given.
     AddUnitInstance { unit: crate::model::UnitKey, name: Option<String> },
     /// Create a read-only parameter synced to an unconstrained line's length.
-    CreateParameterFromLineLength { line_index: usize, name: Option<String> },
+    CreateParameterFromLineLength { line_index: crate::model::LineKey, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
     /// length, two points' distance, two parallel lines' distance, or two lines' angle.
     CreateDerivedParameter {
@@ -1902,7 +1902,7 @@ pub enum Action {
     /// Move a curved line's tangent handle (`near_start` selects the one near `(x0,y0)` vs.
     /// `(x1,y1)`) to sketch-local `(u, v)`. No-op-turned-error on a straight line.
     SetBezierHandle {
-        line: usize,
+        line: crate::model::LineKey,
         near_start: bool,
         u: f32,
         v: f32,
@@ -1911,7 +1911,7 @@ pub enum Action {
     /// of tangent-continuous curves. Errors unless exactly two plain lines meet there.
     ConvertVertexToBezier { point: ConstraintPoint },
     /// Right-click "straighten curve": clears a curved line's tangent handles.
-    StraightenLine { line: usize },
+    StraightenLine { line: crate::model::LineKey },
     /// Retroactive `T` shortcut on a selected sketch vertex (#73): when `continuous`, re-smooths
     /// both incident lines' handles at `point` via [`crate::model::smooth_joint_bezier`]
     /// (same computation as [`Action::ConvertVertexToBezier`]); when not, gives each line an
@@ -2233,7 +2233,7 @@ pub enum Action {
     CreateSweep {
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
-        path: Vec<usize>,
+        path: Vec<crate::model::LineKey>,
         body: RevolveBodyChoice,
         bodies: Vec<crate::model::BodyKey>,
     },
@@ -2360,15 +2360,15 @@ pub enum Action {
     /// Scripted/replayed in-sketch mirror.
     CreateSketchMirrorOperation {
         sketch: crate::model::SketchId,
-        line: usize,
-        line_targets: Vec<usize>,
+        line: crate::model::LineKey,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
     },
     /// Re-target an existing in-sketch mirror.
     EditSketchMirrorOperation {
         op: crate::model::SketchMirrorOpKey,
-        line: usize,
-        line_targets: Vec<usize>,
+        line: crate::model::LineKey,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
     },
     /// Commit the in-progress Repeat-tool operation.
@@ -2414,7 +2414,7 @@ pub enum Action {
     /// plane-local direction `(dir_u, dir_v)`, grouped under a `SketchRepeatOperation`.
     CreateSketchRepeatOperation {
         sketch: crate::model::SketchId,
-        line_targets: Vec<usize>,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
         dir_u: f32,
         dir_v: f32,
@@ -2426,7 +2426,7 @@ pub enum Action {
     /// Re-point / re-space an existing in-sketch repeat (#222).
     EditSketchRepeatOperation {
         op: crate::model::SketchRepeatOpKey,
-        line_targets: Vec<usize>,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
         dir_u: f32,
         dir_v: f32,
@@ -2452,7 +2452,7 @@ pub enum Action {
     EndTutorial,
     CreateSketchOffsetOperation {
         sketch: crate::model::SketchId,
-        line_targets: Vec<usize>,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
         distance: String,
         construction: bool,
@@ -2460,7 +2460,7 @@ pub enum Action {
     /// Re-target / re-distance / re-style an existing in-sketch offset.
     EditSketchOffsetOperation {
         op: crate::model::SketchOffsetOpKey,
-        line_targets: Vec<usize>,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
         distance: String,
         construction: bool,
@@ -2469,11 +2469,11 @@ pub enum Action {
     /// them, shadowing the originals and grouping the fragments under a `SketchSliceOperation`.
     CreateSketchSliceOperation {
         sketch: crate::model::SketchId,
-        line_targets: Vec<usize>,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
         #[allow(dead_code)]
-        face_targets: Vec<Vec<usize>>,
-        cutter_lines: Vec<usize>,
+        face_targets: Vec<Vec<crate::model::LineKey>>,
+        cutter_lines: Vec<crate::model::LineKey>,
     },
     /// Place a text element in a sketch (#282): bakes the glyph outlines from the selected system
     /// font and embeds the font bytes for portability.
@@ -2514,11 +2514,11 @@ pub enum Action {
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
         op: crate::model::SketchSliceOpKey,
-        line_targets: Vec<usize>,
+        line_targets: Vec<crate::model::LineKey>,
         circle_targets: Vec<crate::model::CircleKey>,
         #[allow(dead_code)]
-        face_targets: Vec<Vec<usize>>,
-        cutter_lines: Vec<usize>,
+        face_targets: Vec<Vec<crate::model::LineKey>>,
+        cutter_lines: Vec<crate::model::LineKey>,
     },
     /// Commit the in-progress Slice-tool operation.
     CommitSlice,
@@ -2745,7 +2745,8 @@ pub fn dim_label_target_in_sketch(
         DimLabelAxis::Length => doc
             .lines
             .iter()
-            .enumerate()
+            .collect::<Vec<_>>()
+            .into_iter()
             .rev()
             .find(|(_, l)| l.sketch == sketch)
             .map(|(index, _)| DistanceTarget::LineLength(index)),
@@ -4783,7 +4784,7 @@ impl AppState {
         &mut self,
         sketch: SketchId,
         faces: &[ExtrudeFace],
-        path: &[usize],
+        path: &[crate::model::LineKey],
         choice: RevolveBodyChoice,
         bodies: &[crate::model::BodyKey],
     ) -> Result<crate::model::SweepMode, String> {
@@ -4839,7 +4840,7 @@ impl AppState {
         &mut self,
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
-        path: Vec<usize>,
+        path: Vec<crate::model::LineKey>,
         mode: crate::model::SweepMode,
     ) -> ActionResult {
         let fp = crate::model::Sweep {
@@ -4888,7 +4889,7 @@ impl AppState {
         op: crate::model::SweepKey,
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
-        path: Vec<usize>,
+        path: Vec<crate::model::LineKey>,
         mode: crate::model::SweepMode,
     ) -> ActionResult {
         let Some(existing) = self.doc.sweeps.get(op) else {
@@ -5423,6 +5424,16 @@ pub(crate) fn chained_curve_handles(
     }
 }
 
+/// Drop every line added since `keep` was captured (#1055) — the rollback twin of
+/// [`retain_constraints`].
+fn retain_lines(doc: &mut Document, keep: &[crate::model::LineKey]) {
+    for key in doc.lines.keys().collect::<Vec<_>>() {
+        if !keep.contains(&key) {
+            doc.lines.remove(key);
+        }
+    }
+}
+
 /// Drop every constraint added since `keep` was captured (#1055): the rollback path for a
 /// shape whose typed dimension turned out not to apply.
 fn retain_constraints(doc: &mut Document, keep: &[crate::model::ConstraintKey]) {
@@ -5477,7 +5488,7 @@ fn draw_mode_status(tool: &str, construction: bool) -> String {
 
 fn distance_target_status_label(target: DistanceTarget) -> String {
     match target {
-        DistanceTarget::LineLength(i) => format!("line {i}"),
+        DistanceTarget::LineLength(i) => format!("line {}", i.index()),
         DistanceTarget::CircleDiameter(i) => format!("circle {} diameter", i.index()),
         DistanceTarget::LineLineDistance { .. } => "parallel line spacing".to_string(),
         DistanceTarget::PointPointDistance { .. } => "point distance".to_string(),
@@ -5735,7 +5746,7 @@ fn validate_mirror_inputs(
 fn validate_sketch_repeat_inputs(
     doc: &Document,
     sketch: crate::model::SketchId,
-    line_targets: &[usize],
+    line_targets: &[crate::model::LineKey],
     circle_targets: &[crate::model::CircleKey],
 ) -> Result<(), String> {
     if doc.sketches.get(sketch).is_none() {
@@ -5746,14 +5757,14 @@ fn validate_sketch_repeat_inputs(
     }
     let mut seen_lines = std::collections::HashSet::new();
     for &li in line_targets {
-        let Some(line) = doc.lines.get(li).filter(|l| !l.deleted) else {
-            return Err(format!("Line {li} not found"));
+        let Some(line) = doc.lines.get(li) else {
+            return Err(format!("Line {} not found", li.index()));
         };
         if line.sketch != sketch {
-            return Err(format!("Line {li} is not in sketch {}", sketch.index()));
+            return Err(format!("Line {} is not in sketch {}", li.index(), sketch.index()));
         }
         if !seen_lines.insert(li) {
-            return Err(format!("Line {li} is picked twice"));
+            return Err(format!("Line {} is picked twice", li.index()));
         }
     }
     let mut seen_circles = std::collections::HashSet::new();
@@ -5776,14 +5787,14 @@ fn validate_sketch_repeat_inputs(
 fn validate_sketch_mirror_inputs(
     doc: &Document,
     sketch: crate::model::SketchId,
-    line: usize,
-    line_targets: &[usize],
+    line: crate::model::LineKey,
+    line_targets: &[crate::model::LineKey],
     circle_targets: &[crate::model::CircleKey],
 ) -> Result<(), String> {
     let ml = doc
         .lines
         .get(line)
-        .filter(|l| !l.deleted && l.sketch == sketch)
+        .filter(|l| l.sketch == sketch)
         .ok_or_else(|| "Mirror line not found in this sketch".to_string())?;
     if ml.bezier.is_some() {
         return Err("The mirror line must be a straight line".to_string());
@@ -5796,10 +5807,10 @@ fn validate_sketch_mirror_inputs(
 fn validate_sketch_slice_inputs(
     doc: &Document,
     sketch: crate::model::SketchId,
-    line_targets: &[usize],
+    line_targets: &[crate::model::LineKey],
     circle_targets: &[crate::model::CircleKey],
-    face_targets: &[Vec<usize>],
-    cutter_lines: &[usize],
+    face_targets: &[Vec<crate::model::LineKey>],
+    cutter_lines: &[crate::model::LineKey],
 ) -> Result<(), String> {
     if doc.sketches.get(sketch).is_none() {
         return Err(format!("Sketch {} not found", sketch.index()));
@@ -5809,11 +5820,15 @@ fn validate_sketch_slice_inputs(
     }
     for loop_lines in face_targets {
         for &li in loop_lines {
-            let Some(line) = doc.lines.get(li).filter(|l| !l.deleted) else {
-                return Err(format!("Face boundary line {li} not found"));
+            let Some(line) = doc.lines.get(li) else {
+                return Err(format!("Face boundary line {} not found", li.index()));
             };
             if line.sketch != sketch {
-                return Err(format!("Face boundary line {li} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Face boundary line {} is not in sketch {}",
+                    li.index(),
+                    sketch.index()
+                ));
             }
         }
     }
@@ -5822,11 +5837,15 @@ fn validate_sketch_slice_inputs(
     }
     for (label, list) in [("Line", line_targets), ("Cutter", cutter_lines)] {
         for &li in list {
-            let Some(line) = doc.lines.get(li).filter(|l| !l.deleted) else {
-                return Err(format!("{label} {li} not found"));
+            let Some(line) = doc.lines.get(li) else {
+                return Err(format!("{label} {} not found", li.index()));
             };
             if line.sketch != sketch {
-                return Err(format!("{label} {li} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "{label} {} is not in sketch {}",
+                    li.index(),
+                    sketch.index()
+                ));
             }
         }
     }
@@ -5965,7 +5984,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::UnitInstance(i) => format!("Unit instance {}", i.index()),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {}", i.index()),
         SceneElement::Sketch(i) => format!("Sketch {}", i.index()),
-        SceneElement::Line(i) => format!("Line {i}"),
+        SceneElement::Line(i) => format!("Line {}", i.index()),
         SceneElement::Circle(i) => format!("Circle {}", i.index()),
         SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
         SceneElement::Point(_) => "Point".to_string(),
@@ -7053,7 +7072,7 @@ impl AppState {
                                 match element {
                                     crate::hierarchy::SceneElement::Line(li)
                                         if self.doc.lines.get(li).is_some_and(|l| {
-                                            !l.deleted && l.sketch == session.sketch
+                                            l.sketch == session.sketch
                                         }) =>
                                     {
                                         sm.line_targets.push(li);
@@ -7106,7 +7125,7 @@ impl AppState {
                                 match element {
                                     crate::hierarchy::SceneElement::Line(li)
                                         if self.doc.lines.get(li).is_some_and(|l| {
-                                            !l.deleted && l.sketch == session.sketch
+                                            l.sketch == session.sketch
                                         }) =>
                                     {
                                         co.line_targets.push(li);
@@ -7540,7 +7559,7 @@ impl AppState {
                         );
                         line.construction = true;
                         line.projection = Some(source);
-                        self.doc.lines.push(line);
+                        self.doc.lines.insert(line);
                         self.doc.shape_order.push(crate::model::ShapeKind::Line);
                     }
                 }
@@ -7591,7 +7610,7 @@ impl AppState {
                 if w > 0.5 && h > 0.5 {
                     let construction_edges = if cr.construction { [true; 4] } else { [false; 4] };
                     // Snapshot for rollback if a typed width/height constraint fails to apply.
-                    let lines_before = self.doc.lines.len();
+                    let lines_before: Vec<_> = self.doc.lines.keys().collect();
                     let constraints_before: Vec<_> = self.doc.constraints.keys().collect();
                     let shape_order_before = self.doc.shape_order.len();
                     // A rectangle is now four plain lines (bottom, right, top, left) forming a
@@ -7632,7 +7651,7 @@ impl AppState {
                     }
                     if let Some(e) = constraint_err {
                         retain_constraints(&mut self.doc, &constraints_before);
-                        self.doc.lines.truncate(lines_before);
+                        retain_lines(&mut self.doc, &lines_before);
                         self.doc.shape_order.truncate(shape_order_before);
                         self.rect_origin_snap = None;
                         self.rect_opposite_snap = None;
@@ -7747,9 +7766,8 @@ impl AppState {
                             line.bezier = line_bezier;
                         }
                     }
-                    self.doc.lines.push(line);
+                    let line_index = self.doc.lines.insert(line);
                     self.doc.shape_order.push(ShapeKind::Line);
-                    let line_index = self.doc.lines.len() - 1;
                     // A curve-mode chained joint drawn with the tangent constraint on is
                     // tangent state, not just geometry (#473) — record it. The new segment
                     // starts at the previous chained line's end.
@@ -7771,7 +7789,7 @@ impl AppState {
                             DistanceTarget::LineLength(line_index),
                             cl.text.clone(),
                         ) {
-                            self.doc.lines.pop();
+                            self.doc.lines.remove(line_index);
                             self.doc.shape_order.pop();
                             self.creating_line = Some(cl);
                             self.status = e.clone();
@@ -7806,7 +7824,7 @@ impl AppState {
                             target,
                         );
                     }
-                    let len = self.doc.lines.last().unwrap().length();
+                    let len = self.doc.lines.values().last().unwrap().length();
                     let len_label = crate::value::format_length_display_in(
                         len,
                         crate::model::effective_length_unit(&self.doc, session.sketch),
@@ -8476,7 +8494,7 @@ impl AppState {
                     );
                     line.construction = true;
                     line.projection = Some(source);
-                    self.doc.lines.push(line);
+                    self.doc.lines.insert(line);
                     self.doc.shape_order.push(crate::model::ShapeKind::Line);
                     created += 1;
                 }
@@ -9102,6 +9120,7 @@ impl AppState {
                 // was only for the positive/degeneracy guards.
                 let a_owner = live_vertex_treatment_owner(&self.doc, line1);
                 let b_owner = live_vertex_treatment_owner(&self.doc, line2);
+                // `a`/`b` are positions in the op's `line_targets`, not line keys (#538).
                 let mk_corner =
                     |a: usize, a_end, b: usize, b_end, amount: String| crate::model::SketchVertexTreatmentCorner {
                         a,
@@ -9179,9 +9198,7 @@ impl AppState {
                         // owns everything now. Its source edges belong to `oa` (whose rebuild
                         // re-shadows them), so they are NOT un-shadowed here.
                         for &out in ob_op.line_outputs.iter().chain(ob_op.bridge_outputs.iter()) {
-                            if let Some(l) = self.doc.lines.get_mut(out) {
-                                l.deleted = true;
-                            }
+                            self.doc.lines.remove(out);
                         }
                         for &ci in &ob_op.constraint_outputs {
                             self.doc.constraints.remove(ci);
@@ -9308,7 +9325,7 @@ impl AppState {
                         "Rectangle needs positive width and height".to_string(),
                     );
                 }
-                let lines_before = self.doc.lines.len();
+                let lines_before: Vec<_> = self.doc.lines.keys().collect();
                 let constraints_before: Vec<_> = self.doc.constraints.keys().collect();
                 let shape_order_before = self.doc.shape_order.len();
                 // A rectangle is four plain lines forming a closed loop (#66 polygon); width
@@ -9322,7 +9339,7 @@ impl AppState {
                     height,
                     [false; 4],
                 );
-                let mut add_dim = |line: usize, value: f32, expr: Option<String>| {
+                let mut add_dim = |line: crate::model::LineKey, value: f32, expr: Option<String>| {
                     add_distance_constraint(
                         &mut self.doc,
                         session.sketch,
@@ -9334,7 +9351,7 @@ impl AppState {
                     .and_then(|_| add_dim(lines[1], height, height_expr))
                 {
                     retain_constraints(&mut self.doc, &constraints_before);
-                    self.doc.lines.truncate(lines_before);
+                    retain_lines(&mut self.doc, &lines_before);
                     self.doc.shape_order.truncate(shape_order_before);
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -9396,9 +9413,8 @@ impl AppState {
                 }
                 line.construction = self.draw_construction;
                 line.bezier = bezier;
-                self.doc.lines.push(line);
+                let line_index = self.doc.lines.insert(line);
                 self.doc.shape_order.push(ShapeKind::Line);
-                let line_index = self.doc.lines.len() - 1;
                 if let Some(expression) = dimension {
                     if let Err(e) = add_distance_constraint(
                         &mut self.doc,
@@ -9406,7 +9422,7 @@ impl AppState {
                         DistanceTarget::LineLength(line_index),
                         expression,
                     ) {
-                        self.doc.lines.pop();
+                        self.doc.lines.remove(line_index);
                         self.doc.shape_order.pop();
                         self.status = e.clone();
                         return ActionResult::Err(e);
@@ -13260,9 +13276,9 @@ label_hidden: false,
     fn record_tangent_joint(
         &mut self,
         sketch: SketchId,
-        line1: usize,
+        line1: crate::model::LineKey,
         end1: LineEnd,
-        line2: usize,
+        line2: crate::model::LineKey,
         end2: LineEnd,
     ) {
         let pa = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
@@ -13293,7 +13309,7 @@ label_hidden: false,
         &mut self,
         sketch: SketchId,
         point: ConstraintPoint,
-        moved_line: usize,
+        moved_line: crate::model::LineKey,
         moved_end: LineEnd,
         vpos: (f32, f32),
         moved_handle: (f32, f32),
@@ -13423,9 +13439,8 @@ label_hidden: false,
             });
         let mut line = Line::from_local_endpoints(sketch, mx, my, ex, ey);
         line.construction = true;
-        self.doc.lines.push(line);
+        let new_line_index = self.doc.lines.insert(line);
         self.doc.shape_order.push(ShapeKind::Line);
-        let new_line_index = self.doc.lines.len() - 1;
         let new_line = ConstraintLine::Line(new_line_index);
 
         let push_constraint = |doc: &mut Document, kind: ConstraintKind| {
@@ -13960,7 +13975,6 @@ fn shifted_line_copy(src: &crate::model::Line, dx: f32, dy: f32) -> crate::model
         construction: src.construction,
         shadow: src.shadow,
         name: None,
-        deleted: false,
         bezier: src.bezier.map(|[a, b]| [(a.0 + dx, a.1 + dy), (b.0 + dx, b.1 + dy)]),
         chamfer_fillet_parent: None,
         projection: None,
@@ -14132,9 +14146,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
         }
     }
     for &f in &op.line_outputs {
-        if let Some(l) = doc.lines.get_mut(f) {
-            l.deleted = true;
-        }
+        doc.lines.remove(f);
     }
     // Face-slice targets (#238): un-shadow every boundary line (any were shadowed as crossed
     // edges) and tombstone the coincidence constraints a prior run generated.
@@ -14149,7 +14161,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
         doc.constraints.remove(ci);
     }
     let mut constraint_outputs: Vec<crate::model::ConstraintKey> = Vec::new();
-    let mut outputs = Vec::new();
+    let mut outputs: Vec<crate::model::LineKey> = Vec::new();
     for &a in &op.line_targets {
         let al = doc.lines[a].clone();
         // Gather all crossing parameters along the target across every cutter (works for straight
@@ -14159,7 +14171,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
             if b == a {
                 continue;
             }
-            let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) else {
+            let Some(bl) = doc.lines.get(b) else {
                 continue;
             };
             ts.extend(curve_crossing_params(&al, bl));
@@ -14178,8 +14190,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
             frag.y1 = y1;
             frag.bezier = bezier;
             frag.shadow = false;
-            outputs.push(doc.lines.len());
-            doc.lines.push(frag);
+            outputs.push(doc.lines.insert(frag));
             doc.shape_order.push(crate::model::ShapeKind::Line);
         };
         match al.bezier {
@@ -14211,7 +14222,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
         };
         let mut angles: Vec<f32> = Vec::new();
         for &b in &op.cutter_lines {
-            let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) else {
+            let Some(bl) = doc.lines.get(b) else {
                 continue;
             };
             let cp = bl.sample_local(crate::model::BEZIER_SEGMENTS);
@@ -14240,8 +14251,7 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
                 );
                 frag.bezier = Some([piece[1], piece[2]]);
                 frag.construction = circ.construction;
-                outputs.push(doc.lines.len());
-                doc.lines.push(frag);
+                outputs.push(doc.lines.insert(frag));
                 doc.shape_order.push(crate::model::ShapeKind::Line);
             }
         }
@@ -14267,16 +14277,17 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
 fn slice_face_loop(
     doc: &mut crate::model::Document,
     sketch: crate::model::SketchId,
-    loop_lines: &[usize],
-    cutter_lines: &[usize],
-    outputs: &mut Vec<usize>,
+    loop_lines: &[crate::model::LineKey],
+    cutter_lines: &[crate::model::LineKey],
+    outputs: &mut Vec<crate::model::LineKey>,
     constraint_outputs: &mut Vec<crate::model::ConstraintKey>,
 ) {
     use crate::model::{ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
     // Find boundary edges crossed by a cutter (interior crossing), and the crossing point on each.
-    let mut crossed: Vec<(usize, f32)> = Vec::new(); // (line index, param along it)
+    // (line, param along it)
+    let mut crossed: Vec<(crate::model::LineKey, f32)> = Vec::new();
     for &li in loop_lines {
-        let Some(l) = doc.lines.get(li).filter(|l| !l.deleted && !l.shadow) else {
+        let Some(l) = doc.lines.get(li).filter(|l| !l.shadow) else {
             continue;
         };
         let al = l.clone();
@@ -14285,7 +14296,7 @@ fn slice_face_loop(
             if b == li {
                 continue;
             }
-            if let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) {
+            if let Some(bl) = doc.lines.get(b) {
                 ts.extend(curve_crossing_params(&al, bl));
             }
         }
@@ -14303,13 +14314,16 @@ fn slice_face_loop(
 
     // Split a crossed straight edge at param `t`, returning the two fragment line indices
     // (start-piece, end-piece); the fragments are pushed to `outputs` and the original shadowed.
-    let mut split_edge = |doc: &mut crate::model::Document, li: usize, t: f32| -> Option<(usize, usize, (f32, f32))> {
+    let mut split_edge = |doc: &mut crate::model::Document,
+                          li: crate::model::LineKey,
+                          t: f32|
+     -> Option<(crate::model::LineKey, crate::model::LineKey, (f32, f32))> {
         let l = doc.lines.get(li)?.clone();
         if l.bezier.is_some() {
             return None; // curved boundary edges aren't handled by the clean bisect
         }
         let (mx, my) = (l.x0 + (l.x1 - l.x0) * t, l.y0 + (l.y1 - l.y0) * t);
-        let mut make = |x0: f32, y0: f32, x1: f32, y1: f32| -> usize {
+        let mut make = |x0: f32, y0: f32, x1: f32, y1: f32| -> crate::model::LineKey {
             let mut frag = shifted_line_copy(&l, 0.0, 0.0);
             frag.x0 = x0;
             frag.y0 = y0;
@@ -14317,9 +14331,8 @@ fn slice_face_loop(
             frag.y1 = y1;
             frag.bezier = None;
             frag.shadow = false;
-            let idx = doc.lines.len();
+            let idx = doc.lines.insert(frag);
             outputs.push(idx);
-            doc.lines.push(frag);
             doc.shape_order.push(crate::model::ShapeKind::Line);
             idx
         };
@@ -14335,8 +14348,9 @@ fn slice_face_loop(
     let Some((l2a, l2b, x2)) = split_edge(doc, l2, t2) else { return };
 
     // The cut chord between the two crossing points.
-    let chord = doc.lines.len();
-    doc.lines.push(crate::model::Line::from_local_endpoints(sketch, x1.0, x1.1, x2.0, x2.1));
+    let chord = doc
+        .lines
+        .insert(crate::model::Line::from_local_endpoints(sketch, x1.0, x1.1, x2.0, x2.1));
     doc.shape_order.push(crate::model::ShapeKind::Line);
     outputs.push(chord);
 
@@ -14352,7 +14366,7 @@ fn slice_face_loop(
             name: None,
         }));
     };
-    let ep = |line: usize, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
+    let ep = |line: crate::model::LineKey, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
     // Pieces inherit the crossed edge's corner coincidences.
     glue(doc, ep(l1a, LineEnd::Start), ep(l1, LineEnd::Start));
     glue(doc, ep(l1b, LineEnd::End), ep(l1, LineEnd::End));
@@ -14387,16 +14401,13 @@ fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: crate::mode
     let want_lines = offsets.len() * op.line_targets.len();
     let mut line_outputs = op.line_outputs.clone();
     while line_outputs.len() < want_lines {
-        line_outputs.push(doc.lines.len());
-        // Seeded from target 0; refreshed below. A placeholder keeps indices valid.
+        // Seeded from target 0; refreshed below.
         let seed = doc.lines[op.line_targets[0]].clone();
-        doc.lines.push(shifted_line_copy(&seed, 0.0, 0.0));
+        line_outputs.push(doc.lines.insert(shifted_line_copy(&seed, 0.0, 0.0)));
         doc.shape_order.push(crate::model::ShapeKind::Line);
     }
     for extra in line_outputs.split_off(want_lines) {
-        if let Some(l) = doc.lines.get_mut(extra) {
-            l.deleted = true;
-        }
+        doc.lines.remove(extra);
     }
     for (slot, &out) in line_outputs.iter().enumerate() {
         let instance = slot / op.line_targets.len() + 1;
@@ -14436,13 +14447,13 @@ fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: crate::mode
 fn ensure_offset_joint_coincidences(
     doc: &mut crate::model::Document,
     sketch: crate::model::SketchId,
-    line_outputs: &[usize],
+    line_outputs: &[crate::model::LineKey],
 ) {
     use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
     const EPS: f32 = 1e-3;
-    let mut ends: Vec<(usize, LineEnd, f32, f32)> = Vec::new();
+    let mut ends: Vec<(crate::model::LineKey, LineEnd, f32, f32)> = Vec::new();
     for &li in line_outputs {
-        let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) else {
+        let Some(l) = doc.lines.get(li) else {
             continue;
         };
         ends.push((li, LineEnd::Start, l.x0, l.y0));
@@ -14496,7 +14507,7 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
         .line_targets
         .iter()
         .filter_map(|&li| {
-            let l = doc.lines.get(li).filter(|l| !l.deleted)?;
+            let l = doc.lines.get(li)?;
             Some(crate::offset::OffsetSource {
                 id: li,
                 a: glam::Vec2::new(l.x0, l.y0),
@@ -14511,15 +14522,12 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
 
     let mut line_outputs = op.line_outputs.clone();
     while line_outputs.len() < segments.len() {
-        line_outputs.push(doc.lines.len());
         let seed = doc.lines[segments[0].id].clone();
-        doc.lines.push(seed);
+        line_outputs.push(doc.lines.insert(seed));
         doc.shape_order.push(crate::model::ShapeKind::Line);
     }
     for extra in line_outputs.split_off(segments.len()) {
-        if let Some(l) = doc.lines.get_mut(extra) {
-            l.deleted = true;
-        }
+        doc.lines.remove(extra);
     }
     for (seg, &out) in segments.iter().zip(&line_outputs) {
         let src = doc.lines[seg.id].clone();
@@ -14601,7 +14609,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     let Some(op) = doc.sketch_mirror_ops.get(op_index).cloned() else {
         return false;
     };
-    let Some(ml) = doc.lines.get(op.line).filter(|l| !l.deleted) else {
+    let Some(ml) = doc.lines.get(op.line) else {
         return false;
     };
     let a = glam::Vec2::new(ml.x0, ml.y0);
@@ -14611,23 +14619,20 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     }
 
     // Lines: never reflect the mirror line itself.
-    let want_lines: Vec<usize> = op
+    let want_lines: Vec<crate::model::LineKey> = op
         .line_targets
         .iter()
         .copied()
-        .filter(|&li| li != op.line && doc.lines.get(li).is_some_and(|l| !l.deleted))
+        .filter(|&li| li != op.line && doc.lines.contains(li))
         .collect();
     let mut line_outputs = op.line_outputs.clone();
     while line_outputs.len() < want_lines.len() {
-        line_outputs.push(doc.lines.len());
         let seed = doc.lines[want_lines[0]].clone();
-        doc.lines.push(seed);
+        line_outputs.push(doc.lines.insert(seed));
         doc.shape_order.push(crate::model::ShapeKind::Line);
     }
     for extra in line_outputs.split_off(want_lines.len()) {
-        if let Some(l) = doc.lines.get_mut(extra) {
-            l.deleted = true;
-        }
+        doc.lines.remove(extra);
     }
     for (&li, &out) in want_lines.iter().zip(&line_outputs) {
         let src = doc.lines[li].clone();
@@ -14694,7 +14699,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     for &ci in &op.constraint_outputs {
         doc.constraints.remove(ci);
     }
-    let src_to_out: std::collections::HashMap<usize, usize> =
+    let src_to_out: std::collections::HashMap<crate::model::LineKey, crate::model::LineKey> =
         want_lines.iter().copied().zip(line_outputs.iter().copied()).collect();
     let map_end = |p: &ConstraintPoint| -> Option<ConstraintPoint> {
         match p {
@@ -14787,9 +14792,7 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
         }
     }
     for &out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
-        if let Some(l) = doc.lines.get_mut(out) {
-            l.deleted = true;
-        }
+        doc.lines.remove(out);
     }
     for &ci in &op.constraint_outputs {
         doc.constraints.remove(ci);
@@ -14853,19 +14856,17 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
         }
     }
 
-    // Trimmed copies, index-aligned with `line_targets` (reuse slots mirror-style).
+    // Trimmed copies, index-aligned with `line_targets`. The reset above really removed the
+    // previous run's outputs (#1055), so every copy is minted fresh rather than reused.
     let n = op.line_targets.len();
-    let mut line_outputs = op.line_outputs.clone();
+    let mut line_outputs: Vec<crate::model::LineKey> = Vec::new();
     while line_outputs.len() < n {
         let seed = doc.lines[op.line_targets[line_outputs.len()]].clone();
-        line_outputs.push(doc.lines.len());
-        doc.lines.push(seed);
+        line_outputs.push(doc.lines.insert(seed));
         doc.shape_order.push(ShapeKind::Line);
     }
     for extra in line_outputs.split_off(n) {
-        if let Some(l) = doc.lines.get_mut(extra) {
-            l.deleted = true;
-        }
+        doc.lines.remove(extra);
     }
     for (pos, &src_li) in op.line_targets.iter().enumerate() {
         let out = line_outputs[pos];
@@ -14876,7 +14877,6 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
         copy.length_locked = false;
         copy.length_expr = None;
         copy.length_dim_offset = None;
-        copy.deleted = false;
         if let Some(&p) = trims.get(&(pos, LineEnd::Start)) {
             (copy.x0, copy.y0) = p;
         }
@@ -14888,17 +14888,14 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
 
     // Bridges, index-aligned with `corners`.
     let m = op.corners.len();
-    let mut bridge_outputs = op.bridge_outputs.clone();
+    let mut bridge_outputs: Vec<crate::model::LineKey> = Vec::new();
     while bridge_outputs.len() < m {
-        bridge_outputs.push(doc.lines.len());
-        doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 0.0));
+        bridge_outputs
+            .push(doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 0.0)));
         doc.shape_order.push(ShapeKind::Line);
     }
     for extra in bridge_outputs.split_off(m) {
-        if let Some(l) = doc.lines.get_mut(extra) {
-            l.deleted = true;
-        }
+        doc.lines.remove(extra);
     }
     for (ci, corner) in op.corners.iter().enumerate() {
         let out = bridge_outputs[ci];
@@ -14915,16 +14912,14 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
                 doc.lines[out] = bridge;
             }
             None => {
-                if let Some(l) = doc.lines.get_mut(out) {
-                    l.deleted = true;
-                }
+                doc.lines.remove(out);
             }
         }
     }
 
     // Stitch coincidences (regenerated fresh each rebuild).
     let mut constraint_outputs: Vec<crate::model::ConstraintKey> = Vec::new();
-    let ep = |line: usize, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
+    let ep = |line: crate::model::LineKey, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
     let mut glue = |doc: &mut crate::model::Document, a: ConstraintPoint, b: ConstraintPoint| {
         constraint_outputs.push(doc.constraints.insert(Constraint {
             sketch,
@@ -14977,7 +14972,7 @@ pub fn rebuild_sketch_vertex_treatments(doc: &mut crate::model::Document) {
 /// in that op's `line_targets`)`, or `None` if no live op sources it.
 fn live_vertex_treatment_owner(
     doc: &crate::model::Document,
-    line: usize,
+    line: crate::model::LineKey,
 ) -> Option<(crate::model::SketchVertexTreatmentOpKey, usize)> {
     doc.sketch_vertex_treatment_ops
         .iter()
@@ -15001,13 +14996,18 @@ fn resolve_treatment_corner_sources(
     doc: &crate::model::Document,
     sketch: crate::model::SketchId,
     point: ConstraintPoint,
-) -> Option<(usize, LineEnd, usize, LineEnd)> {
-    let is_output = |line: usize| -> bool {
+) -> Option<(
+    crate::model::LineKey,
+    LineEnd,
+    crate::model::LineKey,
+    LineEnd,
+)> {
+    let is_output = |line: crate::model::LineKey| -> bool {
         doc.sketch_vertex_treatment_ops
             .values()
             .any(|op| op.line_outputs.contains(&line) || op.bridge_outputs.contains(&line))
     };
-    let mut endpoints: Vec<(usize, LineEnd)> =
+    let mut endpoints: Vec<(crate::model::LineKey, LineEnd)> =
         crate::vertex_drag::coincident_group(doc, sketch, point)
             .into_iter()
             .filter_map(|p| match p {
@@ -15015,7 +15015,7 @@ fn resolve_treatment_corner_sources(
                 _ => None,
             })
             .filter(|&(line, _)| {
-                !is_output(line) && doc.lines.get(line).is_some_and(|l| !l.deleted)
+                !is_output(line) && doc.lines.contains(line)
             })
             .collect();
     endpoints.sort_by_key(|&(line, end)| (line, matches!(end, LineEnd::End)));
@@ -15038,8 +15038,10 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
     };
     // Tombstone anything a previous run generated.
     for &si in &op.sketch_outputs {
-        for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
-            l.deleted = true;
+        for key in doc.lines.keys().collect::<Vec<_>>() {
+            if doc.lines[key].sketch == si {
+                doc.lines.remove(key);
+            }
         }
         for c in doc.circles.keys().collect::<Vec<_>>() {
             if doc.circles[c].sketch == si {
@@ -15109,15 +15111,15 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: crate::
             // Copy the source's lines and circles (plane-local coords unchanged).
             let src_lines: Vec<crate::model::Line> = doc
                 .lines
-                .iter()
-                .filter(|l| l.sketch == src && !l.deleted)
+                .values()
+                .filter(|l| l.sketch == src)
                 .cloned()
                 .collect();
             for l in src_lines {
                 let mut copy = shifted_line_copy(&l, 0.0, 0.0);
                 copy.sketch = sketch_idx;
                 copy.shadow = false;
-                doc.lines.push(copy);
+                doc.lines.insert(copy);
                 doc.shape_order.push(ShapeKind::Line);
             }
             let src_circles: Vec<crate::model::Circle> = doc
@@ -15929,6 +15931,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
@@ -16251,14 +16254,14 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         // Mirror axis: the vertical line x = 0.
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0)); // 0
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0)); // 0
         // Target: a segment on the +x side.
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 3.0)); // 1
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 3.0)); // 1
 
         let r = state.apply(Action::CreateSketchMirrorOperation {
             sketch,
-            line: 0,
-            line_targets: vec![1],
+            line: lkey(0),
+            line_targets: vec![lkey(1)],
             circle_targets: vec![],
         });
         assert!(matches!(r, ActionResult::Ok), "sketch mirror should succeed: {r:?}");
@@ -16271,12 +16274,12 @@ mod tests {
         assert!((o.x0 + 5.0).abs() < 1e-3 && o.y0.abs() < 1e-3, "start {:?}", (o.x0, o.y0));
         assert!((o.x1 + 8.0).abs() < 1e-3 && (o.y1 - 3.0).abs() < 1e-3, "end {:?}", (o.x1, o.y1));
         // The original stays.
-        assert!(!state.doc.lines[1].deleted);
+        assert!(state.doc.lines.contains(lkey(1)));
 
         // Deleting the op removes the reflection.
         state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(skop(0)) });
-        assert!(state.doc.lines[out].deleted, "reflected line removed with the op");
-        assert!(!state.doc.lines[1].deleted, "source kept");
+        assert!(!state.doc.lines.contains(out), "reflected line removed with the op");
+        assert!(state.doc.lines.contains(lkey(1)), "source kept");
     }
 
     /// #549: after placing a new dimension on a line, the selection clears so the next click
@@ -16287,15 +16290,15 @@ mod tests {
         use crate::model::Line;
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
-        state.apply(Action::ClickSceneElement { element: SceneElement::Line(0), additive: false });
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
+        state.apply(Action::ClickSceneElement { element: SceneElement::Line(lkey(0)), additive: false });
         assert!(!state.scene_selection.is_empty(), "the line is selected");
         assert!(state.try_begin_dimension_from_selection(), "a single line dimensions its length");
         // That starts placement (#763); the placement click opens the editor.
         state.tool = Tool::Dimension;
         state.apply(Action::BeginDimensionEdit {
             target: crate::model::DimensionTarget::Distance(
-                crate::model::DistanceTarget::LineLength(0),
+                crate::model::DistanceTarget::LineLength(lkey(0)),
             ),
         });
         assert!(state.editing_committed_dim.is_some());
@@ -16316,17 +16319,17 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         // Line 0: the mirror axis x = 0. Lines 1..=4: a square on the +x side.
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, -20.0, 0.0, 20.0)); // 0 axis
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 2.0, 2.0, 6.0, 2.0)); // 1
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 6.0, 2.0, 6.0, 6.0)); // 2
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 6.0, 6.0, 2.0, 6.0)); // 3
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 2.0, 6.0, 2.0, 2.0)); // 4
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, -20.0, 0.0, 20.0)); // 0 axis
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 2.0, 2.0, 6.0, 2.0)); // 1
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 6.0, 2.0, 6.0, 6.0)); // 2
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 6.0, 6.0, 2.0, 6.0)); // 3
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 2.0, 6.0, 2.0, 2.0)); // 4
         // Stitch the square's four corners with coincidences.
         for (la, ea, lb, eb) in [
-            (1, LineEnd::End, 2, LineEnd::Start),
-            (2, LineEnd::End, 3, LineEnd::Start),
-            (3, LineEnd::End, 4, LineEnd::Start),
-            (4, LineEnd::End, 1, LineEnd::Start),
+            (lkey(1), LineEnd::End, lkey(2), LineEnd::Start),
+            (lkey(2), LineEnd::End, lkey(3), LineEnd::Start),
+            (lkey(3), LineEnd::End, lkey(4), LineEnd::Start),
+            (lkey(4), LineEnd::End, lkey(1), LineEnd::Start),
         ] {
             state.doc.constraints.insert(Constraint {
                 sketch,
@@ -16344,8 +16347,8 @@ mod tests {
 
         state.apply(Action::CreateSketchMirrorOperation {
             sketch,
-            line: 0,
-            line_targets: vec![1, 2, 3, 4],
+            line: lkey(0),
+            line_targets: vec![lkey(1), lkey(2), lkey(3), lkey(4)],
             circle_targets: vec![],
         });
         assert_eq!(state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs.len(), 4);
@@ -16358,7 +16361,7 @@ mod tests {
         let loops = crate::polygon::closed_line_loops(&state.doc, sketch);
         assert_eq!(loops.len(), 2, "the reflected rectangle forms its own face: {loops:?}");
         // One loop is made entirely of the reflected output lines.
-        let outs: std::collections::HashSet<usize> =
+        let outs: std::collections::HashSet<crate::model::LineKey> =
             state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs.iter().copied().collect();
         assert!(
             loops.iter().any(|l| l.iter().all(|li| outs.contains(li))),
@@ -16375,12 +16378,12 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         // Mirror axis x = 0 (line 0), a source segment on the +x side (line 1).
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0)); // 0
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 0.0)); // 1
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0)); // 0
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 0.0)); // 1
         state.apply(Action::CreateSketchMirrorOperation {
             sketch,
-            line: 0,
-            line_targets: vec![1],
+            line: lkey(0),
+            line_targets: vec![lkey(1)],
             circle_targets: vec![],
         });
         let out = state.doc.sketch_mirror_ops.values().nth(0).unwrap().line_outputs[0];
@@ -16388,15 +16391,15 @@ mod tests {
 
         // Drag the whole mirror line to x = 2 (both endpoints shift +2 in u), by selecting it
         // and dragging. The reflection of (5,0) across x=2 is (-1,0).
-        state.apply(Action::ClickSceneElement { element: SceneElement::Line(0), additive: false });
+        state.apply(Action::ClickSceneElement { element: SceneElement::Line(lkey(0)), additive: false });
         state.apply(Action::BeginLineDrag {
-            target: crate::model::ConstraintLine::Line(0),
+            target: crate::model::ConstraintLine::Line(lkey(0)),
             anchor_u: 0.0,
             anchor_v: 0.0,
         });
         state.apply(Action::DragLine { u: 2.0, v: 0.0 });
         // Sanity: the mirror line actually moved.
-        let ml = &state.doc.lines[0];
+        let ml = &state.doc.lines[lkey(0)];
         assert!((ml.x0 - 2.0).abs() < 1e-3, "mirror line moved to x=2: {}", ml.x0);
         // The reflection followed: (5,0) across x=2 → (-1,0).
         let o = &state.doc.lines[out];
@@ -17149,9 +17152,9 @@ mod tests {
 
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line, ShapeKind::Line]);
         let coincident = |a, b| Constraint {
             sketch,
@@ -17164,9 +17167,9 @@ mod tests {
             name: None,
         };
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        state.doc.constraints.insert(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
-        state.doc.constraints.insert(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
-        state.doc.constraints.insert(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(lkey(0), LineEnd::End), point(lkey(1), LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(lkey(1), LineEnd::End), point(lkey(2), LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(lkey(2), LineEnd::End), point(lkey(0), LineEnd::Start)));
         state.refresh_document_health();
 
         let loops = crate::polygon::closed_line_loops(&state.doc, sketch);
@@ -17493,7 +17496,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,
-            faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            faces: vec![crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
             distance: 10.0,
             target: None,
             expression: "width".to_string(),
@@ -17652,11 +17655,10 @@ mod tests {
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
         let sketch = state.sketch_session.unwrap().sketch;
 
-        let projected: Vec<usize> = state
+        let projected: Vec<crate::model::LineKey> = state
             .doc
             .lines
             .iter()
-            .enumerate()
             .filter(|(_, l)| {
                 l.sketch == sketch
                     && matches!(l.projection, Some(crate::model::ProjectionSource::UnitEdge { .. }))
@@ -17668,7 +17670,7 @@ mod tests {
             projected.iter().all(|&li| state.doc.lines[li].construction),
             "projected edges are construction references"
         );
-        let side = |doc: &crate::model::Document, li: usize| {
+        let side = |doc: &crate::model::Document, li: crate::model::LineKey| {
             let l = &doc.lines[li];
             (((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)) as f32).sqrt()
         };
@@ -18612,21 +18614,21 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 10.3, 0.2, 20.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 10.3, 0.2, 20.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
         state.refresh_document_health();
 
         let moved = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         let anchor = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         };
         let target = crate::snapping::SnapTarget::Vertex(anchor.clone());
@@ -18663,20 +18665,20 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         // A second line whose endpoint is the point being placed, positioned on the
         // perpendicular through the anchor's midpoint (5, 0) — i.e. u=5.
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 4.0, 20.0, 4.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 4.0, 20.0, 4.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.refresh_document_health();
 
-        let anchor = ConstraintLine::Line(0);
+        let anchor = ConstraintLine::Line(lkey(0));
         let point = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         let target = crate::snapping::SnapTarget::NormalAtMidpoint(anchor.clone());
@@ -18688,7 +18690,7 @@ mod tests {
 
         // A new construction line was invented.
         assert_eq!(state.doc.lines.len(), lines_before + 1);
-        let new_line_index = state.doc.lines.len() - 1;
+        let new_line_index = state.doc.lines.keys().last().expect("the new line");
         assert!(state.doc.lines[new_line_index].construction);
 
         // Three new constraints were added: Midpoint, Perpendicular, and a point-on-line
@@ -18915,18 +18917,18 @@ mod tests {
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 0.0, 10.0, 0.0,
         ));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         crate::selection::click_scene_selection(
             &mut state.scene_selection,
-            crate::hierarchy::SceneElement::Line(0),
+            crate::hierarchy::SceneElement::Line(lkey(0)),
             false,
         );
         state.apply(Action::SetTool(Tool::Offset));
         let co = state.creating_sketch_offset.as_ref().unwrap();
-        assert_eq!(co.line_targets, vec![0]);
+        assert_eq!(co.line_targets, vec![lkey(0)]);
     }
 
     /// Revolve (SPEC §3.5): committing a face + axis creates the revolution and its body
@@ -19002,8 +19004,8 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 25.0));
-        let li = state.doc.lines.len() - 1;
+            .insert(crate::model::Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 25.0));
+        let li = state.doc.lines.keys().last().expect("the line just added");
         state.creating_sweep = Some(CreatingSweep {
             sketch: Some(sketch),
             faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
@@ -19107,9 +19109,9 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         // Two lines meeting at (10, 0), each with a numeric length dim (like typed input).
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
-        for (li, len) in [(0usize, "10"), (1, "10")] {
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        for (li, len) in [(lkey(0), "10"), (lkey(1), "10")] {
             state.doc.constraints.insert(crate::model::Constraint {
                 sketch,
                 kind: ConstraintKind::Distance {
@@ -19124,11 +19126,11 @@ mod tests {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -19137,17 +19139,17 @@ mod tests {
             name: None,
         });
         let result = state.apply(Action::CommitVertexTreatment {
-            point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
+            point: ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End },
             kind: VertexTreatmentKind::Chamfer,
             amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         // The source edge is shadowed and stays at its FULL length (virtual sharp corner intact).
-        assert!(state.doc.lines[0].shadow, "source line 0 becomes a shadow");
+        assert!(state.doc.lines[lkey(0)].shadow, "source line 0 becomes a shadow");
         assert!(
-            (state.doc.lines[0].x1 - 10.0).abs() < 1e-3,
+            (state.doc.lines[lkey(0)].x1 - 10.0).abs() < 1e-3,
             "source stays full length, got x1 = {}",
-            state.doc.lines[0].x1
+            state.doc.lines[lkey(0)].x1
         );
         // Its length dimension is unchanged — still the plain typed "10".
         let dim0 = state
@@ -19157,7 +19159,7 @@ mod tests {
             .find(|c| {
                 matches!(
                         &c.kind,
-                        ConstraintKind::Distance { target: DistanceTarget::LineLength(0) }
+                        ConstraintKind::Distance { target: DistanceTarget::LineLength(_) }
                     )
             })
             .expect("length dim");
@@ -19165,7 +19167,7 @@ mod tests {
         // A live op owns the treated corner; its output is the trimmed copy that lands at x = 7.
         assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
         let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
-        assert_eq!(op.line_targets, vec![0, 1]);
+        assert_eq!(op.line_targets, vec![lkey(0), lkey(1)]);
         assert_eq!(op.corners.len(), 1);
         assert_eq!(op.line_outputs.len(), 2);
         assert_eq!(op.bridge_outputs.len(), 1);
@@ -19178,7 +19180,7 @@ mod tests {
         );
         // A full recompute keeps the source full-length and re-derives the same trim.
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
-        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-2, "source stays full after recompute");
+        assert!((state.doc.lines[lkey(0)].x1 - 10.0).abs() < 1e-2, "source stays full after recompute");
         let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
         assert!((state.doc.lines[op.line_outputs[0]].x1 - 7.0).abs() < 1e-2);
     }
@@ -19309,7 +19311,7 @@ mod tests {
     fn edit_construction_plane_updates_offset_and_descendants() {
         let mut state = ground_plane_only_state();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.construction_planes.insert(plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
@@ -19624,15 +19626,15 @@ mod tests {
             .add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         let mut curve = Line::from_local_endpoints(sketch, 6.0, 4.0, 26.0, 14.0);
         curve.bezier = Some([(6.0, 12.0), (18.0, 14.0)]);
-        state.doc.lines.push(curve);
+        state.doc.lines.insert(curve);
 
         let point = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::Start,
         };
         let normal = plane_normal_for_line_and_point(
             &state.doc,
-            Some(0),
+            Some(lkey(0)),
             Some(&point),
             glam::Vec3::new(1.0, 0.5, 0.0),
         );
@@ -19649,7 +19651,7 @@ mod tests {
         if let Some(cp) = state.creating_plane.as_mut() {
             cp.anchor_source = PlaneAnchorSource::LineAndPoint;
             cp.anchor_labels = labels;
-            cp.anchor_line = Some(0);
+            cp.anchor_line = Some(lkey(0));
             cp.anchor_point = Some(point);
             cp.offset_live = 0.0;
         }
@@ -19818,7 +19820,7 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         state.tool = Tool::Line;
         state.creating_line = Some(CreatingLine {
@@ -19834,7 +19836,7 @@ mod tests {
             chained_from_bezier: None,
         });
         state.line_end_snap = Some(crate::snapping::SnapTarget::Vertex(
-            ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start },
+            ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start },
         ));
         state.apply(Action::CommitLine);
         assert!(
@@ -19867,16 +19869,16 @@ mod tests {
     fn create_parameter_from_line_length_action() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 0.0, 15.0, 0.0,
         ));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::CreateParameterFromLineLength {
-            line_index: 0,
+            line_index: lkey(0),
             name: None,
         });
         assert_eq!(state.doc.parameters.len(), 1);
@@ -19892,20 +19894,20 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.tool = Tool::Constraint;
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 0.0, 10.0, 0.0,
         ));
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, 0.0, 5.0, 2.0, 8.0,
         ));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(1),
+            element: SceneElement::Line(lkey(1)),
             additive: true,
         });
         state.apply(Action::ApplyConstraintShortcut('1'));
@@ -19974,9 +19976,9 @@ mod tests {
         });
         state.apply(Action::CommitLine);
         assert_eq!(state.doc.lines.len(), 1);
-        assert!((state.doc.lines[0].length() - 10.0).abs() < 1e-4);
+        assert!((state.doc.lines[lkey(0)].length() - 10.0).abs() < 1e-4);
         assert_eq!(state.doc.constraints.len(), 1);
-        assert!(state.doc.lines[0].length_locked);
+        assert!(state.doc.lines[lkey(0)].length_locked);
         assert!(state.creating_line.is_none());
     }
 
@@ -19998,7 +20000,7 @@ mod tests {
         });
         state.apply(Action::CommitLine);
         assert_eq!(state.doc.lines.len(), 1);
-        assert!(!state.doc.lines[0].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
     }
 
     #[test]
@@ -20022,22 +20024,22 @@ mod tests {
         state.apply(Action::CommitLine);
         assert_eq!(state.doc.lines.len(), 1);
         // The first segment of a fresh chain has nothing to smooth against yet.
-        assert!(!state.doc.lines[0].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
         // Chaining should have carried curve-mode into the new segment.
         let cl = state
             .creating_line
             .as_ref()
             .expect("should chain into a new segment");
         assert!(cl.curve_mode);
-        assert_eq!(cl.chained_from, Some(0));
+        assert_eq!(cl.chained_from, Some(lkey(0)));
 
         state.creating_line.as_mut().unwrap().last_mouse = Vec3::new(20.0, 5.0, 0.0);
         state.apply(Action::CommitLine);
         assert_eq!(state.doc.lines.len(), 2);
         // The shared vertex (10,0) is now smoothed retroactively on both sides.
-        assert!(state.doc.lines[0].is_curved());
-        assert!(state.doc.lines[1].is_curved());
-        let h0_far = state.doc.lines[0].bezier.unwrap()[0];
+        assert!(state.doc.lines[lkey(0)].is_curved());
+        assert!(state.doc.lines[lkey(1)].is_curved());
+        let h0_far = state.doc.lines[lkey(0)].bezier.unwrap()[0];
         // Line 0 runs along +x from (0,0) to (10,0): its far (from-vertex) handle sits a third
         // of the way along that chord, independent of where the next point ended up.
         assert!((h0_far.0 - 10.0 / 3.0).abs() < 1e-3);
@@ -20067,19 +20069,19 @@ mod tests {
         state.creating_line.as_mut().unwrap().last_mouse = Vec3::new(20.0, 5.0, 0.0);
         state.apply(Action::CommitLine);
         // The previous segment is left completely untouched (tangent constraint is off).
-        assert!(!state.doc.lines[0].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
         // But the new segment still gets its own independent "corner" handles.
-        assert!(state.doc.lines[1].is_curved());
+        assert!(state.doc.lines[lkey(1)].is_curved());
     }
 
     #[test]
     fn cancel_operation_reverts_the_previous_lines_live_curve_preview() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         // Simulate a live curve-mode preview frame having bent the previous line's end handle.
-        state.doc.lines[0].bezier = Some([(3.0, 0.0), (9.0, 2.0)]);
+        state.doc.lines[lkey(0)].bezier = Some([(3.0, 0.0), (9.0, 2.0)]);
         state.creating_line = Some(CreatingLine {
             origin: Vec3::new(10.0, 0.0, 0.0),
             text: String::new(),
@@ -20089,29 +20091,29 @@ mod tests {
             construction: false,
             curve_mode: true,
             tangent_constraint: true,
-            chained_from: Some(0),
+            chained_from: Some(lkey(0)),
             chained_from_bezier: None,
         });
         state.apply(Action::CancelOperation);
         assert!(state.creating_line.is_none());
         // Reverted to the pre-preview baseline (straight, since `chained_from_bezier` was `None`).
-        assert!(!state.doc.lines[0].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
     }
 
     #[test]
     fn set_bezier_handle_moves_the_control_point() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines[0].bezier = Some([(3.0, 0.0), (7.0, 0.0)]);
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines[lkey(0)].bezier = Some([(3.0, 0.0), (7.0, 0.0)]);
         let result = state.apply(Action::SetBezierHandle {
-            line: 0,
+            line: lkey(0),
             near_start: true,
             u: 3.0,
             v: 5.0,
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert_eq!(state.doc.lines[0].bezier, Some([(3.0, 5.0), (7.0, 0.0)]));
+        assert_eq!(state.doc.lines[lkey(0)].bezier, Some([(3.0, 5.0), (7.0, 0.0)]));
     }
 
     /// #473: moving a handle at a tangent-continuous joint rotates the partner handle to
@@ -20121,16 +20123,16 @@ mod tests {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, LineEnd};
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 5.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 5.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End };
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(point.clone()),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -20147,17 +20149,17 @@ mod tests {
 
         // Swing line 0's near handle to a new direction; the joint must stay tangent and
         // line 1's near handle must keep its own length.
-        let old_partner = state.doc.lines[1].bezier.unwrap()[0];
+        let old_partner = state.doc.lines[lkey(1)].bezier.unwrap()[0];
         let old_len = ((old_partner.0 - 10.0).powi(2) + old_partner.1.powi(2)).sqrt();
         assert!(matches!(
-            state.apply(Action::SetBezierHandle { line: 0, near_start: false, u: 8.0, v: 3.0 }),
+            state.apply(Action::SetBezierHandle { line: lkey(0), near_start: false, u: 8.0, v: 3.0 }),
             ActionResult::Ok
         ));
         assert!(
             vertex_is_tangent_continuous(&state.doc, sketch, point.clone()),
             "joint must stay tangent after the handle drag"
         );
-        let partner = state.doc.lines[1].bezier.unwrap()[0];
+        let partner = state.doc.lines[lkey(1)].bezier.unwrap()[0];
         let len = ((partner.0 - 10.0).powi(2) + partner.1.powi(2)).sqrt();
         assert!((len - old_len).abs() < 1e-3, "partner keeps its length ({old_len} -> {len})");
 
@@ -20166,13 +20168,13 @@ mod tests {
             state.apply(Action::SetVertexTangent { point: point.clone(), continuous: false }),
             ActionResult::Ok
         ));
-        let partner_before = state.doc.lines[1].bezier.unwrap()[0];
+        let partner_before = state.doc.lines[lkey(1)].bezier.unwrap()[0];
         assert!(matches!(
-            state.apply(Action::SetBezierHandle { line: 0, near_start: false, u: 6.0, v: -2.0 }),
+            state.apply(Action::SetBezierHandle { line: lkey(0), near_start: false, u: 6.0, v: -2.0 }),
             ActionResult::Ok
         ));
         assert_eq!(
-            state.doc.lines[1].bezier.unwrap()[0],
+            state.doc.lines[lkey(1)].bezier.unwrap()[0],
             partner_before,
             "an independent joint's partner handle must not move"
         );
@@ -20182,9 +20184,9 @@ mod tests {
     fn set_bezier_handle_errors_on_a_straight_line() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let result = state.apply(Action::SetBezierHandle {
-            line: 0,
+            line: lkey(0),
             near_start: true,
             u: 3.0,
             v: 5.0,
@@ -20198,18 +20200,18 @@ mod tests {
 
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -20217,33 +20219,33 @@ mod tests {
             dim_offset: None,
             name: None,
         });
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End };
         let result = state.apply(Action::ConvertVertexToBezier { point });
         assert!(matches!(result, ActionResult::Ok));
-        assert!(state.doc.lines[0].is_curved());
-        assert!(state.doc.lines[1].is_curved());
+        assert!(state.doc.lines[lkey(0)].is_curved());
+        assert!(state.doc.lines[lkey(1)].is_curved());
     }
 
     #[test]
     fn convert_vertex_to_bezier_rejects_an_endpoint_with_only_one_line() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start };
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start };
         let result = state.apply(Action::ConvertVertexToBezier { point });
         assert!(matches!(result, ActionResult::Err(_)));
-        assert!(!state.doc.lines[0].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
     }
 
     #[test]
     fn straighten_line_clears_bezier() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines[0].bezier = Some([(3.0, 1.0), (7.0, 1.0)]);
-        let result = state.apply(Action::StraightenLine { line: 0 });
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines[lkey(0)].bezier = Some([(3.0, 1.0), (7.0, 1.0)]);
+        let result = state.apply(Action::StraightenLine { line: lkey(0) });
         assert!(matches!(result, ActionResult::Ok));
-        assert!(!state.doc.lines[0].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
     }
 
     /// A 90-degree corner: line 0 from (0,0) to (10,0), line 1 from (10,0) to (10,10),
@@ -20252,18 +20254,18 @@ mod tests {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, LineEnd};
 
         let sketch = begin_default_sketch(state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -20272,7 +20274,7 @@ mod tests {
             name: None,
         });
         state.doc.shape_order.push(ShapeKind::Constraint);
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End };
         (sketch, point)
     }
 
@@ -20284,8 +20286,8 @@ mod tests {
         let mut state = AppState::default();
         let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
         assert_eq!(state.doc.lines.len(), 2);
-        let l0 = state.doc.lines[0].clone();
-        let l1 = state.doc.lines[1].clone();
+        let l0 = state.doc.lines[lkey(0)].clone();
+        let l1 = state.doc.lines[lkey(1)].clone();
 
         let result = state.apply(Action::CommitVertexTreatment {
             point,
@@ -20302,8 +20304,8 @@ mod tests {
         // their original (unshadowed) geometry and the op is gone.
         assert_eq!(state.doc.lines.len(), 2, "undo removes the generated geometry");
         assert!(state.doc.sketch_vertex_treatment_ops.is_empty());
-        assert_eq!(state.doc.lines[0], l0, "line 0 restored to its pre-fillet geometry");
-        assert_eq!(state.doc.lines[1], l1, "line 1 restored to its pre-fillet geometry");
+        assert_eq!(state.doc.lines[lkey(0)], l0, "line 0 restored to its pre-fillet geometry");
+        assert_eq!(state.doc.lines[lkey(1)], l1, "line 1 restored to its pre-fillet geometry");
     }
 
     /// #193: redo re-applies an undone action, and a fresh action clears the redo stack.
@@ -20343,8 +20345,8 @@ mod tests {
         let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
         let result = state.apply(Action::SetVertexTangent { point, continuous: true });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert!(state.doc.lines[0].is_curved());
-        assert!(state.doc.lines[1].is_curved());
+        assert!(state.doc.lines[lkey(0)].is_curved());
+        assert!(state.doc.lines[lkey(1)].is_curved());
     }
 
     #[test]
@@ -20353,10 +20355,10 @@ mod tests {
         let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
         let result = state.apply(Action::SetVertexTangent { point, continuous: false });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert!(state.doc.lines[0].is_curved());
-        assert!(state.doc.lines[1].is_curved());
-        let h0_near = state.doc.lines[0].bezier.unwrap()[1];
-        let h1_near = state.doc.lines[1].bezier.unwrap()[0];
+        assert!(state.doc.lines[lkey(0)].is_curved());
+        assert!(state.doc.lines[lkey(1)].is_curved());
+        let h0_near = state.doc.lines[lkey(0)].bezier.unwrap()[1];
+        let h1_near = state.doc.lines[lkey(1)].bezier.unwrap()[0];
         // Line 0 runs along +x from (0,0) to (10,0): its near-vertex handle sits a third of the
         // way back from (10,0) toward (0,0), independent of line 1's own direction.
         assert!((h0_near.0 - (10.0 - 10.0 / 3.0)).abs() < 1e-3);
@@ -20371,8 +20373,8 @@ mod tests {
     fn set_vertex_tangent_rejects_a_vertex_with_only_one_line() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start };
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start };
         let result = state.apply(Action::SetVertexTangent { point, continuous: true });
         assert!(matches!(result, ActionResult::Err(_)));
     }
@@ -20387,11 +20389,11 @@ mod tests {
             false,
         );
         assert!(matches!(state.apply(Action::ToggleCurveMode), ActionResult::Ok));
-        assert!(state.doc.lines[0].is_curved());
-        assert!(state.doc.lines[1].is_curved());
+        assert!(state.doc.lines[lkey(0)].is_curved());
+        assert!(state.doc.lines[lkey(1)].is_curved());
         assert!(matches!(state.apply(Action::ToggleCurveMode), ActionResult::Ok));
-        assert!(!state.doc.lines[0].is_curved());
-        assert!(!state.doc.lines[1].is_curved());
+        assert!(!state.doc.lines[lkey(0)].is_curved());
+        assert!(!state.doc.lines[lkey(1)].is_curved());
     }
 
     #[test]
@@ -20405,10 +20407,10 @@ mod tests {
         );
         // Starts straight (no bezier at all), so `T` first makes it tangent-continuous.
         assert!(matches!(state.apply(Action::ToggleTangentConstraint), ActionResult::Ok));
-        let h0 = state.doc.lines[0].bezier.expect("should be curved now");
+        let h0 = state.doc.lines[lkey(0)].bezier.expect("should be curved now");
         // Toggling again should break the mirroring into independent corner handles.
         assert!(matches!(state.apply(Action::ToggleTangentConstraint), ActionResult::Ok));
-        let h0_after = state.doc.lines[0].bezier.expect("should still be curved");
+        let h0_after = state.doc.lines[lkey(0)].bezier.expect("should still be curved");
         assert_ne!(h0, h0_after);
     }
 
@@ -20466,8 +20468,8 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         // #538: the sources are shadowed at full length; the trim lives on the op's outputs.
-        assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
-        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3, "source 0 stays full length");
+        assert!(state.doc.lines[lkey(0)].shadow && state.doc.lines[lkey(1)].shadow);
+        assert!((state.doc.lines[lkey(0)].x1 - 10.0).abs() < 1e-3, "source 0 stays full length");
         let op = &state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap();
         // Trimmed copy of line 0: End truncated back from (10,0) toward (0,0) by 3mm.
         let t0 = &state.doc.lines[op.line_outputs[0]];
@@ -20515,7 +20517,7 @@ mod tests {
                         if [a, b].iter().all(|e| matches!(
                             e,
                             ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line, .. })
-                                if *line == 0 || *line == 1
+                                if *line == lkey(0) || *line == lkey(1)
                         ))
                 )
         });
@@ -20541,14 +20543,14 @@ mod tests {
         );
         // Corner at (30,0): joins bottom (0) & right (1).
         let r1 = state.apply(Action::CommitVertexTreatment {
-            point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
+            point: ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End },
             kind: VertexTreatmentKind::Chamfer,
             amount: "5.0".to_string(),
         });
         assert!(matches!(r1, ActionResult::Ok), "{r1:?}");
         // Corner at (30,30): joins right (1) & top (2) — right already belongs to the op.
         let r2 = state.apply(Action::CommitVertexTreatment {
-            point: ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End },
+            point: ConstraintPoint::LineEndpoint { line: lkey(1), end: LineEnd::End },
             kind: VertexTreatmentKind::Chamfer,
             amount: "5.0".to_string(),
         });
@@ -20563,7 +20565,7 @@ mod tests {
         assert_eq!(live.len(), 1, "adjacent corners must merge into one op");
         let op = live[0];
         assert_eq!(op.corners.len(), 2);
-        assert_eq!(op.line_targets, vec![0, 1, 2]);
+        assert_eq!(op.line_targets, vec![lkey(0), lkey(1), lkey(2)]);
         assert!(op.line_targets.iter().all(|&li| state.doc.lines[li].shadow));
 
         // The shared edge (line 1) is trimmed at BOTH ends: its output moved off (30,0)-(30,30).
@@ -20589,7 +20591,7 @@ mod tests {
             amount: "3.0".to_string(),
         });
         let op = state.doc.sketch_vertex_treatment_ops.values().nth(0).unwrap().clone();
-        assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
+        assert!(state.doc.lines[lkey(0)].shadow && state.doc.lines[lkey(1)].shadow);
 
         crate::document_lifecycle::tombstone_element(
             &mut state.doc,
@@ -20598,10 +20600,10 @@ mod tests {
 
         assert!(state.doc.sketch_vertex_treatment_ops.is_empty(), "the op is removed, not tombstoned");
         // Sources un-shadowed (live geometry, sharp corner back).
-        assert!(!state.doc.lines[0].shadow && !state.doc.lines[1].shadow);
+        assert!(!state.doc.lines[lkey(0)].shadow && !state.doc.lines[lkey(1)].shadow);
         // Every generated trimmed copy + bridge is tombstoned.
         for out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
-            assert!(state.doc.lines[*out].deleted, "output line {out} should be gone");
+            assert!(!state.doc.lines.contains(*out), "output line {} should be gone", out.index());
         }
     }
 
@@ -20609,8 +20611,8 @@ mod tests {
     fn commit_vertex_treatment_rejects_a_vertex_with_only_one_line() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start };
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start };
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
@@ -20625,18 +20627,18 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         // Two collinear lines meeting at (10,0): not a real corner.
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         state.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -20644,7 +20646,7 @@ mod tests {
             dim_offset: None,
             name: None,
         });
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End };
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
@@ -20685,7 +20687,7 @@ mod tests {
         // the op are gone, and the two sources are their original (unshadowed) selves.
         assert_eq!(state.doc.lines.len(), 2);
         assert!(state.doc.sketch_vertex_treatment_ops.is_empty());
-        assert!(!state.doc.lines[0].shadow && !state.doc.lines[1].shadow);
+        assert!(!state.doc.lines[lkey(0)].shadow && !state.doc.lines[lkey(1)].shadow);
     }
 
     /// #1055/#1060: a key must mean the same thing across an undo. Undo restores a whole
@@ -21223,22 +21225,22 @@ mod tests {
         // A symmetric arch from (0,0) to (10,0), handles pulling it up.
         let mut target = crate::model::Line::from_local_endpoints(si, 0.0, 0.0, 10.0, 0.0);
         target.bezier = Some([(3.0, 5.0), (7.0, 5.0)]);
-        state.doc.lines.push(target); // line 0
+        state.doc.lines.insert(target); // line 0
         // A vertical cutter at x = 4 (off the symmetric apex vertex, so the crossing lands mid-segment).
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(si, 4.0, -1.0, 4.0, 10.0)); // line 1
+            .insert(crate::model::Line::from_local_endpoints(si, 4.0, -1.0, 4.0, 10.0)); // line 1
 
         let result = state.apply(Action::CreateSketchSliceOperation {
             sketch: si,
-            line_targets: vec![0],
+            line_targets: vec![lkey(0)],
             circle_targets: Vec::new(),
             face_targets: Vec::new(),
-            cutter_lines: vec![1],
+            cutter_lines: vec![lkey(1)],
         });
         assert!(matches!(result, ActionResult::Ok));
-        assert!(state.doc.lines[0].shadow);
+        assert!(state.doc.lines[lkey(0)].shadow);
         let op = state.doc.sketch_slice_ops.values().nth(0).unwrap().clone();
         assert_eq!(op.line_outputs.len(), 2);
         let f0 = &state.doc.lines[op.line_outputs[0]];
@@ -21267,14 +21269,14 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(si, -8.0, 0.0, 8.0, 0.0)); // line 0
+            .insert(crate::model::Line::from_local_endpoints(si, -8.0, 0.0, 8.0, 0.0)); // line 0
 
         let result = state.apply(Action::CreateSketchSliceOperation {
             sketch: si,
             line_targets: Vec::new(),
             circle_targets: vec![rkey(0)],
             face_targets: Vec::new(),
-            cutter_lines: vec![0],
+            cutter_lines: vec![lkey(0)],
         });
         assert!(matches!(result, ActionResult::Ok));
         assert!(state.doc.circles[rkey(0)].shadow, "sliced circle becomes shadow");
@@ -21305,8 +21307,8 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(si, 5.0, -2.0, 5.0, 12.0));
-        let cutter = state.doc.lines.len() - 1;
+            .insert(crate::model::Line::from_local_endpoints(si, 5.0, -2.0, 5.0, 12.0));
+        let cutter = state.doc.lines.keys().last().expect("the cutter line");
 
         let result = state.apply(Action::CreateSketchSliceOperation {
             sketch: si,
@@ -21449,7 +21451,7 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
+            .insert(Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
         state.apply(Action::CreateSketchText {
             sketch,
             text: "Hi".to_string(),
@@ -21473,7 +21475,7 @@ mod tests {
                     anchor: crate::model::TextAnchor::Center,
                 }),
                 b: crate::model::ConstraintEntity::Point(crate::model::ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: crate::model::LineEnd::Start,
                 }),
             },
@@ -21483,8 +21485,8 @@ mod tests {
         });
         crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
         // The text's centre anchor now sits on (30, 40) and the line did not move.
-        assert_eq!(state.doc.lines[0].x0, 30.0);
-        assert_eq!(state.doc.lines[0].y0, 40.0);
+        assert_eq!(state.doc.lines[lkey(0)].x0, 30.0);
+        assert_eq!(state.doc.lines[lkey(0)].y0, 40.0);
         let t = &state.doc.sketch_texts[tkey(0)];
         let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
         for c in &t.contours {
@@ -21821,11 +21823,11 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
 
         let mut cr = CreatingSketchRepeat::new(sketch);
         assert_eq!(cr.direction(&state.doc), (1.0, 0.0), "defaults to the U axis");
-        cr.dir_line = Some(0);
+        cr.dir_line = Some(lkey(0));
         let (u, v) = cr.direction(&state.doc);
         assert!((u - 0.0).abs() < 1e-5 && (v - 1.0).abs() < 1e-5, "unit direction from the edge: {u},{v}");
     }
@@ -21837,16 +21839,16 @@ mod tests {
         use crate::hierarchy::SceneElement;
         use crate::model::{RepeatMode, RepeatVar};
         let mut cr = CreatingSketchRepeat::new(skey(0));
-        cr.line_targets = vec![2, 5];
+        cr.line_targets = vec![lkey(2), lkey(5)];
         cr.circle_targets = vec![rkey(1)];
 
-        cr.remove_target(&SceneElement::Line(2));
-        assert_eq!(cr.line_targets, vec![5]);
+        cr.remove_target(&SceneElement::Line(lkey(2)));
+        assert_eq!(cr.line_targets, vec![lkey(5)]);
         cr.remove_target(&SceneElement::Circle(rkey(1)));
         assert!(cr.circle_targets.is_empty());
         // A kind this tool doesn't collect leaves the set alone.
         cr.remove_target(&SceneElement::Body(bkey(0)));
-        assert_eq!(cr.line_targets, vec![5]);
+        assert_eq!(cr.line_targets, vec![lkey(5)]);
         assert!(cr.has_targets());
 
         cr.clear_targets();
@@ -22172,12 +22174,12 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.refresh_document_health();
 
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start }),
+            element: SceneElement::Point(ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start }),
             additive: false,
         });
         state.apply(Action::ClickSceneElement {
@@ -22187,10 +22189,10 @@ mod tests {
         let result = state.apply(Action::AddGeometricConstraint(GeometricConstraintType::Coincident));
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         assert!(
-            state.doc.lines[0].x0.abs() < 1e-3 && state.doc.lines[0].y0.abs() < 1e-3,
+            state.doc.lines[lkey(0)].x0.abs() < 1e-3 && state.doc.lines[lkey(0)].y0.abs() < 1e-3,
             "start should be pinned to the origin, got ({}, {})",
-            state.doc.lines[0].x0,
-            state.doc.lines[0].y0
+            state.doc.lines[lkey(0)].x0,
+            state.doc.lines[lkey(0)].y0
         );
     }
 
@@ -22676,7 +22678,7 @@ mod tests {
         };
         let sketch = state.doc.add_sketch(top);
         // Reuse the box's footprint as a profile on that sketch plane.
-        let face = ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
+        let face = ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]);
         // Camera above the box → positive extrude (toward +Z / camera).
         state.cam.target = glam::Vec3::new(5.0, 5.0, 5.0);
         state.cam.distance = 40.0;
@@ -22864,12 +22866,14 @@ mod tests {
             face: crate::model::FaceId::ConstructionPlane(pkey(0)),
             viewport: None,
         });
-        let before = state.doc.lines.len();
+        let before: Vec<_> = state.doc.lines.keys().collect();
         let result = state.apply(Action::ProjectElement { element: SceneElement::Body(bkey(0)) });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let projected = state.doc.lines[before..]
+        let projected = state
+            .doc
+            .lines
             .iter()
-            .filter(|l| l.projection.is_some())
+            .filter(|(k, l)| !before.contains(k) && l.projection.is_some())
             .count();
         assert!(projected > 0, "clicking a body projects its edges");
 
@@ -22895,7 +22899,7 @@ mod tests {
             state.apply(Action::ProjectElement { element: SceneElement::ConstructionPlane(pkey(2)) });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.lines.len(), before + 1);
-        let li = state.doc.lines.len() - 1;
+        let li = state.doc.lines.keys().last().expect("the line just added");
         let line = &state.doc.lines[li];
         assert!(matches!(
             line.projection,
@@ -22913,7 +22917,7 @@ mod tests {
 
         // Un-project: deleting the projected line removes the reference.
         state.apply(Action::DeleteElement { element: SceneElement::Line(li) });
-        assert!(state.doc.lines[li].deleted);
+        assert!(!state.doc.lines.contains(li));
     }
 
     #[test]
@@ -22949,7 +22953,7 @@ mod tests {
         let result = state.apply(Action::ProjectSelection);
         assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
         assert_eq!(state.doc.lines.len(), lines_before + 1);
-        let line = state.doc.lines.last().unwrap().clone();
+        let line = state.doc.lines.values().last().unwrap().clone();
         assert!(line.construction, "projections render construction-style");
         assert!(line.projection.is_some(), "projection keeps its source link");
         // The top edge at z=5 projects straight down onto the ground plane: local coords
@@ -22966,7 +22970,7 @@ mod tests {
 
         // Associativity: re-resolving after a source change follows the edge. The cap edge
         // is keyed by its endpoints; a geometry recompute re-projects it.
-        let li = state.doc.lines.len() - 1;
+        let li = state.doc.lines.keys().last().expect("the line just added");
         state.doc.lines[li].x0 = 999.0; // knock it out of place
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         let x0 = state.doc.lines[li].x0;
@@ -23128,7 +23132,7 @@ mod tests {
         state
             .doc
             .lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
         state.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
@@ -23137,7 +23141,7 @@ mod tests {
                     index: 0,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: crate::model::LineEnd::Start,
                 }),
             },
@@ -23153,7 +23157,7 @@ mod tests {
         // Translation only: the size is untouched and the line stayed put.
         assert_eq!(img.width_mm, 100.0);
         assert_eq!(img.height_mm, 60.0);
-        assert_eq!(state.doc.lines[0].x0, 30.0);
+        assert_eq!(state.doc.lines[lkey(0)].x0, 30.0);
 
         // Origin coincidence works the same way through the generic entity.
         state.doc.constraints[nkey(0)].kind = ConstraintKind::Coincident {
@@ -23789,7 +23793,7 @@ mod tests {
         assert!(matches!(
             state.line_start_snap,
             Some(crate::snapping::SnapTarget::Vertex(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: _,
                 end: LineEnd::End
             }))
         ));
@@ -23816,7 +23820,7 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
 
         state.creating_line = Some(CreatingLine {
@@ -23834,7 +23838,7 @@ mod tests {
         // The end latched onto the existing vertex at (10, 0).
         state.line_end_snap = Some(crate::snapping::SnapTarget::Vertex(
             ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::Start,
             },
         ));
@@ -23983,25 +23987,25 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::SetTool(Tool::Dimension));
         assert!(state.editing_committed_dim.is_none());
         assert_eq!(
             state.placing_dimension.as_ref().map(|p| p.target.clone()),
-            Some(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
+            Some(DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))))
         );
         // The placement click (the viewport's job) opens the value editor.
         state.apply(Action::BeginDimensionEdit {
-            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))),
         });
         assert_eq!(
             state.editing_committed_dim.as_ref().unwrap().target,
-            DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
+            DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))))
         );
     }
 
@@ -24012,15 +24016,15 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::SetTool(Tool::Dimension));
         state.apply(Action::BeginDimensionEdit {
-            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))),
         });
         assert!(state.editing_committed_dim.is_some());
         // Select can still drag/edit dimension labels, so the edit survives it.
@@ -24037,22 +24041,22 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
         let rotation_sign = crate::constraints::angle_constraint_natural_sign(
             &state.doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
         )
         .unwrap();
         crate::constraints::add_angle_constraint_with_sign(
             &mut state.doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
             "90deg".to_string(),
         )
@@ -24073,8 +24077,8 @@ mod tests {
         );
         state.editing_committed_dim = Some(EditingCommittedDim {
             target: DimEditTarget::New(DimensionTarget::Angle {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 rotation_sign: 1,
             }),
             text: "45deg".to_string(),
@@ -24094,17 +24098,17 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(1),
+            element: SceneElement::Line(lkey(1)),
             additive: true,
         });
         state.apply(Action::SetTool(Tool::Dimension));
@@ -24115,8 +24119,8 @@ mod tests {
             state.placing_dimension,
             Some(PlacingDimension {
                 target: DimensionTarget::Angle {
-                    line_a: ConstraintLine::Line(0),
-                    line_b: ConstraintLine::Line(1),
+                    line_a: ConstraintLine::Line(lkey(0)),
+                    line_b: ConstraintLine::Line(lkey(1)),
                     rotation_sign: 1,
                 },
                 offset: None,
@@ -24124,8 +24128,8 @@ mod tests {
         );
 
         let target = DimensionTarget::Angle {
-            line_a: ConstraintLine::Line(0),
-            line_b: ConstraintLine::Line(1),
+            line_a: ConstraintLine::Line(lkey(0)),
+            line_b: ConstraintLine::Line(lkey(1)),
             rotation_sign: 1,
         };
         state.placing_dimension = None;
@@ -24148,16 +24152,16 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::SetTool(Tool::Dimension));
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert!(
@@ -24167,15 +24171,15 @@ mod tests {
         assert_eq!(
             state.placing_dimension,
             Some(PlacingDimension {
-                target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+                target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))),
                 offset: None,
             }),
             "one edge places its length"
         );
-        assert!(state.scene_selection.is_selected(SceneElement::Line(0)));
+        assert!(state.scene_selection.is_selected(SceneElement::Line(lkey(0))));
 
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(1),
+            element: SceneElement::Line(lkey(1)),
             additive: true, // Shift adds the second edge
         });
         assert!(state.editing_committed_dim.is_none());
@@ -24183,8 +24187,8 @@ mod tests {
             state.placing_dimension,
             Some(PlacingDimension {
                 target: DimensionTarget::Angle {
-                    line_a: ConstraintLine::Line(0),
-                    line_b: ConstraintLine::Line(1),
+                    line_a: ConstraintLine::Line(lkey(0)),
+                    line_b: ConstraintLine::Line(lkey(1)),
                     rotation_sign: 1,
                 },
                 offset: None,
@@ -24194,20 +24198,20 @@ mod tests {
         // #762: a plain click on a third edge switches to dimensioning *that*, instead of
         // dropping the angle where the click landed.
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 20.0, 10.0, 24.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 20.0, 10.0, 24.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(2),
+            element: SceneElement::Line(lkey(2)),
             additive: false,
         });
         assert_eq!(
             state.placing_dimension,
             Some(PlacingDimension {
-                target: DimensionTarget::Distance(DistanceTarget::LineLength(2)),
+                target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(2))),
                 offset: None,
             })
         );
-        assert!(!state.scene_selection.is_selected(SceneElement::Line(0)));
+        assert!(!state.scene_selection.is_selected(SceneElement::Line(lkey(0))));
     }
 
     /// #780: an edge that already carries a dimension opens its value editor when clicked —
@@ -24220,27 +24224,27 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::SetTool(Tool::Dimension));
 
         // Give line 0 a length, then click it: its value editor opens straight away.
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::BeginDimensionEdit {
-            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))),
         });
         state.editing_committed_dim.as_mut().unwrap().text = "12".to_string();
         state.apply(Action::CommitCommittedDim);
         // A single click on an already-dimensioned edge only selects it (#802) — a
         // double-click is what opens the value; the tool's own entry point does the same.
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert!(state.editing_committed_dim.is_none(), "a single click doesn't edit");
@@ -24249,17 +24253,17 @@ mod tests {
 
         // Shift+click the other edge: the edit gives way to the angle between them.
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(1),
+            element: SceneElement::Line(lkey(1)),
             additive: true,
         });
         assert!(state.editing_committed_dim.is_none(), "the edit stood down");
-        assert!(state.scene_selection.is_selected(SceneElement::Line(0)));
-        assert!(state.scene_selection.is_selected(SceneElement::Line(1)));
+        assert!(state.scene_selection.is_selected(SceneElement::Line(lkey(0))));
+        assert!(state.scene_selection.is_selected(SceneElement::Line(lkey(1))));
         assert_eq!(
             state.placing_dimension.as_ref().map(|p| p.target.clone()),
             Some(DimensionTarget::Angle {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 rotation_sign: 1,
             })
         );
@@ -24274,27 +24278,27 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::SetTool(Tool::Dimension));
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::BeginDimensionEdit {
-            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))),
         });
         state.editing_committed_dim.as_mut().unwrap().text = "20".to_string();
         state.apply(Action::CommitCommittedDim);
 
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert!(state.editing_committed_dim.is_none(), "no editor from a single click");
         assert!(state.placing_dimension.is_none(), "and nothing new to place either");
         assert!(
-            state.scene_selection.is_selected(SceneElement::Line(0)),
+            state.scene_selection.is_selected(SceneElement::Line(lkey(0))),
             "but it IS selected, so it can pair with something else"
         );
     }
@@ -24308,22 +24312,22 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::SetTool(Tool::Dimension));
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert!(state.editing_committed_dim.is_none());
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert!(state.editing_committed_dim.is_none());
         assert_eq!(
             state.placing_dimension.as_ref().map(|p| p.target.clone()),
-            Some(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
+            Some(DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))))
         );
     }
 
@@ -24336,18 +24340,18 @@ mod tests {
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state
             .doc
             .lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
         state.tool = Tool::Dimension;
 
         let target = DimensionTarget::Angle {
-            line_a: ConstraintLine::Line(0),
-            line_b: ConstraintLine::Line(1),
+            line_a: ConstraintLine::Line(lkey(0)),
+            line_b: ConstraintLine::Line(lkey(1)),
             rotation_sign: 1,
         };
         state.apply(Action::BeginDimensionEdit { target });
@@ -24359,8 +24363,8 @@ mod tests {
 
         let id = crate::constraints::find_angle_constraint(
             &state.doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
         )
         .expect("angle constraint created");
         assert_eq!(
@@ -24375,18 +24379,18 @@ mod tests {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::SetTool(Tool::Dimension));
         state.apply(Action::BeginDimensionEdit {
-            target: DimensionTarget::Distance(DistanceTarget::LineLength(0)),
+            target: DimensionTarget::Distance(DistanceTarget::LineLength(lkey(0))),
         });
         state.apply(Action::SetLineLength {
             value: "12mm".to_string(),
         });
         state.apply(Action::CommitCommittedDim);
         assert_eq!(state.doc.constraints.len(), 1);
-        assert!((state.doc.lines[0].length() - 12.0).abs() < 1e-3);
+        assert!((state.doc.lines[lkey(0)].length() - 12.0).abs() < 1e-3);
     }
 
     #[test]
@@ -24647,7 +24651,7 @@ mod tests {
             state
                 .doc
                 .lines
-                .push(Line::from_local_endpoints(sketch, a.0, a.1, b.0, b.1));
+                .insert(Line::from_local_endpoints(sketch, a.0, a.1, b.0, b.1));
         }
         state.apply(Action::ExitSketch);
         while state.cam.tick_transition(0.05) {}
@@ -24864,17 +24868,17 @@ mod tests {
     fn delete_selection_tombstones_selected_geometry() {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::default());
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::DeleteSelection);
-        assert!(state.doc.lines[0].deleted);
+        assert!(!state.doc.lines.contains(lkey(0)));
         assert!(state.scene_selection.is_empty());
         assert_eq!(
-            state.document_health.element_status(SceneElement::Line(0)),
+            state.document_health.element_status(SceneElement::Line(lkey(0))),
             crate::document_health::HealthStatus::Healthy
         );
     }
@@ -24896,7 +24900,7 @@ mod tests {
         assert!(matches!(
             state.apply(Action::CreateSketchOffsetOperation {
                 sketch,
-                line_targets: vec![0, 1, 2, 3],
+                line_targets: vec![lkey(0), lkey(1), lkey(2), lkey(3)],
                 circle_targets: vec![],
                 distance: "-5".to_string(),
                 construction: false,
@@ -24904,19 +24908,19 @@ mod tests {
             ActionResult::Ok
         ));
         let out = state.doc.sketch_offset_ops.values().nth(0).unwrap().line_outputs[0];
-        assert!(!state.doc.lines[out].deleted, "offset output exists");
+        assert!(state.doc.lines.contains(out), "offset output exists");
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Line(out),
             additive: false,
         });
         state.apply(Action::DeleteSelection);
         assert!(
-            state.doc.lines[out].deleted,
+            !state.doc.lines.contains(out),
             "offset output must stay deleted after DeleteSelection"
         );
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
         assert!(
-            state.doc.lines[out].deleted,
+            !state.doc.lines.contains(out),
             "rebuild must not revive a user-deleted offset line"
         );
         assert!(
@@ -24938,22 +24942,22 @@ mod tests {
 
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
             expression: String::new(),
             dim_offset: None,
             name: None,
         });
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         state.apply(Action::DeleteSelection);
@@ -24968,21 +24972,21 @@ mod tests {
 
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
             expression: String::new(),
             dim_offset: None,
             name: None,
         });
-        tombstone_element(&mut state.doc, SceneElement::Line(0));
+        tombstone_element(&mut state.doc, SceneElement::Line(lkey(0)));
         state.refresh_document_health();
         state.apply(Action::OpenSketch {
             sketch,
@@ -24991,7 +24995,7 @@ mod tests {
 
         assert_eq!(
             state.apply(Action::CommitElementName {
-                element: SceneElement::Line(1),
+                element: SceneElement::Line(lkey(1)),
                 name: "Partner".to_string(),
             }),
             ActionResult::Err("unstable: Lost parallel/perpendicular partner".to_string())
@@ -24999,7 +25003,7 @@ mod tests {
         assert_eq!(
             state.apply(Action::DragVertex {
                 point: ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 },
                 u: 1.0,
@@ -25046,34 +25050,34 @@ mod tests {
 
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
             expression: String::new(),
             dim_offset: None,
             name: None,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        tombstone_element(&mut doc, SceneElement::Line(0));
+        tombstone_element(&mut doc, SceneElement::Line(lkey(0)));
         crate::storage::save(&path, &doc).unwrap();
 
         let loaded = crate::storage::open(&path).unwrap();
-        assert!(loaded.lines[0].deleted);
-        assert!(!loaded.lines[1].deleted);
+        assert!(!loaded.lines.contains(lkey(0)));
+        assert!(loaded.lines.contains(lkey(1)));
         let health_after_load = crate::document_health::recompute_document_health(&loaded);
         assert_eq!(
             health_after_load.element_status(SceneElement::Constraint(nkey(0))),
             crate::document_health::HealthStatus::Invalid
         );
         assert_eq!(
-            health_after_load.element_status(SceneElement::Line(1)),
+            health_after_load.element_status(SceneElement::Line(lkey(1))),
             crate::document_health::HealthStatus::Unstable
         );
 
@@ -25084,7 +25088,7 @@ mod tests {
             crate::document_health::HealthStatus::Invalid
         );
         assert_eq!(
-            state.document_health.element_status(SceneElement::Line(1)),
+            state.document_health.element_status(SceneElement::Line(lkey(1))),
             crate::document_health::HealthStatus::Unstable
         );
 
@@ -25160,7 +25164,7 @@ mod tests {
             chained_from_bezier: None,
         });
         state.apply(Action::CommitLine);
-        assert!(state.doc.lines[0].construction);
+        assert!(state.doc.lines[lkey(0)].construction);
     }
 
     #[test]
@@ -25256,15 +25260,15 @@ mod tests {
     fn commit_element_name_updates_document() {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         assert_eq!(
             state.apply(Action::CommitElementName {
-                element: SceneElement::Line(0),
+                element: SceneElement::Line(lkey(0)),
                 name: "Guide".to_string(),
             }),
             ActionResult::Ok
         );
-        assert_eq!(state.doc.lines[0].name.as_deref(), Some("Guide"));
+        assert_eq!(state.doc.lines[lkey(0)].name.as_deref(), Some("Guide"));
     }
 
     /// #335: a new drawing arrives with its title as a normal, deletable text annotation
@@ -25293,9 +25297,9 @@ mod tests {
             ActionResult::Err("Select a single element to rename".to_string())
         );
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Line(0),
+            element: SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert_eq!(state.apply(Action::FocusElementName), ActionResult::Ok);

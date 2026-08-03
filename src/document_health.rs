@@ -713,6 +713,7 @@ fn capture_geometry_snapshot(doc: &Document, element: SceneElement) -> Option<El
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::constraint_key_for_slot as nkey;
     use super::*;
@@ -720,15 +721,13 @@ mod tests {
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line, ShapeKind};
     use crate::model::FaceId;
 
-    fn parallel_lines_doc() -> (Document, usize, usize) {
+    fn parallel_lines_doc() -> (Document, crate::model::LineKey, crate::model::LineKey) {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let line_a = doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        let line_a = 0;
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        let line_b = doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        let line_b = 1;
         doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
@@ -779,8 +778,8 @@ mod tests {
     fn healthy_document_has_no_frozen_elements() {
         let (doc, _, _) = parallel_lines_doc();
         let health = recompute_document_health(&doc);
-        assert_eq!(health.element_status(SceneElement::Line(0)), HealthStatus::Healthy);
-        assert!(!health.element_status(SceneElement::Line(0)).is_frozen());
+        assert_eq!(health.element_status(SceneElement::Line(lkey(0))), HealthStatus::Healthy);
+        assert!(!health.element_status(SceneElement::Line(lkey(0))).is_frozen());
     }
 
     #[test]
@@ -808,7 +807,7 @@ mod tests {
         let (mut doc, line_a, line_b) = parallel_lines_doc();
         let sketch = doc.sketches.keys().next().unwrap();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 20.0, 0.0, 30.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 20.0, 0.0, 30.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         tombstone_element(&mut doc, SceneElement::Line(line_a));
         let health = recompute_document_health(&doc);
@@ -817,7 +816,7 @@ mod tests {
             HealthStatus::Unstable
         );
         assert_eq!(
-            health.element_status(SceneElement::Line(2)),
+            health.element_status(SceneElement::Line(lkey(2))),
             HealthStatus::Healthy
         );
         assert_eq!(

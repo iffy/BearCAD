@@ -853,7 +853,7 @@ struct TextWidthDrag {
 }
 
 struct BezierHandleDrag {
-    line: usize,
+    line: crate::model::LineKey,
     near_start: bool,
     /// Where the press landed and whether it ever traveled: a press that releases without
     /// moving is a *click*, which toggles tangency at the handle's joint (#473).
@@ -2840,7 +2840,7 @@ fn draw_touch_draw_loupe(
     painter.circle_filled(center, radius, col::BG);
 
     let doc = &state.doc;
-    for line in doc.lines.iter().filter(|l| !l.deleted && l.sketch == session.sketch) {
+    for line in doc.lines.values().filter(|l| l.sketch == session.sketch) {
         let color = if line.projection.is_some() {
             col::PROJECTION
         } else if line.construction {
@@ -2924,11 +2924,11 @@ fn draw_touch_draw_loupe(
 #[derive(Clone)]
 enum ViewportContextMenu {
     ConvertVertexToBezier(ConstraintPoint),
-    StraightenLine(usize),
+    StraightenLine(model::LineKey),
     /// Right-clicked directly on a bezier handle: same underlying action as `StraightenLine`
     /// (there's no independent per-handle state to remove — see `selected_bezier_handle`), but
     /// worded as "delete" since that's what the user clicked on (#75).
-    DeleteBezierHandle(usize),
+    DeleteBezierHandle(model::LineKey),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3000,7 +3000,7 @@ struct App {
     text_width_drag: Option<TextWidthDrag>,
     /// Bezier handle selected by a plain click (persists past the click, unlike
     /// `bezier_handle_drag`), so Delete/Backspace can remove it (#75). `(line, near_start)`.
-    selected_bezier_handle: Option<(usize, bool)>,
+    selected_bezier_handle: Option<(model::LineKey, bool)>,
     /// What the viewport's right-click context menu should offer, resolved from whatever was
     /// under the cursor when it was opened (remembered across frames since the menu content
     /// closure may run on a later frame than the click itself).
@@ -6548,7 +6548,7 @@ impl App {
             }
             let (ou, ov) = (off * du, off * dv);
             for &li in &cr.line_targets {
-                if let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) {
+                if let Some(l) = doc.lines.get(li) {
                     let a = crate::face::local_to_world(&frame, l.x0 + ou, l.y0 + ov);
                     let b = crate::face::local_to_world(&frame, l.x1 + ou, l.y1 + ov);
                     segs.push((a, b));
@@ -6599,7 +6599,7 @@ impl App {
             .line_targets
             .iter()
             .filter_map(|&i| {
-                let l = doc.lines.get(i).filter(|l| !l.deleted)?;
+                let l = doc.lines.get(i)?;
                 Some(crate::offset::OffsetSource {
                     id: i,
                     a: glam::Vec2::new(l.x0, l.y0),
@@ -6831,7 +6831,7 @@ impl App {
                         .doc
                         .lines
                         .get(li)
-                        .is_some_and(|l| !l.deleted && l.sketch == session.sketch)
+                        .is_some_and(|l| l.sketch == session.sketch)
                         && !co.line_targets.contains(&li)
                     {
                         co.line_targets.push(li);
@@ -6860,9 +6860,12 @@ impl App {
         if sources.is_empty() {
             return;
         }
-        let before = self.state.doc.lines.len();
+        let before: Vec<_> = self.state.doc.lines.keys().collect();
         self.state.apply(Action::ProjectSources { sources });
-        for li in before..self.state.doc.lines.len() {
+        for li in self.state.doc.lines.keys().collect::<Vec<_>>() {
+            if before.contains(&li) {
+                continue;
+            }
             if let Some(co) = self.state.creating_sketch_offset.as_mut() {
                 if !co.line_targets.contains(&li) {
                     co.line_targets.push(li);
@@ -7683,7 +7686,7 @@ impl App {
             match element {
                 SceneElement::Line(li) => {
                     if let Some(l) =
-                        self.state.doc.lines.get(li).filter(|l| !l.deleted && l.sketch == session.sketch)
+                        self.state.doc.lines.get(li).filter(|l| l.sketch == session.sketch)
                     {
                         acc(l.x0, l.y0);
                         acc(l.x1, l.y1);
@@ -8718,7 +8721,7 @@ impl App {
                         .doc
                         .lines
                         .get(li)
-                        .is_some_and(|l| !l.deleted && l.bezier.is_none());
+                        .is_some_and(|l| l.bezier.is_none());
                     if straight {
                         if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
                             sm.line = Some(li);
@@ -8777,7 +8780,7 @@ impl App {
         let Some(frame) = sketch_geometry_frame(doc, sm.sketch) else {
             return Vec::new();
         };
-        let Some(ml) = doc.lines.get(line_idx).filter(|l| !l.deleted) else {
+        let Some(ml) = doc.lines.get(line_idx) else {
             return Vec::new();
         };
         let a = glam::Vec2::new(ml.x0, ml.y0);
@@ -8791,7 +8794,7 @@ impl App {
         };
         let mut segs = Vec::new();
         for &li in &sm.line_targets {
-            let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) else { continue };
+            let Some(l) = doc.lines.get(li) else { continue };
             if li == line_idx {
                 continue;
             }
@@ -8847,7 +8850,7 @@ impl App {
                         .doc
                         .lines
                         .get(li)
-                        .filter(|l| !l.deleted)
+                        
                         .and_then(|l| crate::face::line_world_endpoints(&self.state.doc, l))
                     {
                         draw_world_segment(painter, project, a, b, GREEN, 3.5);
@@ -12300,7 +12303,7 @@ impl eframe::App for App {
                         .doc
                         .tracing_images
                         .get(image)
-                        .zip(self.state.doc.lines.get(li).filter(|l| !l.deleted))
+                        .zip(self.state.doc.lines.get(li))
                         .filter(|(img, line)| {
                             self.state.doc.sketch_face(line.sketch)
                                 == Some(model::FaceId::ConstructionPlane(img.plane))
@@ -12686,7 +12689,7 @@ impl eframe::App for App {
                 // Lines, then circles, then faces (#955) — the order the removal handler
                 // unpacks a row index back into the three sets.
                 let mut targets: Vec<hierarchy::SceneElement> = Vec::new();
-                let mut cutters: Vec<usize> = Vec::new();
+                let mut cutters: Vec<model::LineKey> = Vec::new();
                 let (mut picking_cutter, mut editing, mut has_t, mut has_c) =
                     (false, false, false, false);
                 if let Some(c) = c {
@@ -16243,7 +16246,7 @@ fn resolve_viewport_hover_highlight(
                             SceneElement::Line(li) => doc
                                 .lines
                                 .get(*li)
-                                .filter(|l| !l.deleted)
+                                
                                 .and_then(|l| crate::face::line_world_polyline(doc, l))
                                 .and_then(|p| Some((*p.first()?, *p.last()?))),
                             _ => None,
@@ -16302,7 +16305,7 @@ fn build_viewport_scene_input<'a>(
     creating_edge_treatment: Option<&CreatingEdgeTreatment>,
     creating_revolve: Option<&actions::CreatingRevolve>,
     creating_sweep: Option<&actions::CreatingSweep>,
-    highlighted_bezier_handles: Vec<(usize, bool)>,
+    highlighted_bezier_handles: Vec<(model::LineKey, bool)>,
     creating_loft: Option<&actions::CreatingLoft>,
     creating_repeat: Option<&actions::CreatingRepeat>,
     creating_mirror: Option<&actions::CreatingMirror>,
@@ -17280,10 +17283,10 @@ fn face_loop_at_world(
     doc: &model::Document,
     sketch: model::SketchId,
     world: Vec3,
-) -> Option<Vec<usize>> {
+) -> Option<Vec<model::LineKey>> {
     let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
     let (u, v) = world_to_local(&frame, world);
-    let mut best: Option<(f32, Vec<usize>)> = None;
+    let mut best: Option<(f32, Vec<model::LineKey>)> = None;
     for lines in crate::polygon::closed_line_loops(doc, sketch) {
         let Some(verts) = crate::polygon::loop_vertices_uv(doc, sketch, &lines) else {
             continue;
@@ -17518,7 +17521,7 @@ fn point_to_segment_line_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -
 fn sketch_centroid_uv(doc: &model::Document, sketch: SketchId) -> Option<(f32, f32)> {
     let mut sum = (0.0f32, 0.0f32);
     let mut n = 0usize;
-    for (li, line) in doc.lines.iter().enumerate() {
+    for (li, line) in doc.lines.iter() {
         if line.sketch != sketch || !document_lifecycle::line_alive(doc, li) {
             continue;
         }
@@ -17673,7 +17676,7 @@ fn build_committed_dim_layouts(
     let sketch_centroid = {
         let mut sum = (0.0f32, 0.0f32);
         let mut n = 0usize;
-        for (li, line) in doc.lines.iter().enumerate() {
+        for (li, line) in doc.lines.iter() {
             if line.sketch != session.sketch || !document_lifecycle::line_alive(doc, li) {
                 continue;
             }
@@ -19319,11 +19322,11 @@ fn nearest_bezier_handle_in_sketch(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &model::Document,
     sketch: model::SketchId,
-) -> Option<(usize, bool)> {
+) -> Option<(model::LineKey, bool)>  {
     let frame = sketch_geometry_frame(doc, sketch)?;
-    let mut best: Option<(usize, bool, f32)> = None;
-    for (li, line) in doc.lines.iter().enumerate() {
-        if line.deleted || line.sketch != sketch {
+    let mut best: Option<(model::LineKey, bool, f32)> = None;
+    for (li, line) in doc.lines.iter() {
+        if line.sketch != sketch {
             continue;
         }
         let Some([c0, c1]) = line.bezier else {
@@ -24272,7 +24275,7 @@ impl App {
                 // takes the line — the raw chain for the paths that chain it themselves:
                 // the plain selection fall-through, and Sweep's hand-rolled path toggle.
                 let armed = tool_pickers.iter().position(|v| v.picker.is_focused());
-                let picker_run: Option<Vec<usize>> = armed
+                let picker_run: Option<Vec<model::LineKey>> = armed
                     .into_iter()
                     .chain((armed != Some(0)).then_some(0))
                     .filter_map(|i| tool_pickers.get(i))
@@ -24289,10 +24292,10 @@ impl App {
                                     SceneElement::Line(l) => Some(l),
                                     _ => None,
                                 })
-                                .collect()
+                                .collect::<Vec<model::LineKey>>()
                         })
                     });
-                let run: Vec<usize> = match picker_run {
+                let run: Vec<model::LineKey> = match picker_run {
                     Some(run) => run,
                     None if armed.is_none() || self.state.tool == Tool::Sweep => {
                         crate::element_picker::sketch_line_tangent_chain(doc, li)
@@ -24863,7 +24866,7 @@ impl App {
         let edit_preview_meshes = self.edit_preview_descendant_meshes();
         // Bezier tangent handles to draw highlighted (#472): the selected handle, the one
         // mid-drag, and the one under the cursor (so hover reads as "grabbable").
-        let mut highlighted_bezier_handles: Vec<(usize, bool)> = Vec::new();
+        let mut highlighted_bezier_handles: Vec<(model::LineKey, bool)> = Vec::new();
         if let Some(session) = self.state.sketch_session {
             if let Some((line, near_start)) = self.selected_bezier_handle {
                 if self.state.doc.lines.get(line).is_some_and(|l| l.bezier.is_some()) {
@@ -25256,7 +25259,7 @@ impl App {
 
             let visibility = &self.state.element_visibility;
             let health = &self.state.document_health;
-            for (li, line) in doc.lines.iter().enumerate() {
+            for (li, line) in doc.lines.iter() {
                 if !line_alive(doc, li)
                     || !visibility.effective_visible(doc, SceneElement::Line(li))
                     || self.state.scene_selection.is_selected(SceneElement::Line(li))
@@ -27348,6 +27351,7 @@ fn draw_ground(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::extrusion_key_for_slot as xkey;
@@ -27390,14 +27394,14 @@ mod tests {
     fn sketch_offset_gizmo_frame_anchors_on_the_first_pick() {
         let mut doc = model::Document::default();
         let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(model::Line::from_local_endpoints(sketch, -10.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(model::Line::from_local_endpoints(sketch, -10.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(model::ShapeKind::Line);
 
         let mut co = actions::CreatingSketchOffset::new(sketch);
         // Nothing picked: no handle.
         assert!(sketch_offset_gizmo_world(&doc, &co).is_none());
 
-        co.line_targets.push(0);
+        co.line_targets.push(lkey(0));
         let (anchor, normal, dist, ..) =
             sketch_offset_gizmo_world(&doc, &co).expect("a picked line gives the handle a frame");
         // XY construction plane: sketch (u, v) is world (x, y).
@@ -27686,19 +27690,19 @@ mod tests {
     fn sketch_isolation_filters_selection_picks() {
         use crate::model::{ConstraintLine, ConstraintPoint, LineEnd, SketchAxis};
         let mut doc = model::Document::default();
-        doc.lines.push(model::Line::from_local_endpoints(model::sketch_key_for_slot(0), 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(model::Line::from_local_endpoints(model::sketch_key_for_slot(1), 0.0, 0.0, 5.0, 5.0));
-        assert!(element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Line(0)));
-        assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Line(1)));
+        doc.lines.insert(model::Line::from_local_endpoints(model::sketch_key_for_slot(0), 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(model::Line::from_local_endpoints(model::sketch_key_for_slot(1), 0.0, 0.0, 5.0, 5.0));
+        assert!(element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Line(lkey(0))));
+        assert!(!element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Line(lkey(1))));
         assert!(element_in_sketch(
             &doc,
             model::sketch_key_for_slot(0),
-            &SceneElement::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start })
+            &SceneElement::Point(ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start })
         ));
         assert!(!element_in_sketch(
             &doc,
             model::sketch_key_for_slot(0),
-            &SceneElement::Point(ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End })
+            &SceneElement::Point(ConstraintPoint::LineEndpoint { line: lkey(1), end: LineEnd::End })
         ));
         assert!(element_in_sketch(&doc, model::sketch_key_for_slot(0), &SceneElement::Origin));
         assert!(element_in_sketch(
@@ -27824,7 +27828,7 @@ mod tests {
             }),
             Some(bkey(2))
         );
-        assert_eq!(body_index_from_pick(&PickTargetKind::Line(0)), None);
+        assert_eq!(body_index_from_pick(&PickTargetKind::Line(lkey(0))), None);
         assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(pkey(0))), None);
     }
 
@@ -27880,8 +27884,8 @@ mod tests {
         );
         // Sketch geometry is untouched.
         assert_eq!(
-            select_tool_element_from_pick(&PickTargetKind::Line(3)),
-            Some(SceneElement::Line(3))
+            select_tool_element_from_pick(&PickTargetKind::Line(lkey(3))),
+            Some(SceneElement::Line(lkey(3)))
         );
     }
 
@@ -27956,7 +27960,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ToggleExtrudeFace {
-            face: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+            face: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
         });
         let ce = state.creating_extrusion.as_ref().unwrap();
         assert_eq!(ce.target, None, "target isn't committed onto ce yet");
@@ -28039,7 +28043,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ToggleExtrudeFace {
-            face: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+            face: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
         });
         state.apply(Action::CommitExtrusion);
         assert!(state.doc.bodies.len() > 0, "an extruded body exists");
@@ -28117,7 +28121,7 @@ mod tests {
         // the hole, parked where each extra hole will be punched.
         let cut = state.doc.extrusions.insert(crate::model::Extrusion {
             sketch,
-            faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+            faces: vec![ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)])],
             distance: -3.0,
             target: None,
             expression: String::new(),
@@ -28523,7 +28527,7 @@ mod tests {
         crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::ToggleExtrudeFace {
-            face: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+            face: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
         });
         state.apply(Action::SetExtrudeDistance { distance: 5.0 });
         state.apply(Action::CommitExtrusion);
@@ -28614,18 +28618,18 @@ mod tests {
             viewport: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.insert(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::Start,
                 }),
             },
@@ -28633,7 +28637,7 @@ mod tests {
             dim_offset: None,
             name: None,
         });
-        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let point = ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::End };
         (sketch, point)
     }
 
@@ -29077,14 +29081,14 @@ mod tests {
         // true across the viewport and freeze every sketch drag.
         let mut state = crate::actions::AppState::default();
         let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
-        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+        state.doc.lines.insert(crate::model::Line::from_local_endpoints(
             sketch, -30.0, -20.0, 30.0, 20.0,
         ));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
         crate::constraints::add_distance_constraint(
             &mut state.doc,
             sketch,
-            crate::model::DistanceTarget::LineLength(0),
+            crate::model::DistanceTarget::LineLength(lkey(0)),
             "60mm".to_string(),
         )
         .unwrap();
@@ -30031,7 +30035,7 @@ mod tests {
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         // A line far from the origin so it never wins the pick.
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 30.0, 60.0, 30.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 30.0, 30.0, 60.0, 30.0));
 
         let cam = crate::camera::Camera::default();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
@@ -30092,7 +30096,7 @@ mod tests {
         let mut doc = crate::model::Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
 
         let cam = crate::camera::Camera::default();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
@@ -30123,8 +30127,8 @@ mod tests {
             matches!(
                 hover,
                 Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
-                    PickTargetKind::Line(0)
-                ))
+                    PickTargetKind::Line(l)
+                )) if l == lkey(0)
             ),
             "hovering a line with the Dimension tool should highlight it, got {hover:?}"
         );
@@ -30172,7 +30176,7 @@ mod tests {
         let mut doc = crate::model::Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
 
         let cam = crate::camera::Camera::default();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
@@ -30210,8 +30214,8 @@ mod tests {
             matches!(
                 hover,
                 Some(gpu_viewport::ViewportHoverHighlight::Element(
-                    crate::hierarchy::SceneElement::Line(0)
-                ))
+                    crate::hierarchy::SceneElement::Line(l)
+                )) if l == lkey(0)
             ),
             "hovering a line with the Mirror tool should highlight it, got {hover:?}"
         );
@@ -30392,7 +30396,7 @@ mod tests {
         use construction::PickTargetKind as K;
         // A sketch line and a shape edge are the same "edges" kind for the exploder, so they get the
         // same top-level rank and never split into two edge groups.
-        let line_rank = crowd_type_rank(&K::Line(0));
+        let line_rank = crowd_type_rank(&K::Line(lkey(0)));
         let edge_rank = crowd_type_rank(&K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X });
         assert_eq!(line_rank, edge_rank, "lines and body edges group together");
         // ...and distinct from circles and faces.
@@ -30420,7 +30424,7 @@ mod tests {
         for i in 0..total {
             pts.push(egui::pos2((i % per) as f32 * 50.0, (i / per) as f32 * 50.0));
             kinds.push(match i / per {
-                0 => K::Line(i),
+                0 => K::Line(lkey(i)),
                 1 => K::Circle(model::circle_key_for_slot(i)),
                 _ => K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
             });
@@ -30450,7 +30454,7 @@ mod tests {
         let n_lines = exploder::MAX_LOUPES;
         let total = n_lines + 1;
         let pts: Vec<egui::Pos2> = (0..total).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
-        let mut kinds: Vec<K> = (0..n_lines).map(K::Line).collect();
+        let mut kinds: Vec<K> = (0..n_lines).map(|i| K::Line(lkey(i))).collect();
         kinds.push(K::Circle(model::circle_key_for_slot(0)));
         let idxs: Vec<usize> = (0..total).collect();
         let tree = build_exploder_tree(&idxs, &pts, &kinds);
@@ -30470,7 +30474,7 @@ mod tests {
         // Mix several types that would otherwise each form/join a type group.
         let kinds: Vec<K> = (0..n)
             .map(|i| match i % 3 {
-                0 => K::Line(i),
+                0 => K::Line(lkey(i)),
                 1 => K::Circle(model::circle_key_for_slot(i)),
                 _ => K::BodyFace {
                     body: bkey(0),
@@ -30494,7 +30498,7 @@ mod tests {
         // 20 identical single-type points can't be split spatially — the even-chunk fallback in
         // build_spatial_tree must still terminate, all under one type group.
         let pts = vec![egui::pos2(7.0, 7.0); 20];
-        let kinds: Vec<K> = (0..20).map(|i| K::Line(i)).collect();
+        let kinds: Vec<K> = (0..20).map(|i| K::Line(lkey(i))).collect();
         let idxs: Vec<usize> = (0..20).collect();
         let tree = build_exploder_tree(&idxs, &pts, &kinds);
         assert_eq!(tree.len(), 1, "one type → one top group");
@@ -30541,7 +30545,7 @@ mod tests {
         let face = K::BodyFace { body: bkey(0), triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z };
         let edge = K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X };
         let vertex = K::BodyVertex { body: bkey(0), position: Vec3::ZERO };
-        let sketch_face = K::SketchFace(FaceId::Polygon(vec![0, 1, 2, 3]));
+        let sketch_face = K::SketchFace(FaceId::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]));
         let plane_face = K::SketchFace(FaceId::ConstructionPlane(pkey(0)));
         let all = [
             sketch_face.clone(),
@@ -30604,11 +30608,11 @@ mod tests {
         let mut doc = crate::model::Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
 
-        let line = K::Line(0);
+        let line = K::Line(lkey(0));
         let endpoint = K::Point(crate::model::ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: crate::model::LineEnd::Start,
         });
         let all = [
@@ -30642,15 +30646,15 @@ mod tests {
         let mut doc = crate::model::Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         doc.lines
-            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut projected = crate::model::Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0);
         projected.projection = Some(crate::model::ProjectionSource::Plane {
             plane: doc.ground_plane().unwrap(),
         });
-        doc.lines.push(projected);
+        doc.lines.insert(projected);
 
-        let own_line = K::Line(0);
-        let projected_line = K::Line(1);
+        let own_line = K::Line(lkey(0));
+        let projected_line = K::Line(lkey(1));
         let crossing_plane = K::ConstructionPlane(model::plane_key_for_slot(2));
         let host_plane = K::ConstructionPlane(model::plane_key_for_slot(0));
         let body_edge = K::BodyEdge { body: bkey(0), a: Vec3::ZERO, b: Vec3::X };

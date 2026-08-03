@@ -455,7 +455,7 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
 
 fn distance_target_label(target: DistanceTarget) -> String {
     match target {
-        DistanceTarget::LineLength(i) => format!("Line {i} length"),
+        DistanceTarget::LineLength(i) => format!("Line {} length", i.index()),
         DistanceTarget::CircleDiameter(i) => format!("Circle {} diameter", i.index()),
         DistanceTarget::LineLineDistance { .. } => "Line spacing".to_string(),
         DistanceTarget::PointPointDistance { .. } => "Point distance".to_string(),
@@ -465,7 +465,7 @@ fn distance_target_label(target: DistanceTarget) -> String {
 
 fn line_sort_key(line: &ConstraintLine) -> (u8, usize, u8, usize) {
     match line {
-        ConstraintLine::Line(i) => (0, *i, 0, 0),
+        ConstraintLine::Line(i) => (0, i.index() as usize, 0, 0),
         ConstraintLine::FaceEdge { index, .. } => (2, *index, 0, 0),
         ConstraintLine::OriginAxis(axis) => (3, *axis as usize, 0, 0),
     }
@@ -626,9 +626,13 @@ fn validate_line_in_sketch(
             let entity = doc
                 .lines
                 .get(index)
-                .ok_or_else(|| format!("Line {index} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", index.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Line {index} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Line {} is not in sketch {}",
+                    index.index(),
+                    sketch.index()
+                ));
             }
         }
         // A face's own edge has no owning sketch — valid for any sketch as long as the
@@ -875,9 +879,13 @@ pub fn validate_distance_target(
             let line = doc
                 .lines
                 .get(i)
-                .ok_or_else(|| format!("Line {i} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", i.index()))?;
             if line.sketch != sketch {
-                return Err(format!("Line {i} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Line {} is not in sketch {}",
+                    i.index(),
+                    sketch.index()
+                ));
             }
         }
         DistanceTarget::CircleDiameter(i) => {
@@ -973,7 +981,7 @@ pub fn solve_document_constraints_with_pins(
 }
 
 fn clear_legacy_dimension_locks(doc: &mut Document) {
-    for line in &mut doc.lines {
+    for line in doc.lines.values_mut() {
         line.length_locked = false;
         line.length_expr = None;
     }
@@ -1017,7 +1025,7 @@ fn sync_legacy_dimension_flags(
 /// Create constraints from legacy `*_locked` fields (pre-constraint documents).
 pub fn migrate_legacy_dimensions(doc: &mut Document) {
     let mut pending = Vec::new();
-    for (i, line) in doc.lines.iter().enumerate() {
+    for (i, line) in doc.lines.iter() {
         if line.length_locked {
             let expr = line.length_expr.clone().unwrap_or_else(|| {
                 // Chord, not arc: the migrated constraint solves endpoint distance.
@@ -1444,6 +1452,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::sketch_key_for_slot as skey;
@@ -1465,15 +1474,15 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         // Line 0 along the X axis; line 1 offset and tilted.
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 2.0, 5.0, 8.0, 7.0));
+            .insert(Line::from_local_endpoints(sketch, 2.0, 5.0, 8.0, 7.0));
         doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
-                a: ConstraintEntity::Line(ConstraintLine::Line(0)),
-                b: ConstraintEntity::Line(ConstraintLine::Line(1)),
+                a: ConstraintEntity::Line(ConstraintLine::Line(lkey(0))),
+                b: ConstraintEntity::Line(ConstraintLine::Line(lkey(1))),
             },
             expression: String::new(),
             dim_offset: None,
@@ -1483,17 +1492,17 @@ mod tests {
         // The two lines are now collinear: line 1's endpoints lie on line 0's infinite line
         // (neither line was independently fixed, so both may have moved — collinearity is the
         // invariant, not a specific position).
-        let a = (doc.lines[0].x0, doc.lines[0].y0);
-        let b = (doc.lines[0].x1, doc.lines[0].y1);
+        let a = (doc.lines[lkey(0)].x0, doc.lines[lkey(0)].y0);
+        let b = (doc.lines[lkey(0)].x1, doc.lines[lkey(0)].y1);
         let dir = (b.0 - a.0, b.1 - a.1);
         let off_line = |p: (f32, f32)| (dir.0 * (p.1 - a.1) - dir.1 * (p.0 - a.0)).abs()
             / (dir.0.hypot(dir.1).max(1e-6));
         assert!(
-            off_line((doc.lines[1].x0, doc.lines[1].y0)) < 1e-2
-                && off_line((doc.lines[1].x1, doc.lines[1].y1)) < 1e-2,
+            off_line((doc.lines[lkey(1)].x0, doc.lines[lkey(1)].y0)) < 1e-2
+                && off_line((doc.lines[lkey(1)].x1, doc.lines[lkey(1)].y1)) < 1e-2,
             "line 1's endpoints should lie on line 0's line; offsets {} and {}",
-            off_line((doc.lines[1].x0, doc.lines[1].y0)),
-            off_line((doc.lines[1].x1, doc.lines[1].y1))
+            off_line((doc.lines[lkey(1)].x0, doc.lines[lkey(1)].y0)),
+            off_line((doc.lines[lkey(1)].x1, doc.lines[lkey(1)].y1))
         );
     }
 
@@ -1508,13 +1517,13 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::Start,
                 }),
                 b: ConstraintEntity::Line(ConstraintLine::OriginAxis(SketchAxis::X)),
@@ -1525,9 +1534,9 @@ mod tests {
         });
         solve_document_constraints(&mut doc).unwrap();
         assert!(
-            doc.lines[0].y0.abs() < 1e-3,
+            doc.lines[lkey(0)].y0.abs() < 1e-3,
             "start should sit on the X axis (v = 0), got y0={}",
-            doc.lines[0].y0
+            doc.lines[lkey(0)].y0
         );
 
         // Now pin the *end* to the Y axis (u = 0).
@@ -1535,7 +1544,7 @@ mod tests {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
                 b: ConstraintEntity::Line(ConstraintLine::OriginAxis(SketchAxis::Y)),
@@ -1546,9 +1555,9 @@ mod tests {
         });
         solve_document_constraints(&mut doc).unwrap();
         assert!(
-            doc.lines[0].x1.abs() < 1e-3,
+            doc.lines[lkey(0)].x1.abs() < 1e-3,
             "end should sit on the Y axis (u = 0), got x1={}",
-            doc.lines[0].x1
+            doc.lines[lkey(0)].x1
         );
     }
 
@@ -1556,18 +1565,18 @@ mod tests {
     fn add_distance_constraint_for_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         let id = add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "5mm".to_string(),
         )
         .unwrap();
         assert_eq!(id.index(), 0);
-        assert!((doc.lines[0].length() - 5.0).abs() < 1e-3);
-        assert!(doc.lines[0].length_locked);
+        assert!((doc.lines[lkey(0)].length() - 5.0).abs() < 1e-3);
+        assert!(doc.lines[lkey(0)].length_locked);
     }
 
     #[test]
@@ -1575,22 +1584,22 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
         line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
-        doc.lines.push(line);
+        doc.lines.insert(line);
         doc.shape_order.push(ShapeKind::Line);
         // The default dimension expression is the measured chord (10 mm), even though
         // the arc length shown in labels/introspection is longer.
-        assert!(doc.lines[0].length() > 10.5);
-        let expr = default_distance_expression(&doc, sketch, DistanceTarget::LineLength(0));
+        assert!(doc.lines[lkey(0)].length() > 10.5);
+        let expr = default_distance_expression(&doc, sketch, DistanceTarget::LineLength(lkey(0)));
         assert_eq!(expr, "10.0 mm");
         // Solving the dimension moves the endpoints so the chord matches.
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "5mm".to_string(),
         )
         .unwrap();
-        assert!((doc.lines[0].chord_length() - 5.0).abs() < 1e-3);
+        assert!((doc.lines[lkey(0)].chord_length() - 5.0).abs() < 1e-3);
     }
 
     fn push_coincident(doc: &mut Document, sketch: SketchId, kind: ConstraintKind) -> ConstraintId {
@@ -1610,11 +1619,11 @@ mod tests {
         use crate::model::LineEnd;
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 3.0, 4.0, 6.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 3.0, 4.0, 6.0, 8.0));
         let free = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         let on_line = push_coincident(
@@ -1622,7 +1631,7 @@ mod tests {
             sketch,
             ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(free.clone()),
-                b: ConstraintEntity::Line(ConstraintLine::Line(0)),
+                b: ConstraintEntity::Line(ConstraintLine::Line(lkey(0))),
             },
         );
         // Later: pin the same point to a specific endpoint of line 0.
@@ -1632,7 +1641,7 @@ mod tests {
             ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(free),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::End,
                 }),
             },
@@ -1646,9 +1655,9 @@ mod tests {
     fn midpoint_subsumes_point_on_line_but_not_other_lines() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         let pt = ConstraintPoint::CircleCenter(rkey(0));
         doc.circles
             .insert(Circle::from_local_center_radius(sketch, 5.0, 0.0, 1.0, 0.0));
@@ -1657,7 +1666,7 @@ mod tests {
             sketch,
             ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(pt.clone()),
-                b: ConstraintEntity::Line(ConstraintLine::Line(0)),
+                b: ConstraintEntity::Line(ConstraintLine::Line(lkey(0))),
             },
         );
         let on_line1 = push_coincident(
@@ -1665,7 +1674,7 @@ mod tests {
             sketch,
             ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(pt.clone()),
-                b: ConstraintEntity::Line(ConstraintLine::Line(1)),
+                b: ConstraintEntity::Line(ConstraintLine::Line(lkey(1))),
             },
         );
         let mid = push_coincident(
@@ -1673,7 +1682,7 @@ mod tests {
             sketch,
             ConstraintKind::Midpoint {
                 point: pt,
-                line: ConstraintLine::Line(0),
+                line: ConstraintLine::Line(lkey(0)),
             },
         );
         remove_subsumed_point_on_line(&mut doc, sketch, mid);
@@ -1685,7 +1694,7 @@ mod tests {
     fn sketch_degrees_of_freedom_reports_positive_for_open_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         assert!(sketch_degrees_of_freedom(&doc, sketch).unwrap() > 0);
     }
 
@@ -1693,28 +1702,28 @@ mod tests {
     fn set_constraint_expression_updates_geometry() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
         set_constraint_expression(&mut doc, nkey(0), "15mm".to_string()).unwrap();
-        assert!((doc.lines[0].length() - 15.0).abs() < 1e-3);
+        assert!((doc.lines[lkey(0)].length() - 15.0).abs() < 1e-3);
     }
 
     #[test]
     fn constraint_label_starts_with_constraint() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
@@ -1729,11 +1738,11 @@ mod tests {
         let (doc, sketch) = sketch_doc();
         let mut doc = doc;
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
-        let kind = crate::construction::PickTargetKind::Line(0);
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+        let kind = crate::construction::PickTargetKind::Line(lkey(0));
         assert_eq!(
             distance_target_from_pick(&doc, sketch, &kind),
-            Some(DistanceTarget::LineLength(0))
+            Some(DistanceTarget::LineLength(lkey(0)))
         );
         assert_eq!(distance_target_from_pick(&doc, skey(9), &kind), None);
     }
@@ -1780,8 +1789,8 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         doc.default_length_unit = crate::value::LengthUnit::In;
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 25.4, 0.0));
-        add_distance_constraint(&mut doc, sketch, DistanceTarget::LineLength(0), "25.4mm".to_string())
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 25.4, 0.0));
+        add_distance_constraint(&mut doc, sketch, DistanceTarget::LineLength(lkey(0)), "25.4mm".to_string())
             .unwrap();
         let label = constraint_label(&doc, nkey(0));
         assert!(label.contains("1.0 in"), "expected inches in {label:?}");
@@ -1815,20 +1824,20 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
 
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         assert_eq!(
             dimension_edit_from_selection(&doc, sketch, &sel),
             Some(DimensionTarget::Distance(DistanceTarget::LineLineDistance {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 side: 1,
             }))
         );
@@ -1842,20 +1851,20 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
 
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         assert_eq!(
             dimension_edit_from_selection(&doc, sketch, &sel),
             Some(DimensionTarget::Angle {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 rotation_sign: 1,
             })
         );
@@ -1867,27 +1876,27 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         let rotation_sign =
-            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .unwrap();
         add_angle_constraint_with_sign(
             &mut doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
             "45".to_string(),
         )
         .unwrap();
         let angle = measured_angle_between_lines(
             &doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
         )
         .unwrap();
@@ -1902,18 +1911,18 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 50.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 50.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
 
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         let m = selection_status_measurement(&doc, sketch, &sel).expect("line length");
         assert!(m.contains("Length") && m.contains("50"), "got {m}");
 
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         let m = selection_status_measurement(&doc, sketch, &sel).expect("angle");
         assert!(m.contains("Angle") && m.contains("90"), "got {m}");
     }
@@ -1926,28 +1935,28 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 20.0, 50.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 20.0, 50.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         let natural =
-            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .unwrap();
         let opposite = -natural;
         add_angle_constraint_with_sign(
             &mut doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             opposite,
             "92deg".to_string(),
         )
         .unwrap();
         let angle = measured_angle_between_lines(
             &doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             opposite,
         )
         .unwrap();
@@ -1964,17 +1973,17 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 8.0, 10.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 8.0, 10.0, 8.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         add_distance_constraint(
             &mut doc,
             sketch,
             DistanceTarget::LineLineDistance {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 side: 1,
             },
             "5mm".to_string(),
@@ -1983,8 +1992,8 @@ mod tests {
         let dist = measured_line_line_distance(
             &doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
         )
         .unwrap();
         assert!((dist - 5.0).abs() < 0.2, "dist={dist}");
@@ -1998,9 +2007,9 @@ mod tests {
             panic!("expected line spacing constraint");
         };
         assert_eq!(side, 1);
-        assert!((doc.lines[1].y0 - 5.0).abs() < 0.2);
+        assert!((doc.lines[lkey(1)].y0 - 5.0).abs() < 0.2);
         set_constraint_expression(&mut doc, nkey(0), "12mm".to_string()).unwrap();
-        assert!((doc.lines[1].y0 - 12.0).abs() < 0.2, "y0={}", doc.lines[1].y0);
+        assert!((doc.lines[lkey(1)].y0 - 12.0).abs() < 0.2, "y0={}", doc.lines[lkey(1)].y0);
     }
 
     #[test]
@@ -2009,17 +2018,17 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, -8.0, 10.0, -8.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, -8.0, 10.0, -8.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         add_distance_constraint(
             &mut doc,
             sketch,
             DistanceTarget::LineLineDistance {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 side: 1,
             },
             "5mm".to_string(),
@@ -2035,12 +2044,12 @@ mod tests {
             panic!("expected line spacing constraint");
         };
         assert_eq!(side, -1);
-        assert!(doc.lines[1].y0 < -0.5, "y0={}", doc.lines[1].y0);
+        assert!(doc.lines[lkey(1)].y0 < -0.5, "y0={}", doc.lines[lkey(1)].y0);
         set_constraint_expression(&mut doc, nkey(0), "3mm".to_string()).unwrap();
         assert!(
-            doc.lines[1].y0 < -0.5 && (doc.lines[1].y0 + 3.0).abs() < 0.2,
+            doc.lines[lkey(1)].y0 < -0.5 && (doc.lines[lkey(1)].y0 + 3.0).abs() < 0.2,
             "y0={}",
-            doc.lines[1].y0
+            doc.lines[lkey(1)].y0
         );
     }
 
@@ -2050,13 +2059,13 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, -4.0, 6.0, -4.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, -4.0, 6.0, -4.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         let point = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         add_distance_constraint(
@@ -2064,7 +2073,7 @@ mod tests {
             sketch,
             DistanceTarget::PointLineDistance {
                 point: point.clone(),
-                line: ConstraintLine::Line(0),
+                line: ConstraintLine::Line(lkey(0)),
                 side: 1,
             },
             "3mm".to_string(),
@@ -2091,17 +2100,17 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 3.0, 4.0, 4.0, 4.0));
+            .insert(Line::from_local_endpoints(sketch, 3.0, 4.0, 4.0, 4.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         let anchor = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::Start,
         };
         let mover = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
         add_distance_constraint(
@@ -2140,16 +2149,16 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 10.0, 5.0, 20.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 10.0, 5.0, 20.0));
         let rotation_sign =
-            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .unwrap();
         let display = angle_constraint_display(
             &doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
         )
         .unwrap();
@@ -2164,16 +2173,16 @@ mod tests {
         let (doc, sketch) = sketch_doc();
         let mut doc = doc;
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
         let rotation_sign =
-            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .unwrap();
         let display = angle_constraint_display(
             &doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
         )
         .unwrap();
@@ -2193,11 +2202,11 @@ mod tests {
         // reflex side where it would slide off screen at larger radii (#188).
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
-        let line_a = ConstraintLine::Line(0);
-        let line_b = ConstraintLine::Line(1);
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+        let line_a = ConstraintLine::Line(lkey(0));
+        let line_b = ConstraintLine::Line(lkey(1));
         let sign = angle_constraint_natural_sign(&doc, line_a.clone(), line_b.clone()).unwrap();
         let display = angle_constraint_display(&doc, line_a, line_b, sign).unwrap();
 
@@ -2217,20 +2226,20 @@ mod tests {
 
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, -10.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, -10.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
         let rotation_sign =
-            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(lkey(0)), ConstraintLine::Line(lkey(1)))
                 .unwrap();
         assert_eq!(rotation_sign, -1);
         add_angle_constraint_with_sign(
             &mut doc,
             sketch,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
+            ConstraintLine::Line(lkey(0)),
+            ConstraintLine::Line(lkey(1)),
             rotation_sign,
             "45".to_string(),
         )
@@ -2242,7 +2251,7 @@ mod tests {
             panic!("expected angle constraint");
         };
         assert_eq!(rotation_sign, -1);
-        assert!(doc.lines[1].y1 < -5.0, "y1={}", doc.lines[1].y1);
+        assert!(doc.lines[lkey(1)].y1 < -5.0, "y1={}", doc.lines[lkey(1)].y1);
     }
 
     #[test]
@@ -2253,17 +2262,17 @@ mod tests {
         // (a line crossing near the middle of another at ~80 degrees was reported as 111.5).
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
         let angle_rad = 80f32.to_radians();
-        doc.lines.push(Line::from_local_endpoints(
+        doc.lines.insert(Line::from_local_endpoints(
             sketch,
             50.0,
             0.0,
             50.0 + 50.0 * angle_rad.cos(),
             50.0 * angle_rad.sin(),
         ));
-        let line_a = ConstraintLine::Line(0);
-        let line_b = ConstraintLine::Line(1);
+        let line_a = ConstraintLine::Line(lkey(0));
+        let line_b = ConstraintLine::Line(lkey(1));
 
         let natural_sign = angle_constraint_natural_sign(&doc, line_a.clone(), line_b.clone()).unwrap();
         let display_natural =
@@ -2305,18 +2314,18 @@ mod tests {
     fn rejects_duplicate_constraint_on_same_target() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "10mm".to_string(),
         )
         .unwrap();
         assert!(add_distance_constraint(
             &mut doc,
             sketch,
-            DistanceTarget::LineLength(0),
+            DistanceTarget::LineLength(lkey(0)),
             "5mm".to_string(),
         )
         .is_err());

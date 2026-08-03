@@ -872,6 +872,7 @@ fn show_argument_prompt(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::sketch_key_for_slot as skey;
     use super::*;
     use crate::actions::SketchSession;
@@ -977,7 +978,7 @@ mod tests {
                 .any(|c| c.id == PaletteCommandId::DeleteSelection)
         );
         state.apply(Action::ClickSceneElement {
-            element: crate::hierarchy::SceneElement::Line(0),
+            element: crate::hierarchy::SceneElement::Line(lkey(0)),
             additive: false,
         });
         assert!(

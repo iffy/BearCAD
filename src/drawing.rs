@@ -568,7 +568,7 @@ pub const DIM_STROKE: f32 = 0.6;
 pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
     if let Some(si) = view.sketch {
         let mut edges = Vec::new();
-        for line in doc.lines.iter().filter(|l| !l.deleted && l.sketch == si) {
+        for line in doc.lines.values().filter(|l| l.sketch == si) {
             if let Some(pts) = crate::face::line_world_polyline(doc, line) {
                 for w in pts.windows(2) {
                     edges.push((w[0], w[1]));

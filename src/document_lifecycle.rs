@@ -12,8 +12,8 @@ pub fn sketch_alive(doc: &Document, sketch: SketchId) -> bool {
     doc.sketches.contains(sketch)
 }
 
-pub fn line_alive(doc: &Document, index: usize) -> bool {
-    doc.lines.get(index).is_some_and(|l| !l.deleted)
+pub fn line_alive(doc: &Document, index: crate::model::LineKey) -> bool {
+    doc.lines.contains(index)
 }
 
 pub fn circle_alive(doc: &Document, index: crate::model::CircleKey) -> bool {
@@ -289,8 +289,10 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         doc.construction_planes.remove(*out);
                     }
                     for &si in &op.sketch_outputs {
-                        for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
-                            l.deleted = true;
+                        for key in doc.lines.keys().collect::<Vec<_>>() {
+                            if doc.lines[key].sketch == si {
+                                doc.lines.remove(key);
+                            }
                         }
                         for c in doc.circles.keys().collect::<Vec<_>>() {
                             if doc.circles[c].sketch == si {
@@ -309,9 +311,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     // The duplicated lines/circles go with the op (#222/#228).
                     let op = removed.clone();
                     for &out in &op.line_outputs {
-                        if let Some(l) = doc.lines.get_mut(out) {
-                            l.deleted = true;
-                        }
+                        doc.lines.remove(out);
                     }
                     for &out in &op.circle_outputs {
                         doc.circles.remove(out);
@@ -326,9 +326,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     // The parallel lines/circles go with the op.
                     let op = removed.clone();
                     for &out in &op.line_outputs {
-                        if let Some(l) = doc.lines.get_mut(out) {
-                            l.deleted = true;
-                        }
+                        doc.lines.remove(out);
                     }
                     for &out in &op.circle_outputs {
                         doc.circles.remove(out);
@@ -343,9 +341,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     // The reflected lines/circles go with the op (#523).
                     let op = removed.clone();
                     for &out in &op.line_outputs {
-                        if let Some(l) = doc.lines.get_mut(out) {
-                            l.deleted = true;
-                        }
+                        doc.lines.remove(out);
                     }
                     for &out in &op.circle_outputs {
                         doc.circles.remove(out);
@@ -371,9 +367,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
-                        if let Some(l) = doc.lines.get_mut(out) {
-                            l.deleted = true;
-                        }
+                        doc.lines.remove(out);
                     }
                     for &ci in &op.constraint_outputs {
                         doc.constraints.remove(ci);
@@ -398,9 +392,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &out in &op.line_outputs {
-                        if let Some(l) = doc.lines.get_mut(out) {
-                            l.deleted = true;
-                        }
+                        doc.lines.remove(out);
                     }
                     changed = true;
                 }
@@ -646,11 +638,10 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
     doc.sketches.remove(sketch);
     remove_shape_order_entry(doc, ShapeKind::Sketch, ordinal);
 
-    let lines: Vec<usize> = doc
+    let lines: Vec<crate::model::LineKey> = doc
         .lines
         .iter()
-        .enumerate()
-        .filter(|(_, line)| line.sketch == sketch && !line.deleted)
+        .filter(|(_, line)| line.sketch == sketch)
         .map(|(i, _)| i)
         .collect();
     for li in lines {
@@ -703,25 +694,24 @@ fn tombstone_circle(doc: &mut Document, index: crate::model::CircleKey) -> bool 
     true
 }
 
-fn tombstone_line(doc: &mut Document, index: usize) -> bool {
-    let Some(line) = doc.lines.get_mut(index) else {
+fn tombstone_line(doc: &mut Document, index: crate::model::LineKey) -> bool {
+    // The history-tape marker to drop is the one for this line's place among the live ones,
+    // read before the removal (#1055).
+    let Some(ordinal) = doc.lines.keys().position(|k| k == index) else {
         return false;
     };
-    if line.deleted {
-        return false;
-    }
-    line.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Line, index);
+    doc.lines.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::Line, ordinal);
     // #502: detach from parametric ops that would re-create this line on recompute
-    // (offset/repeat rebuild overwrites `deleted: false` for live outputs).
+    // (an offset/repeat rebuild re-inserts live outputs).
     detach_line_from_sketch_ops(doc, index);
     true
 }
 
 /// When a line is deleted, drop it from any sketch offset/repeat target or output
 /// lists so rebuild does not revive it (#502). Empties the op if it has no sources left.
-fn detach_line_from_sketch_ops(doc: &mut Document, line: usize) {
-    let mut orphan_outputs: Vec<usize> = Vec::new();
+fn detach_line_from_sketch_ops(doc: &mut Document, line: crate::model::LineKey) {
+    let mut orphan_outputs: Vec<crate::model::LineKey> = Vec::new();
     let mut empty_ops: Vec<crate::model::SketchOffsetOpKey> = Vec::new();
     for (oi, op) in doc.sketch_offset_ops.iter_mut() {
         // Parallel target/output slots: drop whichever end references this line.
@@ -752,11 +742,10 @@ fn detach_line_from_sketch_ops(doc: &mut Document, line: usize) {
         }
     }
     for out in orphan_outputs {
-        if let Some(l) = doc.lines.get_mut(out) {
-            if !l.deleted {
-                l.deleted = true;
-                remove_shape_order_entry(doc, ShapeKind::Line, out);
-            }
+        let ordinal = doc.lines.keys().position(|k| k == out);
+        if let Some(ordinal) = ordinal {
+            doc.lines.remove(out);
+            remove_shape_order_entry(doc, ShapeKind::Line, ordinal);
         }
     }
     for oi in empty_ops {
@@ -1036,20 +1025,18 @@ mod tests {
         assert!(!doc.joints.contains(ji), "joint must die with its unit instance");
     }
 
-    fn sketch_with_two_lines() -> (Document, SketchId, usize, usize) {
+    fn sketch_with_two_lines() -> (Document, SketchId, crate::model::LineKey, crate::model::LineKey) {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let line_a = doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
-        let line_a = 0;
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        let line_b = doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        let line_b = 1;
         (doc, sketch, line_a, line_b)
     }
 
     #[test]
-    fn tombstone_line_preserves_index_for_constraint_refs() {
+    fn deleting_a_line_leaves_a_constraint_pointing_at_the_dead_key() {
         let (mut doc, sketch, line_a, line_b) = sketch_with_two_lines();
         doc.constraints.insert(Constraint {
             sketch,
@@ -1063,17 +1050,19 @@ mod tests {
         });
         doc.shape_order.push(ShapeKind::Constraint);
         assert!(tombstone_line(&mut doc, line_a));
-        assert!(doc.lines[line_a].deleted);
+        assert!(!doc.lines.contains(line_a));
         assert!(!line_alive(&doc, line_a));
         assert!(line_alive(&doc, line_b));
-        assert_eq!(doc.lines.len(), 2);
+        // The line is really gone now (#1055) — the constraint keeps the dead key, which is
+        // what makes the constraint read as invalid instead of silently retargeting.
+        assert_eq!(doc.lines.len(), 1);
         let constraint = &doc.constraints[nkey(0)];
         assert!(matches!(
             constraint.kind,
             ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
+                line_a: ConstraintLine::Line(l),
                 ..
-            }
+            } if l == line_a
         ));
     }
 
@@ -1088,7 +1077,7 @@ mod tests {
             ],
         );
         assert_eq!(count, 2);
-        assert!(doc.lines[line_a].deleted);
-        assert!(doc.lines[line_b].deleted);
+        assert!(!doc.lines.contains(line_a));
+        assert!(!doc.lines.contains(line_b));
     }
 }

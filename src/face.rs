@@ -540,7 +540,7 @@ fn extend_sketch_bounds(bounds: &mut Option<SketchZoomBounds>, u0: f32, v0: f32,
 /// Axis-aligned zoom bounds for all geometry in a sketch (lines and circles).
 fn sketch_local_bounds(doc: &Document, sketch: SketchId) -> Option<SketchZoomBounds> {
     let mut bounds = None;
-    for line in &doc.lines {
+    for line in doc.lines.values() {
         if line.sketch == sketch {
             extend_sketch_bounds(&mut bounds, line.x0, line.y0, line.x1, line.y1);
         }
@@ -1503,7 +1503,7 @@ mod pick_tests {
             (0.0, 30.0, 0.0, 0.0),
         ] {
             doc.lines
-                .push(crate::model::Line::from_local_endpoints(sketch, x0, y0, x1, y1));
+                .insert(crate::model::Line::from_local_endpoints(sketch, x0, y0, x1, y1));
         }
         doc.circles
             .insert(crate::model::Circle::from_local_center_radius(sketch, 20.0, 15.0, 3.0, 0.0));
@@ -1526,6 +1526,7 @@ mod pick_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::retain_ground_plane_only;
     use crate::model::circle_key_for_slot as rkey;
@@ -1673,7 +1674,7 @@ mod tests {
             .insert(Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
         let s1 = doc.add_sketch(FaceId::Circle(rkey(0)));
         doc.lines
-            .push(Line::from_local_endpoints(s1, -5.0, -5.0, 5.0, 5.0));
+            .insert(Line::from_local_endpoints(s1, -5.0, -5.0, 5.0, 5.0));
         let target = sketch_camera_target(&doc, s1).unwrap();
         let zoom = target.zoom.unwrap();
         assert!(zoom.half_u >= 5.0);
@@ -1935,7 +1936,7 @@ mod tests {
         // wall's centroid whenever the sketch isn't centered on its host face, letting the
         // (unextrudable) bare face win the pick outright.
         let mut doc = doc_with_extruded_box();
-        let profile = crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
+        let profile = crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]);
         let host = FaceId::ExtrudeSide {
             extrusion: xkey(0),
             profile: profile.clone(),
@@ -1980,27 +1981,31 @@ mod tests {
     }
 
     /// Push `vertices` as a closed loop of lines into `sketch` (with the coincident
-    /// constraints that make it a recognized loop), returning the line indices.
-    fn add_line_loop(doc: &mut Document, sketch: SketchId, vertices: &[(f32, f32)]) -> Vec<usize> {
+    /// constraints that make it a recognized loop), returning the line keys.
+    fn add_line_loop(
+        doc: &mut Document,
+        sketch: SketchId,
+        vertices: &[(f32, f32)],
+    ) -> Vec<crate::model::LineKey> {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
-        let base = doc.lines.len();
         let n = vertices.len();
-        for i in 0..n {
-            let (u0, v0) = vertices[i];
-            let (u1, v1) = vertices[(i + 1) % n];
-            doc.lines
-                .push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
-        }
+        let keys: Vec<crate::model::LineKey> = (0..n)
+            .map(|i| {
+                let (u0, v0) = vertices[i];
+                let (u1, v1) = vertices[(i + 1) % n];
+                doc.lines.insert(Line::from_local_endpoints(sketch, u0, v0, u1, v1))
+            })
+            .collect();
         for i in 0..n {
             doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                        line: base + i,
+                        line: keys[i],
                         end: LineEnd::End,
                     }),
                     b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                        line: base + (i + 1) % n,
+                        line: keys[(i + 1) % n],
                         end: LineEnd::Start,
                     }),
                 },
@@ -2009,10 +2014,10 @@ mod tests {
                 name: None,
             });
         }
-        (base..doc.lines.len()).collect()
+        keys
     }
 
-    fn extrude_loop(doc: &mut Document, sketch: SketchId, lines: Vec<usize>) {
+    fn extrude_loop(doc: &mut Document, sketch: SketchId, lines: Vec<crate::model::LineKey>) {
         doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
@@ -2028,7 +2033,11 @@ mod tests {
     /// Every side-wall frame's normal must point out of the solid and its (u, v, normal)
     /// triad must be right-handed — checked by mapping the frame's outward offset back to
     /// the profile plane and asserting it lands *outside* the profile polygon.
-    fn assert_side_frames_outward(doc: &Document, vertices: &[(f32, f32)], lines: &[usize]) {
+    fn assert_side_frames_outward(
+        doc: &Document,
+        vertices: &[(f32, f32)],
+        lines: &[crate::model::LineKey],
+    ) {
         let profile = crate::model::ExtrudeFace::Polygon(lines.to_vec());
         for edge in 0..vertices.len() {
             let frame = sketch_frame(
@@ -2129,7 +2138,7 @@ mod tests {
     #[test]
     fn convex_side_frames_unchanged_by_winding_derivation() {
         let doc = doc_with_extruded_box();
-        let profile = crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
+        let profile = crate::model::ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]);
         let expected = [-Vec3::Y, Vec3::X, Vec3::Y, -Vec3::X];
         for edge in 0..4u8 {
             let frame = sketch_frame(

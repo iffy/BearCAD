@@ -723,6 +723,7 @@ pub fn icon_button(ui: &mut Ui, id: IconId, tooltip: impl Into<WidgetText>) -> e
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use super::*;
 
     #[test]
@@ -830,21 +831,21 @@ mod tests {
 
         assert_eq!(
             icon_for_constraint_kind(&ConstraintKind::Distance {
-                target: DistanceTarget::LineLength(0),
+                target: DistanceTarget::LineLength(lkey(0)),
             }),
             IconId::Dimension
         );
         assert_eq!(
             icon_for_constraint_kind(&ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             }),
             IconId::Parallel
         );
         assert_eq!(
             icon_for_constraint_kind(&ConstraintKind::Angle {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
                 rotation_sign: 1,
             }),
             IconId::Constraint
@@ -852,11 +853,11 @@ mod tests {
         assert_eq!(
             icon_for_constraint_kind(&ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 0,
+                    line: lkey(0),
                     end: LineEnd::Start,
                 }),
                 b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: lkey(1),
                     end: LineEnd::End,
                 }),
             }),

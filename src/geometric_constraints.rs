@@ -335,9 +335,9 @@ pub fn scene_element_to_constraint_ref(element: SceneElement) -> Option<Constrai
 
 fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
     match reference {
-        ConstraintRef::Line(ConstraintLine::Line(i)) => (0, i, 0, 0),
+        ConstraintRef::Line(ConstraintLine::Line(i)) => (0, i.index() as usize, 0, 0),
         ConstraintRef::Point(ConstraintPoint::LineEndpoint { line, end }) => {
-            (2, line, end as u8, 0)
+            (2, line.index() as usize, end as u8, 0)
         }
         ConstraintRef::Point(ConstraintPoint::CircleCenter(i)) => (4, i.index() as usize, 0, 0),
         ConstraintRef::Circle(i) => (5, i.index() as usize, 0, 0),
@@ -576,9 +576,13 @@ fn validate_line_ref(doc: &Document, sketch: SketchId, line: &ConstraintLine) ->
             let entity = doc
                 .lines
                 .get(*index)
-                .ok_or_else(|| format!("Line {index} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", index.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Line {index} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Line {} is not in sketch {}",
+                    index.index(),
+                    sketch.index()
+                ));
             }
         }
         // A face's own edge has no owning sketch — it's valid for any sketch, as long as the
@@ -628,9 +632,13 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
             let entity = doc
                 .lines
                 .get(*line)
-                .ok_or_else(|| format!("Line {line} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", line.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Line {line} is not in sketch {}", sketch.index()));
+                return Err(format!(
+                    "Line {} is not in sketch {}",
+                    line.index(),
+                    sketch.index()
+                ));
             }
         }
         ConstraintPoint::CircleCenter(circle) => {
@@ -765,7 +773,7 @@ pub fn line_uv_endpoints(
             let entity = doc
                 .lines
                 .get(index)
-                .ok_or_else(|| format!("Line {index} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", index.index()))?;
             Ok(((entity.x0, entity.y0), (entity.x1, entity.y1)))
         }
         // A face's own edge has no stored local coordinate: it's a body-space 3D segment
@@ -826,7 +834,7 @@ pub fn set_line_uv_endpoints(
             let entity = doc
                 .lines
                 .get_mut(index)
-                .ok_or_else(|| format!("Line {index} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", index.index()))?;
             entity.x0 = start.0;
             entity.y0 = start.1;
             entity.x1 = end.0;
@@ -846,7 +854,7 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
             let entity = doc
                 .lines
                 .get(line)
-                .ok_or_else(|| format!("Line {line} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", line.index()))?;
             Ok(match end {
                 LineEnd::Start => (entity.x0, entity.y0),
                 LineEnd::End => (entity.x1, entity.y1),
@@ -905,7 +913,7 @@ pub fn set_point_uv(
             let entity = doc
                 .lines
                 .get_mut(line)
-                .ok_or_else(|| format!("Line {line} not found"))?;
+                .ok_or_else(|| format!("Line {} not found", line.index()))?;
             match end {
                 LineEnd::Start => {
                     entity.x0 = u;
@@ -962,6 +970,7 @@ pub fn set_point_uv(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::constraint_key_for_slot as nkey;
@@ -1026,11 +1035,11 @@ mod tests {
         // horizontal (v0 == v1) — the general axis-based solution.
         use crate::model::SketchAxis;
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 4.0));
+        doc.lines.insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 4.0));
         doc.shape_order.push(ShapeKind::Line);
 
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         click_scene_selection(
             &mut sel,
             SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X)),
@@ -1052,7 +1061,7 @@ mod tests {
         )
         .unwrap();
 
-        let line = &doc.lines[0];
+        let line = &doc.lines[lkey(0)];
         assert!(
             (line.y1 - line.y0).abs() < EPS,
             "line should be horizontal (parallel to X axis), got dy={}",
@@ -1074,7 +1083,7 @@ mod tests {
     #[test]
     fn single_line_selection_asks_for_another_line() {
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         let rows = constraint_pane_rows(&sel);
         let row = |kind| rows.iter().find(|r| r.kind == kind).unwrap();
         for kind in [
@@ -1090,7 +1099,7 @@ mod tests {
         click_scene_selection(
             &mut sel,
             SceneElement::Point(crate::model::ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: crate::model::LineEnd::Start,
             }),
             false,
@@ -1139,9 +1148,9 @@ mod tests {
         // the axis-based replacement for Horizontal/Vertical.
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 5.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         let rows = constraint_pane_rows(&sel);
         assert_eq!(rows.len(), GeometricConstraintType::ALL.len());
         let by_kind: std::collections::HashMap<_, _> =
@@ -1160,9 +1169,9 @@ mod tests {
         use crate::model::SketchAxis;
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 4.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 4.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
         let id = add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1173,14 +1182,14 @@ mod tests {
         assert_eq!(
             doc.constraints[id].kind,
             ConstraintKind::Parallel {
-                line_a: ConstraintLine::Line(0),
+                line_a: ConstraintLine::Line(lkey(0)),
                 line_b: ConstraintLine::OriginAxis(SketchAxis::X),
             }
         );
         assert!(
-            (doc.lines[0].y1 - doc.lines[0].y0).abs() < EPS,
+            (doc.lines[lkey(0)].y1 - doc.lines[lkey(0)].y0).abs() < EPS,
             "line should be horizontal, dy={}",
-            doc.lines[0].y1 - doc.lines[0].y0
+            doc.lines[lkey(0)].y1 - doc.lines[lkey(0)].y0
         );
     }
 
@@ -1188,17 +1197,17 @@ mod tests {
     fn line_and_point_enable_only_coincident_and_midpoint() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::Start,
             }),
             false,
         );
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         let rows = constraint_pane_rows(&sel);
         // All six types are present; only Coincident and Midpoint are enabled.
         assert_eq!(rows.len(), GeometricConstraintType::ALL.len());
@@ -1224,18 +1233,18 @@ mod tests {
     fn sole_enabled_constraint_type_returns_single_row() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 5.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 5.0, 5.0));
         let mut sel = SceneSelection::default();
         select_two_points(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 0,
+                line: lkey(0),
                 end: LineEnd::End,
             }),
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
         );
@@ -1255,12 +1264,12 @@ mod tests {
     fn parallel_constraint_aligns_direction() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 2.0, 8.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 2.0, 8.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1268,8 +1277,8 @@ mod tests {
             &sel,
         )
         .unwrap();
-        let (du0, dv0) = line_dir(&doc.lines[0]);
-        let (du1, dv1) = line_dir(&doc.lines[1]);
+        let (du0, dv0) = line_dir(&doc.lines[lkey(0)]);
+        let (du1, dv1) = line_dir(&doc.lines[lkey(1)]);
         assert_dirs_parallel(du0, dv0, du1, dv1);
     }
 
@@ -1277,12 +1286,12 @@ mod tests {
     fn equal_constraint_enabled_for_two_lines_and_equalizes_length() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 3.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 5.0, 3.0, 5.0));
         let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(1)), true);
         // Pane shows Equal as enabled for two selected lines.
         let rows = constraint_pane_rows(&sel);
         assert!(
@@ -1298,10 +1307,10 @@ mod tests {
         )
         .unwrap();
         assert!(
-            (doc.lines[0].length() - doc.lines[1].length()).abs() < EPS,
+            (doc.lines[lkey(0)].length() - doc.lines[lkey(1)].length()).abs() < EPS,
             "lengths: {} vs {}",
-            doc.lines[0].length(),
-            doc.lines[1].length()
+            doc.lines[lkey(0)].length(),
+            doc.lines[lkey(1)].length()
         );
     }
 
@@ -1309,19 +1318,19 @@ mod tests {
     fn coincident_point_on_line_projects() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 8.0, 6.0, 9.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 8.0, 6.0, 9.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
             false,
         );
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1329,8 +1338,8 @@ mod tests {
             &sel,
         )
         .unwrap();
-        assert!((doc.lines[1].x0 - 5.0).abs() < EPS);
-        assert!(doc.lines[1].y0.abs() < EPS);
+        assert!((doc.lines[lkey(1)].x0 - 5.0).abs() < EPS);
+        assert!(doc.lines[lkey(1)].y0.abs() < EPS);
     }
 
     #[test]
@@ -1341,12 +1350,12 @@ mod tests {
             .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
         // A line whose start sits inside the circle.
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 3.0, 1.0, 20.0, 20.0));
+            .insert(Line::from_local_endpoints(sketch, 3.0, 1.0, 20.0, 20.0));
         doc.shape_order.push(ShapeKind::Circle);
         doc.shape_order.push(ShapeKind::Line);
 
         let point = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::Start,
         };
         let mut sel = SceneSelection::default();
@@ -1386,18 +1395,18 @@ mod tests {
     fn pinning_to_endpoint_removes_earlier_point_on_line() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 3.0, 4.0, 7.0, 9.0));
+            .insert(Line::from_local_endpoints(sketch, 3.0, 4.0, 7.0, 9.0));
         let free = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
 
         // First: generic point-on-line (point + line selected).
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Point(free.clone()), false);
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         let on_line = add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1408,7 +1417,7 @@ mod tests {
 
         // Later: pin to a specific endpoint of that same line (two points selected).
         let endpoint = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         };
         let mut sel2 = SceneSelection::default();
@@ -1433,16 +1442,16 @@ mod tests {
     fn perpendicular_preserves_coincident_points() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 5.0, 15.0, 5.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 5.0, 15.0, 5.0));
 
         let shared_on_line0 = ConstraintPoint::LineEndpoint {
-            line: 0,
+            line: lkey(0),
             end: LineEnd::End,
         };
         let shared_on_line1 = ConstraintPoint::LineEndpoint {
-            line: 1,
+            line: lkey(1),
             end: LineEnd::Start,
         };
 
@@ -1460,14 +1469,14 @@ mod tests {
             &mut doc,
             sketch,
             ConstraintKind::Perpendicular {
-                line_a: ConstraintLine::Line(0),
-                line_b: ConstraintLine::Line(1),
+                line_a: ConstraintLine::Line(lkey(0)),
+                line_b: ConstraintLine::Line(lkey(1)),
             },
         );
 
         assert_points_equal(&doc, sketch, shared_on_line0, shared_on_line1);
-        let (du0, dv0) = line_dir(&doc.lines[0]);
-        let (du1, dv1) = line_dir(&doc.lines[1]);
+        let (du0, dv0) = line_dir(&doc.lines[lkey(0)]);
+        let (du1, dv1) = line_dir(&doc.lines[lkey(1)]);
         let dot = du0 * du1 + dv0 * dv1;
         assert!(dot.abs() < EPS, "lines should be perpendicular, dot={dot}");
     }
@@ -1476,20 +1485,20 @@ mod tests {
     fn midpoint_places_point_on_line_center() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .insert(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 5.0, 8.0, 6.0, 9.0));
+            .insert(Line::from_local_endpoints(sketch, 5.0, 8.0, 6.0, 9.0));
 
         let mut sel = SceneSelection::default();
         click_scene_selection(
             &mut sel,
             SceneElement::Point(ConstraintPoint::LineEndpoint {
-                line: 1,
+                line: lkey(1),
                 end: LineEnd::Start,
             }),
             false,
         );
-        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
@@ -1498,17 +1507,17 @@ mod tests {
         )
         .unwrap();
 
-        assert!((doc.lines[1].x0 - 5.0).abs() < EPS);
-        assert!(doc.lines[1].y0.abs() < EPS);
+        assert!((doc.lines[lkey(1)].x0 - 5.0).abs() < EPS);
+        assert!(doc.lines[lkey(1)].y0.abs() < EPS);
         assert!(matches!(
             doc.constraints[nkey(0)].kind,
             ConstraintKind::Midpoint {
                 point: ConstraintPoint::LineEndpoint {
-                    line: 1,
+                    line: p,
                     end: LineEnd::Start,
                 },
-                line: ConstraintLine::Line(0),
-            }
+                line: ConstraintLine::Line(l),
+            } if p == lkey(1) && l == lkey(0)
         ));
     }
 
