@@ -31,7 +31,7 @@ pub struct UnitEvaluation {
 
 /// Overrides sorted by parameter name: the cache key must not care what order the
 /// instance happens to store them in.
-type CacheKey = (usize, Vec<(String, String)>);
+type CacheKey = (crate::model::UnitKey, Vec<(String, String)>);
 
 thread_local! {
     /// Per-thread memo, keyed by units-fingerprint then (unit, overrides). Two levels —
@@ -422,7 +422,7 @@ pub fn unit_is_stale(
 #[derive(Default)]
 pub struct UnitSourceWatcher {
     /// Last observed source mtime (nanos since epoch) per unit index.
-    observed: std::collections::HashMap<usize, u128>,
+    observed: std::collections::HashMap<crate::model::UnitKey, u128>,
 }
 
 impl UnitSourceWatcher {
@@ -433,9 +433,9 @@ impl UnitSourceWatcher {
         doc: &Document,
         own_path: Option<&str>,
         library: Option<&std::path::Path>,
-    ) -> Vec<usize> {
+    ) -> Vec<crate::model::UnitKey> {
         let mut ready = Vec::new();
-        for (index, unit) in doc.units.iter().enumerate() {
+        for (index, unit) in doc.units.iter() {
             if unit.link != crate::model::LinkMode::Dynamic {
                 continue;
             }
@@ -503,6 +503,7 @@ pub fn save_ping_stamp() -> Option<u128> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
     use crate::model::{ImportedUnit, LinkMode, UnitInstance, UnitPlacement, UnitSource};
@@ -541,7 +542,7 @@ mod tests {
 
     fn doc_with_unit_and_instances(overrides: Vec<Vec<(String, String)>>) -> Document {
         let mut doc = Document::default();
-        doc.units.push(ImportedUnit {
+        doc.units.insert(ImportedUnit {
             source: UnitSource::RelativePath("a.bearcad".to_string()),
             link: LinkMode::Static,
             document: boxy_unit_doc(),
@@ -550,7 +551,7 @@ mod tests {
         });
         for parameter_overrides in overrides {
             doc.unit_instances.insert(UnitInstance {
-                unit: 0,
+                unit: ukey(0),
                 name: None,
                 parameter_overrides,
                 placement: UnitPlacement::default(),
@@ -646,7 +647,7 @@ mod tests {
 
         // A healthy instance beside it still evaluates cleanly.
         doc.unit_instances.insert(crate::model::UnitInstance {
-            unit: 0,
+            unit: ukey(0),
             name: None,
             parameter_overrides: Vec::new(),
             placement: UnitPlacement::default(),

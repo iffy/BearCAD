@@ -2119,7 +2119,17 @@ fn joint_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::mode
     doc.joints.keys().nth(ordinal)
 }
 
-/// The drawing an ordinal names — the inverse of [`drawing_ordinal`].
+/// A unit's ordinal among the live ones — what a script writes (#1055).
+fn unit_ordinal(doc: &crate::model::Document, key: crate::model::UnitKey) -> Option<usize> {
+    doc.units.keys().position(|k| k == key)
+}
+
+/// The unit an ordinal names — the inverse of [`unit_ordinal`].
+fn unit_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::UnitKey> {
+    doc.units.keys().nth(ordinal)
+}
+
+/// The drawing an ordinal names (#1055) — a script counts the live drawings.
 fn drawing_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::DrawingKey> {
     doc.drawings.keys().nth(ordinal)
 }
@@ -2638,12 +2648,17 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 expression: expression.clone(),
             })
         }
-        Action::SyncUnit { unit } => Some(Instruction::SyncUnit { unit: *unit }),
+        Action::SyncUnit { unit } => {
+            Some(Instruction::SyncUnit { unit: unit_ordinal(doc, *unit)? })
+        }
         Action::SetUnitLink { unit, link } => {
-            Some(Instruction::SetUnitLink { unit: *unit, link: *link })
+            Some(Instruction::SetUnitLink { unit: unit_ordinal(doc, *unit)?, link: *link })
         }
         Action::AddUnitInstance { unit, name } => {
-            Some(Instruction::AddUnitInstance { unit: *unit, name: name.clone() })
+            Some(Instruction::AddUnitInstance {
+                unit: unit_ordinal(doc, *unit)?,
+                name: name.clone(),
+            })
         }
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
         Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
@@ -6187,16 +6202,28 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::SyncUnit { unit } => {
+                let Some(unit) = unit_key(&state.doc, unit) else {
+                    self.last_action_error = Some(format!("Unit {unit} not found"));
+                    return StepResult::Continue;
+                };
                 let r = state.apply(Action::SyncUnit { unit });
                 self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::SetUnitLink { unit, link } => {
+                let Some(unit) = unit_key(&state.doc, unit) else {
+                    self.last_action_error = Some(format!("Unit {unit} not found"));
+                    return StepResult::Continue;
+                };
                 let r = state.apply(Action::SetUnitLink { unit, link });
                 self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::AddUnitInstance { unit, name } => {
+                let Some(unit) = unit_key(&state.doc, unit) else {
+                    self.last_action_error = Some(format!("Unit {unit} not found"));
+                    return StepResult::Continue;
+                };
                 let r = state.apply(Action::AddUnitInstance { unit, name });
                 self.record_action_error(r);
                 StepResult::Continue
@@ -6940,7 +6967,8 @@ mod tests {
         );
         assert_eq!(Instruction::SyncUnit { unit: 2 }.as_lua(), "bearcad.sync_unit(2)");
         assert_eq!(
-            Instruction::SetUnitLink { unit: 0, link: crate::model::LinkMode::Dynamic }.as_lua(),
+            Instruction::SetUnitLink { unit: 0, link: crate::model::LinkMode::Dynamic }
+                .as_lua(),
             "bearcad.unit_link(0, \"dynamic\")"
         );
 

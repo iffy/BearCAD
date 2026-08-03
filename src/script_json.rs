@@ -2188,6 +2188,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
@@ -2479,7 +2480,7 @@ mod tests {
         }
         for _ in 0..3 {
             doc.unit_instances.insert(crate::model::UnitInstance {
-                unit: 0,
+                unit: ukey(0),
                 name: None,
                 parameter_overrides: Vec::new(),
                 placement: Default::default(),

@@ -1175,7 +1175,7 @@ pub struct NameControl {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitInstanceControl {
     pub instance: crate::model::UnitInstanceKey,
-    pub unit: usize,
+    pub unit: crate::model::UnitKey,
     pub link: crate::model::LinkMode,
     /// The source file's name plus how it's referenced ("library" / "relative").
     pub source: String,
@@ -1188,9 +1188,9 @@ pub struct UnitInstanceControl {
 /// Edits the unit-instance section can make (#734), applied by the frame loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitPaneEdit {
-    SetLink { unit: usize, link: crate::model::LinkMode },
+    SetLink { unit: crate::model::UnitKey, link: crate::model::LinkMode },
     /// Update the embedded copy from the source file (#732).
-    Sync { unit: usize },
+    Sync { unit: crate::model::UnitKey },
 }
 
 /// Draft text and focus state for the name field in the context pane.

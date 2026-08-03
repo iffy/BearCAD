@@ -1705,6 +1705,12 @@ pub fn joint_key_for_slot(n: usize) -> JointKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
+/// The same for an imported unit (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn unit_key_for_slot(n: usize) -> UnitKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
 /// The same for a drawing (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn drawing_key_for_slot(n: usize) -> DrawingKey {
@@ -3867,12 +3873,15 @@ pub struct ImportedUnit {
     pub source_hash: Option<u64>,
 }
 
+/// An imported unit's identity (#1055): stable across deletions of other units.
+pub type UnitKey = crate::arena::Key<ImportedUnit>;
+
 /// One placement of an [`ImportedUnit`] (#719). Ten instances of A cost one embedded copy
 /// of A plus ten of these.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UnitInstance {
-    /// Index into [`Document::units`].
-    pub unit: usize,
+    /// The embedded copy this places.
+    pub unit: UnitKey,
     /// The instance name used in qualified expression references (`name.param`, #729).
     #[serde(default)]
     pub name: Option<String>,
@@ -3968,7 +3977,7 @@ pub fn validate_units(doc: &Document, own_path: Option<&std::path::Path>) -> Res
                 "imported units nest deeper than {MAX_UNIT_DEPTH} levels"
             ));
         }
-        for unit in &doc.units {
+        for unit in doc.units.values() {
             let (key, child_prefix, child_dir) = match &unit.source {
                 UnitSource::RelativePath(p) => {
                     let resolved = dir.join(p);
@@ -4120,7 +4129,7 @@ pub struct Document {
     /// Imported units (#719): one embedded copy per imported source document, placed by
     /// [`unit_instances`](Self::unit_instances).
     #[serde(default)]
-    pub units: Vec<ImportedUnit>,
+    pub units: crate::arena::Arena<ImportedUnit>,
     /// Placements of imported units (#719), each with its own name, parameter overrides,
     /// and placement transform.
     #[serde(default)]
@@ -4322,7 +4331,7 @@ impl Default for Document {
             default_angle_unit: AngleUnit::default(),
             components: crate::arena::Arena::new(),
             component_members: Vec::new(),
-            units: Vec::new(),
+            units: crate::arena::Arena::new(),
             unit_instances: crate::arena::Arena::new(),
             mesh_rev: 0,
         }

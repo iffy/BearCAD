@@ -1059,6 +1059,7 @@ pub(crate) fn canonical_value_text(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
 
     /// #937: Tab belongs to the autocomplete only while there's a name to complete — with
     /// nothing to complete the field lets it walk to the next input.
@@ -1104,7 +1105,7 @@ mod tests {
             });
         }
         let mut doc = Document::default();
-        doc.units.push(crate::model::ImportedUnit {
+        doc.units.insert(crate::model::ImportedUnit {
             source: crate::model::UnitSource::RelativePath("bracket.bearcad".to_string()),
             link: crate::model::LinkMode::Static,
             document: inner,
@@ -1113,7 +1114,7 @@ mod tests {
         });
         for name in ["foo", "my bracket"] {
             doc.unit_instances.insert(crate::model::UnitInstance {
-                unit: 0,
+                unit: ukey(0),
                 name: Some(name.to_string()),
                 parameter_overrides: Vec::new(),
                 placement: crate::model::UnitPlacement::default(),

@@ -267,7 +267,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_arena_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
-    save_indexed_nodes(&tx, &mut row_id, "unit", &doc.units)?;
+    save_arena_nodes(&tx, &mut row_id, "unit", &doc.units)?;
     save_arena_nodes(&tx, &mut row_id, "unit_instance", &doc.unit_instances)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
@@ -602,7 +602,7 @@ pub fn open(path: &str) -> Result<Document> {
     let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
     let drawings = load_arena_entities(&conn, "drawing")?;
     let joints = load_arena_entities(&conn, "joint")?;
-    let units = load_indexed_entities(&conn, "unit")?;
+    let units = load_arena_entities(&conn, "unit")?;
     let unit_instances = load_arena_entities(&conn, "unit_instance")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
@@ -659,6 +659,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::slice_op_key_for_slot as slckey;
@@ -1005,18 +1006,63 @@ mod tests {
         }
     }
 
+    /// #1055: embedded units keep their keys across a save, and so do the instances that
+    /// place them. A refused import removes the trial copy, so the collection does have a
+    /// removal path even though ordinary deletion leaves the copy behind.
+    #[test]
+    fn unit_keys_survive_a_save_and_reload() {
+        let unit = |name: &str| crate::model::ImportedUnit {
+            source: crate::model::UnitSource::RelativePath(format!("{name}.bearcad")),
+            link: crate::model::LinkMode::Dynamic,
+            document: Document::default(),
+            source_mtime: None,
+            source_hash: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.units.insert(unit("doomed"));
+        let kept = doc.units.insert(unit("kept"));
+        assert!(doc.units.remove(doomed).is_some());
+        let instance = doc.unit_instances.insert(crate::model::UnitInstance {
+            unit: kept,
+            name: Some("a".to_string()),
+            parameter_overrides: Vec::new(),
+            placement: Default::default(),
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_unit_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.units.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.units.get(kept).map(|u| u.source.clone()),
+                Some(crate::model::UnitSource::RelativePath("kept.bearcad".to_string())),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.unit_instances.get(instance).map(|i| i.unit),
+                Some(kept),
+                "{suffix}: its placement still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: unit instances keep their keys across a save, and so does everything that
     /// names one — the materialized body's source and a move op's instance targets.
     #[test]
     fn unit_instance_keys_survive_a_save_and_reload() {
         let instance = |name: &str| crate::model::UnitInstance {
-            unit: 0,
+            unit: ukey(0),
             name: Some(name.to_string()),
             parameter_overrides: Vec::new(),
             placement: Default::default(),
         };
         let mut doc = Document::default();
-        doc.units.push(crate::model::ImportedUnit {
+        doc.units.insert(crate::model::ImportedUnit {
             source: crate::model::UnitSource::RelativePath("bracket.bearcad".to_string()),
             link: crate::model::LinkMode::Dynamic,
             document: Document::default(),
@@ -2215,14 +2261,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document::default();
-        doc.units.push(ImportedUnit {
+        doc.units.insert(ImportedUnit {
             source: UnitSource::RelativePath("missing/bracket.bearcad".to_string()),
             link: LinkMode::Static,
             document: unit_source_doc("width"),
             source_mtime: Some(1_700_000_000),
             source_hash: Some(crate::model::content_hash(b"bracket bytes")),
         });
-        doc.units.push(ImportedUnit {
+        doc.units.insert(ImportedUnit {
             source: UnitSource::Library("hardware/bolt.bearcad".to_string()),
             link: LinkMode::Dynamic,
             document: unit_source_doc("length"),
@@ -2230,7 +2276,7 @@ mod tests {
             source_hash: None,
         });
         doc.unit_instances.insert(UnitInstance {
-            unit: 0,
+            unit: ukey(0),
             name: Some("bracket1".to_string()),
             parameter_overrides: vec![("width".to_string(), "20".to_string())],
             placement: UnitPlacement {
@@ -2242,7 +2288,7 @@ mod tests {
             },
         });
         doc.unit_instances.insert(UnitInstance {
-            unit: 1,
+            unit: ukey(1),
             name: Some("bolt_a".to_string()),
             parameter_overrides: Vec::new(),
             placement: UnitPlacement::default(),
@@ -2288,7 +2334,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut inner_b = Document::default();
-        inner_b.units.push(ImportedUnit {
+        inner_b.units.insert(ImportedUnit {
             source: UnitSource::RelativePath("bearcad_unit_cycle_test.bearcad".to_string()),
             link: LinkMode::Static,
             document: Document::default(),
@@ -2296,7 +2342,7 @@ mod tests {
             source_hash: None,
         });
         let mut doc = Document::default();
-        doc.units.push(ImportedUnit {
+        doc.units.insert(ImportedUnit {
             source: UnitSource::RelativePath("b.bearcad".to_string()),
             link: LinkMode::Static,
             document: inner_b,
@@ -2319,7 +2365,7 @@ mod tests {
         let mut doc = Document::default();
         for level in 0..=MAX_UNIT_DEPTH {
             let mut outer = Document::default();
-            outer.units.push(ImportedUnit {
+            outer.units.insert(ImportedUnit {
                 source: UnitSource::RelativePath(format!("level{level}.bearcad")),
                 link: LinkMode::Static,
                 document: doc,

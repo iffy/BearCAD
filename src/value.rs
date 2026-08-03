@@ -1320,6 +1320,7 @@ impl<'a> AngleParser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
 
@@ -1336,7 +1337,7 @@ mod tests {
             });
         }
         let mut doc = Document::default();
-        doc.units.push(crate::model::ImportedUnit {
+        doc.units.insert(crate::model::ImportedUnit {
             source: crate::model::UnitSource::RelativePath("a.bearcad".to_string()),
             link: crate::model::LinkMode::Static,
             document: inner,
@@ -1345,7 +1346,7 @@ mod tests {
         });
         for name in ["foo", "my bracket"] {
             doc.unit_instances.insert(crate::model::UnitInstance {
-                unit: 0,
+                unit: ukey(0),
                 name: Some(name.to_string()),
                 parameter_overrides: Vec::new(),
                 placement: crate::model::UnitPlacement::default(),

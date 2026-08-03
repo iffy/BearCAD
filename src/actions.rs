@@ -1792,13 +1792,13 @@ pub enum Action {
     /// Replace unit `unit`'s embedded copy from its source file (#732) — every instance
     /// of the unit updates at once. Breaks are applied and reported through document
     /// health; undo puts the previous copy back.
-    SyncUnit { unit: usize },
+    SyncUnit { unit: crate::model::UnitKey },
     /// Switch a unit's link mode (#734): dynamic follows the source file, static
     /// freezes the embedded copy until an explicit update.
-    SetUnitLink { unit: usize, link: crate::model::LinkMode },
+    SetUnitLink { unit: crate::model::UnitKey, link: crate::model::LinkMode },
     /// Add another instance of an already-embedded unit (#736): named like an import's
     /// first instance (the source file stem, uniquified) unless a name is given.
-    AddUnitInstance { unit: usize, name: Option<String> },
+    AddUnitInstance { unit: crate::model::UnitKey, name: Option<String> },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     /// Create a read-only parameter measuring the current selection (#432): a line's
@@ -3557,14 +3557,18 @@ impl AppState {
         self.document_health = recompute_document_health(&self.doc);
         // Stale units (#732): the embedded copy is behind the source file. Cheap — the
         // content hash is only consulted when the mtime moved.
-        self.document_health.stale_units = (0..self.doc.units.len())
-            .filter(|&u| {
+        self.document_health.stale_units = self
+            .doc
+            .units
+            .iter()
+            .filter(|(_, u)| {
                 crate::units::unit_is_stale(
-                    &self.doc.units[u],
+                    u,
                     self.path.as_deref(),
                     self.library_directory.as_deref(),
                 )
             })
+            .map(|(k, _)| k)
             .collect();
         // #103 part 2: this is the one seam every document mutation already goes through
         // (commits, open, undo, imports — never per-frame drags), so the "kernel fallback is
@@ -3754,9 +3758,9 @@ impl AppState {
     /// even when it breaks something in B — what broke then reports through document
     /// health (a decision written down in the SPEC), and snapshot undo restores the
     /// previous copy. Refuses only a missing/unreadable source or an import cycle.
-    fn sync_unit(&mut self, unit: usize) -> Result<String, String> {
+    fn sync_unit(&mut self, unit: crate::model::UnitKey) -> Result<String, String> {
         let Some(source) = self.doc.units.get(unit).map(|u| u.source.clone()) else {
-            return Err(format!("Unit {unit} not found"));
+            return Err(format!("Unit {} not found", unit.index()));
         };
         let Some(path) = crate::units::resolve_unit_source_path(
             &source,
@@ -3812,7 +3816,8 @@ impl AppState {
     /// many units updated.
     pub fn sync_stale_dynamic_units(&mut self) -> usize {
         let mut updated = 0;
-        for unit in 0..self.doc.units.len() {
+        let candidates: Vec<_> = self.doc.units.keys().collect();
+        for unit in candidates {
             let u = &self.doc.units[unit];
             if u.link != crate::model::LinkMode::Dynamic {
                 continue;
@@ -4038,21 +4043,20 @@ impl AppState {
             }
         };
         // The same file imported again shares the existing embedded copy (#719).
-        let existing = self.doc.units.iter().position(|u| u.source == source);
+        let existing = self.doc.units.iter().find(|(_, u)| u.source == source).map(|(k, _)| k);
         let unit = existing.unwrap_or_else(|| {
             let mtime = std::fs::metadata(path)
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_nanos() as i64);
-            self.doc.units.push(ImportedUnit {
+            self.doc.units.insert(ImportedUnit {
                 source: source.clone(),
                 link: link.unwrap_or(crate::model::LinkMode::Dynamic),
                 document: source_doc,
                 source_mtime: mtime,
                 source_hash: Some(crate::model::content_hash(&bytes)),
-            });
-            self.doc.units.len() - 1
+            })
         });
         let stem = std::path::Path::new(path)
             .file_stem()
@@ -4074,7 +4078,7 @@ impl AppState {
         ) {
             self.doc.unit_instances.remove(placed);
             if existing.is_none() {
-                self.doc.units.pop();
+                self.doc.units.remove(unit);
             }
             self.status = format!("Import refused: {e}");
             return ActionResult::Err(self.status.clone());
@@ -8542,7 +8546,7 @@ impl AppState {
             }
             Action::SetUnitLink { unit, link } => {
                 let Some(u) = self.doc.units.get_mut(unit) else {
-                    self.status = format!("Unit {unit} not found");
+                    self.status = format!("Unit {} not found", unit.index());
                     return ActionResult::Err(self.status.clone());
                 };
                 u.link = link;
@@ -8558,7 +8562,7 @@ impl AppState {
             }
             Action::AddUnitInstance { unit, name } => {
                 if self.doc.units.get(unit).is_none() {
-                    self.status = format!("Unit {unit} not found");
+                    self.status = format!("Unit {} not found", unit.index());
                     return ActionResult::Err(self.status.clone());
                 }
                 let stem = match &self.doc.units[unit].source {
@@ -15937,6 +15941,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -17343,12 +17348,12 @@ mod tests {
         assert_eq!(state.doc.units.len(), 1);
         assert_eq!(state.doc.unit_instances.len(), 1);
         assert_eq!(
-            state.doc.units[0].source,
+            state.doc.units[ukey(0)].source,
             crate::model::UnitSource::RelativePath("bearcad_unit_import_a.bearcad".to_string())
         );
-        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Dynamic, "default link is dynamic");
-        assert!(state.doc.units[0].source_hash.is_some());
-        assert_eq!(state.doc.units[0].document.parameters.values().next().unwrap().name, "width");
+        assert_eq!(state.doc.units[ukey(0)].link, crate::model::LinkMode::Dynamic, "default link is dynamic");
+        assert!(state.doc.units[ukey(0)].source_hash.is_some());
+        assert_eq!(state.doc.units[ukey(0)].document.parameters.values().next().unwrap().name, "width");
         assert_eq!(
             state.doc.unit_instances[uikey(0)].name.as_deref(),
             Some("bearcad_unit_import_a")
@@ -17388,10 +17393,10 @@ mod tests {
         });
         assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
         assert_eq!(
-            state.doc.units[0].source,
+            state.doc.units[ukey(0)].source,
             crate::model::UnitSource::Library("hardware/bolt.bearcad".to_string())
         );
-        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Static);
+        assert_eq!(state.doc.units[ukey(0)].link, crate::model::LinkMode::Static);
         assert_eq!(state.doc.unit_instances[uikey(0)].name.as_deref(), Some("bolt"));
 
         let _ = std::fs::remove_dir_all(&lib_dir);
@@ -17422,7 +17427,7 @@ mod tests {
 
         // A imports B (by relative path), saved beside it.
         let mut a_state = AppState::default();
-        a_state.doc.units.push(crate::model::ImportedUnit {
+        a_state.doc.units.insert(crate::model::ImportedUnit {
             source: crate::model::UnitSource::RelativePath(
                 "bearcad_unit_cycle_b.bearcad".to_string(),
             ),
@@ -17477,7 +17482,7 @@ mod tests {
         let loaded = crate::storage::open(&elsewhere.to_string_lossy()).unwrap();
         assert_eq!(loaded.units.len(), 1, "the embedded copy travels with the document");
         assert_eq!(loaded.unit_instances.len(), 1);
-        assert_eq!(loaded.units[0].document.parameters.values().next().unwrap().name, "width");
+        assert_eq!(loaded.units[ukey(0)].document.parameters.values().next().unwrap().name, "width");
 
         let _ = std::fs::remove_dir_all(&elsewhere_dir);
     }
@@ -17769,7 +17774,7 @@ mod tests {
             "the consumed unit body shadows; the unit itself is untouched"
         );
         assert_eq!(
-            state.doc.units[0].document.extrusions.len(),
+            state.doc.units[ukey(0)].document.extrusions.len(),
             1,
             "the embedded copy still has only its own extrusion"
         );
@@ -17826,10 +17831,10 @@ mod tests {
 
         // Re-sync simulation (#732 will do this from disk): the embedded copy is replaced
         // with new geometry; both operations re-run against it.
-        let mut taller = state.doc.units[0].document.clone();
+        let mut taller = state.doc.units[ukey(0)].document.clone();
         taller.parameters.values_mut().next().unwrap().expression = "18".to_string();
         crate::parameters::recompute_document_geometry(&mut taller).unwrap();
-        state.doc.units[0].document = taller;
+        state.doc.units[ukey(0)].document = taller;
         state.refresh_document_health();
         let cut_after =
             crate::extrude::body_solid_mesh(&state.doc, cut_body).expect("cut re-runs");
@@ -17857,8 +17862,8 @@ mod tests {
         }
         let _ = std::fs::remove_file(&unit_path);
         // Mark `width` primary in the embedded copy, and add a secondary internal.
-        state.doc.units[0].document.parameters.values_mut().next().unwrap().primary = true;
-        state.doc.units[0].document.parameters.insert(crate::model::Parameter {
+        state.doc.units[ukey(0)].document.parameters.values_mut().next().unwrap().primary = true;
+        state.doc.units[ukey(0)].document.parameters.insert(crate::model::Parameter {
             name: "internal".to_string(),
             expression: "width * 2".to_string(),
             primary: false,
@@ -18082,14 +18087,14 @@ mod tests {
             name: "x".to_string(),
             expression: format!("{first}.width"),
         });
-        let mut v2 = state.doc.units[0].document.clone();
+        let mut v2 = state.doc.units[ukey(0)].document.clone();
         v2.parameters.values_mut().next().unwrap().name = "w".to_string();
         v2.extrusions[0].expression = "w * 2".to_string();
         std::thread::sleep(std::time::Duration::from_millis(1100)); // move the mtime second
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
 
         assert!(
-            crate::units::unit_is_stale(&state.doc.units[0], state.path.as_deref(), None),
+            crate::units::unit_is_stale(&state.doc.units[ukey(0)], state.path.as_deref(), None),
             "the changed source reads as stale"
         );
         // The dynamic auto-sync path (open / poll) picks it up without being told.
@@ -18112,14 +18117,14 @@ mod tests {
         );
 
         // A static unit does not sync by itself — only when told.
-        state.doc.units[0].link = crate::model::LinkMode::Static;
+        state.doc.units[ukey(0)].link = crate::model::LinkMode::Static;
         let mut v3 = v2.clone();
         v3.extrusions[0].expression = "w * 3".to_string();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         crate::storage::save(&unit_path.to_string_lossy(), &v3).unwrap();
         assert_eq!(state.sync_stale_dynamic_units(), 0, "static units never auto-sync");
         assert!((height(&state.doc, uikey(0)) - 20.0).abs() < 1e-2, "unchanged until told");
-        let r = state.apply(Action::SyncUnit { unit: 0 });
+        let r = state.apply(Action::SyncUnit { unit: ukey(0) });
         assert_eq!(r, ActionResult::Ok, "status: {}", state.status);
         assert!((height(&state.doc, uikey(0)) - 30.0).abs() < 1e-2, "explicit update applies");
 
@@ -18129,11 +18134,11 @@ mod tests {
 
         // A missing source refuses the sync and leaves everything usable.
         std::fs::remove_file(&unit_path).unwrap();
-        let r = state.apply(Action::SyncUnit { unit: 0 });
+        let r = state.apply(Action::SyncUnit { unit: ukey(0) });
         assert!(matches!(r, ActionResult::Err(_)));
         assert!((height(&state.doc, uikey(0)) - 20.0).abs() < 1e-2, "the embedded copy still builds");
         assert!(
-            !crate::units::unit_is_stale(&state.doc.units[0], state.path.as_deref(), None),
+            !crate::units::unit_is_stale(&state.doc.units[ukey(0)], state.path.as_deref(), None),
             "a missing source is not 'stale' — the embedded copy is the truth"
         );
     }
@@ -18161,7 +18166,7 @@ mod tests {
         assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
 
         // The source is rewritten — twice, quickly (an editor's temp-write dance).
-        let mut v2 = state.doc.units[0].document.clone();
+        let mut v2 = state.doc.units[ukey(0)].document.clone();
         v2.parameters.values_mut().next().unwrap().expression = "17".to_string();
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
         assert!(
@@ -18177,15 +18182,15 @@ mod tests {
         );
         assert_eq!(
             watcher.poll(&state.doc, state.path.as_deref(), None),
-            vec![0],
+            vec![ukey(0)],
             "quiet now: exactly one rebuild for the whole burst"
         );
         // The app then syncs it; afterwards the watcher goes quiet again.
-        assert_eq!(state.apply(Action::SyncUnit { unit: 0 }), ActionResult::Ok);
+        assert_eq!(state.apply(Action::SyncUnit { unit: ukey(0) }), ActionResult::Ok);
         assert!(watcher.poll(&state.doc, state.path.as_deref(), None).is_empty());
 
         // A static unit is never reported, however stale.
-        state.doc.units[0].link = crate::model::LinkMode::Static;
+        state.doc.units[ukey(0)].link = crate::model::LinkMode::Static;
         v2.parameters.values_mut().next().unwrap().expression = "19".to_string();
         std::thread::sleep(std::time::Duration::from_millis(30));
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
@@ -18210,13 +18215,13 @@ mod tests {
             name: None,
         });
         let _ = std::fs::remove_file(&unit_path);
-        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Dynamic);
+        assert_eq!(state.doc.units[ukey(0)].link, crate::model::LinkMode::Dynamic);
         let r = state.apply(Action::SetUnitLink {
-            unit: 0,
+            unit: ukey(0),
             link: crate::model::LinkMode::Static,
         });
         assert_eq!(r, ActionResult::Ok);
-        assert_eq!(state.doc.units[0].link, crate::model::LinkMode::Static);
+        assert_eq!(state.doc.units[ukey(0)].link, crate::model::LinkMode::Static);
 
         state.apply(Action::ClickSceneElement {
             element: SceneElement::UnitInstance(uikey(0)),

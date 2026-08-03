@@ -97,7 +97,7 @@ pub struct DocumentHealth {
     /// Units whose embedded copy is behind their source file (#732). Populated by
     /// `AppState::refresh_document_health` (staleness needs the document's own path and
     /// the library directory, which the pure health pass doesn't have).
-    pub stale_units: std::collections::HashSet<usize>,
+    pub stale_units: std::collections::HashSet<crate::model::UnitKey>,
 }
 
 impl DocumentHealth {

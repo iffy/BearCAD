@@ -922,6 +922,7 @@ pub fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: us
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line};
@@ -1034,7 +1035,7 @@ mod tests {
     fn joint_dies_with_its_unit_instance() {
         let mut doc = Document::default();
         let a = push_test_body(&mut doc);
-        doc.units.push(crate::model::ImportedUnit {
+        doc.units.insert(crate::model::ImportedUnit {
             source: crate::model::UnitSource::RelativePath("x.bearcad".to_string()),
             link: Default::default(),
             document: Document::default(),
@@ -1042,7 +1043,7 @@ mod tests {
             source_hash: None,
         });
         doc.unit_instances.insert(crate::model::UnitInstance {
-            unit: 0,
+            unit: ukey(0),
             name: None,
             parameter_overrides: Vec::new(),
             placement: Default::default(),

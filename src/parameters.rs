@@ -852,7 +852,7 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
 /// Renaming a unit instance rewrites every qualified reference to it (#731):
 /// `old.param` becomes `new.param` (in its backticked spelling where the new name needs
 /// one) across everything holding an expression, so the rename never breaks a model.
-pub fn propagate_instance_rename(doc: &mut Document, unit: usize, old: &str, new: &str) {
+pub fn propagate_instance_rename(doc: &mut Document, unit: crate::model::UnitKey, old: &str, new: &str) {
     let old = old.trim();
     let new = new.trim();
     if old.is_empty() || new.is_empty() || old == new {

@@ -4256,7 +4256,7 @@ impl App {
     /// `Action::SyncUnit`; static units are never watched.
     fn tick_unit_sync(&mut self, ctx: &egui::Context) {
         const POLL_SECONDS: f64 = 0.5;
-        if self.state.doc.units.iter().all(|u| u.link != model::LinkMode::Dynamic) {
+        if self.state.doc.units.values().all(|u| u.link != model::LinkMode::Dynamic) {
             return;
         }
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
@@ -4280,9 +4280,11 @@ impl App {
         self.last_unit_sync_poll = now;
         let ready = if pinged {
             // A completed save announced itself: the file is whole, sync stale units now.
-            (0..self.state.doc.units.len())
-                .filter(|&u| {
-                    let unit = &self.state.doc.units[u];
+            self.state
+                .doc
+                .units
+                .iter()
+                .filter(|(_, unit)| {
                     unit.link == model::LinkMode::Dynamic
                         && units::unit_is_stale(
                             unit,
@@ -4290,6 +4292,7 @@ impl App {
                             self.state.library_directory.as_deref(),
                         )
                 })
+                .map(|(k, _)| k)
                 .collect()
         } else {
             self.unit_source_watcher.poll(

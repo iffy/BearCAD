@@ -5460,6 +5460,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::unit_key_for_slot as ukey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -5615,7 +5616,7 @@ mod tests {
             shadow: false,
         });
         let mut doc = Document::default();
-        doc.units.push(crate::model::ImportedUnit {
+        doc.units.insert(crate::model::ImportedUnit {
             source: crate::model::UnitSource::RelativePath("a.bearcad".to_string()),
             link: crate::model::LinkMode::Static,
             document: inner,
@@ -5623,7 +5624,7 @@ mod tests {
             source_hash: None,
         });
         doc.unit_instances.insert(crate::model::UnitInstance {
-            unit: 0,
+            unit: ukey(0),
             name: Some("bracket".to_string()),
             parameter_overrides: Vec::new(),
             placement: crate::model::UnitPlacement::default(),

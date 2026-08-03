@@ -3174,6 +3174,13 @@ transform. Ten instances of one part cost one embedded copy plus ten override li
 the importing file opens and rebuilds with the source file absent. Load refuses import
 cycles (matched on resolved source path) and nesting deeper than `MAX_UNIT_DEPTH`.
 
+**Unit identity (#1055):** `Document.units` is an `arena::Arena` keyed by `UnitKey`, which
+is what an instance's `unit`, `Action::SyncUnit`/`SetUnitLink`/`AddUnitInstance`, the
+staleness set, and the source watcher hold. Importing the same source again still shares the
+existing embedded copy (matched on source), and deleting the last instance still leaves that
+copy in place — only a **refused** import removes the trial copy it just made. A script names
+a unit by its **ordinal** among the live ones.
+
 **Instance identity (#1055):** `Document.unit_instances` is an `arena::Arena`, and a
 placement is named by a `UnitInstanceKey` — `SceneElement::UnitInstance`,
 `HierarchyNode::UnitInstance`/`UnitChild`, `JointRef::UnitInstance`,
