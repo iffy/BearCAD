@@ -188,6 +188,7 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: None,
+            frame: Default::default(),
         });
         doc
     }

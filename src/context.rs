@@ -426,6 +426,14 @@ pub struct JointControl {
     pub slide_max: String,
     pub turn_min: String,
     pub turn_max: String,
+    /// How the joint works (#1079): the frame its freedoms act in. Populated by the mate
+    /// when that names a plane, and always the user's to change.
+    pub frame_origin: Option<crate::model::MovePointRef>,
+    pub frame_origin_focused: bool,
+    pub frame_primary: Option<crate::model::MateRef>,
+    pub frame_primary_focused: bool,
+    pub frame_secondary: Option<crate::model::MateRef>,
+    pub frame_secondary_focused: bool,
     /// The travel stops (#896/#955): a plane or flat face the slide ends at.
     pub slide_min_stop: Option<crate::hierarchy::SceneElement>,
     pub slide_min_stop_focused: bool,
@@ -499,6 +507,13 @@ pub enum JointEdit {
     /// Which way the moving part ends up facing, and the gap it's held off by.
     Flip(bool),
     Offset(String),
+    /// The joint's own frame (#1079).
+    FrameOriginFocus,
+    ClearFrameOrigin,
+    FramePrimaryFocus,
+    ClearFramePrimary,
+    FrameSecondaryFocus,
+    ClearFrameSecondary,
     /// A line-up row (#1015), by its index.
     LineUpMovingFocus(usize),
     ClearLineUpMoving(usize),
@@ -1313,6 +1328,11 @@ pub enum PickerTarget {
     JointLineUpFixed(usize),
     JointMinStop,
     JointMaxStop,
+    /// How the joint works (#1079): where its freedoms act and which way they run. Seeded
+    /// from the mate when it names a plane, and editable whether or not it did.
+    JointFrameOrigin,
+    JointFramePrimary,
+    JointFrameSecondary,
     /// Extrude's "Up to" target and Repeat's "Distance to" (#584/#645/#958): inline under
     /// their tools' Distance fields, registered like every other picker.
     ExtrudeUpTo,
@@ -2028,6 +2048,46 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 ),
             ] {
                 let mut picker = mate_picker(&LINE_UP_KINDS, on_moving, focused);
+                picker.set_picked(input.doc, pick.as_ref().map(SceneElement::from_mate_ref));
+                tool_pickers.push(ToolPickerView {
+                    heading,
+                    picker,
+                    target,
+                    separator_above: false,
+                    render: PickerRender::Inline,
+                });
+            }
+        }
+        // The joint's frame (#1079). An axis input takes anything with a **direction** — a
+        // face or datum plane (its normal), a body edge or world axis, a hole's centre line —
+        // and refuses a bare point, which has none. The origin input takes the point.
+        {
+            let mut origin = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Vertex),
+                PickLimit::Finite(1),
+            );
+            origin.set_focused(j.frame_origin_focused);
+            origin.set_picked(input.doc, j.frame_origin.map(SceneElement::from_move_point));
+            tool_pickers.push(ToolPickerView {
+                heading: "Origin",
+                picker: origin,
+                target: PickerTarget::JointFrameOrigin,
+                separator_above: false,
+                render: PickerRender::Inline,
+            });
+            for (heading, target, pick, focused) in [
+                ("Axis", PickerTarget::JointFramePrimary, j.frame_primary, j.frame_primary_focused),
+                ("Second axis", PickerTarget::JointFrameSecondary, j.frame_secondary, j.frame_secondary_focused),
+            ] {
+                let mut picker = ElementPicker::new(
+                    ElementFilter::kinds(&[
+                        ElementKind::Face,
+                        ElementKind::Plane,
+                        ElementKind::Edge,
+                    ]),
+                    PickLimit::Finite(1),
+                );
+                picker.set_focused(focused);
                 picker.set_picked(input.doc, pick.as_ref().map(SceneElement::from_mate_ref));
                 tool_pickers.push(ToolPickerView {
                     heading,
@@ -5796,6 +5856,55 @@ pub fn show_pane(
                 );
             }
         }
+        // How the joint works (#1079): where its freedoms act and which way they run. The
+        // mate seeds these when it names a plane; they are editable whether it did or not,
+        // which is what lets a Point Snap or In place mate carry a joint at all.
+        {
+            section_label(ui, "Freedom");
+            let mut frame_row = |ui: &mut egui::Ui,
+                                 label: &'static str,
+                                 id: &'static str,
+                                 target: PickerTarget,
+                                 on_focus: JointEdit,
+                                 on_clear: JointEdit| {
+                let Some(view) = tool_pickers.iter().find(|v| v.target == target) else {
+                    return;
+                };
+                labeled_row_top(ui, label, |ui| {
+                    if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, id) {
+                        pending = Some(match event {
+                            crate::element_picker::PickerEvent::Focus => on_focus,
+                            crate::element_picker::PickerEvent::Remove(_)
+                            | crate::element_picker::PickerEvent::Clear => on_clear,
+                        });
+                    }
+                });
+            };
+            frame_row(
+                ui,
+                "Origin",
+                "joint_frame_origin",
+                PickerTarget::JointFrameOrigin,
+                JointEdit::FrameOriginFocus,
+                JointEdit::ClearFrameOrigin,
+            );
+            frame_row(
+                ui,
+                "Axis",
+                "joint_frame_primary",
+                PickerTarget::JointFramePrimary,
+                JointEdit::FramePrimaryFocus,
+                JointEdit::ClearFramePrimary,
+            );
+            frame_row(
+                ui,
+                "Second axis",
+                "joint_frame_secondary",
+                PickerTarget::JointFrameSecondary,
+                JointEdit::FrameSecondaryFocus,
+                JointEdit::ClearFrameSecondary,
+            );
+        }
         // The preview sweep's animation (#906): one switch for every joint.
         {
             let mut animate = control.animate;
@@ -8469,6 +8578,12 @@ mod tests {
                 slide_max: String::new(),
                 turn_min: String::new(),
                 turn_max: String::new(),
+                frame_origin: None,
+                frame_origin_focused: false,
+                frame_primary: None,
+                frame_primary_focused: false,
+                frame_secondary: None,
+                frame_secondary_focused: false,
                 slide_min_stop: None,
                 slide_min_stop_focused: false,
                 slide_max_stop: None,

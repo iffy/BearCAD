@@ -456,6 +456,8 @@ pub enum Instruction {
         base: usize,
         kind: crate::model::JointKind,
         mate: crate::model::JointMate,
+        /// How the joint's freedoms are oriented (#1079).
+        frame: crate::model::JointFrame,
         position: String,
         position2: String,
         position3: String,
@@ -468,6 +470,8 @@ pub enum Instruction {
         base: usize,
         kind: crate::model::JointKind,
         mate: crate::model::JointMate,
+        /// How the joint's freedoms are oriented (#1079).
+        frame: crate::model::JointFrame,
         position: String,
         position2: String,
         position3: String,
@@ -481,6 +485,8 @@ pub enum Instruction {
         base: usize,
         kind: crate::model::JointKind,
         mate: crate::model::JointMate,
+        /// How the joint's freedoms are oriented (#1079).
+        frame: crate::model::JointFrame,
         position: String,
         position2: String,
         position3: String,
@@ -1261,14 +1267,14 @@ impl Instruction {
             Instruction::EditMoveOp { op, targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
-            Instruction::CreateJointOp { members, base, kind, mate, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.joint", None, members, *base, kind, mate, position, position2, position3, limits)
+            Instruction::CreateJointOp { members, base, kind, mate, frame, position, position2, position3, limits } => {
+                joint_op_lua("bearcad.joint", None, members, *base, kind, mate, frame, position, position2, position3, limits)
             }
-            Instruction::BeginJointOp { members, base, kind, mate, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.begin_joint", None, members, *base, kind, mate, position, position2, position3, limits)
+            Instruction::BeginJointOp { members, base, kind, mate, frame, position, position2, position3, limits } => {
+                joint_op_lua("bearcad.begin_joint", None, members, *base, kind, mate, frame, position, position2, position3, limits)
             }
-            Instruction::EditJointOp { op, members, base, kind, mate, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, mate, position, position2, position3, limits)
+            Instruction::EditJointOp { op, members, base, kind, mate, frame, position, position2, position3, limits } => {
+                joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, mate, frame, position, position2, position3, limits)
             }
             Instruction::SetJointRest { op } => format!("bearcad.set_joint_rest({op})"),
             Instruction::RevertJoint { op } => format!("bearcad.revert_joint({op})"),
@@ -2498,25 +2504,27 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 length_target: length_target.clone(),
             })
         }
-        Action::CreateJointOperation { members, base, kind, mate, position, position2, position3, limits } => {
+        Action::CreateJointOperation { members, base, kind, mate, frame, position, position2, position3, limits } => {
             Some(Instruction::CreateJointOp {
                 members: members.clone(),
                 base: *base,
                 kind: kind.clone(),
                 mate: mate.clone(),
+                frame: frame.clone(),
                 position: position.clone(),
                 position2: position2.clone(),
                 position3: position3.clone(),
                 limits: limits.clone(),
             })
         }
-        Action::EditJointOperation { op, members, base, kind, mate, position, position2, position3, limits } => {
+        Action::EditJointOperation { op, members, base, kind, mate, frame, position, position2, position3, limits } => {
             Some(Instruction::EditJointOp {
                 op: joint_ordinal(doc, *op)?,
                 members: members.clone(),
                 base: *base,
                 kind: kind.clone(),
                 mate: mate.clone(),
+                frame: frame.clone(),
                 position: position.clone(),
                 position2: position2.clone(),
                 position3: position3.clone(),
@@ -3324,6 +3332,7 @@ fn joint_op_lua(
     base: usize,
     kind: &crate::model::JointKind,
     mate: &crate::model::JointMate,
+    frame: &crate::model::JointFrame,
     position: &str,
     position2: &str,
     position3: &str,
@@ -3356,6 +3365,16 @@ fn joint_op_lua(
         parts.push("base = \"b\"".to_string());
     }
     parts.extend(mate_lua(mate));
+    // How the joint works (#1079): only mentioned when set, since a mate usually seeds it.
+    if let Some(p) = &frame.origin {
+        parts.push(format!("frame_origin = {}", move_point_lua(p)));
+    }
+    if let Some(r) = &frame.primary {
+        parts.push(format!("frame_axis = {}", mate_ref_lua(r)));
+    }
+    if let Some(r) = &frame.secondary {
+        parts.push(format!("frame_axis2 = {}", mate_ref_lua(r)));
+    }
     for (name, value) in [
         ("position", position),
         ("position2", position2),
@@ -5712,12 +5731,13 @@ impl ScriptRunner {
                 });
                 StepResult::Continue
             }
-            Instruction::CreateJointOp { members, base, kind, mate, position, position2, position3, limits } => {
+            Instruction::CreateJointOp { members, base, kind, mate, frame, position, position2, position3, limits } => {
                 let result = state.apply(Action::CreateJointOperation {
                     members,
                     base,
                     kind,
                     mate,
+                    frame,
                     position,
                     position2,
                     position3,
@@ -5726,7 +5746,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditJointOp { op, members, base, kind, mate, position, position2, position3, limits } => {
+            Instruction::EditJointOp { op, members, base, kind, mate, frame, position, position2, position3, limits } => {
                 let Some(op) = joint_key(&state.doc, op) else {
                     self.last_action_error = Some(format!("Joint {op} not found"));
                     return StepResult::Continue;
@@ -5737,6 +5757,7 @@ impl ScriptRunner {
                     base,
                     kind,
                     mate,
+                    frame,
                     position,
                     position2,
                     position3,
@@ -5745,13 +5766,14 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::BeginJointOp { members, base, kind, mate, position, position2, position3, limits } => {
+            Instruction::BeginJointOp { members, base, kind, mate, frame, position, position2, position3, limits } => {
                 state.apply(crate::actions::Action::SetTool(crate::actions::Tool::Joint));
                 let probe = crate::model::Joint {
                     members,
                     base,
                     kind,
                     mate,
+                    frame,
                     position,
                     position2,
                     position3,

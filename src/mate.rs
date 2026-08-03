@@ -29,6 +29,17 @@ pub enum MateGeom {
     Point(Vec3),
 }
 
+/// The **direction** a mate reference contributes to a joint's frame (#1079): a face or datum
+/// plane gives its normal, an edge or world axis its own direction, a hole its centre line. A
+/// point has no direction, so it is `None` — which is why the frame's axis inputs refuse one.
+pub fn mate_ref_direction(doc: &Document, r: &MateRef) -> Option<Vec3> {
+    match resolve(doc, r)? {
+        MateGeom::Plane { normal, .. } => (normal.length_squared() > 0.5).then_some(normal),
+        MateGeom::Line { dir, .. } => (dir.length_squared() > 0.5).then_some(dir),
+        MateGeom::Point(_) => None,
+    }
+}
+
 /// A resolved pick's representative point — where its mark is drawn.
 pub fn geom_point(g: &MateGeom) -> Vec3 {
     g.point()
@@ -603,6 +614,7 @@ pub mod tests {
             rest3: String::new(),
             limits: JointLimits::default(),
             name: None,
+            frame: Default::default(),
         }
     }
 

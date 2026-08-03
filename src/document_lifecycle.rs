@@ -954,6 +954,7 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: None,
+            frame: Default::default(),
         });
         doc.shape_order.push(ShapeKind::Joint);
         key

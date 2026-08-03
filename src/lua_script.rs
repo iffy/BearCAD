@@ -1768,6 +1768,7 @@ type JointOpArgs = (
     usize,
     crate::model::JointKind,
     crate::model::JointMate,
+    crate::model::JointFrame,
     String,
     String,
     String,
@@ -1784,6 +1785,7 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
         call,
         &[
             "index", "a", "b", "parts", "kind", "lead", "base", "face", "line_up",
+            "frame_origin", "frame_axis", "frame_axis2",
             "position", "position2", "position3", "slide_min",
             "slide_max", "slide_min_to", "slide_max_to", "turn_min", "turn_max", "name",
         ],
@@ -1854,11 +1856,18 @@ fn parse_joint_op_args(lua: &Lua, opts: &Table, call: &str) -> mlua::Result<Join
         turn_min: joint_position_arg(opts, "turn_min")?,
         turn_max: joint_position_arg(opts, "turn_max")?,
     };
+    // How the joint works (#1079): its own frame, seeded by the mate when left out.
+    let frame = crate::model::JointFrame {
+        origin: parse_move_point(lua, opts.get("frame_origin")?, "frame_origin")?,
+        primary: parse_mate_ref(lua, opts.get("frame_axis")?, "frame_axis")?,
+        secondary: parse_mate_ref(lua, opts.get("frame_axis2")?, "frame_axis2")?,
+    };
     Ok((
         members,
         base,
         kind,
         mate,
+        frame,
         joint_position_arg(opts, "position")?,
         joint_position_arg(opts, "position2")?,
         joint_position_arg(opts, "position3")?,
@@ -5051,12 +5060,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, mate, position, position2, position3, limits) =
+            let (members, base, kind, mate, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::CreateJointOp {
-                    members, base, kind, mate, position, position2, position3, limits,
+                    members, base, kind, mate, frame, position, position2, position3, limits,
                 })?;
             }
             let element = SceneElement::Joint(unsafe {
@@ -5077,12 +5086,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "begin_joint",
         lua.create_function(|lua, opts: Table| {
-            let (members, base, kind, mate, position, position2, position3, limits) =
+            let (members, base, kind, mate, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "begin_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::BeginJointOp {
-                    members, base, kind, mate, position, position2, position3, limits,
+                    members, base, kind, mate, frame, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -5093,12 +5102,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_joint",
         lua.create_function(|lua, opts: Table| {
             let op: usize = opts.get("index")?;
-            let (members, base, kind, mate, position, position2, position3, limits) =
+            let (members, base, kind, mate, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "edit_joint")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
                 tick.exec(Instruction::EditJointOp {
-                    op, members, base, kind, mate, position, position2, position3, limits,
+                    op, members, base, kind, mate, frame, position, position2, position3, limits,
                 })?;
             }
             Ok(())
@@ -8860,6 +8869,39 @@ mod tests {
         assert!(
             (t - glam::Vec3::new(40.0, 0.0, 0.0)).length() < 1e-3,
             "midpoint-to-midpoint offset should be +40 X, got {t:?}"
+        );
+    }
+
+    /// #1079: a joint's frame is its own — scripted as `frame_axis`, and left to the mate to
+    /// seed when it isn't given. A mate that names a fixed face seeds the axis from it, so the
+    /// common case still needs nothing said.
+    #[test]
+    fn lua_joint_frame_is_set_or_seeded() {
+        let script = |extra: &str| {
+            format!(
+                r#"
+                bearcad.rect{{ width = 10, height = 10 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
+                bearcad.rect{{ x = 40, y = 0, width = 10, height = 10 }}
+                bearcad.extrude{{ polygon = {{4, 5, 6, 7}}, distance = 5 }}
+                bearcad.joint{{ a = 0, b = 1, kind = "revolute",
+                  face = {{ moving = {{ body = 1, face = {{45, 5, 0}}, normal = {{0, 0, -1}} }},
+                           fixed = {{ body = 0, face = {{5, 5, 5}}, normal = {{0, 0, 1}} }} }}{extra} }}
+                "#
+            )
+        };
+        // No frame given: the mate's fixed face seeds it.
+        let seeded = run_lua(&script(""));
+        let j = seeded.doc.joints.values().next().unwrap();
+        assert_eq!(j.frame.primary, j.mate.fixed_face, "the fixed face is the axis");
+        assert!(j.frame.secondary.is_none(), "nothing lined up, so no second axis");
+
+        // Given outright, it is used as given rather than seeded over.
+        let set = run_lua(&script(r#", frame_axis = { axis = "x" }"#));
+        let j = set.doc.joints.values().next().unwrap();
+        assert_eq!(
+            j.frame.primary,
+            Some(crate::model::MateRef::Axis(crate::construction::GlobalAxis::X))
         );
     }
 

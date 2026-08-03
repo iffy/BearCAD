@@ -712,6 +712,10 @@ pub enum JointFocus {
     SlideMinStop,
     /// The slide's **max stop** (#896).
     SlideMaxStop,
+    /// The joint's own frame (#1079): where its freedoms act, and which way they run.
+    FrameOrigin,
+    FramePrimary,
+    FrameSecondary,
 }
 
 /// A Select-tool drag moving a part through its joint (#897): the joint being driven,
@@ -8197,6 +8201,27 @@ impl App {
             return;
         };
         let focus = self.joint_focus();
+        // The frame's **origin** (#1079): a point anywhere on either part — where the joint's
+        // freedoms act from. Its axis inputs take a `MateRef`, so they ride the mate pick
+        // path below; only the origin is a point.
+        if focus == JointFocus::FrameOrigin {
+            let allowed = |_: model::BodyKey| true;
+            match self.pick_body_point(pp, project, pick_occlusion, &allowed, true) {
+                Some(point) => {
+                    let label = self.move_point_label(&point);
+                    if let Some(cj) = self.state.creating_joint.as_mut() {
+                        cj.frame.origin = Some(point);
+                    }
+                    self.release_satisfied_joint_focus();
+                    self.state.status = format!("Joint: origin — {label}");
+                }
+                None => {
+                    self.state.status =
+                        "Pick the origin, or a corner, edge or face on either part".to_string();
+                }
+            }
+            return;
+        }
         // A slide stop (#896): the click picks a face/plane the travel ends at, through
         // the same pick the Extrude tool's "to object" uses.
         if matches!(focus, JointFocus::SlideMinStop | JointFocus::SlideMaxStop) {
@@ -8247,9 +8272,17 @@ impl App {
         if let Some((on_moving, faces_only, what)) = match focus {
             JointFocus::MovingFace => Some((true, true, "moving face")),
             JointFocus::FixedFace => Some((false, true, "fixed face")),
+            // The frame's two axis inputs (#1079) take anything with a direction, on either
+            // part — a joint may perfectly well turn about an axis on the part that moves.
+            JointFocus::FramePrimary => Some((true, false, "axis")),
+            JointFocus::FrameSecondary => Some((true, false, "second axis")),
             JointFocus::LineUpMoving(_) => Some((true, false, "line up")),
             JointFocus::LineUpFixed(_) => Some((false, false, "line up")),
-            JointFocus::Members | JointFocus::SlideMinStop | JointFocus::SlideMaxStop => None,
+            JointFocus::Members
+            | JointFocus::SlideMinStop
+            | JointFocus::SlideMaxStop
+            // The frame's origin is a point, taken above.
+            | JointFocus::FrameOrigin => None,
         } {
             // Moving picks sit on the driven member's bodies; fixed picks on the base's —
             // plus, on the fixed side, the world's own geometry (#1018).
@@ -9595,6 +9628,7 @@ impl App {
             base: joint.base,
             kind: joint.kind,
             mate: joint.mate,
+            frame: joint.frame,
             position: landed.0,
             position2: landed.1,
             position3: landed.2,
@@ -12621,6 +12655,12 @@ impl eframe::App for App {
                     slide_max: cj.map(|c| c.limits.slide_max.clone()).unwrap_or_default(),
                     turn_min: cj.map(|c| c.limits.turn_min.clone()).unwrap_or_default(),
                     turn_max: cj.map(|c| c.limits.turn_max.clone()).unwrap_or_default(),
+                    frame_origin: cj.and_then(|c| c.frame.origin),
+                    frame_origin_focused: joint_focus == JointFocus::FrameOrigin,
+                    frame_primary: cj.and_then(|c| c.frame.primary),
+                    frame_primary_focused: joint_focus == JointFocus::FramePrimary,
+                    frame_secondary: cj.and_then(|c| c.frame.secondary),
+                    frame_secondary_focused: joint_focus == JointFocus::FrameSecondary,
                     slide_min_stop: cj
                         .and_then(|c| c.limits.slide_min_target.as_ref())
                         .map(hierarchy::SceneElement::from_extrude_target),
@@ -13614,12 +13654,24 @@ impl eframe::App for App {
                     context::JointEdit::SlideMaxStopFocus => {
                         self.state.joint_focus_override = Some(JointFocus::SlideMaxStop)
                     }
+                    context::JointEdit::FrameOriginFocus => {
+                        self.state.joint_focus_override = Some(JointFocus::FrameOrigin)
+                    }
+                    context::JointEdit::FramePrimaryFocus => {
+                        self.state.joint_focus_override = Some(JointFocus::FramePrimary)
+                    }
+                    context::JointEdit::FrameSecondaryFocus => {
+                        self.state.joint_focus_override = Some(JointFocus::FrameSecondary)
+                    }
                     context::JointEdit::ClearMovingFace
                     | context::JointEdit::ClearFixedFace
                     | context::JointEdit::ClearLineUpMoving(_)
                     | context::JointEdit::ClearLineUpFixed(_)
                     | context::JointEdit::ClearSlideMinStop
                     | context::JointEdit::ClearSlideMaxStop
+                    | context::JointEdit::ClearFrameOrigin
+                    | context::JointEdit::ClearFramePrimary
+                    | context::JointEdit::ClearFrameSecondary
                     | context::JointEdit::Commit => self.state.joint_focus_override = None,
                     _ => {}
                 }
@@ -13685,6 +13737,14 @@ impl eframe::App for App {
                                     (cj.base + 1) % cj.members.len()
                                 };
                             }
+                            // Clearing a frame input (#1079): the mate may seed it again, but
+                            // only while the user has not set one by hand.
+                            context::JointEdit::FrameOriginFocus
+                            | context::JointEdit::FramePrimaryFocus
+                            | context::JointEdit::FrameSecondaryFocus => {}
+                            context::JointEdit::ClearFrameOrigin => cj.frame.origin = None,
+                            context::JointEdit::ClearFramePrimary => cj.frame.primary = None,
+                            context::JointEdit::ClearFrameSecondary => cj.frame.secondary = None,
                             context::JointEdit::Position(v) => cj.position = v,
                             context::JointEdit::Position2(v) => cj.position2 = v,
                             context::JointEdit::Position3(v) => cj.position3 = v,
@@ -14331,7 +14391,10 @@ impl eframe::App for App {
                     }
                     // The Move tool's point pickers (#958): the pane's own rows drive
                     // focus and clearing through `MoveEdit`, so nothing routes here.
-                    context::PickerTarget::MoveFaceMoving
+                    context::PickerTarget::JointFrameOrigin
+                    | context::PickerTarget::JointFramePrimary
+                    | context::PickerTarget::JointFrameSecondary
+                    | context::PickerTarget::MoveFaceMoving
                     | context::PickerTarget::MoveFaceFixed
                     | context::PickerTarget::MoveStartA
                     | context::PickerTarget::MoveEndA
@@ -15835,6 +15898,12 @@ fn joint_focus_chain(doc: &model::Document, cj: &actions::CreatingJoint) -> Focu
         chain.push((JointFocus::LineUpMoving(i), row.moving.is_some()));
         chain.push((JointFocus::LineUpFixed(i), row.fixed.is_some()));
     }
+    // The frame (#1079) comes after the placement, and only when the mate has not seeded it:
+    // Face Snap names a plane, so there is usually nothing left to ask. A joint whose mate
+    // named none walks into these instead of stopping with no axis at all.
+    if cj.frame.is_empty() && cj.mate.fixed_face.is_none() {
+        chain.push((JointFocus::FramePrimary, cj.frame.primary.is_some()));
+    }
     chain
 }
 
@@ -15863,7 +15932,14 @@ fn set_mate_pick(
         JointFocus::FixedFace => cj.mate.fixed_face = pick,
         JointFocus::LineUpMoving(i) => row(cj, i).moving = pick,
         JointFocus::LineUpFixed(i) => row(cj, i).fixed = pick,
-        JointFocus::Members | JointFocus::SlideMinStop | JointFocus::SlideMaxStop => {}
+        // The frame's axis inputs take a `MateRef` too (#1079), so a pick lands straight in.
+        JointFocus::FramePrimary => cj.frame.primary = pick,
+        JointFocus::FrameSecondary => cj.frame.secondary = pick,
+        // The frame's origin is a *point*, filled from the point-pick path instead.
+        JointFocus::FrameOrigin
+        | JointFocus::Members
+        | JointFocus::SlideMinStop
+        | JointFocus::SlideMaxStop => {}
     }
     // A row emptied on both sides isn't a row any more; trailing blanks would keep the pane
     // growing an extra input that pins nothing.
@@ -16919,6 +16995,7 @@ fn build_viewport_scene_input<'a>(
             rest3: String::new(),
             limits: Default::default(),
             name: None,
+            frame: Default::default(),
         };
         if let Some(m) = joints::preview_pose(doc, &probe) {
             let base = if cj.base < cj.members.len() { cj.base } else { 0 };
@@ -25166,6 +25243,7 @@ impl App {
                 rest3: String::new(),
                 limits: cj.limits.clone(),
                 name: None,
+                frame: Default::default(),
             };
             let time = ui.input(|i| i.time);
             let (p1, p2, p3) = joints::sweep_positions(&self.state.doc, &probe, time)?;
@@ -28515,6 +28593,7 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: None,
+            frame: Default::default(),
         };
         // Half a face pair previews nothing: there is no placement yet.
         cj.mate = JointMate {

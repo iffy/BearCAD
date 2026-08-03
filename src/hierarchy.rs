@@ -5569,6 +5569,7 @@ mod tests {
             rest3: String::new(),
             limits: crate::model::JointLimits::default(),
             name: None,
+            frame: Default::default(),
         });
         assert_eq!(produced_bodies(&doc, &SceneElement::Joint(jkey(0))), vec![bkey(0), bkey(1)]);
 

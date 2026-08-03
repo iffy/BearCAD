@@ -70,6 +70,19 @@ which without reading the pane. They go back to their own colours once it's comm
 The moving part also sweeps back and forth through its range, showing the motion before you
 commit. **Animate** turns that sweep off — one switch for every joint.
 
+## Freedom
+
+**Freedom** in the Context pane says how the joint works: an **Origin**, an **Axis** and a
+**Second axis**. The Axis is what a Slider slides along and a Revolute turns about; the
+Second axis fixes the roll, which a Planar or Ball joint needs.
+
+Mating fills these in — the fixed face becomes the Axis, and the first line-up row the Second
+axis — so most joints need nothing said. Change any of them to move the joint's freedoms
+somewhere else without disturbing where the mate put the part.
+
+An Axis takes anything with a direction: a flat face or datum plane (its normal), a body edge
+or world axis, or a hole's centre line. The Origin takes a point.
+
 ## The kinds
 
 <a
@@ -143,6 +156,8 @@ local fixed  = bearcad.body_faces(0)[2]
 bearcad.joint{
   a = 0, b = 1, kind = "revolute",
   face = { moving = moving, fixed = fixed, offset = 2 },
+  -- Optional: say which way the hinge swings. Left out, the fixed face decides.
+  frame_axis = { axis = "z" },
   line_up = {
     {
       moving = { body = 1, vertex = {40, 0, 0} },

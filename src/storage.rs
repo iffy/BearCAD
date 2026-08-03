@@ -1614,6 +1614,13 @@ mod tests {
             rest3: String::new(),
             limits: Default::default(),
             name: Some(name.to_string()),
+            // #1079: the joint's own frame — the axis its freedoms run along, which is no
+            // longer derivable from the mate and so has to survive the file.
+            frame: crate::model::JointFrame {
+                origin: Some(crate::model::MovePointRef::Origin),
+                primary: Some(crate::model::MateRef::Axis(crate::construction::GlobalAxis::X)),
+                secondary: None,
+            },
         };
         let doomed = doc.joints.insert(joint("doomed"));
         let kept = doc.joints.insert(joint("kept"));
@@ -1627,6 +1634,11 @@ mod tests {
             let loaded = open(&path).unwrap();
 
             assert_eq!(loaded.joints.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.joints.get(kept).map(|j| j.frame.clone()),
+                Some(joint("kept").frame),
+                "{suffix}: the joint's frame came back"
+            );
             assert_eq!(
                 loaded.joints.get(kept).and_then(|j| j.name.clone()),
                 Some("kept".to_string()),
@@ -1693,6 +1705,7 @@ mod tests {
             rest3: String::new(),
             limits: crate::model::JointLimits::default(),
             name: None,
+            frame: Default::default(),
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -1999,6 +2012,7 @@ mod tests {
                 turn_max: "110".to_string(),
             },
             name: Some("Lead screw".to_string()),
+            frame: Default::default(),
         });
         doc.shape_order.push(crate::model::ShapeKind::Body);
         doc.shape_order.push(crate::model::ShapeKind::Body);

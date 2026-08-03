@@ -1577,10 +1577,30 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     linear in the slide for any fixed spin, so it solves as a sweep over the spin with a
     least-norm 2×2 solve inside — no iteration to diverge, and an underdetermined mate falls out
     as "stay put" rather than as a failure.
-  - **The freedoms' frame:** the mate names the only frame there is, so the kind's primary axis
-    is the **mating normal** — a part spun, tilted or screwed on a face turns about the face it
-    sits on — except for `slider` and `pin_slot`, whose slide is travel rather than lift: those
-    take the first line-up row's direction, because a part flush on a face slides *along* it.
+  - **The freedoms' frame (#1079, `model::JointFrame`):** how the joint works is its **own**
+    state — an **Origin**, an **Axis** and a **Second axis** in the pane's *Freedom* section —
+    not something derived from the mate. It used to be derived, and could be, because a mate
+    was always a face on a face; a joint's placement is now an ordinary move (#1068) and three
+    of the four move modes name no plane at all, so a joint mated by Point Snap, Free or In
+    place would otherwise have no axis to slide along or turn about.
+
+    The mate **seeds** it — a fixed face becomes the Axis and the first line-up row the Second
+    axis (`actions::seeded_joint_frame`, run where the joint is built, so a scripted joint is
+    seeded exactly like a drawn one) — and every field stays editable either way. An Axis input
+    takes anything with a **direction**: a face or datum plane contributes its normal, an edge
+    or world axis its own direction, a hole its centre line; a bare point has none and is
+    refused. The Origin defaults to where the mate landed the moving face rather than to the
+    axis's own reference point, because choosing an axis says which way the part moves, not
+    where the mate put it.
+
+    With no frame set the old rule still answers exactly: the primary axis is the **mating
+    normal** — a part spun, tilted or screwed on a face turns about the face it sits on —
+    except for `slider` and `pin_slot`, whose slide is travel rather than lift: those take the
+    first line-up row's direction, because a part flush on a face slides *along* it. A frame
+    the user set is taken as given, with no swap by kind: it says which axis is which.
+
+    Scripted as `frame_origin =` (a point), `frame_axis =` and `frame_axis2 =` (mate picks) on
+    `bearcad.joint` / `edit_joint` / `begin_joint`; left out, the mate seeds them.
   - **Holes and shafts (#1013):** a round wall is one element with a **centre line** of its
     own (`SceneElement::BodyCylinder` / `BodyAxis`, fitted by `extrude::fit_cylinder` from the
     mesh, so an imported part gets them as readily as a modelled hole). Lining a hole up on a

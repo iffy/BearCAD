@@ -1199,10 +1199,41 @@ pub struct CreatingJoint {
     pub position: String,
     pub position2: String,
     pub position3: String,
+    /// How the joint works (#1079): the frame its freedoms act in, seeded by the mate and
+    /// editable either way.
+    pub frame: crate::model::JointFrame,
     /// Travel limits (#896), carried whole — expressions and stop targets.
     pub limits: crate::model::JointLimits,
     /// `Some(joint)` while re-editing a committed joint.
     pub editing: Option<crate::model::JointKey>,
+}
+
+/// The frame a joint is stored with (#1079): whatever was set, with anything left blank
+/// filled in from the mate — a mate that names a fixed face names the natural axis, and its
+/// first line-up row the natural second one.
+///
+/// Seeding rather than deriving is the whole point: a mate that names no plane simply leaves
+/// the inputs empty for the user, and one that does can still be overruled. It runs where the
+/// joint is built rather than at commit, so a scripted joint is seeded exactly like a drawn
+/// one.
+fn seeded_joint_frame(
+    frame: &crate::model::JointFrame,
+    mate: &crate::model::JointMate,
+) -> crate::model::JointFrame {
+    let mut frame = frame.clone();
+    if frame.origin.is_none() {
+        frame.origin = mate.fixed_face.as_ref().and_then(|r| match r {
+            crate::model::MateRef::Point(p) => Some(*p),
+            _ => None,
+        });
+    }
+    if frame.primary.is_none() {
+        frame.primary = mate.fixed_face;
+    }
+    if frame.secondary.is_none() {
+        frame.secondary = mate.line_up.iter().find_map(|row| row.fixed);
+    }
+    frame
 }
 
 impl CreatingJoint {
@@ -1282,6 +1313,7 @@ impl CreatingJoint {
             base: joint.base,
             kind: joint.kind.clone(),
             mate: joint.mate.clone(),
+            frame: joint.frame.clone(),
             position: joint.position.clone(),
             position2: joint.position2.clone(),
             position3: joint.position3.clone(),
@@ -2344,6 +2376,8 @@ pub enum Action {
         base: usize,
         kind: crate::model::JointKind,
         mate: crate::model::JointMate,
+        /// How the joint's freedoms are oriented (#1079).
+        frame: crate::model::JointFrame,
         position: String,
         position2: String,
         position3: String,
@@ -2356,6 +2390,8 @@ pub enum Action {
         base: usize,
         kind: crate::model::JointKind,
         mate: crate::model::JointMate,
+        /// How the joint's freedoms are oriented (#1079).
+        frame: crate::model::JointFrame,
         position: String,
         position2: String,
         position3: String,
@@ -11728,6 +11764,7 @@ label_hidden: false,
                         base: cj.base,
                         kind: cj.kind.clone(),
                         mate: crate::mate::settled_mate(&cj.mate),
+                        frame: cj.frame.clone(),
                         position: cj.position.clone(),
                         position2: cj.position2.clone(),
                         position3: cj.position3.clone(),
@@ -11738,6 +11775,7 @@ label_hidden: false,
                         base: cj.base,
                         kind: cj.kind.clone(),
                         mate: crate::mate::settled_mate(&cj.mate),
+                        frame: cj.frame.clone(),
                         position: cj.position.clone(),
                         position2: cj.position2.clone(),
                         position3: cj.position3.clone(),
@@ -11757,6 +11795,7 @@ label_hidden: false,
                 base,
                 kind,
                 mate,
+                frame,
                 position,
                 position2,
                 position3,
@@ -11768,6 +11807,7 @@ label_hidden: false,
                 }
                 // The rest pose (#898) is captured from creation: wherever the parts were
                 // (and whatever position that implied) is what Revert returns to.
+                let mate_seed = mate.clone();
                 let joint = crate::model::Joint {
                     members,
                     base: if base < 2 { base } else { 0 },
@@ -11781,6 +11821,7 @@ label_hidden: false,
                     rest3: position3,
                     limits,
                     name: None,
+                    frame: seeded_joint_frame(&frame, &mate_seed),
                 };
                 // A joint that can't resolve — closing a loop, or claiming a part another
                 // joint drives — is refused with the reason, not committed broken (#893).
@@ -11803,6 +11844,7 @@ label_hidden: false,
                 base,
                 kind,
                 mate,
+                frame,
                 position,
                 position2,
                 position3,
@@ -11820,6 +11862,7 @@ label_hidden: false,
                 joint.members = members;
                 joint.base = if base < 2 { base } else { 0 };
                 joint.kind = kind;
+                joint.frame = seeded_joint_frame(&frame, &mate);
                 joint.mate = mate;
                 joint.position = position;
                 joint.position2 = position2;
@@ -15345,7 +15388,10 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         | P::JointLineUpMoving(_)
         | P::JointLineUpFixed(_)
         | P::JointMinStop
-        | P::JointMaxStop => {}
+        | P::JointMaxStop
+        | P::JointFrameOrigin
+        | P::JointFramePrimary
+        | P::JointFrameSecondary => {}
         // Extrude's "Up to" and Repeat's "Distance to" are pick *modes* rather than sets: each
         // has a flag on the tool that the next click reads. Their pane rows set it directly, and
         // so does this — without which `picker_focus` silently did nothing for them (#988) and

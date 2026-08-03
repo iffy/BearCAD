@@ -2584,6 +2584,42 @@ impl JointMate {
     }
 }
 
+/// How a joint's freedoms are oriented (#1079): the frame its slide and turn act in.
+///
+/// This used to be derived from the mate at solve time — the primary axis *was* the mating
+/// normal, and there was no way to say otherwise. Now that a joint's placement is an ordinary
+/// move (#1068), three of the four move modes name no plane at all, so the frame is stored
+/// state instead: a mate may **populate** it — Face Snap fills in the fixed face's normal and
+/// an in-plane direction — but every field stays the user's to change, and a move that names
+/// no plane simply leaves it unset to be filled in by hand.
+///
+/// `None` throughout is a joint with no frame yet: it holds its parts where they are, which is
+/// what a Rigid joint does anyway and is the honest answer for the others until an axis is
+/// given.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct JointFrame {
+    /// Where the freedoms act from — the frame's origin.
+    #[serde(default)]
+    pub origin: Option<MovePointRef>,
+    /// What a Slider slides along and a Revolute turns about. A face or datum plane
+    /// contributes its **normal**, an edge or world axis its direction, a hole its centre
+    /// line; a point has no direction and is not accepted here.
+    #[serde(default)]
+    pub primary: Option<MateRef>,
+    /// The second axis, which fixes the frame's roll: what a Planar joint's V runs along and
+    /// what a Ball's second turn is about. Squared against `primary`, so it only has to be
+    /// roughly right.
+    #[serde(default)]
+    pub secondary: Option<MateRef>,
+}
+
+impl JointFrame {
+    /// Nothing set: the joint has no frame and holds its parts where they are.
+    pub fn is_empty(&self) -> bool {
+        self.origin.is_none() && self.primary.is_none() && self.secondary.is_none()
+    }
+}
+
 /// Where a joint's travel stops (#896). Every field is optional — an empty expression and
 /// no target leaves that end open.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -2628,6 +2664,10 @@ pub struct Joint {
     /// of it. Empty mates as identity, so joining parts already in place moves nothing.
     #[serde(default)]
     pub mate: JointMate,
+    /// How the freedoms are oriented (#1079). Seeded from the mate when it names a plane,
+    /// and editable either way.
+    #[serde(default)]
+    pub frame: JointFrame,
     /// The joint's current value along each freedom, as expressions so a pose is
     /// parametric like a dimension. What each slot means depends on `kind`:
     /// slider/cylindrical/pin-slot/planar read `position` as mm of slide (planar's u),

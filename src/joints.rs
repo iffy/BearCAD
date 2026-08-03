@@ -46,23 +46,55 @@ fn frame_mat(f: &Frame) -> Mat4 {
     )
 }
 
-/// The frame a joint's freedoms act in, taken from its solved mate (#1021).
+/// The frame a joint's freedoms act in (#1021/#1079): the joint's **own** `frame` where one
+/// is set, else the mating plane it used to be derived from.
 ///
-/// The mate places the part; the freedoms need somewhere to act, and the mating plane is the
-/// only thing the placement names. The primary axis is the **mating normal** — a part spun,
-/// tilted or screwed on a face turns about the face it sits on — except for the two kinds
-/// whose slide is travel rather than lift: a Slider and a PinSlot take the first line-up
-/// row's direction instead, because a part flush on a face slides **along** it, not off it.
-fn mate_frame(kind: &JointKind, p: &crate::mate::Placement) -> Frame {
-    let n = p.normal;
-    let d = p.along;
-    let (x, y) = match kind {
-        JointKind::Slider | JointKind::PinSlot => (d, n),
-        _ => (n, d),
+/// It used to be derived from the mate alone — the primary axis *was* the mating normal, and
+/// there was no way to say otherwise. That only worked because a mate was always a face on a
+/// face; now that a joint's placement is an ordinary move (#1068), three of the four move
+/// modes name no plane, so the frame is the user's to set (#1079). The mate seeds it and the
+/// pane can change it.
+///
+/// The fallback keeps the old rule exactly: the primary axis is the mating normal — a part
+/// spun, tilted or screwed on a face turns about the face it sits on — except for the two
+/// kinds whose slide is travel rather than lift. A Slider and a PinSlot take the in-plane
+/// direction instead, because a part flush on a face slides **along** it, not off it.
+fn mate_frame(doc: &Document, joint: &Joint, p: &crate::mate::Placement) -> Frame {
+    let stored = joint_frame_axes(doc, &joint.frame);
+    // The origin defaults to the mate's landing point — where the moving face ended up — not
+    // to the axis's own reference point: choosing an axis says which way the part moves, not
+    // where the mate put it. Picking an origin outright overrides that.
+    let origin = match &joint.frame.origin {
+        Some(point) => crate::extrude::move_point_world(doc, point).unwrap_or(p.origin),
+        None => p.origin,
+    };
+    let (n, d) = match stored {
+        Some((primary, secondary)) => (primary, secondary),
+        None => (p.normal, p.along),
+    };
+    // A frame the user set says which axis is which outright; only the mate-derived fallback
+    // still swaps them by kind.
+    let (x, y) = match (stored.is_some(), &joint.kind) {
+        (false, JointKind::Slider) | (false, JointKind::PinSlot) => (d, n),
+        (false, _) => (n, d),
+        (true, _) => (n, d),
     };
     let y = (y - x * y.dot(x)).normalize_or_zero();
     let y = if y.length_squared() > 0.5 { y } else { x.any_orthonormal_vector() };
-    Frame { origin: p.origin, x, y, z: x.cross(y).normalize_or_zero() }
+    Frame { origin, x, y, z: x.cross(y).normalize_or_zero() }
+}
+
+/// A stored [`crate::model::JointFrame`]'s two axes (#1079). `None` when no primary axis is
+/// set or it no longer resolves — a frame without one has nothing to say, so the mate's own
+/// plane answers instead.
+fn joint_frame_axes(doc: &Document, frame: &crate::model::JointFrame) -> Option<(Vec3, Vec3)> {
+    let primary = crate::mate::mate_ref_direction(doc, frame.primary.as_ref()?)?;
+    let secondary = frame
+        .secondary
+        .as_ref()
+        .and_then(|r| crate::mate::mate_ref_direction(doc, r))
+        .unwrap_or_else(|| primary.any_orthonormal_vector());
+    Some((primary, secondary))
 }
 
 /// Solve a joint's mate against the base side's pose (#1021). `None` when the face pair is
@@ -128,7 +160,7 @@ fn resolve_limits_posed(doc: &Document, joint: &Joint, base_pose: Mat4) -> Resol
     };
     let stop = |target: &Option<crate::model::ExtrudeTarget>| -> Option<f32> {
         let target = target.as_ref()?;
-        let frame = mate_frame(&joint.kind, &solve_mate(doc, joint, base_pose)?);
+        let frame = mate_frame(doc, joint, &solve_mate(doc, joint, base_pose)?);
         crate::extrude::target_distance(doc, frame.origin, frame.x, target)
     };
     ResolvedJointLimits {
@@ -220,7 +252,7 @@ fn joint_transform(doc: &Document, joint: &Joint, base_pose: Mat4) -> Mat4 {
     let Some(m) = motion(doc, joint, base_pose) else {
         return placed.transform;
     };
-    let frame = frame_mat(&mate_frame(&joint.kind, &placed));
+    let frame = frame_mat(&mate_frame(doc, joint, &placed));
     frame * m * frame.inverse() * placed.transform
 }
 
@@ -477,7 +509,7 @@ pub fn posed_joint_frame(
 ) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
     let joint = doc.joints.get(ji)?;
     let base_pose = base_pose_of(doc, joint);
-    let frame = mate_frame(&joint.kind, &solve_mate(doc, joint, base_pose)?);
+    let frame = mate_frame(doc, joint, &solve_mate(doc, joint, base_pose)?);
     Some((frame.origin, frame.x, frame.y, frame.z))
 }
 
@@ -728,6 +760,49 @@ mod tests {
             (moved - Vec3::new(42.0, 4.0, 10.0)).length() < 1e-3,
             "swung to {moved}"
         );
+    }
+
+    /// #1079: the frame is the joint's **own**, not the mate's, once one is set. A Revolute
+    /// mated flat on a face turns about that face's normal by default — but say the axis is
+    /// +X and it turns about +X instead, without touching where the mate put the part.
+    #[test]
+    fn a_joints_own_frame_overrides_the_mating_normal() {
+        use crate::model::{JointFrame, MateRef};
+        let mut doc = Document::default();
+        let (a, b) = two_cubes(&mut doc);
+        let mut j = joint(
+            vec![JointRef::Body(a), JointRef::Body(b)],
+            JointKind::Revolute,
+        );
+        j.mate = stack_mate(&doc, a, b);
+        j.position = "90".to_string();
+        // The mate lands the moving face's middle at (42, 2, 10); the frame's origin stays
+        // there, so only the axis changes.
+        j.frame = JointFrame {
+            origin: None,
+            primary: Some(MateRef::Axis(crate::construction::GlobalAxis::X)),
+            secondary: None,
+        };
+        let ji = doc.joints.insert(j);
+        let pose = body_joint_pose(&doc, b).unwrap();
+        // The mate still lands the moving face's middle at (42, 2, 10), and that is still the
+        // turn's centre — choosing an axis says which way the part moves, not where the mate
+        // put it. The un-posed (44, 4, 0) lifts to (44, 4, 10), which is (2, 2, 0) from the
+        // centre; a quarter turn about +X takes (y, z) = (2, 0) to (0, 2), landing it at
+        // (44, 2, 12). About the mating normal it would have stayed at z = 10.
+        let moved = pose.transform_point3(Vec3::new(44.0, 4.0, 0.0));
+        assert!(
+            (moved - Vec3::new(44.0, 2.0, 12.0)).length() < 1e-3,
+            "turned about +X, not the mating normal: {moved}"
+        );
+        // And the frame the rest of the tool reads agrees.
+        let (_, x, _, _) = posed_joint_frame(&doc, ji).unwrap();
+        assert!((x - Vec3::X).length() < 1e-3, "{x:?}");
+
+        // Clearing it hands the axis back to the mate.
+        doc.joints[ji].frame = JointFrame::default();
+        let (_, x, _, _) = posed_joint_frame(&doc, ji).unwrap();
+        assert!((x - Vec3::Z).length() < 1e-3, "back to the mating normal: {x:?}");
     }
 
     /// #893: a screw couples travel to turn by its lead — a full turn advances one lead

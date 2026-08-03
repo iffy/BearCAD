@@ -5958,6 +5958,7 @@ mod tests {
             rest3: String::new(),
             limits: crate::model::JointLimits::default(),
             name: None,
+            frame: Default::default(),
         });
 
         // A tracing image on the XY plane — its quad's outline is what its row lights.

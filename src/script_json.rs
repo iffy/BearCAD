@@ -519,14 +519,14 @@ pub fn instruction_from_json(
             Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "joint" => {
-            let (members, base, kind, mate, position, position2, position3, limits) =
+            let (members, base, kind, mate, frame, position, position2, position3, limits) =
                 joint_op_args(doc, o)?;
-            Ok(Instruction::CreateJointOp { members, base, kind, mate, position, position2, position3, limits })
+            Ok(Instruction::CreateJointOp { members, base, kind, mate, frame, position, position2, position3, limits })
         }
         "begin_joint" => {
-            let (members, base, kind, mate, position, position2, position3, limits) =
+            let (members, base, kind, mate, frame, position, position2, position3, limits) =
                 joint_op_args(doc, o)?;
-            Ok(Instruction::BeginJointOp { members, base, kind, mate, position, position2, position3, limits })
+            Ok(Instruction::BeginJointOp { members, base, kind, mate, frame, position, position2, position3, limits })
         }
         "set_joint_rest" => Ok(Instruction::SetJointRest {
             op: req_usize(o, "index", "set_joint_rest")?,
@@ -537,9 +537,9 @@ pub fn instruction_from_json(
         "revert_joints" => Ok(Instruction::RevertAllJoints),
         "edit_joint" => {
             let op = req_usize(o, "index", "edit_joint")?;
-            let (members, base, kind, mate, position, position2, position3, limits) =
+            let (members, base, kind, mate, frame, position, position2, position3, limits) =
                 joint_op_args(doc, o)?;
-            Ok(Instruction::EditJointOp { op, members, base, kind, mate, position, position2, position3, limits })
+            Ok(Instruction::EditJointOp { op, members, base, kind, mate, frame, position, position2, position3, limits })
         }
         "begin_move" => {
             let (targets, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
@@ -1383,6 +1383,7 @@ fn joint_op_args(
         usize,
         crate::model::JointKind,
         crate::model::JointMate,
+        crate::model::JointFrame,
         String,
         String,
         String,
@@ -1473,11 +1474,18 @@ fn joint_op_args(
         turn_min: expr_arg(o, "turn_min")?,
         turn_max: expr_arg(o, "turn_max")?,
     };
+    // How the joint works (#1079): its own frame, seeded by the mate when left out.
+    let frame = crate::model::JointFrame {
+        origin: move_point_from_json(doc, o.get("frame_origin"), "frame_origin")?,
+        primary: mate_ref_from_json(doc, o.get("frame_axis"), "frame_axis")?,
+        secondary: mate_ref_from_json(doc, o.get("frame_axis2"), "frame_axis2")?,
+    };
     Ok((
         members,
         base,
         kind,
         mate,
+        frame,
         expr_arg(o, "position")?,
         expr_arg(o, "position2")?,
         expr_arg(o, "position3")?,
@@ -2729,6 +2737,7 @@ mod tests {
                 position2: String::new(),
                 position3: String::new(),
                 limits: Default::default(),
+                frame: Default::default(),
             })
         );
         // `base = "b"` names the second member as the held side.
@@ -2750,6 +2759,7 @@ mod tests {
                 position2: String::new(),
                 position3: String::new(),
                 limits: Default::default(),
+                frame: Default::default(),
             })
         );
     }
