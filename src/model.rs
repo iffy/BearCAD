@@ -19,14 +19,14 @@ pub enum FaceId {
     /// A planar cap face of an extruded body: one profile face of an extrusion,
     /// at either the base (`top = false`) or offset (`top = true`) end.
     ExtrudeCap {
-        extrusion: usize,
+        extrusion: ExtrusionKey,
         profile: ExtrudeFace,
         top: bool,
     },
     /// A planar side wall of an extruded body: the quad swept by one `edge` of a
     /// polygonal profile (rectangles only; circular profiles have no flat sides).
     ExtrudeSide {
-        extrusion: usize,
+        extrusion: ExtrusionKey,
         profile: ExtrudeFace,
         edge: u8,
     },
@@ -82,7 +82,7 @@ impl FaceId {
     /// `FaceVertex`/`FaceEdge` dependency tracking piggybacks on this: a sketch on a body face,
     /// or a constraint referencing that face's own boundary, both depend on the extrusion that
     /// produced it — same relationship `hierarchy::face_element` already tracks for sketches).
-    pub fn extrusion_index(&self) -> Option<usize> {
+    pub fn extrusion_index(&self) -> Option<ExtrusionKey> {
         match self {
             FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
                 Some(*extrusion)
@@ -1224,20 +1224,21 @@ pub struct Extrusion {
     pub symmetric: bool,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
     /// Parametric 3D edge chamfer/fillet bevels applied to this extrusion's own analytic
     /// side/cap edges (#77) — see [`EdgeTreatment`].
     #[serde(default)]
     pub edge_treatments: Vec<EdgeTreatment>,
 }
 
+/// An extrusion's identity (#1055): stable across deletions of other extrusions.
+pub type ExtrusionKey = crate::arena::Key<Extrusion>;
+
 /// The feature(s) that produced a solid body.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BodySource {
-    Extrusion(usize),
-    Extrusions(Vec<usize>),
+    Extrusion(ExtrusionKey),
+    Extrusions(Vec<ExtrusionKey>),
     /// A mesh body brought in via STL import (#70); keys `Document::imported_meshes`
     /// rather than depending on a sketch-based feature.
     Imported(ImportedMeshKey),
@@ -1316,9 +1317,9 @@ pub enum BodySource {
     /// `Solid` serialization stays readable (existing saved files never carry a cut list —
     /// they load as `Extrusion`/`Extrusions` unchanged).
     Solid {
-        add: Vec<usize>,
+        add: Vec<ExtrusionKey>,
         #[serde(default)]
-        cut: Vec<usize>,
+        cut: Vec<ExtrusionKey>,
     },
     /// The materialized geometry of one imported-unit instance (#724): indexes
     /// `Document::unit_instances`. Derived data kept in sync by `units::sync_unit_bodies`
@@ -1332,16 +1333,16 @@ pub enum BodySource {
     /// document (#726): the read-only unit is the input; this body is the importing
     /// document's own result. The unit's materialized body shadows while consumed, the
     /// way a boolean input does — but is never mutated.
-    UnitCut { instance: UnitInstanceKey, cut: Vec<usize> },
+    UnitCut { instance: UnitInstanceKey, cut: Vec<ExtrusionKey> },
 }
 
 impl BodySource {
-    pub fn single(extrusion: usize) -> Self {
+    pub fn single(extrusion: ExtrusionKey) -> Self {
         Self::Extrusion(extrusion)
     }
 
     /// Extrusions **added** to (fused into) the body.
-    pub fn extrusion_indices(&self) -> &[usize] {
+    pub fn extrusion_indices(&self) -> &[ExtrusionKey] {
         match self {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
@@ -1364,7 +1365,7 @@ impl BodySource {
 
     /// Extrusions **subtracted** (cut) from the body (#35). Empty for every non-`Solid`
     /// form except a unit cut (#726).
-    pub fn cut_extrusion_indices(&self) -> &[usize] {
+    pub fn cut_extrusion_indices(&self) -> &[ExtrusionKey] {
         match self {
             Self::Solid { cut, .. } => cut.as_slice(),
             Self::UnitCut { cut, .. } => cut.as_slice(),
@@ -1407,12 +1408,12 @@ impl BodySource {
     }
 
     /// Whether the body is built from `extrusion` in any role (added or cut).
-    pub fn owns_extrusion(&self, extrusion: usize) -> bool {
+    pub fn owns_extrusion(&self, extrusion: ExtrusionKey) -> bool {
         self.extrusion_indices().contains(&extrusion)
             || self.cut_extrusion_indices().contains(&extrusion)
     }
 
-    pub fn append_extrusion(&mut self, extrusion: usize) {
+    pub fn append_extrusion(&mut self, extrusion: ExtrusionKey) {
         match self {
             Self::Extrusion(existing) => {
                 *self = Self::Extrusions(vec![*existing, extrusion]);
@@ -1439,7 +1440,7 @@ impl BodySource {
 
     /// Register `extrusion` as a **cut** (subtraction) of this body (#35), moving the source
     /// into the `Solid` form if it wasn't already.
-    pub fn append_cut_extrusion(&mut self, extrusion: usize) {
+    pub fn append_cut_extrusion(&mut self, extrusion: ExtrusionKey) {
         match self {
             Self::Extrusion(existing) => {
                 *self = Self::Solid {
@@ -1477,7 +1478,7 @@ impl BodySource {
     /// single-extrusion form when one added index remains). No-op if `extrusion` isn't owned.
     /// Undo never removes a body's last/only *added* extrusion this way — that path tombstones
     /// the whole body instead.
-    pub fn remove_extrusion(&mut self, extrusion: usize) {
+    pub fn remove_extrusion(&mut self, extrusion: ExtrusionKey) {
         match self {
             Self::Extrusions(indices) => {
                 indices.retain(|&ei| ei != extrusion);
@@ -1540,7 +1541,7 @@ pub fn body_shadowed_by_other_ops(
 }
 
 /// The body whose source includes `extrusion` (added or cut), if any.
-pub fn body_index_for_extrusion(doc: &Document, extrusion: usize) -> Option<BodyKey> {
+pub fn body_index_for_extrusion(doc: &Document, extrusion: ExtrusionKey) -> Option<BodyKey> {
     doc.bodies
         .iter()
         .find_map(|(key, body)| body.source.owns_extrusion(extrusion).then_some(key))
@@ -1702,6 +1703,12 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
 /// The same for a joint (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn joint_key_for_slot(n: usize) -> JointKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for an extrusion (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn extrusion_key_for_slot(n: usize) -> ExtrusionKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -2755,7 +2762,7 @@ pub struct RepeatOperation {
     /// rather than copying a solid. No output bodies — the extra cuts fold into the target body's
     /// shape at build time (`occt_body_shape_from_indices`).
     #[serde(default)]
-    pub extrusion_targets: Vec<usize>,
+    pub extrusion_targets: Vec<ExtrusionKey>,
     /// Source sketch indices to repeat as offset copies (#226). Each copy rides a generated
     /// construction plane parallel to the source's, translated along the axis, so its entities
     /// keep their plane-local coords and step by the offset in world. Restricted to
@@ -2871,7 +2878,7 @@ pub struct TreatedEdge {
     /// Index into the owning op's `targets` list (which input body this edge belongs to).
     pub target: usize,
     /// The extrusion whose analytic edge is treated.
-    pub extrusion: usize,
+    pub extrusion: ExtrusionKey,
     pub edge: ExtrusionEdgeRef,
 }
 
@@ -4027,7 +4034,7 @@ pub struct Document {
     pub constraints: Vec<Constraint>,
     pub construction_planes: Vec<ConstructionPlane>,
     #[serde(default)]
-    pub extrusions: Vec<Extrusion>,
+    pub extrusions: crate::arena::Arena<Extrusion>,
     #[serde(default)]
     pub bodies: crate::arena::Arena<Body>,
     /// Materials bodies can be made of (#834). A body with no material renders in the
@@ -4186,7 +4193,7 @@ pub type ComponentKey = crate::arena::Key<Component>;
 #[serde(rename_all = "snake_case")]
 pub enum ComponentMember {
     ConstructionPlane(usize),
-    Extrusion(usize),
+    Extrusion(ExtrusionKey),
     Body(BodyKey),
     Loft(LoftKey),
     BooleanOp(BooleanOpKey),
@@ -4302,7 +4309,7 @@ impl Default for Document {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: crate::face::default_datum_planes(),
-            extrusions: Vec::new(),
+            extrusions: crate::arena::Arena::new(),
             bodies: crate::arena::Arena::new(),
             materials: Material::defaults(),
             imported_meshes: crate::arena::Arena::new(),

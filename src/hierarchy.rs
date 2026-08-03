@@ -37,7 +37,7 @@ pub enum HierarchyNode {
     Line(usize),
     Circle(usize),
     Constraint(usize),
-    Extrusion(usize),
+    Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
     /// A tracing image (#163/#169).
     Image(crate::model::TracingImageKey),
@@ -82,7 +82,7 @@ pub enum HierarchyNode {
     /// extrusion's `edge_treatments`. A display-only leaf (like [`HierarchyNode::Document`]
     /// it has no [`SceneElement`]): it nests under its extrusion and is right-clickable to
     /// edit its amount after the fact (#192), but isn't individually selectable/hideable.
-    EdgeTreatment { extrusion: usize, index: usize },
+    EdgeTreatment { extrusion: crate::model::ExtrusionKey, index: usize },
     /// A body/sketch **projection** placed on a technical drawing (#281): a display-only leaf
     /// nested under its [`HierarchyNode::Drawing`]. `view` indexes the drawing's `views`. It has
     /// no [`SceneElement`] (not selectable/hideable through the scene graph); its source
@@ -132,7 +132,7 @@ pub enum SceneElement {
     Circle(usize),
     Point(ConstraintPoint),
     Constraint(usize),
-    Extrusion(usize),
+    Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
     /// An edge of an extrusion-backed body face's own boundary loop (#26/#27), for
     /// constraint-authoring selection — mirrors `Point` wrapping the whole `ConstraintPoint`
@@ -241,7 +241,7 @@ pub enum SceneElement {
     /// the parametric edge a committed `EdgeTreatment` is defined against.
     #[allow(dead_code)]
     ExtrusionEdge {
-        extrusion: usize,
+        extrusion: crate::model::ExtrusionKey,
         edge: crate::model::ExtrusionEdgeRef,
     },
     /// A **repeat instance's** face (#452/#955): the source face's plane translated along the
@@ -699,10 +699,10 @@ impl ElementVisibility {
                     ConstraintLine::FaceEdge { face, .. } => face_owner_element(face),
                     ConstraintLine::Line(_) | ConstraintLine::OriginAxis(_) => None,
                 };
-                self.effective_visible(
-                    doc,
-                    owner.unwrap_or(SceneElement::Extrusion(usize::MAX)),
-                )
+                // With no owning feature there is nothing to inherit from: a face edge
+                // whose face names no extrusion is visible on its own (#1055 — there is no
+                // "impossible index" to stand in for one any more).
+                owner.is_none_or(|owner| self.effective_visible(doc, owner))
             }
             // A body's own edge/vertex/face (#156/#555) is visible exactly when its body is.
             SceneElement::BodyEdge { body, .. }
@@ -772,10 +772,9 @@ fn point_effective_visible(
         }),
         // A face's own vertex tracks the feature that produced its face — same dependency
         // `face_element` gives a sketch placed on a body cap/side wall.
-        ConstraintPoint::FaceVertex { face, .. } => visibility.effective_visible(
-            doc,
-            face_owner_element(&face).unwrap_or(SceneElement::Extrusion(usize::MAX)),
-        ),
+        // With no owning feature there is nothing to inherit from (#1055).
+        ConstraintPoint::FaceVertex { face, .. } => face_owner_element(&face)
+            .is_none_or(|owner| visibility.effective_visible(doc, owner)),
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(text).is_some_and(|entity| {
                 visibility.effective_visible(doc, SceneElement::Sketch(entity.sketch))
@@ -1785,8 +1784,8 @@ pub fn build_hierarchy(
     // Extrusions nest under the sketch they were built from (see
     // build_sketch_entry). Any extrusion whose sketch is no longer reachable is
     // surfaced at the top level so it never disappears from the tree.
-    for (i, extrusion) in doc.extrusions.iter().enumerate() {
-        if extrusion.deleted || sketch_alive(doc, extrusion.sketch) {
+    for (i, extrusion) in doc.extrusions.iter() {
+        if sketch_alive(doc, extrusion.sketch) {
             continue;
         }
         roots.push(HierarchyEntry {
@@ -2781,7 +2780,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     collect_descendants(doc, SceneElement::ConstructionPlane(pi), out);
                 }
             }
-            for (ei, extrusion) in doc.extrusions.iter().enumerate() {
+            for (ei, extrusion) in doc.extrusions.iter() {
                 if extrusion.sketch == sketch {
                     out.insert(SceneElement::Extrusion(ei));
                     collect_descendants(doc, SceneElement::Extrusion(ei), out);
@@ -3411,7 +3410,7 @@ pub fn unit_child_rows(doc: &Document, instance: crate::model::UnitInstanceKey) 
 /// The [`EdgeTreatment`] a [`HierarchyNode::EdgeTreatment`] points at, if it still exists.
 fn edge_treatment_at(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     index: usize,
 ) -> Option<&crate::model::EdgeTreatment> {
     doc.extrusions
@@ -3702,8 +3701,7 @@ fn build_sketch_extrusions(
 ) -> Vec<HierarchyEntry> {
     doc.extrusions
         .iter()
-        .enumerate()
-        .filter(|(_, extrusion)| !extrusion.deleted && extrusion.sketch == sketch)
+        .filter(|(_, extrusion)| extrusion.sketch == sketch)
         .map(|(ei, _)| {
             let mut children: Vec<HierarchyEntry> = doc
                 .bodies
@@ -3763,8 +3761,8 @@ pub fn show_pane(
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
-    on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
+    on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
+    on_edit_edge_treatment: &mut impl FnMut(crate::model::ExtrusionKey, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
@@ -4219,8 +4217,8 @@ fn show_graph_view(
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
-    on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
+    on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
+    on_edit_edge_treatment: &mut impl FnMut(crate::model::ExtrusionKey, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
@@ -4841,8 +4839,8 @@ fn show_row(
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
-    on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
+    on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
+    on_edit_edge_treatment: &mut impl FnMut(crate::model::ExtrusionKey, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
@@ -5294,7 +5292,7 @@ fn element_context_menu(
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
-    on_edit_extrusion: &mut impl FnMut(usize),
+    on_edit_extrusion: &mut impl FnMut(crate::model::ExtrusionKey),
     on_edit_edge_treatment_op: &mut impl FnMut(crate::model::EdgeTreatmentOpKey),
     on_edit_operation: &mut impl FnMut(SceneElement),
     on_joint_rest: &mut impl FnMut(JointRestCommand),
@@ -5460,6 +5458,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
@@ -5484,7 +5483,7 @@ mod tests {
         use crate::model::ComponentMember as CM;
         let members = [
             CM::ConstructionPlane(1),
-            CM::Extrusion(1),
+            CM::Extrusion(xkey(1)),
             CM::Body(bkey(1)),
             CM::BooleanOp(bopkey(1)),
             CM::MoveOp(mopkey(1)),
@@ -5512,7 +5511,7 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
             distance: 5.0,
@@ -5520,7 +5519,6 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         let live = |source| Body {
@@ -5529,16 +5527,16 @@ mod tests {
             name: None,
             shadow: false,
         };
-        doc.bodies.insert(live(BodySource::Extrusion(0))); // body 0
-        doc.bodies.insert(live(BodySource::Extrusion(0))); // body 1
+        doc.bodies.insert(live(BodySource::Extrusion(xkey(0)))); // body 0
+        doc.bodies.insert(live(BodySource::Extrusion(xkey(0)))); // body 1
         // A consumed input, which is not an output of anything the user can point at.
         doc.bodies.insert(Body {
             shadow: true,
-            ..live(BodySource::Extrusion(0))
+            ..live(BodySource::Extrusion(xkey(0)))
         });
 
         assert_eq!(
-            produced_bodies(&doc, &SceneElement::Extrusion(0)),
+            produced_bodies(&doc, &SceneElement::Extrusion(xkey(0))),
             vec![bkey(0), bkey(1)],
             "an operation's outputs, and not the input it consumed"
         );
@@ -5695,7 +5693,7 @@ mod tests {
     #[test]
     fn graph_layering_enforcement_keeps_inputs_above_consumers() {
         let a = HierarchyNode::Sketch(0);
-        let b = HierarchyNode::Extrusion(0);
+        let b = HierarchyNode::Extrusion(xkey(0));
         let c = HierarchyNode::Body(bkey(0));
         let edges = vec![(a, b), (b, c)];
         // b dragged above its input a: a slides up; c stays below b.
@@ -5768,7 +5766,7 @@ mod tests {
     #[test]
     fn graph_layering_stops_a_drag_once_its_inputs_hit_the_top() {
         let a = HierarchyNode::Sketch(0);
-        let b = HierarchyNode::Extrusion(0);
+        let b = HierarchyNode::Extrusion(xkey(0));
         let c = HierarchyNode::Body(bkey(0));
         let edges = vec![(a, b), (b, c)];
         // c is dragged far above the top. It has two inputs stacked above it (a → b → c),
@@ -5792,7 +5790,7 @@ mod tests {
     fn input_chain_depth_uses_the_longest_chain() {
         let a = HierarchyNode::Sketch(0);
         let b = HierarchyNode::Sketch(1);
-        let c = HierarchyNode::Extrusion(0);
+        let c = HierarchyNode::Extrusion(xkey(0));
         let d = HierarchyNode::Body(bkey(0));
         // a → c → d and b → d: d's longest chain is a → c → d, i.e. 2 above it.
         let edges = vec![(a, c), (c, d), (b, d)];
@@ -5809,7 +5807,7 @@ mod tests {
     fn graph_dependency_edges_cover_operation_inputs() {
         let mut doc = Document::default();
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -6203,7 +6201,7 @@ label_hidden: false,
         assert!(f.shows(HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }));
         assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: dkey(0), annotation: 0 }));
         assert!(!f.shows(HierarchyNode::ConstructionPlane(0)));
-        assert!(!f.shows(HierarchyNode::Extrusion(0)));
+        assert!(!f.shows(HierarchyNode::Extrusion(xkey(0))));
     }
 
     /// #381: the Model workbench default keeps drawing rows but hides their **components**
@@ -6268,14 +6266,13 @@ label_hidden: false,
         // itself is not cascaded away, so it must still surface — as a Document child, not
         // a top-level root.
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: Vec::new(),
             distance: 5.0,
             target: None,
             expression: String::new(),
             name: None,
-            deleted: false,
             symmetric: false,
             edge_treatments: Vec::new(),
         });
@@ -6301,7 +6298,7 @@ label_hidden: false,
         let children: Vec<HierarchyNode> = tree[0].children.iter().map(|c| c.node).collect();
         assert!(children.contains(&HierarchyNode::ConstructionPlane(0)));
         assert!(children.contains(&HierarchyNode::ConstructionPlane(1)));
-        assert!(children.contains(&HierarchyNode::Extrusion(0)));
+        assert!(children.contains(&HierarchyNode::Extrusion(xkey(0))));
         assert!(children.contains(&HierarchyNode::Body(bkey(0))));
     }
 
@@ -6997,7 +6994,7 @@ label_hidden: false,
         // Rolling back to the sketch hides everything built from it: its rect lines, the
         // extrusion, and the body — but not the sketch itself or its host plane.
         let rb = rolled_back_elements(&doc, &here(SceneElement::Sketch(sketch)));
-        assert!(rb.contains(&SceneElement::Extrusion(0)), "extrusion depends on the sketch");
+        assert!(rb.contains(&SceneElement::Extrusion(xkey(0))), "extrusion depends on the sketch");
         assert!(rb.contains(&SceneElement::Body(bkey(0))), "body depends on the extrusion");
         assert!(!rb.contains(&SceneElement::Sketch(sketch)), "the marker itself stays");
         assert!(!rb.contains(&SceneElement::ConstructionPlane(0)), "ancestors stay active");
@@ -7005,7 +7002,7 @@ label_hidden: false,
         // "Just before here" additionally hides the marker element itself.
         let rb_before = rolled_back_elements(&doc, &before(SceneElement::Sketch(sketch)));
         assert!(rb_before.contains(&SceneElement::Sketch(sketch)), "inclusive hides the marker");
-        assert!(rb_before.contains(&SceneElement::Extrusion(0)), "and its descendants");
+        assert!(rb_before.contains(&SceneElement::Extrusion(xkey(0))), "and its descendants");
 
         // Rolling back to the body (a leaf nothing consumes) suppresses nothing — unless
         // inclusive, which hides just the body.
@@ -7025,19 +7022,18 @@ label_hidden: false,
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let rect_lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        doc.extrusions.push(Extrusion {
+        doc.extrusions.insert(Extrusion {
             sketch,
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 5.0,
             target: None,
             expression: String::new(),
             name: None,
-            deleted: false,
             symmetric: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(Body {
-            source: BodySource::Extrusion(0),
+            source: BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,

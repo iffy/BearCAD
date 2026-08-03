@@ -515,15 +515,12 @@ fn occt_extrusion_mesh(doc: &Document, extrusion: &Extrusion, distance: f32) -> 
 /// deleted/degenerate).
 fn occt_fused_extrusions(
     doc: &Document,
-    indices: &[usize],
+    indices: &[crate::model::ExtrusionKey],
 ) -> Option<Option<crate::kernel::Shape>> {
     use crate::kernel::BoolOp;
     let mut fused: Option<crate::kernel::Shape> = None;
     for &ei in indices {
         let extrusion = doc.extrusions.get(ei)?;
-        if extrusion.deleted {
-            continue;
-        }
         let distance = effective_distance(doc, extrusion);
         if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
             continue;
@@ -565,8 +562,8 @@ fn occt_fused_extrusions(
 /// falls back to the hand-rolled per-extrusion concatenation.
 fn occt_body_mesh(
     doc: &Document,
-    add_indices: &[usize],
-    cut_indices: &[usize],
+    add_indices: &[crate::model::ExtrusionKey],
+    cut_indices: &[crate::model::ExtrusionKey],
 ) -> Option<SolidMesh> {
     let solid = occt_body_shape_from_indices(doc, add_indices, cut_indices)?;
     let tris = solid.tessellate(OCCT_DEFLECTION as f64);
@@ -578,8 +575,8 @@ fn occt_body_mesh(
 /// extrusion isn't kernel-representable, or the adds contribute no geometry at all.
 fn occt_body_shape_from_indices(
     doc: &Document,
-    add_indices: &[usize],
-    cut_indices: &[usize],
+    add_indices: &[crate::model::ExtrusionKey],
+    cut_indices: &[crate::model::ExtrusionKey],
 ) -> Option<crate::kernel::Shape> {
     let solid = occt_fused_extrusions(doc, add_indices)??;
     occt_subtract_cut_extrusions(doc, solid, cut_indices)
@@ -591,14 +588,11 @@ fn occt_body_shape_from_indices(
 fn occt_subtract_cut_extrusions(
     doc: &Document,
     mut solid: crate::kernel::Shape,
-    cut_indices: &[usize],
+    cut_indices: &[crate::model::ExtrusionKey],
 ) -> Option<crate::kernel::Shape> {
     use crate::kernel::BoolOp;
     for &ei in cut_indices {
         let extrusion = doc.extrusions.get(ei)?;
-        if extrusion.deleted {
-            continue;
-        }
         let distance = effective_distance(doc, extrusion);
         if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
             continue;
@@ -2389,7 +2383,7 @@ pub fn warm_body_mesh_cache(doc: &Document, body_index: crate::model::BodyKey, m
 /// degenerate (other commit checks own those rejections).
 pub fn occt_edge_treatments_feasible(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     candidate: &Extrusion,
 ) -> bool {
     let Some(base) = doc.extrusions.get(extrusion) else {
@@ -3511,7 +3505,6 @@ pub fn selection_world_bounds(
                 if let Some((min, max)) = doc
                     .extrusions
                     .get(ei)
-                    .filter(|e| !e.deleted)
                     .and_then(|e| extrusion_mesh(doc, e))
                     .and_then(|m| m.bounds())
                 {
@@ -4525,9 +4518,6 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
         let Some(extrusion) = doc.extrusions.get(ei) else {
             continue;
         };
-        if extrusion.deleted {
-            continue;
-        }
         if let Some(solid) = extrusion_mesh(doc, extrusion) {
             mesh.triangles.extend(solid.triangles);
         }
@@ -4664,8 +4654,7 @@ pub fn preview_cut_body_mesh(doc: &Document, body_index: crate::model::BodyKey, 
                 }
             }
             let mut clone = doc.clone();
-            let cut_index = clone.extrusions.len();
-            clone.extrusions.push(cut.clone());
+            let cut_index = clone.extrusions.insert(cut.clone());
             let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
             cut_indices.push(cut_index);
             let mesh = occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices)
@@ -5411,12 +5400,12 @@ fn polygon_profile_world(doc: &Document, lines: &[usize]) -> Option<(Vec<Vec3>, 
 /// otherwise the base end (sketch plane, or `−|d|/2` when symmetric, #504).
 pub fn cap_polygon_world(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     profile: &ExtrudeFace,
     top: bool,
 ) -> Option<Vec<Vec3>> {
     let ext = doc.extrusions.get(extrusion)?;
-    if ext.deleted || !ext.faces.contains(profile) {
+    if !ext.faces.contains(profile) {
         return None;
     }
     let distance = effective_distance(doc, ext);
@@ -5432,14 +5421,14 @@ pub fn cap_polygon_world(
 /// stay coplanar.
 pub fn cap_hole_loops_world(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     profile: &ExtrudeFace,
     top: bool,
 ) -> Vec<Vec<Vec3>> {
     let Some(ext) = doc.extrusions.get(extrusion) else {
         return Vec::new();
     };
-    if ext.deleted || !ext.faces.contains(profile) {
+    if !ext.faces.contains(profile) {
         return Vec::new();
     }
     let distance = effective_distance(doc, ext);
@@ -5499,12 +5488,12 @@ pub fn side_face_count(profile: &ExtrudeFace) -> usize {
 /// identical to the old faceted addressing (each straight line is exactly one faceted edge).
 pub fn side_quad_world(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     profile: &ExtrudeFace,
     edge: usize,
 ) -> Option<[Vec3; 4]> {
     let ext = doc.extrusions.get(extrusion)?;
-    if ext.deleted || !ext.faces.contains(profile) || edge >= side_face_count(profile) {
+    if !ext.faces.contains(profile) || edge >= side_face_count(profile) {
         return None;
     }
     let ExtrudeFace::Polygon(lines) = profile else {
@@ -5793,13 +5782,10 @@ pub fn edge_treatment_conflicts(existing: &[EdgeTreatment], new: ExtrusionEdgeRe
 /// deleted, `edge.face()` indexes one of its faces, that face has an analytic (`Rect`/
 /// `Polygon`, at least 3 sides) profile — a `Circle` profile has none, see
 /// [`side_face_count`] — and `edge`'s own index is in range.
-pub fn extrusion_edge_exists(doc: &Document, extrusion: usize, edge: ExtrusionEdgeRef) -> bool {
+pub fn extrusion_edge_exists(doc: &Document, extrusion: crate::model::ExtrusionKey, edge: ExtrusionEdgeRef) -> bool {
     let Some(ext) = doc.extrusions.get(extrusion) else {
         return false;
     };
-    if ext.deleted {
-        return false;
-    }
     let Some(face) = ext.faces.get(edge.face()) else {
         return false;
     };
@@ -5829,7 +5815,7 @@ pub fn treatable_edge_for_selection(
     body: crate::model::BodyKey,
     a: [i32; 3],
     b: [i32; 3],
-) -> Option<(usize, ExtrusionEdgeRef)> {
+) -> Option<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> {
     let q = crate::hierarchy::quantize_body_point;
     for (extrusion, edge, ea, eb) in treatable_edges(doc) {
         if crate::model::body_index_for_extrusion(doc, extrusion) != Some(body) {
@@ -5849,8 +5835,8 @@ pub fn treatable_edge_for_selection(
 pub fn treatable_edges_in_selection(
     doc: &Document,
     selection: &crate::selection::SceneSelection,
-) -> Vec<(usize, ExtrusionEdgeRef)> {
-    let mut out: Vec<(usize, ExtrusionEdgeRef)> = Vec::new();
+) -> Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> {
+    let mut out: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> = Vec::new();
     for element in selection.iter() {
         if let crate::hierarchy::SceneElement::BodyEdge { body, a, b } = element {
             if let Some(resolved) = treatable_edge_for_selection(doc, body, a, b) {
@@ -5867,12 +5853,11 @@ pub fn treatable_edges_in_selection(
 /// directly (rather than the generic mesh-feature-edge extraction used for construction-plane
 /// referencing, #31) when no sketch is open, since it needs the structured edge reference, not
 /// just two raw points.
-pub fn treatable_edges(doc: &Document) -> Vec<(usize, ExtrusionEdgeRef, Vec3, Vec3)> {
+pub fn treatable_edges(
+    doc: &Document,
+) -> Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef, Vec3, Vec3)> {
     let mut out = Vec::new();
-    for (ei, ext) in doc.extrusions.iter().enumerate() {
-        if ext.deleted {
-            continue;
-        }
+    for (ei, ext) in doc.extrusions.iter() {
         for (fi, face) in ext.faces.iter().enumerate() {
             let n = side_face_count(face);
             if n < 3 {
@@ -5934,11 +5919,8 @@ pub fn treatable_edges(doc: &Document) -> Vec<(usize, ExtrusionEdgeRef, Vec3, Ve
 /// amount) for the 3D edge chamfer/fillet gizmo — the 3D analogue of `vertex_treatment_anchor`
 /// in `main.rs`. `None` if the edge no longer resolves (deleted extrusion, out-of-range index,
 /// or degenerate geometry).
-pub fn extrusion_edge_anchor(doc: &Document, extrusion: usize, edge: ExtrusionEdgeRef) -> Option<(Vec3, Vec3)> {
+pub fn extrusion_edge_anchor(doc: &Document, extrusion: crate::model::ExtrusionKey, edge: ExtrusionEdgeRef) -> Option<(Vec3, Vec3)> {
     let ext = doc.extrusions.get(extrusion)?;
-    if ext.deleted {
-        return None;
-    }
     let face = ext.faces.get(edge.face())?;
     // Circle cap rim (#177): anchor at a rim point, pointing diagonally outward (radial +
     // cap normal) like the polygonal cap-edge bisector below.
@@ -6016,7 +5998,7 @@ pub fn extrusion_edge_anchor(doc: &Document, extrusion: usize, edge: ExtrusionEd
 /// fallback (which never panics, but also never reports *why* an edge didn't visibly change).
 pub fn edge_treatment_would_bevel(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     edge: ExtrusionEdgeRef,
     kind: VertexTreatmentKind,
     amount: f32,
@@ -6027,9 +6009,6 @@ pub fn edge_treatment_would_bevel(
     let Some(ext) = doc.extrusions.get(extrusion) else {
         return false;
     };
-    if ext.deleted {
-        return false;
-    }
     let Some(face) = ext.faces.get(edge.face()) else {
         return false;
     };
@@ -6102,7 +6081,7 @@ pub fn edge_treatment_would_bevel(
 /// [`crate::actions::Action::CommitEdgeTreatments`] to build the value it stores.
 pub fn extrusion_with_edge_treatment(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     treatment: EdgeTreatment,
 ) -> Option<Extrusion> {
     extrusion_with_edge_treatments(doc, extrusion, [treatment])
@@ -6112,7 +6091,7 @@ pub fn extrusion_with_edge_treatment(
 /// multi-edge chamfer/fillet splices every in-progress treatment into the clone at once.
 pub fn extrusion_with_edge_treatments(
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     treatments: impl IntoIterator<Item = EdgeTreatment>,
 ) -> Option<Extrusion> {
     let mut ext = doc.extrusions.get(extrusion)?.clone();
@@ -6462,6 +6441,7 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::move_op_key_for_slot as mopkey;
     use super::*;
@@ -6512,9 +6492,9 @@ mod tests {
     fn a_cube_keeps_its_edges_sharp() {
         let (mut doc, sketch) = sketch_doc();
         let face = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
-        doc.extrusions.push(extrusion(sketch, vec![face], 10.0));
+        doc.extrusions.insert(extrusion(sketch, vec![face], 10.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             name: None,
             material: None,
             shadow: false,
@@ -7540,9 +7520,9 @@ mod tests {
     #[test]
     fn body_mesh_analyses_are_cached_and_invalidated() {
         let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -7557,7 +7537,7 @@ mod tests {
 
         // Changing the geometry invalidates it: the taller box's faces are recomputed.
         let before = first.clone();
-        doc.extrusions[0].distance = 40.0;
+        doc.extrusions[xkey(0)].distance = 40.0;
         let after = body_face_groups(&doc, bkey(0));
         assert!(!std::rc::Rc::ptr_eq(&before, &after), "a geometry edit rebuilds the groups");
         let height = |groups: &Vec<Vec<[Vec3; 3]>>| {
@@ -7691,10 +7671,10 @@ mod tests {
     #[test]
     fn uncached_mesh_follows_scratch_doc_edit() {
         let (mut doc, _sketch, ext) = box_doc();
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         // body 0: the extruded box; body 1: a moved copy of it.
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -7758,12 +7738,12 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let outer = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let inner = rect_profile(&mut doc, sketch, 3.0, 3.0, 4.0, 4.0);
-        doc.extrusions.push(extrusion(sketch, vec![outer], 5.0));
-        doc.extrusions.push(extrusion(sketch, vec![inner], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![outer], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![inner], 5.0));
         doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::Solid {
-                add: vec![0],
-                cut: vec![1],
+                add: vec![xkey(0)],
+                cut: vec![xkey(1)],
             },
             material: None,
             name: None,
@@ -7785,9 +7765,9 @@ mod tests {
     #[test]
     fn selection_bounds_cover_a_body_faces_full_extent() {
         let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -7860,9 +7840,9 @@ mod tests {
         use crate::model::{Body, BodySource, ExtrudeTarget, RepeatMode, RepeatOperation, RevolveAxis};
         let (mut doc, sketch, ext) = box_doc(); // 10x10x5 box, x∈[0,10]
         let _ = sketch;
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(Body {
-            source: BodySource::Solid { add: vec![0], cut: vec![] },
+            source: BodySource::Solid { add: vec![xkey(0)], cut: vec![] },
             material: None,
             name: None,
             shadow: false,
@@ -7923,11 +7903,11 @@ mod tests {
         // Two 10x10x5 boxes overlapping in x∈[5,10]: union volume 500+500-250 = 750.
         let a = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let b = rect_profile(&mut doc, sketch, 5.0, 0.0, 10.0, 10.0);
-        doc.extrusions.push(extrusion(sketch, vec![a], 5.0));
-        doc.extrusions.push(extrusion(sketch, vec![b], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![a], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![b], 5.0));
         for ei in 0..2 {
             doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::Extrusion(ei),
+                source: crate::model::BodySource::Extrusion(xkey(ei)),
                 material: None,
                 name: None,
                 shadow: false,
@@ -8034,9 +8014,9 @@ mod tests {
             }
             a.abs() * 0.5
         };
-        doc.extrusions.push(extrusion(sketch, vec![glyph_face], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![glyph_face], 5.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -8062,9 +8042,9 @@ mod tests {
             a: Box::new(ExtrudeFace::Circle(0)),
             b: Box::new(ExtrudeFace::Circle(1)),
         };
-        doc.extrusions.push(extrusion(sketch, vec![ring], h));
+        doc.extrusions.insert(extrusion(sketch, vec![ring], h));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -8091,10 +8071,10 @@ mod tests {
             a: Box::new(ExtrudeFace::Circle(0)),
             b: Box::new(ExtrudeFace::Circle(1)),
         };
-        doc.extrusions.push(extrusion(sketch, vec![ring.clone()], h));
+        doc.extrusions.insert(extrusion(sketch, vec![ring.clone()], h));
 
-        let base = cap_hole_loops_world(&doc, 0, &ring, false);
-        let top = cap_hole_loops_world(&doc, 0, &ring, true);
+        let base = cap_hole_loops_world(&doc, xkey(0), &ring, false);
+        let top = cap_hole_loops_world(&doc, xkey(0), &ring, true);
         assert_eq!(base.len(), 1, "the ring has one hole on the base cap");
         assert_eq!(top.len(), 1, "and one hole on the top cap");
 
@@ -8107,8 +8087,8 @@ mod tests {
         );
 
         // A simply-connected cap (a plain disc) has no holes.
-        doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], h));
-        let disc = cap_hole_loops_world(&doc, 1, &ExtrudeFace::Circle(0), true);
+        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(0)], h));
+        let disc = cap_hole_loops_world(&doc, xkey(1), &ExtrudeFace::Circle(0), true);
         assert!(disc.is_empty(), "a solid disc cap reports no holes");
     }
 
@@ -8124,9 +8104,9 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -8148,7 +8128,7 @@ mod tests {
     fn cut_hole_rim_fillet_rounds_the_hole_edge() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0);
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
         let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0);
         hole.edge_treatments.push(EdgeTreatment {
@@ -8156,9 +8136,9 @@ mod tests {
             kind: VertexTreatmentKind::Fillet,
             amount: 1.0,
         });
-        doc.extrusions.push(hole);
+        doc.extrusions.insert(hole);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8184,12 +8164,12 @@ mod tests {
         use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0); // 20×20×5
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         // A 2.5mm-radius hole at x = -6.
         doc.circles.push(Circle::from_local_center_radius(sketch, -6.0, 0.0, 2.5, 0.0));
-        doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
+        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8201,7 +8181,7 @@ mod tests {
         doc.repeat_ops.insert(RepeatOperation {
             targets: Vec::new(),
             plane_targets: Vec::new(),
-            extrusion_targets: vec![1],
+            extrusion_targets: vec![xkey(1)],
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
             path_circle: None,
@@ -8233,9 +8213,9 @@ mod tests {
         use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
         let (mut doc, sketch) = sketch_doc();
         let box_face = rect_profile(&mut doc, sketch, 0.0, 0.0, 4.0, 4.0); // 4×4
-        doc.extrusions.push(extrusion(sketch, vec![box_face], 5.0)); // ×5 = 80
+        doc.extrusions.insert(extrusion(sketch, vec![box_face], 5.0)); // ×5 = 80
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![] },
+            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![] },
             material: None,
             name: None,
             shadow: false,
@@ -8246,7 +8226,7 @@ mod tests {
         doc.repeat_ops.insert(RepeatOperation {
             targets: Vec::new(),
             plane_targets: Vec::new(),
-            extrusion_targets: vec![0],
+            extrusion_targets: vec![xkey(0)],
             sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
             path_circle: None,
@@ -8274,9 +8254,9 @@ mod tests {
     fn parameter_edit_propagates_to_a_moved_descendant() {
         use crate::model::{Body, BodySource, MoveOperation, Parameter};
         let (mut doc, _sketch, ext) = box_doc(); // box x ∈ [0, 10]
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(Body {
-            source: BodySource::Solid { add: vec![0], cut: vec![] },
+            source: BodySource::Solid { add: vec![xkey(0)], cut: vec![] },
             material: None,
             name: None,
             shadow: true, // consumed by the move
@@ -8336,7 +8316,7 @@ mod tests {
     fn cut_hole_rim_chamfer_countersinks_the_body() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0);
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
         let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0);
         hole.edge_treatments.push(EdgeTreatment {
@@ -8346,9 +8326,9 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
-        doc.extrusions.push(hole);
+        doc.extrusions.insert(hole);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8369,7 +8349,7 @@ mod tests {
     fn treatable_edges_include_circle_cap_rims() {
         let (mut doc, sketch) = sketch_doc();
         doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
-        doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
+        doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
         let edges = treatable_edges(&doc);
         let tops: Vec<_> = edges
             .iter()
@@ -8390,7 +8370,7 @@ mod tests {
             .all(|(_, e, _, _)| !matches!(e, ExtrusionEdgeRef::Vertical { .. })));
         assert!(extrusion_edge_exists(
             &doc,
-            0,
+            xkey(0),
             ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true }
         ));
     }
@@ -8402,16 +8382,16 @@ mod tests {
     fn multi_face_cut_extrusion_subtracts_every_face() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, 0.0, 0.0, 50.0, 40.0);
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         doc.circles.push(Circle::from_local_center_radius(sketch, 35.0, 10.0, 2.5, 0.0));
         doc.circles.push(Circle::from_local_center_radius(sketch, 35.0, 30.0, 2.5, 0.0));
-        doc.extrusions.push(extrusion(
+        doc.extrusions.insert(extrusion(
             sketch,
             vec![ExtrudeFace::Circle(0), ExtrudeFace::Circle(1)],
             6.0,
         ));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8431,9 +8411,9 @@ mod tests {
     fn preview_cut_body_mesh_removes_material() {
         let (mut doc, sketch) = sketch_doc();
         let outer = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
-        doc.extrusions.push(extrusion(sketch, vec![outer], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![outer], 5.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -8461,18 +8441,18 @@ mod tests {
     fn body_face_target_reaches_another_extrusions_cap() {
         let (mut doc, sketch) = sketch_doc();
         let base_profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
-        doc.extrusions.push(extrusion(sketch, vec![base_profile.clone()], 8.0));
+        doc.extrusions.insert(extrusion(sketch, vec![base_profile.clone()], 8.0));
 
         let second_profile = rect_profile(&mut doc, sketch, 20.0, 0.0, 10.0, 10.0);
         let mut second = extrusion(sketch, vec![second_profile], 3.0);
         second.target = Some(ExtrudeTarget::BodyFace(FaceId::ExtrudeCap {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile: base_profile,
             top: true,
         }));
-        doc.extrusions.push(second);
+        doc.extrusions.insert(second);
 
-        let depth = effective_distance(&doc, &doc.extrusions[1]);
+        let depth = effective_distance(&doc, &doc.extrusions[xkey(1)]);
         assert!(
             (depth - 8.0).abs() < 1e-3,
             "should reach extrusion 0's top cap at z=8, got {depth}"
@@ -8488,12 +8468,12 @@ mod tests {
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let mut ext = extrusion(sketch, vec![profile.clone()], 3.0);
         ext.target = Some(ExtrudeTarget::BodyFace(FaceId::ExtrudeCap {
-            extrusion: 99,
+            extrusion: xkey(99),
             profile,
             top: true,
         }));
-        doc.extrusions.push(ext);
-        let depth = effective_distance(&doc, &doc.extrusions[0]);
+        doc.extrusions.insert(ext);
+        let depth = effective_distance(&doc, &doc.extrusions[xkey(0)]);
         assert!((depth - 3.0).abs() < 1e-3, "should fall back to distance=3, got {depth}");
     }
 
@@ -8704,9 +8684,9 @@ mod tests {
     fn revolve_cut_carves_the_targeted_body() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -8834,9 +8814,9 @@ mod tests {
     fn sweep_cut_carves_the_targeted_body() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -8867,9 +8847,9 @@ mod tests {
     fn loft_cut_carves_the_targeted_body() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
-        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.extrusions.insert(extrusion(sketch, vec![plate], 5.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -9094,7 +9074,6 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         }
     }
@@ -9131,8 +9110,7 @@ mod tests {
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let mut ext = extrusion(sketch, vec![profile.clone()], 20.0);
         ext.symmetric = true;
-        doc.extrusions.push(ext);
-        let ei = doc.extrusions.len() - 1;
+        let ei = doc.extrusions.insert(ext);
         let base = glam::Vec3::ZERO;
         let normal = glam::Vec3::Z;
         // The sketch sits on z = 0; the symmetric caps are at +10 and -10, not +20 and 0.
@@ -9377,11 +9355,14 @@ mod tests {
         // Two D counter profiles cut through the full thickness.
         let upper = push_d_profile(&mut doc, sketch, UPPER.0, UPPER.1, UPPER.2, UPPER.3);
         let lower = push_d_profile(&mut doc, sketch, LOWER.0, LOWER.1, LOWER.2, LOWER.3);
-        doc.extrusions.push(extrusion(sketch, vec![outer], LETTER_B_DEPTH)); // 0: the B
-        doc.extrusions.push(extrusion(sketch, vec![upper], LETTER_B_DEPTH)); // 1: upper cut
-        doc.extrusions.push(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
+        doc.extrusions.insert(extrusion(sketch, vec![outer], LETTER_B_DEPTH)); // 0: the B
+        doc.extrusions.insert(extrusion(sketch, vec![upper], LETTER_B_DEPTH)); // 1: upper cut
+        doc.extrusions.insert(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1, 2] },
+            source: crate::model::BodySource::Solid {
+                add: vec![xkey(0)],
+                cut: vec![xkey(1), xkey(2)],
+            },
             material: None,
             name: Some("B".to_string()),
             shadow: false,
@@ -9724,9 +9705,9 @@ mod tests {
 
         let (doc, _sketch, ext) = box_doc();
         let mut doc = doc;
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -9772,9 +9753,9 @@ mod tests {
     #[test]
     fn body_mesh_cache_invalidates_on_in_place_geometry_edits() {
         let (mut doc, _sketch, ext) = box_doc();
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -9784,7 +9765,7 @@ mod tests {
         // Cached call returns the same mesh.
         assert_eq!(body_solid_mesh(&doc, bkey(0)).unwrap(), before);
 
-        doc.extrusions[0].distance = 9.0;
+        doc.extrusions[xkey(0)].distance = 9.0;
         let after = body_solid_mesh(&doc, bkey(0)).expect("re-meshed box");
         let (_, after_max) = after.bounds().unwrap();
         assert!(
@@ -9799,17 +9780,17 @@ mod tests {
     fn treatable_edges_enumerates_verticals_and_caps_for_rect_none_for_circle() {
         let (doc, _sketch, ext) = box_doc();
         let mut doc = doc;
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         let edges = treatable_edges(&doc);
         // 4 vertical + 4 bottom cap + 4 top cap = 12 for a rectangular profile.
         assert_eq!(edges.len(), 12);
-        assert!(edges.iter().all(|(ei, _, _, _)| *ei == 0));
+        assert!(edges.iter().all(|(ei, _, _, _)| *ei == xkey(0)));
 
         let (mut cdoc, csketch) = sketch_doc();
         cdoc.circles
             .push(Circle::from_local_center_radius(csketch, 0.0, 0.0, 5.0, 0.0));
         cdoc.extrusions
-            .push(extrusion(csketch, vec![ExtrudeFace::Circle(0)], 6.0));
+            .insert(extrusion(csketch, vec![ExtrudeFace::Circle(0)], 6.0));
         // Circle profiles have no polygonal edges; their two cap rims are treatable
         // (#177), emitted as chord segments naming Cap { edge: 0 }.
         let circle_edges = treatable_edges(&cdoc);
@@ -9822,26 +9803,26 @@ mod tests {
     #[test]
     fn extrusion_edge_anchor_points_at_edge_midpoint() {
         let (mut doc, _sketch, ext) = box_doc();
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         // Vertical edge 0 -> profile vertex 1 = local (10, 0); base z=0, top z=5.
         let (origin, normal) =
-            extrusion_edge_anchor(&doc, 0, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })
+            extrusion_edge_anchor(&doc, xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })
                 .unwrap();
         assert!((origin - Vec3::new(10.0, 0.0, 2.5)).length() < 1e-3, "{origin:?}");
         assert!(normal.length() > 0.9 && normal.length() < 1.1);
 
-        // A deleted extrusion, an out-of-range extrusion index, and an out-of-range edge index
-        // all resolve to `None`.
-        doc.extrusions[0].deleted = true;
+        // A removed extrusion, a stale key, and an out-of-range edge index all resolve to
+        // `None` (#1055).
+        let mut gone = doc.clone();
+        gone.extrusions.remove(xkey(0));
         assert!(
-            extrusion_edge_anchor(&doc, 0, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })
+            extrusion_edge_anchor(&gone, xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })
                 .is_none()
         );
-        doc.extrusions[0].deleted = false;
-        assert!(extrusion_edge_anchor(&doc, 7, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })
+        assert!(extrusion_edge_anchor(&doc, xkey(7), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })
             .is_none());
         assert!(
-            extrusion_edge_anchor(&doc, 0, ExtrusionEdgeRef::Vertical { face: 0, edge: 9 })
+            extrusion_edge_anchor(&doc, xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 9 })
                 .is_none()
         );
     }
@@ -9896,34 +9877,33 @@ mod tests {
 
     #[test]
     fn extrusion_edge_exists_checks_range_and_profile_kind() {
-        let (doc, _sketch, mut ext) = box_doc();
+        let (doc, _sketch, ext) = box_doc();
         let mut doc = doc;
-        doc.extrusions.push(ext.clone());
-        assert!(extrusion_edge_exists(&doc, 0, ExtrusionEdgeRef::Vertical { face: 0, edge: 3 }));
-        assert!(!extrusion_edge_exists(&doc, 0, ExtrusionEdgeRef::Vertical { face: 0, edge: 4 }));
-        assert!(!extrusion_edge_exists(&doc, 5, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }));
-        assert!(!extrusion_edge_exists(&doc, 0, ExtrusionEdgeRef::Vertical { face: 1, edge: 0 }));
-        ext.deleted = true;
-        doc.extrusions[0] = ext;
-        assert!(!extrusion_edge_exists(&doc, 0, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }));
+        doc.extrusions.insert(ext.clone());
+        assert!(extrusion_edge_exists(&doc, xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 3 }));
+        assert!(!extrusion_edge_exists(&doc, xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 4 }));
+        assert!(!extrusion_edge_exists(&doc, xkey(5), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }));
+        assert!(!extrusion_edge_exists(&doc, xkey(0), ExtrusionEdgeRef::Vertical { face: 1, edge: 0 }));
+        doc.extrusions.remove(xkey(0));
+        assert!(!extrusion_edge_exists(&doc, xkey(0), ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }));
     }
 
     #[test]
     fn extrusion_with_edge_treatment_replaces_same_edge_rather_than_stacking() {
         let (doc, _sketch, ext) = box_doc();
         let mut doc = doc;
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         let once = extrusion_with_edge_treatment(
             &doc,
-            0,
+            xkey(0),
             EdgeTreatment { edge, kind: VertexTreatmentKind::Chamfer, amount: 1.0 },
         )
         .unwrap();
-        doc.extrusions[0] = once;
+        doc.extrusions[xkey(0)] = once;
         let twice = extrusion_with_edge_treatment(
             &doc,
-            0,
+            xkey(0),
             EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 3.0 },
         )
         .unwrap();
@@ -9939,35 +9919,35 @@ mod tests {
     #[test]
     fn occt_edge_treatments_feasible_rejects_only_what_the_kernel_cannot_build() {
         let (mut doc, sketch, ext) = box_doc();
-        doc.extrusions.push(ext);
+        doc.extrusions.insert(ext);
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         let small = extrusion_with_edge_treatment(
             &doc,
-            0,
+            xkey(0),
             EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 2.0 },
         )
         .unwrap();
-        assert!(occt_edge_treatments_feasible(&doc, 0, &small));
+        assert!(occt_edge_treatments_feasible(&doc, xkey(0), &small));
         let oversized = extrusion_with_edge_treatment(
             &doc,
-            0,
+            xkey(0),
             EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 500.0 },
         )
         .unwrap();
-        assert!(!occt_edge_treatments_feasible(&doc, 0, &oversized));
+        assert!(!occt_edge_treatments_feasible(&doc, xkey(0), &oversized));
 
         // A two-face extrusion is kernel-representable too (each face's prism fused), so
         // the feasibility trial still applies: the oversized fillet is rejected on it.
         let second = rect_profile(&mut doc, sketch, 20.0, 20.0, 10.0, 10.0);
         let extra_face = second.clone();
-        doc.extrusions[0].faces.push(extra_face);
+        doc.extrusions[xkey(0)].faces.push(extra_face);
         let candidate = extrusion_with_edge_treatment(
             &doc,
-            0,
+            xkey(0),
             EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 500.0 },
         )
         .unwrap();
-        assert!(!occt_edge_treatments_feasible(&doc, 0, &candidate));
+        assert!(!occt_edge_treatments_feasible(&doc, xkey(0), &candidate));
     }
 
     /// #103 part 2: [`kernel_fallback_cut_warning`] fires exactly when a cut-bearing body
@@ -9977,7 +9957,7 @@ mod tests {
     fn kernel_fallback_cut_warning_fires_only_for_kernel_infeasible_cut_bodies() {
         let mut doc = cut_body_doc();
         assert_eq!(kernel_fallback_cut_warning(&doc), None, "healthy cut body: no warning");
-        doc.extrusions[0].edge_treatments.push(EdgeTreatment {
+        doc.extrusions[xkey(0)].edge_treatments.push(EdgeTreatment {
             edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
             kind: VertexTreatmentKind::Fillet,
             amount: 500.0,
@@ -9986,7 +9966,7 @@ mod tests {
         assert!(warning.contains("cuts are not shown"), "{warning}");
         // Without cuts there's nothing to silently drop: no warning even though the body
         // still falls back to the mesh-bevel path.
-        doc.bodies.values_mut().nth(0).unwrap().source = crate::model::BodySource::Solid { add: vec![0], cut: vec![] };
+        doc.bodies.values_mut().nth(0).unwrap().source = crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![] };
         assert_eq!(kernel_fallback_cut_warning(&doc), None);
     }
 }

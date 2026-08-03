@@ -71,7 +71,7 @@ pub fn scene_element_from_kind(
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(index)),
-        "extrusion" => Some(SceneElement::Extrusion(index)),
+        "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
@@ -182,7 +182,9 @@ pub fn scene_element_selection_index(
         | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_) => None,
-        SceneElement::ExtrusionEdge { extrusion, .. } => Some(*extrusion),
+        SceneElement::ExtrusionEdge { extrusion, .. } => {
+            doc.extrusions.keys().position(|k| k == *extrusion)
+        }
         SceneElement::RepeatedFace { instance, .. } => Some(*instance),
         // A page item indexes by its place on the page; a dimension has no index of its own,
         // so it reports the view it is shown on (#967).
@@ -204,8 +206,8 @@ pub fn scene_element_selection_index(
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
-        | SceneElement::Extrusion(i)
         | SceneElement::SketchText(i) => Some(*i),
+        SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
         SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
         SceneElement::UnitInstance(key) => doc.unit_instances.keys().position(|k| k == *key),
         SceneElement::Joint(key) => doc.joints.keys().position(|k| k == *key),
@@ -519,12 +521,12 @@ pub fn instruction_from_json(
             Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c })
         }
         "mirror_bodies" => {
-            let (plane, targets, mode) = mirror_op_args(o)?;
+            let (plane, targets, mode) = mirror_op_args(doc, o)?;
             Ok(Instruction::CreateMirrorOp { plane, targets, mode })
         }
         "edit_mirror" => {
             let op = req_usize(o, "index", "edit_mirror")?;
-            let (plane, targets, mode) = mirror_op_args(o)?;
+            let (plane, targets, mode) = mirror_op_args(doc, o)?;
             Ok(Instruction::EditMirrorOp { op, plane, targets, mode })
         }
         "repeat_bodies" => {
@@ -539,12 +541,12 @@ pub fn instruction_from_json(
             Ok(Instruction::EditRepeatOp { op, targets, axis, around_axis, flip, mode, count, spacing, length, length_target })
         }
         "slice" => {
-            let (targets, cutters, extend_infinite) = slice_op_args(o)?;
+            let (targets, cutters, extend_infinite) = slice_op_args(doc, o)?;
             Ok(Instruction::CreateSliceOp { targets, cutters, extend_infinite })
         }
         "edit_slice" => {
             let op = req_usize(o, "index", "edit_slice")?;
-            let (targets, cutters, extend_infinite) = slice_op_args(o)?;
+            let (targets, cutters, extend_infinite) = slice_op_args(doc, o)?;
             Ok(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })
         }
 
@@ -653,6 +655,7 @@ pub fn instruction_from_json(
         // ----- Chamfer/fillet a sketch vertex (#37/#38) or an extrusion's 3D edge (#77). -----
         "chamfer_vertex" | "fillet_vertex" => {
             let point = constraint_point_from_json(
+                doc,
                 o.get("point").ok_or_else(|| format!("{name} requires a `point`"))?,
             )?;
             let (kind, amount_key) = if name == "chamfer_vertex" {
@@ -907,7 +910,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
     let o = as_object(args)?;
     match name {
         "extrude" => {
-            let target = extrude_target_opt(o)?;
+            let target = extrude_target_opt(doc, o)?;
             // `distance` accepts a plain number or a parameter expression string (#402).
             let (distance, expression) = match opt_scalar(o, "distance")? {
                 Some(d) => d,
@@ -950,9 +953,10 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
         }
         "extrude_face" => {
             let face = face_id_from_json(
+                doc,
                 o.get("face").ok_or("extrude_face requires a `face` table")?,
             )?;
-            let target = extrude_target_opt(o)?;
+            let target = extrude_target_opt(doc, o)?;
             let distance = match opt_f32(o, "distance")? {
                 Some(d) => d,
                 None if target.is_some() => 0.0,
@@ -968,15 +972,16 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 None => (None, None),
             };
             let by = opt_f32(o, "by")?;
-            let target = extrude_target_opt(o)?;
+            let target = extrude_target_opt(doc, o)?;
             if let Some(by) = by {
                 if distance.is_some() {
                     return Err("edit_extrusion takes `distance` or `by`, not both".into());
                 }
                 let ext = doc
                     .extrusions
-                    .get(extrusion)
-                    .filter(|e| !e.deleted)
+                    .keys()
+                    .nth(extrusion)
+                    .map(|k| &doc.extrusions[k])
                     .ok_or_else(|| format!("no extrusion {extrusion}"))?;
                 distance = Some(crate::extrude::effective_distance(doc, ext) + by);
             }
@@ -999,16 +1004,22 @@ fn body_choice(o: &Map<String, Value>) -> ExtrudeBodyChoice {
 }
 
 /// An optional `to = {...}` extrude target.
-fn extrude_target_opt(o: &Map<String, Value>) -> Result<Option<ExtrudeTarget>, String> {
+fn extrude_target_opt(
+    doc: &crate::model::Document,
+    o: &Map<String, Value>,
+) -> Result<Option<ExtrudeTarget>, String> {
     match o.get("to") {
         None | Some(Value::Null) => Ok(None),
-        Some(v) => Ok(Some(extrude_target_from_json(v)?)),
+        Some(v) => Ok(Some(extrude_target_from_json(doc, v)?)),
     }
 }
 
 /// An `ExtrudeTarget` from a `to = {...}` object (mirrors `parse_extrude_target_table`):
 /// `{plane=i}`, `{face=<face spec | FaceId>}`, or `{vertex=<point>}`.
-fn extrude_target_from_json(v: &Value) -> Result<ExtrudeTarget, String> {
+fn extrude_target_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<ExtrudeTarget, String> {
     let t = v.as_object().ok_or("extrude `to` must be an object")?;
     if let Some(i) = opt_usize(t, "plane")? {
         return Ok(ExtrudeTarget::Plane(i));
@@ -1018,14 +1029,14 @@ fn extrude_target_from_json(v: &Value) -> Result<ExtrudeTarget, String> {
             let fo = face.as_object().ok_or("extrude `to.face` must be an object")?;
             // A `kind`/`type` key marks a 3D body face (FaceId); otherwise it's a flat profile.
             if fo.contains_key("kind") || fo.contains_key("type") {
-                return Ok(ExtrudeTarget::BodyFace(face_id_from_json(face)?));
+                return Ok(ExtrudeTarget::BodyFace(face_id_from_json(doc, face)?));
             }
             return Ok(ExtrudeTarget::Face(extrude_face_from_json(face)?));
         }
     }
     if let Some(vertex) = t.get("vertex") {
         if !vertex.is_null() {
-            return Ok(ExtrudeTarget::Vertex(constraint_point_from_json(vertex)?));
+            return Ok(ExtrudeTarget::Vertex(constraint_point_from_json(doc, vertex)?));
         }
     }
     Err("extrude target requires one of plane/face/vertex".into())
@@ -1069,7 +1080,10 @@ fn boolean_face_from_json(v: &Value) -> Result<ExtrudeFace, String> {
 /// A `ConstraintPoint` from a point object (mirrors `parse_constraint_point_table`): a line
 /// endpoint (`{kind="line", index, end}`), a circle center (`{kind="circle", index}`), or a
 /// body-face vertex (`{kind="face", face={...}, index}`).
-fn constraint_point_from_json(v: &Value) -> Result<ConstraintPoint, String> {
+fn constraint_point_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<ConstraintPoint, String> {
     let t = v.as_object().ok_or("point must be an object")?;
     let kind = t
         .get("kind")
@@ -1077,7 +1091,7 @@ fn constraint_point_from_json(v: &Value) -> Result<ConstraintPoint, String> {
         .and_then(Value::as_str)
         .ok_or("point requires a string `kind`")?;
     if kind.eq_ignore_ascii_case("face") {
-        let face = face_id_from_json(t.get("face").ok_or("face vertex requires `face`")?)?;
+        let face = face_id_from_json(doc, t.get("face").ok_or("face vertex requires `face`")?)?;
         let index = req_usize(t, "index", "point")?;
         return Ok(ConstraintPoint::FaceVertex { face, index });
     }
@@ -1349,7 +1363,7 @@ fn joint_op_args(
     let stop = |key: &str| -> Result<Option<ExtrudeTarget>, String> {
         match o.get(key) {
             None | Some(Value::Null) => Ok(None),
-            Some(v) => Ok(Some(extrude_target_from_json(v)?)),
+            Some(v) => Ok(Some(extrude_target_from_json(doc, v)?)),
         }
     };
     let limits = crate::model::JointLimits {
@@ -1568,20 +1582,23 @@ fn repeat_op_args(
         expr_arg(o, "spacing")?,
         expr_arg(o, "length")?,
         // `to` picks a face/plane/vertex the fill length is measured to (#645).
-        extrude_target_opt(o)?,
+        extrude_target_opt(doc, o)?,
     ))
 }
 
 /// `slice`/`edit_slice` shared arguments: target bodies, the planar cutters (face-spec
 /// objects), and the extend-to-infinity flag (default true).
-fn slice_op_args(o: &Map<String, Value>) -> Result<(Vec<usize>, Vec<FaceId>, bool), String> {
+fn slice_op_args(
+    doc: &crate::model::Document,
+    o: &Map<String, Value>,
+) -> Result<(Vec<usize>, Vec<FaceId>, bool), String> {
     let targets = usize_list(o, "bodies")?;
     let mut cutters = Vec::new();
     match o.get("cutters") {
         None | Some(Value::Null) => {}
         Some(Value::Array(list)) => {
             for t in list {
-                cutters.push(face_id_from_json(t)?);
+                cutters.push(face_id_from_json(doc, t)?);
             }
         }
         Some(_) => return Err("slice `cutters` must be a list of face specs".into()),
@@ -1592,11 +1609,12 @@ fn slice_op_args(o: &Map<String, Value>) -> Result<(Vec<usize>, Vec<FaceId>, boo
 /// `mirror_bodies`/`edit_mirror` shared arguments (#523): the mirror plane (a face spec) and
 /// the target bodies.
 fn mirror_op_args(
+    doc: &crate::model::Document,
     o: &Map<String, Value>,
 ) -> Result<(FaceId, Vec<usize>, crate::model::MirrorMode), String> {
     use crate::model::MirrorMode;
     let plane = match o.get("plane") {
-        Some(v) if !v.is_null() => face_id_from_json(v)?,
+        Some(v) if !v.is_null() => face_id_from_json(doc, v)?,
         _ => return Err("mirror `plane` (a face spec) is required".into()),
     };
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
@@ -1655,7 +1673,7 @@ fn revolve_axis_from_value(
 /// Mirrors `parse_face_id_table`: a body cap/side wall (`extrude_cap`/`extrude_side`, with
 /// its extrusion + profile descriptors) or, otherwise, a plain `(kind, index)` via
 /// [`FaceId::from_script`] (a construction plane or a circle profile).
-fn face_id_from_json(v: &Value) -> Result<FaceId, String> {
+fn face_id_from_json(doc: &crate::model::Document, v: &Value) -> Result<FaceId, String> {
     let t = v.as_object().ok_or("face spec must be an object")?;
     let kind = t
         .get("kind")
@@ -1664,7 +1682,13 @@ fn face_id_from_json(v: &Value) -> Result<FaceId, String> {
         .ok_or("face spec requires a string `kind`")?;
     match kind.to_ascii_lowercase().as_str() {
         "extrude_cap" | "extrude_side" => {
-            let extrusion = req_usize(t, "extrusion", "face")?;
+            let ordinal = req_usize(t, "extrusion", "face")?;
+            // A script names an extrusion by its ordinal among the live ones (#1055).
+            let extrusion = doc
+                .extrusions
+                .keys()
+                .nth(ordinal)
+                .ok_or_else(|| format!("no extrusion {ordinal}"))?;
             let profile_kind = t
                 .get("profile")
                 .or_else(|| t.get("profile_kind"))
@@ -1738,7 +1762,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 "construction_plane" | "plane" => {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
                 }
-                "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
+                "extrusion" => doc.extrusions.len(),
                 "body" => doc.bodies.len(),
                 "drawing" => doc.drawings.len(),
                 "parameter" => doc.parameters.len(),
@@ -1859,7 +1883,9 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             }
         }
         "extrusion" => {
-            let Some(extrusion) = doc.extrusions.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the extrusion's ordinal among the live ones (#1055).
+            let Some(extrusion) = doc.extrusions.keys().nth(index).map(|k| &doc.extrusions[k])
+            else {
                 return Ok(Value::Null);
             };
             t.insert("distance".into(), json!(extrusion.distance));
@@ -2188,6 +2214,7 @@ fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use crate::model::body_key_for_slot as bkey;
@@ -2472,7 +2499,7 @@ mod tests {
         let mut doc = Document::default();
         for _ in 0..2 {
             doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::Extrusion(0),
+                source: crate::model::BodySource::Extrusion(xkey(0)),
                 name: None,
                 material: None,
                 shadow: false,
@@ -2829,10 +2856,20 @@ mod tests {
         let mut doc = Document::default();
         for _ in 0..5 {
             doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::Extrusion(0),
+                source: crate::model::BodySource::Extrusion(xkey(0)),
                 name: None,
                 material: None,
                 shadow: false,
+            });
+            doc.extrusions.insert(crate::model::Extrusion {
+                sketch: 0,
+                faces: Vec::new(),
+                distance: 1.0,
+                target: None,
+                expression: String::new(),
+                symmetric: false,
+                name: None,
+                edge_treatments: Vec::new(),
             });
         }
         for (kind, idx) in [("plane", 2), ("sketch", 0), ("line", 5), ("circle", 1),
@@ -3207,8 +3244,20 @@ mod tests {
 
     #[test]
     fn slice_reads_plane_and_body_cutters() {
+        // The cap cutter below names an extrusion by ordinal (#1055).
+        let mut doc = Document::default();
+        doc.extrusions.insert(crate::model::Extrusion {
+            sketch: 0,
+            faces: Vec::new(),
+            distance: 1.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            edge_treatments: Vec::new(),
+        });
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "slice",
                 &json!({ "bodies": [0], "cutters": [{ "kind": "plane", "index": 1 }] })
             ),
@@ -3220,7 +3269,7 @@ mod tests {
         );
         // A body cap cutter, and the extend flag turned off.
         assert_eq!(
-            instruction_from_json(&Document::default(), 
+            instruction_from_json(&doc,
                 "edit_slice",
                 &json!({ "index": 0, "bodies": [1], "extend": false,
                          "cutters": [{ "kind": "extrude_cap", "extrusion": 0, "profile": "polygon",
@@ -3230,7 +3279,7 @@ mod tests {
                 op: 0,
                 targets: vec![1],
                 cutters: vec![FaceId::ExtrudeCap {
-                    extrusion: 0,
+                    extrusion: xkey(0),
                     profile: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
                     top: false,
                 }],

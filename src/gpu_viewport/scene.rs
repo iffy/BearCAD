@@ -608,7 +608,7 @@ pub struct ViewportSceneInput<'a> {
     pub repeat_ghosts: Vec<crate::extrude::SolidMesh>,
     /// Index of the extrusion currently being edited, if any. Its committed body
     /// is suppressed so only the ghost preview is shown while editing.
-    pub editing_extrusion: Option<usize>,
+    pub editing_extrusion: Option<crate::model::ExtrusionKey>,
     /// Target body when the in-progress extrusion is a **cut** (#142): its committed solid is
     /// suppressed and replaced by a translucent preview of the *cut result* (that body with
     /// `preview_extrusion` subtracted) rather than the additive block, so the preview looks
@@ -1688,7 +1688,6 @@ impl ViewportScene {
                         .doc
                         .extrusions
                         .get(*ei)
-                        .filter(|e| !e.deleted)
                         .and_then(|e| crate::extrude::extrusion_mesh(input.doc, e))
                     {
                         mesh.set_index_layer(MeshIndexLayer::Wireframe);
@@ -2713,13 +2712,13 @@ impl<'a> SceneMesh<'a> {
     fn push_sub_body_recolor(
         &mut self,
         doc: &Document,
-        extrusion: usize,
+        extrusion: crate::model::ExtrusionKey,
         color: Color32,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        let Some(ext) = doc.extrusions.get(extrusion).filter(|e| !e.deleted) else {
+        let Some(ext) = doc.extrusions.get(extrusion) else {
             return;
         };
         let Some(mesh) = crate::extrude::extrusion_mesh(doc, ext) else {
@@ -4984,6 +4983,7 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::component_key_for_slot as ckey;
@@ -5923,7 +5923,7 @@ mod tests {
             hover_overlay_indices(&state, ViewportHoverHighlight::Element(element))
         };
         for element in [
-            SceneElement::Extrusion(0),
+            SceneElement::Extrusion(xkey(0)),
             SceneElement::Body(bkey(0)),
             SceneElement::Component(ckey(0)),
             SceneElement::Joint(jkey(0)),
@@ -6581,7 +6581,7 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
 
         let cam = state.cam.clone();
-        let build = |editing: Option<usize>| {
+        let build = |editing: Option<crate::model::ExtrusionKey>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
@@ -6631,7 +6631,7 @@ mod tests {
         };
 
         let with_body = build(None);
-        let editing = build(Some(0));
+        let editing = build(Some(xkey(0)));
         assert!(
             editing.vertices.len() < with_body.vertices.len(),
             "editing scene ({}) should drop the committed body geometry present without editing ({})",
@@ -6690,9 +6690,9 @@ mod tests {
             target: None,
             symmetric: false,
         });
-        state.doc.extrusions[0].target = Some(crate::model::ExtrudeTarget::Plane(1));
+        state.doc.extrusions[xkey(0)].target = Some(crate::model::ExtrudeTarget::Plane(1));
 
-        let raw = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
+        let raw = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[xkey(0)]).unwrap();
         let cap_vertex = *raw
             .triangles
             .iter()
@@ -6766,7 +6766,6 @@ mod tests {
             target: Some(crate::model::ExtrudeTarget::Plane(1)),
             expression: String::new(),
             name: None,
-            deleted: false,
             symmetric: false,
             edge_treatments: Vec::new(),
         };

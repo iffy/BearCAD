@@ -769,6 +769,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `undo_groups` stay plain creation-order counts — a history tape, not an identity table.
   A script still names a body by its **ordinal** among the live ones, resolved to a key at
   the script boundary.
+- **Extrusion identity (#1055):** `Document::extrusions` is an `arena::Arena`, and an
+  extrusion is named by an `ExtrusionKey` — `BodySource::Extrusion`/`Extrusions`/`Solid`'s
+  add and cut lists/`UnitCut`'s cuts, `FaceId::ExtrudeCap`/`ExtrudeSide` (so every sketch
+  hosted on a cap or side wall names its host by key), `SceneElement::Extrusion` and
+  `ExtrusionEdge`, `HierarchyNode::Extrusion`/`EdgeTreatment`, `ComponentMember::Extrusion`,
+  a repeat op's `extrusion_targets`, and an edge-treatment op's treated edges. Deleting an
+  extrusion removes it; a body built solely from it goes too, and a body that merged it with
+  others just drops it. A script names an extrusion by its **ordinal** among the live ones,
+  resolved to a key at the script boundary.
 - **Boolean**: union, cut (subtract), intersect.
 - **Extrude body modes (#32/#35)**: an extrusion commits into a body one of three ways — **New
   body** (its own body), **Add to body** (fused into an existing body's solid), or **Cut body**

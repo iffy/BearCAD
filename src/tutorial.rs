@@ -1090,7 +1090,7 @@ fn profile_dimensioned(app: &AppState) -> bool {
 }
 
 fn extruded(app: &AppState) -> bool {
-    app.doc.extrusions.iter().any(|e| !e.deleted)
+    !app.doc.extrusions.is_empty()
 }
 
 /// Count treated edges of `kind` across both the first-class edge-treatment operations (#531)
@@ -1106,8 +1106,7 @@ fn edge_treatment_count(app: &AppState, kind: VertexTreatmentKind) -> usize {
     let legacy = app
         .doc
         .extrusions
-        .iter()
-        .filter(|e| !e.deleted)
+        .values()
         .flat_map(|e| &e.edge_treatments)
         .filter(|t| t.kind == kind)
         .count();
@@ -1666,12 +1665,18 @@ fn assist_extrude(app: &mut AppState) {
     });
 }
 
+/// The tutorial's own first extrusion — the plate (#1055: named by key, not by index 0).
+fn plate_extrusion(app: &AppState) -> Option<crate::model::ExtrusionKey> {
+    app.doc.extrusions.keys().next()
+}
+
 /// Round one of the bend's vertical edges. `nth` is the profile vertex the edge stands on.
 fn fillet_vertical_edge(app: &mut AppState, edge: usize, expression: &str) {
     use crate::model::{ExtrusionEdgeRef, VertexTreatmentKind};
+    let Some(plate) = plate_extrusion(app) else { return };
     let amount = crate::value::eval_length_mm_in_doc(expression, &app.doc).unwrap_or(4.0);
     app.apply(Action::CommitEdgeTreatments {
-        edges: vec![(0, ExtrusionEdgeRef::Vertical { face: 0, edge })],
+        edges: vec![(plate, ExtrusionEdgeRef::Vertical { face: 0, edge })],
         kind: VertexTreatmentKind::Fillet,
         amount,
     });
@@ -1708,9 +1713,10 @@ fn open_flange_sketch_for_me(app: &mut AppState) {
     if lines.len() < 3 {
         return;
     }
+    let Some(plate) = plate_extrusion(app) else { return };
     app.apply(Action::BeginSketch {
         face: FaceId::ExtrudeSide {
-            extrusion: 0,
+            extrusion: plate,
             profile: ExtrudeFace::Polygon(lines),
             edge: 2,
         },
@@ -1767,15 +1773,7 @@ fn assist_cut_holes(app: &mut AppState) {
 /// Countersink both holes: a chamfer on each hole's rim.
 fn assist_countersink(app: &mut AppState) {
     use crate::model::{ExtrusionEdgeRef, VertexTreatmentKind};
-    let cut = app
-        .doc
-        .extrusions
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, e)| !e.deleted)
-        .map(|(i, _)| i);
-    let Some(cut) = cut else { return };
+    let Some(cut) = app.doc.extrusions.keys().last() else { return };
     let faces = app.doc.extrusions[cut].faces.len();
     let edges = (0..faces)
         .map(|face| (cut, ExtrusionEdgeRef::Cap { face, edge: 0, top: false }))
@@ -1793,9 +1791,10 @@ fn assist_countersink(app: &mut AppState) {
 /// Round the four flange-tip corners.
 fn assist_round_corners(app: &mut AppState) {
     use crate::model::{ExtrusionEdgeRef, VertexTreatmentKind};
+    let Some(plate) = plate_extrusion(app) else { return };
     let edges = [0usize, 1, 3, 4]
         .into_iter()
-        .map(|edge| (0, ExtrusionEdgeRef::Vertical { face: 0, edge }))
+        .map(|edge| (plate, ExtrusionEdgeRef::Vertical { face: 0, edge }))
         .collect::<Vec<_>>();
     app.apply(Action::CommitEdgeTreatments {
         edges,
@@ -1853,9 +1852,10 @@ fn assist_engrave(app: &mut AppState) {
     if app.sketch_session.is_some() {
         app.apply(Action::ExitSketch);
     }
+    let Some(plate) = plate_extrusion(app) else { return };
     app.apply(Action::BeginSketch {
         face: FaceId::ExtrudeSide {
-            extrusion: 0,
+            extrusion: plate,
             profile: ExtrudeFace::Polygon(lines),
             edge: 0,
         },

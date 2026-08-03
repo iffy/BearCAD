@@ -3196,8 +3196,8 @@ pub fn nearest_treatable_edge(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
-) -> Option<(usize, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> {
-    let mut best: Option<(usize, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> = None;
+) -> Option<(crate::model::ExtrusionKey, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> {
+    let mut best: Option<(crate::model::ExtrusionKey, crate::model::ExtrusionEdgeRef, Vec3, Vec3, f32)> = None;
     for (extrusion, edge, a, b) in crate::extrude::treatable_edges(doc) {
         let Some(dist) = segment_pick_distance(screen, project, a, b) else {
             continue;
@@ -3397,6 +3397,7 @@ pub fn add_line_rectangle(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use eframe::egui::Pos2;
@@ -4210,7 +4211,7 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        doc.extrusions.push(Extrusion {
+        doc.extrusions.insert(Extrusion {
             sketch,
             faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
             distance: 5.0,
@@ -4218,11 +4219,10 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(Body {
-            source: BodySource::Extrusion(0),
+            source: BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,

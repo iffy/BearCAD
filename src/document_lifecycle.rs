@@ -102,8 +102,8 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
     }
 }
 
-pub fn extrusion_alive(doc: &Document, index: usize) -> bool {
-    doc.extrusions.get(index).is_some_and(|e| !e.deleted)
+pub fn extrusion_alive(doc: &Document, index: crate::model::ExtrusionKey) -> bool {
+    doc.extrusions.contains(index)
 }
 
 pub fn body_alive(doc: &Document, index: crate::model::BodyKey) -> bool {
@@ -568,15 +568,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
     changed
 }
 
-fn tombstone_extrusion(doc: &mut Document, index: usize) -> bool {
-    let Some(extrusion) = doc.extrusions.get_mut(index) else {
+fn tombstone_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) -> bool {
+    // The history-tape marker to drop is the one for this extrusion's place among the live
+    // ones, read before the removal (#1055).
+    let Some(ordinal) = doc.extrusions.keys().position(|k| k == index) else {
         return false;
     };
-    if extrusion.deleted {
-        return false;
-    }
-    extrusion.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Extrusion, index);
+    doc.extrusions.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::Extrusion, ordinal);
     // A body that depends solely on this extrusion is removed with it; a body merging this
     // extrusion with others (#32) just drops this one and keeps the rest.
     let dependent: Vec<crate::model::BodyKey> = doc
@@ -922,6 +921,7 @@ pub fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: us
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
@@ -962,7 +962,7 @@ mod tests {
 
     fn push_test_body(doc: &mut Document) -> crate::model::BodyKey {
         let key = doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             name: None,
             material: None,
             shadow: false,

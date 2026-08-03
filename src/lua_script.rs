@@ -207,10 +207,11 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
-        | SceneElement::Extrusion(i)
         | SceneElement::SketchText(i)
-
         => i,
+        SceneElement::Extrusion(key) => {
+            doc.extrusions.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::Component(key) => {
             doc.components.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -233,7 +234,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::BodyAxis { .. }
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_) => 0,
-        SceneElement::ExtrusionEdge { extrusion, .. } => extrusion,
+        SceneElement::ExtrusionEdge { extrusion, .. } => {
+            doc.extrusions.keys().position(|k| k == extrusion).unwrap_or(0)
+        }
         SceneElement::RepeatedFace { instance, .. } => instance,
         // A drawing item indexes by its place on the page; a dimension has no index of its
         // own, so it reports the view it's on.
@@ -262,7 +265,7 @@ pub fn scene_element_from_kind(
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(index)),
-        "extrusion" => Some(SceneElement::Extrusion(index)),
+        "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "boolean_op" | "boolean" => {
             Some(SceneElement::BooleanOp(doc.boolean_ops.keys().nth(index)?))
@@ -354,6 +357,18 @@ fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.body_at(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
+}
+
+/// The extrusion a script ordinal names (#1055) — extrusions are keyed, scripts count.
+fn extrusion_key_from_ordinal(
+    lua: &Lua,
+    ordinal: usize,
+) -> mlua::Result<crate::model::ExtrusionKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.extrusions.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no extrusion {ordinal}")))
 }
 
 /// The unit instance a script ordinal names (#1055) — instances are keyed, scripts count.
@@ -478,7 +493,7 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     match kind.to_ascii_lowercase().as_str() {
         "extrude_cap" | "extrude_side" => {
-            let extrusion: usize = table.get("extrusion")?;
+            let extrusion = extrusion_key_from_ordinal(lua, table.get("extrusion")?)?;
             let profile_kind: String =
                 table.get("profile").or_else(|_| table.get("profile_kind"))?;
             let profile_index: usize = table
@@ -2482,7 +2497,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "construction_plane" | "plane" => {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
                 }
-                "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
+                "extrusion" => doc.extrusions.len(),
                 "body" => doc.bodies.len(),
                 "drawing" => doc.drawings.len(),
                 "parameter" => doc.parameters.len(),
@@ -2596,7 +2611,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                 }
                 "extrusion" => {
-                    let Some(extrusion) = doc.extrusions.get(index).filter(|e| !e.deleted)
+                    // The script's `index` is the extrusion's ordinal among the live
+                    // ones (#1055).
+                    let Some(extrusion) =
+                        doc.extrusions.keys().nth(index).map(|k| &doc.extrusions[k])
                     else {
                         return Ok(Value::Nil);
                     };
@@ -2617,12 +2635,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     let add = lua.create_table()?;
                     for (i, ei) in body.source.extrusion_indices().iter().enumerate() {
-                        add.set(i + 1, *ei)?;
+                        add.set(i + 1, doc.extrusions.keys().position(|k| k == *ei))?;
                     }
                     t.set("add", add)?;
                     let cut = lua.create_table()?;
                     for (i, ei) in body.source.cut_extrusion_indices().iter().enumerate() {
-                        cut.set(i + 1, *ei)?;
+                        cut.set(i + 1, doc.extrusions.keys().position(|k| k == *ei))?;
                     }
                     t.set("cut", cut)?;
                 }
@@ -4229,10 +4247,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     symmetric,
                 })?;
             }
-            let element = SceneElement::Extrusion(unsafe {
-                tick.state().doc.extrusions.len().saturating_sub(1)
-            });
-            apply_optional_name(lua, element, Some(opts))
+            // The extrusion just committed (#1055): the newest live one.
+            let Some(key) = (unsafe { tick.state().doc.extrusions.keys().last() }) else {
+                return Ok(());
+            };
+            apply_optional_name(lua, SceneElement::Extrusion(key), Some(opts))
         })?,
     )?;
 
@@ -4270,10 +4289,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe {
                 tick.exec(Instruction::ExtrudeBodyFace { face, distance, body, target })?;
             }
-            let element = SceneElement::Extrusion(unsafe {
-                tick.state().doc.extrusions.len().saturating_sub(1)
-            });
-            apply_optional_name(lua, element, Some(opts))
+            // The extrusion just committed (#1055): the newest live one.
+            let Some(key) = (unsafe { tick.state().doc.extrusions.keys().last() }) else {
+                return Ok(());
+            };
+            apply_optional_name(lua, SceneElement::Extrusion(key), Some(opts))
         })?,
     )?;
 
@@ -4550,7 +4570,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "repeat_cut",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let cuts: Vec<usize> = opts.get::<Option<Vec<usize>>>("cuts")?.unwrap_or_default();
+            let cuts = opts
+                .get::<Option<Vec<usize>>>("cuts")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|ordinal| extrusion_key_from_ordinal(lua, ordinal))
+                .collect::<mlua::Result<Vec<_>>>()?;
             let (_targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(lua, &opts)?;
             let result = unsafe {
@@ -5450,13 +5475,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 let current = unsafe {
                     let doc = &tick.state().doc;
-                    let ext = doc
+                    let key = doc
                         .extrusions
-                        .get(extrusion)
-                        .filter(|e| !e.deleted)
-                        .ok_or_else(|| {
-                            mlua::Error::external(format!("no extrusion {extrusion}"))
-                        })?;
+                        .keys()
+                        .nth(extrusion)
+                        .ok_or_else(|| mlua::Error::external(format!("no extrusion {extrusion}")))?;
+                    let ext = &doc.extrusions[key];
                     crate::extrude::effective_distance(doc, ext)
                 };
                 distance = Some(current + by);
@@ -5634,6 +5658,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
@@ -6490,13 +6515,13 @@ mod tests {
             bearcad.extrude{ circles = {0, 1}, distance = 4BODY }
         "#;
         let split = run_lua(&source.replace("BODY", ""));
-        assert_eq!(split.doc.extrusions.iter().filter(|e| !e.deleted).count(), 2);
+        assert_eq!(split.doc.extrusions.values().count(), 2);
         assert_eq!(split.doc.bodies.values().count(), 2);
 
         let joined = run_lua(&source.replace("BODY", r#", body = "join""#));
-        assert_eq!(joined.doc.extrusions.iter().filter(|e| !e.deleted).count(), 1);
+        assert_eq!(joined.doc.extrusions.values().count(), 1);
         assert_eq!(joined.doc.bodies.values().count(), 1);
-        assert_eq!(joined.doc.extrusions[0].faces.len(), 2, "both profiles in the one solid");
+        assert_eq!(joined.doc.extrusions[xkey(0)].faces.len(), 2, "both profiles in the one solid");
     }
 
     /// #797: a dimension value of `name = value` defines the parameter on the spot and
@@ -7077,7 +7102,7 @@ mod tests {
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         assert_eq!(
             state.apply(crate::actions::Action::CommitEdgeTreatments {
-                edges: vec![(0, edge)],
+                edges: vec![(xkey(0), edge)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.75,
             }),
@@ -7111,7 +7136,7 @@ mod tests {
         "#,
         );
         assert!(
-            state.doc.extrusions[0].edge_treatments.is_empty(),
+            state.doc.extrusions[xkey(0)].edge_treatments.is_empty(),
             "an out-of-range edge shouldn't be stored"
         );
         assert!(
@@ -7353,23 +7378,23 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 1);
-        assert_eq!(state.doc.extrusions[0].distance, 20.0);
+        assert_eq!(state.doc.extrusions[xkey(0)].distance, 20.0);
         assert_eq!(
             find_element_by_name(&state.doc, "Boss"),
-            Some(SceneElement::Extrusion(0))
+            Some(SceneElement::Extrusion(xkey(0)))
         );
         // The extrusion produces a body that depends on it.
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
             state.doc.bodies.values().nth(0).unwrap().source,
-            crate::model::BodySource::Extrusion(0)
+            crate::model::BodySource::Extrusion(xkey(0))
         );
         // Both appear as elements; the body nests under its extrusion.
         let nodes = crate::hierarchy::build_element_list(&state.doc, state.sketch_session);
-        assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Extrusion(0)));
+        assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Extrusion(xkey(0))));
         assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Body(bkey(0))));
         let mesh =
-            crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
+            crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[xkey(0)]).unwrap();
         assert_eq!(mesh.triangles.len(), 12);
     }
 
@@ -7384,9 +7409,9 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 1);
-        assert!(state.doc.extrusions[0].symmetric);
+        assert!(state.doc.extrusions[xkey(0)].symmetric);
         let mesh =
-            crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
+            crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[xkey(0)]).unwrap();
         let (min, max) = mesh.bounds().unwrap();
         assert!(
             (min.z + 10.0).abs() < 0.5 && (max.z - 10.0).abs() < 0.5,
@@ -7415,7 +7440,7 @@ mod tests {
         );
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(
-            state.doc.extrusions[0].faces,
+            state.doc.extrusions[xkey(0)].faces,
             vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2])]
         );
     }
@@ -7434,7 +7459,7 @@ mod tests {
         );
         assert_eq!(state.doc.extrusions.len(), 2);
         assert_eq!(state.doc.bodies.len(), 1, "the second extrusion should join body 0");
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0, 1]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0), xkey(1)]);
     }
 
     #[test]
@@ -7453,8 +7478,8 @@ mod tests {
         );
         assert_eq!(state.doc.extrusions.len(), 2);
         assert_eq!(state.doc.bodies.len(), 1, "the cut should not create a new body");
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0]);
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [1]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0)]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [xkey(1)]);
     }
 
     /// #178 part 1: `body = "cut"` (or `"merge"`) explicitly requested, but the sketch isn't
@@ -7500,8 +7525,8 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 1, "the cut must not create a new body");
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0]);
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [1]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0)]);
+        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [xkey(1)]);
     }
 
     /// #178 part 2: `side_quad_world`'s `edge` indexes the profile's lines analytically. The
@@ -7526,7 +7551,7 @@ mod tests {
         let frame = crate::face::sketch_geometry_frame(&state.doc, 0).unwrap();
         for (edge, &li) in loop_lines.iter().enumerate() {
             let line = &state.doc.lines[li];
-            let quad = crate::extrude::side_quad_world(&state.doc, 0, &profile, edge);
+            let quad = crate::extrude::side_quad_world(&state.doc, xkey(0), &profile, edge);
             if line.is_curved() {
                 assert!(quad.is_none(), "curved bridge (line {li}) is not a flat wall");
                 continue;
@@ -7570,9 +7595,9 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
         crate::document_lifecycle::tombstone_element(
             &mut state.doc,
-            SceneElement::Extrusion(0),
+            SceneElement::Extrusion(xkey(0)),
         );
-        assert!(state.doc.extrusions[0].deleted);
+        assert!(!state.doc.extrusions.contains(xkey(0)));
         assert!(!state.doc.bodies.contains(bkey(0)), "body should be removed with its extrusion");
     }
 
@@ -7859,9 +7884,9 @@ mod tests {
         assert!((width - 24.0).abs() < 1e-3, "rect width, got {width}");
         assert!((state.doc.circles[0].r - 6.0).abs() < 1e-3, "radius expr");
         assert!((state.doc.circles[1].r - 12.0).abs() < 1e-3, "diameter expr");
-        assert!((state.doc.extrusions[0].distance - 12.0).abs() < 1e-3);
+        assert!((state.doc.extrusions[xkey(0)].distance - 12.0).abs() < 1e-3);
         // Expressions stored, not baked numbers: the dims reference the parameter…
-        assert_eq!(state.doc.extrusions[0].expression, "w / 2");
+        assert_eq!(state.doc.extrusions[xkey(0)].expression, "w / 2");
         let exprs: Vec<&str> = state
             .doc
             .constraints
@@ -7885,9 +7910,9 @@ mod tests {
         let width = ((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)).sqrt();
         assert!((width - 30.0).abs() < 1e-3, "rect follows the parameter, got {width}");
         assert!(
-            (state.doc.extrusions[0].distance - 15.0).abs() < 1e-3,
+            (state.doc.extrusions[xkey(0)].distance - 15.0).abs() < 1e-3,
             "extrusion depth follows the parameter, got {}",
-            state.doc.extrusions[0].distance
+            state.doc.extrusions[xkey(0)].distance
         );
     }
 
@@ -8766,8 +8791,8 @@ mod tests {
             bearcad.edit_extrusion{ extrusion = 0, distance = "d" }
             "#,
         );
-        assert!((state.doc.extrusions[0].distance - 9.0).abs() < 1e-3);
-        assert_eq!(state.doc.extrusions[0].expression, "d");
+        assert!((state.doc.extrusions[xkey(0)].distance - 9.0).abs() < 1e-3);
+        assert_eq!(state.doc.extrusions[xkey(0)].expression, "d");
     }
 
     /// #107: `bearcad.parameter("get"/"get_expression", name)` reads a parameter back.
@@ -8988,7 +9013,7 @@ mod tests {
             assert(not ok, "zero distance should raise")
         "#,
         );
-        assert!((state.doc.extrusions[0].distance - 6.0).abs() < 1e-3);
+        assert!((state.doc.extrusions[xkey(0)].distance - 6.0).abs() < 1e-3);
     }
 
     /// #114: `extrude{ to = { vertex = ... } }` snaps the new extrusion to another
@@ -9014,7 +9039,7 @@ mod tests {
             bearcad.edit_extrusion{ extrusion = 0, distance = 12 }
         "#,
         );
-        let snapped = &state.doc.extrusions[1];
+        let snapped = &state.doc.extrusions[xkey(1)];
         assert!(snapped.target.is_some(), "extrusion 1 should keep its snap target");
         let depth = crate::extrude::effective_distance(&state.doc, snapped);
         assert!(
@@ -9041,8 +9066,8 @@ mod tests {
             bearcad.edit_extrusion{ extrusion = 1, distance = 3 }
         "#,
         );
-        assert!(state.doc.extrusions[1].target.is_none());
-        assert!((state.doc.extrusions[1].distance - 3.0).abs() < 1e-3);
+        assert!(state.doc.extrusions[xkey(1)].target.is_none());
+        assert!((state.doc.extrusions[xkey(1)].distance - 3.0).abs() < 1e-3);
     }
 
     /// #114: `extrude{ to = { plane = i } }` (no distance needed) reaches exactly the
@@ -9058,7 +9083,7 @@ mod tests {
         "#,
         );
 
-        let ext = &state.doc.extrusions[0];
+        let ext = &state.doc.extrusions[xkey(0)];
         assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(3)));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
@@ -9099,9 +9124,14 @@ mod tests {
             }
         "#,
         );
-        let ext = &state.doc.extrusions[1];
+        let ext = &state.doc.extrusions[xkey(1)];
         assert!(
-            matches!(ext.target, Some(crate::model::ExtrudeTarget::BodyFace(crate::model::FaceId::ExtrudeCap { extrusion: 0, top: true, .. }))),
+            matches!(
+                ext.target,
+                Some(crate::model::ExtrudeTarget::BodyFace(
+                    crate::model::FaceId::ExtrudeCap { extrusion, top: true, .. }
+                )) if extrusion == xkey(0)
+            ),
             "unexpected target: {:?}",
             ext.target
         );
@@ -9181,7 +9211,7 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 2, "a second extrusion grew from the body face");
-        assert_eq!(state.doc.extrusions[1].name.as_deref(), Some("Boss"));
+        assert_eq!(state.doc.extrusions[xkey(1)].name.as_deref(), Some("Boss"));
     }
 
     /// #130: `extrude_face{ to = { face = ... } }` snaps a pushed face onto another face —
@@ -9200,7 +9230,7 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 2);
-        assert!(state.doc.extrusions[1].target.is_some(), "the extrusion snapped to a target");
+        assert!(state.doc.extrusions[xkey(1)].target.is_some(), "the extrusion snapped to a target");
     }
 
     /// the inputs (except kept B), and names the operation.
@@ -9598,12 +9628,12 @@ mod tests {
         "#,
         );
         assert_eq!(
-            state.doc.extrusions.iter().filter(|e| !e.deleted).count(),
+            state.doc.extrusions.values().count(),
             1,
             "the text extrudes into one extrusion"
         );
         // Its faces are the text's glyph regions.
-        let ex = state.doc.extrusions.iter().find(|e| !e.deleted).unwrap();
+        let ex = state.doc.extrusions.values().next().unwrap();
         assert!(
             ex.faces
                 .iter()

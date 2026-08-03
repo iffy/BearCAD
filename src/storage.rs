@@ -239,7 +239,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
     save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
-    save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
+    save_arena_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_arena_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
     save_arena_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
@@ -577,7 +577,7 @@ pub fn open(path: &str) -> Result<Document> {
     let construction_planes =
         load_construction_planes(&conn, construction_planes).map_err(|e| e.to_string())?;
     // Extrusions/bodies (empty for legacy files that predate them).
-    let extrusions = load_indexed_entities(&conn, "extrusion")?;
+    let extrusions = load_arena_entities(&conn, "extrusion")?;
     let bodies = load_arena_entities(&conn, "body")?;
     // Materials (#834) — empty for files saved before they existed.
     let materials = load_arena_entities(&conn, "material")?;
@@ -659,6 +659,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::body_key_for_slot as bkey;
@@ -917,6 +918,74 @@ mod tests {
         }
     }
 
+    /// #1055: extrusions keep their keys across a save, and so does everything that names
+    /// one — a body's add/cut lists, a sketch's host cap/side face, an edge treatment.
+    #[test]
+    fn extrusion_keys_survive_a_save_and_reload() {
+        let extrusion = |name: &str| crate::model::Extrusion {
+            sketch: 0,
+            faces: vec![crate::model::ExtrudeFace::Circle(0)],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: Some(name.to_string()),
+            edge_treatments: Vec::new(),
+        };
+        let mut doc = Document::default();
+        let doomed = doc.extrusions.insert(extrusion("doomed"));
+        let kept = doc.extrusions.insert(extrusion("kept"));
+        let cut = doc.extrusions.insert(extrusion("cut"));
+        assert!(doc.extrusions.remove(doomed).is_some());
+        let body = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![kept], cut: vec![cut] },
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        doc.sketches.push(crate::model::Sketch {
+            face: crate::model::FaceId::ExtrudeCap {
+                extrusion: kept,
+                profile: crate::model::ExtrudeFace::Circle(0),
+                top: true,
+            },
+            name: None,
+            deleted: false,
+            length_unit: None,
+            angle_unit: None,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_extrusion_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.extrusions.len(), 2, "{suffix}");
+            assert_eq!(
+                loaded.extrusions.get(kept).and_then(|e| e.name.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.bodies[body].source,
+                crate::model::BodySource::Solid { add: vec![kept], cut: vec![cut] },
+                "{suffix}: the body still names both"
+            );
+            assert_eq!(
+                loaded.sketches[0].face,
+                crate::model::FaceId::ExtrudeCap {
+                    extrusion: kept,
+                    profile: crate::model::ExtrudeFace::Circle(0),
+                    top: true,
+                },
+                "{suffix}: the sketch still sits on its host cap"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: drawings keep their keys across a save, and so does a membership entry that
     /// names one.
     #[test]
@@ -1148,7 +1217,7 @@ mod tests {
     #[test]
     fn body_keys_survive_a_save_and_reload() {
         let body = |name: &str| crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             name: Some(name.to_string()),
             material: None,
             shadow: false,
@@ -1445,13 +1514,13 @@ mod tests {
 
         let mut doc = Document::default();
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             name: None,
             material: None,
             shadow: false,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(1),
+            source: crate::model::BodySource::Extrusion(xkey(1)),
             name: None,
             material: None,
             shadow: false,
@@ -1714,13 +1783,13 @@ mod tests {
             color: [0xc8, 0x8a, 0x4a],
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: Some(brass),
             name: None,
             shadow: false,
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(1),
+            source: crate::model::BodySource::Extrusion(xkey(1)),
             material: None,
             name: None,
             shadow: false,
@@ -1863,7 +1932,7 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let rect_lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
-        doc.extrusions.push(Extrusion {
+        doc.extrusions.insert(Extrusion {
             sketch,
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 12.0,
@@ -1871,12 +1940,11 @@ mod tests {
             expression: String::new(),
             name: Some("Boss".to_string()),
             symmetric: false,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.shape_order.push(ShapeKind::Extrusion);
         doc.bodies.insert(Body {
-            source: BodySource::Extrusion(0),
+            source: BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -1887,13 +1955,13 @@ mod tests {
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.extrusions.len(), 1);
         assert_eq!(
-            loaded.extrusions[0].faces,
+            loaded.extrusions[xkey(0)].faces,
             vec![ExtrudeFace::Polygon(rect_lines.to_vec())]
         );
-        assert_eq!(loaded.extrusions[0].distance, 12.0);
-        assert_eq!(loaded.extrusions[0].name.as_deref(), Some("Boss"));
+        assert_eq!(loaded.extrusions[xkey(0)].distance, 12.0);
+        assert_eq!(loaded.extrusions[xkey(0)].name.as_deref(), Some("Boss"));
         assert_eq!(loaded.bodies.len(), 1);
-        assert_eq!(loaded.bodies.values().nth(0).unwrap().source, BodySource::Extrusion(0));
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().source, BodySource::Extrusion(xkey(0)));
         assert!(loaded.shape_order.contains(&ShapeKind::Extrusion));
         assert!(loaded.shape_order.contains(&ShapeKind::Body));
 
@@ -1919,7 +1987,7 @@ mod tests {
             ExtrudeFace::Polygon(outer.to_vec()),
             ExtrudeFace::Polygon(inner.to_vec()),
         ] {
-            doc.extrusions.push(Extrusion {
+            doc.extrusions.insert(Extrusion {
                 sketch,
                 faces: vec![face],
                 distance: 5.0,
@@ -1927,15 +1995,14 @@ mod tests {
                 expression: String::new(),
                 name: None,
                 symmetric: false,
-                deleted: false,
                 edge_treatments: Vec::new(),
             });
             doc.shape_order.push(ShapeKind::Extrusion);
         }
         doc.bodies.insert(Body {
             source: BodySource::Solid {
-                add: vec![0],
-                cut: vec![1],
+                add: vec![xkey(0)],
+                cut: vec![xkey(1)],
             },
             material: None,
             name: None,
@@ -1948,12 +2015,12 @@ mod tests {
         assert_eq!(
             loaded.bodies.values().nth(0).unwrap().source,
             BodySource::Solid {
-                add: vec![0],
-                cut: vec![1],
+                add: vec![xkey(0)],
+                cut: vec![xkey(1)],
             }
         );
-        assert_eq!(loaded.bodies.values().nth(0).unwrap().source.extrusion_indices(), [0]);
-        assert_eq!(loaded.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [1]);
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0)]);
+        assert_eq!(loaded.bodies.values().nth(0).unwrap().source.cut_extrusion_indices(), [xkey(1)]);
 
         std::fs::remove_file(&path).unwrap();
     }

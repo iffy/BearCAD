@@ -485,6 +485,7 @@ pub fn find_normal_at_midpoint_snap(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::{Document, FaceId, Line};
 
@@ -573,7 +574,7 @@ mod tests {
         let (mut doc, base) = sketch_doc();
         let lines = crate::construction::add_line_rectangle(&mut doc, base, 0.0, 0.0, 10.0, 4.0, [false; 4]);
         let profile = ExtrudeFace::Polygon(lines.to_vec());
-        doc.extrusions.push(Extrusion {
+        doc.extrusions.insert(Extrusion {
             sketch: base,
             faces: vec![profile.clone()],
             distance: 6.0,
@@ -581,11 +582,10 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         let cap = doc.add_sketch(FaceId::ExtrudeCap {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile,
             top: true,
         });

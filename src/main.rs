@@ -10829,7 +10829,7 @@ impl App {
                 // An edge under the cursor is the pick. Failing that, a **face** is: this
                 // picker takes edges and not faces, so clicking a face means all of that
                 // face's edges (#960) — otherwise it's a dead click with nothing to say why.
-                let picked: Vec<(usize, model::ExtrusionEdgeRef)> =
+                let picked: Vec<(model::ExtrusionKey, model::ExtrusionEdgeRef)> =
                     match construction::nearest_treatable_edge(pp, project, &self.state.doc) {
                         Some((extrusion, edge, _, _, _)) => vec![(extrusion, edge)],
                         None => crate::face::pick_body_face(
@@ -11716,8 +11716,8 @@ impl eframe::App for App {
             let mut edit_sketch: Option<SketchId> = None;
             let mut edit_plane: Option<usize> = None;
             let mut import_image_on_plane: Option<usize> = None;
-            let mut edit_extrusion: Option<usize> = None;
-            let mut edit_edge_treatment: Option<(usize, usize)> = None;
+            let mut edit_extrusion: Option<model::ExtrusionKey> = None;
+            let mut edit_edge_treatment: Option<(model::ExtrusionKey, usize)> = None;
             let mut edit_edge_treatment_op: Option<crate::model::EdgeTreatmentOpKey> = None;
             let mut edit_operation: Option<hierarchy::SceneElement> = None;
             let mut edit_drawing: Option<model::DrawingKey> = None;
@@ -11764,10 +11764,10 @@ impl eframe::App for App {
                     let mut queue_import_image_on_plane = |index: usize| {
                         import_image_on_plane = Some(index);
                     };
-                    let mut queue_edit_extrusion = |index: usize| {
+                    let mut queue_edit_extrusion = |index: model::ExtrusionKey| {
                         edit_extrusion = Some(index);
                     };
-                    let mut queue_edit_edge_treatment = |extrusion: usize, index: usize| {
+                    let mut queue_edit_edge_treatment = |extrusion: model::ExtrusionKey, index: usize| {
                         edit_edge_treatment = Some((extrusion, index));
                     };
                     let mut queue_edit_edge_treatment_op = |op: crate::model::EdgeTreatmentOpKey| {
@@ -16521,7 +16521,6 @@ fn build_viewport_scene_input<'a>(
                 expression: String::new(),
                 symmetric: ce.symmetric,
                 name: None,
-                deleted: false,
                 edge_treatments: Vec::new(),
             })
         })
@@ -16610,7 +16609,6 @@ fn build_viewport_scene_input<'a>(
                 let Some(base) = doc
                     .extrusions
                     .get(ei)
-                    .filter(|e| !e.deleted)
                     .and_then(|e| extrude::extrusion_mesh(doc, e))
                 else {
                     continue;
@@ -18434,7 +18432,7 @@ fn extrude_gizmo_display_offset(distance: f32) -> f32 {
 fn extrude_target_from_face(
     face: FaceId,
     exclude: &[model::ExtrudeFace],
-    editing: Option<usize>,
+    editing: Option<model::ExtrusionKey>,
 ) -> Option<model::ExtrudeTarget> {
     use model::ExtrudeTarget;
     match face {
@@ -18465,7 +18463,7 @@ fn extrude_target_from_face(
 fn extrude_target_from_pick(
     kind: &construction::PickTargetKind,
     exclude: &[model::ExtrudeFace],
-    editing: Option<usize>,
+    editing: Option<model::ExtrusionKey>,
 ) -> Option<model::ExtrudeTarget> {
     use construction::PickTargetKind as PK;
     match kind {
@@ -18484,7 +18482,7 @@ fn pick_extrude_target(
     normal: Vec3,
     exclude: &[model::ExtrudeFace],
     eye: Vec3,
-    editing: Option<usize>,
+    editing: Option<model::ExtrusionKey>,
 ) -> Option<(model::ExtrudeTarget, f32)> {
     use model::ExtrudeTarget;
     const VERTEX_RADIUS_PX: f32 = 12.0;
@@ -18521,7 +18519,7 @@ fn pick_repeated_face(
     pp: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &model::Document,
-    editing: Option<usize>,
+    editing: Option<model::ExtrusionKey>,
 ) -> Option<model::ExtrudeTarget> {
     let mut best: Option<(f32, model::ExtrudeTarget)> = None;
     for (op_index, op) in doc.repeat_ops.iter() {
@@ -18537,7 +18535,7 @@ fn pick_repeated_face(
                 if editing == Some(ei) {
                     continue;
                 }
-                let Some(ext) = doc.extrusions.get(ei).filter(|e| !e.deleted) else {
+                let Some(ext) = doc.extrusions.get(ei) else {
                     continue;
                 };
                 for profile in &ext.faces {
@@ -24203,7 +24201,7 @@ impl App {
                 // Which analytic edges a click here would take: the one under the cursor, or —
                 // over a face, which this picker can't hold — all of that face's (#960), so
                 // what lights up is what the click does.
-                let wanted: Vec<(usize, model::ExtrusionEdgeRef)> =
+                let wanted: Vec<(model::ExtrusionKey, model::ExtrusionEdgeRef)> =
                     match construction::nearest_treatable_edge(pp, &project, doc) {
                         Some((extrusion, edge, _, _, _)) => vec![(extrusion, edge)],
                         None => crate::face::pick_body_face(pp, &project, doc, cam.eye())
@@ -27356,6 +27354,7 @@ fn draw_ground(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
 
@@ -28120,8 +28119,7 @@ mod tests {
         // body, so the body-target loop never saw it and picking one to repeat showed nothing
         // at all until commit — the ghost is the extrusion's own prism, the tool that carves
         // the hole, parked where each extra hole will be punched.
-        let cut = state.doc.extrusions.len();
-        state.doc.extrusions.push(crate::model::Extrusion {
+        let cut = state.doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: -3.0,
@@ -28129,7 +28127,6 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         state.creating_repeat = Some(CreatingRepeat {
@@ -28534,11 +28531,11 @@ mod tests {
         });
         state.apply(Action::SetExtrudeDistance { distance: 5.0 });
         state.apply(Action::CommitExtrusion);
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 0);
+        assert_eq!(state.doc.extrusions[xkey(0)].edge_treatments.len(), 0);
 
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount_live: 2.0,
             text: "2".to_string(),
@@ -28603,8 +28600,8 @@ mod tests {
         assert_eq!(preview.edge_treatments.len(), 1);
         assert_eq!(preview.edge_treatments[0].amount, 2.0);
         assert_eq!(preview.edge_treatments[0].edge, edge);
-        assert_eq!(scene_input.editing_extrusion, Some(0));
-        assert!(state.doc.extrusions[0].edge_treatments.is_empty());
+        assert_eq!(scene_input.editing_extrusion, Some(xkey(0)));
+        assert!(state.doc.extrusions[xkey(0)].edge_treatments.is_empty());
     }
 
     /// A two-line right-angle corner (10mm + 10mm legs meeting at (10,0)) in a fresh sketch on
@@ -29650,7 +29647,7 @@ mod tests {
         let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
         let lines =
             construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 100.0, 100.0, [false; 4]);
-        doc.extrusions.push(model::Extrusion {
+        doc.extrusions.insert(model::Extrusion {
             sketch,
             faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
             distance: 50.0,
@@ -29658,11 +29655,10 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(model::Body {
-            source: model::BodySource::Extrusion(0),
+            source: model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -29710,7 +29706,7 @@ mod tests {
             construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         doc.circles
             .push(model::Circle::from_local_center_radius(sketch, 20.0, 20.0, 4.0, 0.0));
-        doc.extrusions.push(model::Extrusion {
+        doc.extrusions.insert(model::Extrusion {
             sketch,
             faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
             distance: 5.0,
@@ -29718,11 +29714,10 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(model::Body {
-            source: model::BodySource::Extrusion(0),
+            source: model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -29794,7 +29789,7 @@ mod tests {
             .materials
             .insert(model::Material { name: "Pink".to_string(), color: [230, 120, 170] });
         doc.bodies.insert(model::Body {
-            source: model::BodySource::Extrusion(0),
+            source: model::BodySource::Extrusion(xkey(0)),
             material: Some(pink),
             name: None,
             shadow: false,
@@ -29808,7 +29803,7 @@ mod tests {
         assert!(dim.r() < full.r(), "and darker");
         // A body with no material of its own keeps the document's default look, not the accent.
         doc.bodies.insert(model::Body {
-            source: model::BodySource::Extrusion(0),
+            source: model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -29833,7 +29828,7 @@ mod tests {
         let mut doc = model::Document::default();
         let sketch = doc.add_sketch(model::FaceId::ConstructionPlane(0));
         let lines = construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 100.0, 100.0, [false; 4]);
-        doc.extrusions.push(model::Extrusion {
+        doc.extrusions.insert(model::Extrusion {
             sketch,
             faces: vec![model::ExtrudeFace::Polygon(lines.to_vec())],
             distance: 50.0,
@@ -29841,11 +29836,10 @@ mod tests {
             expression: String::new(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(model::Body {
-            source: model::BodySource::Extrusion(0),
+            source: model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,

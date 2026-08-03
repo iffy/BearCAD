@@ -275,10 +275,7 @@ pub fn placed_instance_meshes(doc: &Document, instance: crate::model::UnitInstan
 pub fn inner_face_ids(inner: &Document) -> Vec<crate::model::FaceId> {
     use crate::model::{ExtrudeFace, FaceId};
     let mut faces = Vec::new();
-    for (ei, extrusion) in inner.extrusions.iter().enumerate() {
-        if extrusion.deleted {
-            continue;
-        }
+    for (ei, extrusion) in inner.extrusions.iter() {
         for profile in &extrusion.faces {
             for top in [false, true] {
                 faces.push(FaceId::ExtrudeCap { extrusion: ei, profile: profile.clone(), top });
@@ -503,6 +500,7 @@ pub fn save_ping_stamp() -> Option<u128> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
     use super::*;
@@ -520,7 +518,7 @@ mod tests {
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 10.0,
@@ -528,11 +526,10 @@ mod tests {
             expression: "width".to_string(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,

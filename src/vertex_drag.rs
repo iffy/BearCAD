@@ -167,8 +167,10 @@ pub fn scene_element_for_point(point: ConstraintPoint) -> SceneElement {
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
         // A face's own vertex tracks the feature that produced its face, same convention
         // as `document_health`/`hierarchy`'s owner mappings for `FaceVertex`/`FaceEdge`.
-        ConstraintPoint::FaceVertex { face, .. } => crate::hierarchy::face_owner_element(&face)
-            .unwrap_or(SceneElement::Extrusion(usize::MAX)),
+        // No owning feature means nothing to inherit from (#1055).
+        ConstraintPoint::FaceVertex { face, .. } => {
+            crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
+        }
     }
 }
 

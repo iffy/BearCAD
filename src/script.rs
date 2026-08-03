@@ -1895,9 +1895,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: Some(point),
         },
+        // The extrusion's arena slot, not its ordinal (#1070).
         SceneElement::Extrusion(i) => ElementScriptTokens {
             kind: "extrusion",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The body's arena slot, not its ordinal (#1070).
@@ -1937,7 +1938,7 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
         },
         SceneElement::ExtrusionEdge { extrusion, .. } => ElementScriptTokens {
             kind: "extrusion_edge",
-            index: extrusion,
+            index: extrusion.index() as usize,
             point: None,
         },
         SceneElement::RepeatedFace { instance, .. } => ElementScriptTokens {
@@ -2117,6 +2118,22 @@ fn joint_ordinal(doc: &crate::model::Document, key: crate::model::JointKey) -> O
 /// The joint an ordinal names — the inverse of [`joint_ordinal`].
 fn joint_key(doc: &crate::model::Document, ordinal: usize) -> Option<crate::model::JointKey> {
     doc.joints.keys().nth(ordinal)
+}
+
+/// An extrusion's ordinal among the live ones — what a script writes (#1055).
+fn extrusion_ordinal(
+    doc: &crate::model::Document,
+    key: crate::model::ExtrusionKey,
+) -> Option<usize> {
+    doc.extrusions.keys().position(|k| k == key)
+}
+
+/// The extrusion an ordinal names — the inverse of [`extrusion_ordinal`].
+fn extrusion_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::ExtrusionKey> {
+    doc.extrusions.keys().nth(ordinal)
 }
 
 /// A unit's ordinal among the live ones — what a script writes (#1055).
@@ -2469,7 +2486,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
         Action::UpdateExtrusion { extrusion, distance, target, expression } => {
             Some(Instruction::UpdateExtrusion {
-                extrusion: *extrusion,
+                extrusion: extrusion_ordinal(doc, *extrusion)?,
                 distance: *distance,
                 target: target.clone(),
                 expression: expression.clone(),
@@ -2749,7 +2766,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }
         Action::ZoomToFit => Some(Instruction::ZoomFit),
         Action::CommitEdgeTreatments { edges, kind, amount } => Some(Instruction::EdgeTreatment {
-            edges: edges.clone(),
+            edges: edges
+                .iter()
+                .map(|(e, edge)| extrusion_ordinal(doc, *e).map(|o| (o, *edge)))
+                .collect::<Option<Vec<_>>>()?,
             kind: *kind,
             amount: *amount,
         }),
@@ -2807,7 +2827,7 @@ pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> 
 /// `instruction_from_action`, since `Action::CommitExtrusion` carries no fields to read the
 /// committed faces/distance/body choice from — only `doc`'s post-commit state has them (#59).
 pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Instruction> {
-    let ei = doc.extrusions.len().checked_sub(1)?;
+    let ei = doc.extrusions.keys().last()?;
     let extrusion = doc.extrusions.get(ei)?;
     let body = match crate::model::body_index_for_extrusion(doc, ei).and_then(|bi| doc.bodies.get(bi))
     {
@@ -2951,8 +2971,16 @@ pub fn instructions_for_new_edge_treatment_op(
     let Some(op) = doc.edge_treatment_ops.values().last() else {
         return Vec::new();
     };
+    let Some(edges) = op
+        .edges
+        .iter()
+        .map(|te| extrusion_ordinal(doc, te.extrusion).map(|o| (o, te.edge)))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
     vec![Instruction::EdgeTreatment {
-        edges: op.edges.iter().map(|te| (te.extrusion, te.edge)).collect(),
+        edges,
         kind: op.kind,
         amount: op.amount,
     }]
@@ -3560,8 +3588,8 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         FaceId::Circle(i) => ("circle", *i),
         FaceId::ConstructionPlane(i) => ("construction_plane", *i),
         // Cap/side faces aren't yet addressable from the two-argument script form.
-        FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", *extrusion),
-        FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", *extrusion),
+        FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", extrusion.index() as usize),
+        FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", extrusion.index() as usize),
         // A unit face isn't fully addressable from the two-argument form either (#725):
         // the inner face rides only in session recordings via its instance.
         FaceId::UnitFace { instance, .. } => ("unit_face", instance.index() as usize),
@@ -3764,11 +3792,13 @@ fn face_id_lua_ref(face: &FaceId) -> String {
             lines.first().copied().unwrap_or(0)
         ),
         FaceId::ExtrudeCap { extrusion, profile, top } => format!(
-            "{{ kind = \"extrude_cap\", extrusion = {extrusion}, {}, top = {top} }}",
+            "{{ kind = \"extrude_cap\", extrusion = {}, {}, top = {top} }}",
+            extrusion.index(),
             extrude_face_profile_lua_fields(profile)
         ),
         FaceId::ExtrudeSide { extrusion, profile, edge } => format!(
-            "{{ kind = \"extrude_side\", extrusion = {extrusion}, {}, edge = {edge} }}",
+            "{{ kind = \"extrude_side\", extrusion = {}, {}, edge = {edge} }}",
+            extrusion.index(),
             extrude_face_profile_lua_fields(profile)
         ),
         FaceId::RevolveCap { revolution, profile, end } => format!(
@@ -5030,6 +5060,10 @@ impl ScriptRunner {
                     },
                     None => distance,
                 };
+                let Some(extrusion) = extrusion_key(&state.doc, extrusion) else {
+                    self.last_action_error = Some(format!("No extrusion {extrusion}"));
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::UpdateExtrusion {
                     extrusion,
                     distance,
@@ -5349,6 +5383,14 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::EdgeTreatment { edges, kind, amount } => {
+                let Some(edges) = edges
+                    .iter()
+                    .map(|(o, edge)| extrusion_key(&state.doc, *o).map(|k| (k, *edge)))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    self.last_action_error = Some("No such extrusion".to_string());
+                    return StepResult::Continue;
+                };
                 let result = state.apply(Action::CommitEdgeTreatments { edges, kind, amount });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -6676,6 +6718,7 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::ConstraintLine;
 
@@ -6744,7 +6787,7 @@ mod tests {
             .unwrap();
         drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
         assert_eq!(state.doc.extrusions.len(), 1);
-        assert_eq!(state.doc.extrusions[0].name.as_deref(), Some("Base"));
+        assert_eq!(state.doc.extrusions[xkey(0)].name.as_deref(), Some("Base"));
         assert!(
             state.status.starts_with("Added extrusion ("),
             "name= must not clobber the creation status, got: {}",
@@ -7187,10 +7230,24 @@ mod tests {
     #[test]
     fn instruction_from_action_maps_commit_edge_treatment() {
         use crate::model::ExtrusionEdgeRef;
-        let doc = crate::model::Document::default();
+        // An extrusion is named by its ordinal among the live ones (#1055), so the document
+        // has to actually hold that many.
+        let mut doc = crate::model::Document::default();
+        for _ in 0..3 {
+            doc.extrusions.insert(crate::model::Extrusion {
+                sketch: 0,
+                faces: Vec::new(),
+                distance: 1.0,
+                target: None,
+                expression: String::new(),
+                symmetric: false,
+                name: None,
+                edge_treatments: Vec::new(),
+            });
+        }
         let edge = ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: false };
         let action = Action::CommitEdgeTreatments {
-            edges: vec![(2, edge)],
+            edges: vec![(xkey(2), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.5,
         };

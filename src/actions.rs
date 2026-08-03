@@ -587,7 +587,7 @@ pub struct CreatingExtrusion {
     /// When set, the depth is constrained to this object's extended plane.
     pub target: Option<crate::model::ExtrudeTarget>,
     /// `Some` when editing an existing extrusion rather than creating one.
-    pub edit_index: Option<usize>,
+    pub edit_index: Option<crate::model::ExtrusionKey>,
     /// How this extrusion should attach to the document's bodies on commit.
     pub body_mode: ExtrudeBodyMode,
     /// Body that `body_mode` can merge into / cut (the host body of the sketch face);
@@ -785,7 +785,7 @@ pub struct CreatingRepeat {
     /// Picked source construction planes to repeat as offset copies (#221).
     pub plane_targets: Vec<usize>,
     /// Picked cut extrusions whose effect is replayed at each offset (#220).
-    pub extrusion_targets: Vec<usize>,
+    pub extrusion_targets: Vec<crate::model::ExtrusionKey>,
     /// Picked source sketches to repeat as offset copies (#226).
     pub sketch_targets: Vec<usize>,
     /// `None` until picked (#439): the path picker starts empty and focused.
@@ -1416,7 +1416,7 @@ pub struct CreatingLoft {
 pub struct CreatingEdgeTreatment {
     /// The analytic edges being treated together (#166): one shared amount/gizmo applies to
     /// all of them on commit. Non-empty; the first entry anchors the gizmo.
-    pub edges: Vec<(usize, ExtrusionEdgeRef)>,
+    pub edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
     pub kind: VertexTreatmentKind,
     /// Live amount (mm), gizmo-driven; always clamped non-negative.
     pub amount_live: f32,
@@ -1428,13 +1428,13 @@ pub struct CreatingEdgeTreatment {
 
 impl CreatingEdgeTreatment {
     /// The gizmo-anchoring edge (the first in the set).
-    pub fn primary(&self) -> Option<(usize, ExtrusionEdgeRef)> {
+    pub fn primary(&self) -> Option<(crate::model::ExtrusionKey, ExtrusionEdgeRef)> {
         self.edges.first().copied()
     }
 
     /// Toggle an edge's membership in the set (#166; shift+click). Removing the last edge
     /// is refused — an in-progress treatment always keeps at least one edge.
-    pub fn toggle_edge(&mut self, entry: (usize, ExtrusionEdgeRef)) {
+    pub fn toggle_edge(&mut self, entry: (crate::model::ExtrusionKey, ExtrusionEdgeRef)) {
         if let Some(pos) = self.edges.iter().position(|e| *e == entry) {
             if self.edges.len() > 1 {
                 self.edges.remove(pos);
@@ -1949,7 +1949,7 @@ pub enum Action {
     /// not one operation per edge, which would each bevel the same sharp input body and leave
     /// the outputs overlapping (#672).
     CommitEdgeTreatments {
-        edges: Vec<(usize, ExtrusionEdgeRef)>,
+        edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
     },
@@ -1957,7 +1957,7 @@ pub enum Action {
     /// amount input (#259). Removes the baked treatment from the extrusion and reloads its edge,
     /// kind, and amount into `creating_edge_treatment` so re-commit re-creates it as a
     /// first-class operation (#531) rather than an in-place extrusion edit.
-    EditEdgeTreatment { extrusion: usize, index: usize },
+    EditEdgeTreatment { extrusion: crate::model::ExtrusionKey, index: usize },
     /// Re-open a committed edge-treatment **operation** (#531) for editing: reloads its edges,
     /// kind, and amount into `creating_edge_treatment`, tombstones the op (releasing its shadow
     /// inputs and outputs) so the gizmo commit rebuilds it, and switches to the matching tool.
@@ -2015,7 +2015,7 @@ pub enum Action {
     /// (clears any snap target — a plain typed distance is a blind extrude) and/or
     /// snap to a new target, re-evaluating the parametric geometry.
     UpdateExtrusion {
-        extrusion: usize,
+        extrusion: crate::model::ExtrusionKey,
         distance: Option<f32>,
         target: Option<crate::model::ExtrudeTarget>,
         /// Distance expression to store alongside `distance` (#402); `None` with a
@@ -2045,7 +2045,7 @@ pub enum Action {
         target: Option<crate::model::ExtrudeTarget>,
     },
     /// Begin editing an existing extrusion.
-    EditExtrusion { index: usize },
+    EditExtrusion { index: crate::model::ExtrusionKey },
     /// Finalize the in-progress extrusion (create or update).
     CommitExtrusion,
     /// Add/remove a cross section from the in-progress loft (starts one if needed).
@@ -2377,7 +2377,7 @@ pub enum Action {
     CreateRepeatOperation {
         targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
-        extrusion_targets: Vec<usize>,
+        extrusion_targets: Vec<crate::model::ExtrusionKey>,
         sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         /// A circle used as the path (#840); wins over `axis`.
@@ -2398,7 +2398,7 @@ pub enum Action {
         op: crate::model::RepeatOpKey,
         targets: Vec<crate::model::BodyKey>,
         plane_targets: Vec<usize>,
-        extrusion_targets: Vec<usize>,
+        extrusion_targets: Vec<crate::model::ExtrusionKey>,
         sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         path_circle: Option<usize>,
@@ -3585,7 +3585,7 @@ impl AppState {
     /// extrusion's body choice in the context pane (#32). The extrusion always already has a
     /// home (every committed extrusion gets one), so this only needs to detach it from there
     /// when the new home differs and attach it to the new one.
-    fn apply_extrude_body_mode(&mut self, ei: usize, mode: ExtrudeBodyMode) {
+    fn apply_extrude_body_mode(&mut self, ei: crate::model::ExtrusionKey, mode: ExtrudeBodyMode) {
         let current = crate::model::body_index_for_extrusion(&self.doc, ei);
         // The body is solely `ei`'s home (a lone added extrusion, no cuts) — removing `ei`
         // would leave it empty, so it should be tombstoned rather than emptied.
@@ -3736,10 +3736,7 @@ impl AppState {
         ) {
             return;
         }
-        for ext in &self.doc.extrusions {
-            if ext.deleted {
-                continue;
-            }
+        for ext in self.doc.extrusions.values() {
             if ext
                 .faces
                 .iter()
@@ -3838,7 +3835,7 @@ impl AppState {
 
     /// Register cut extrusion `ei` against unit `instance` (#726): appended to the
     /// existing live `UnitCut` output body, or a fresh one. Returns the output body.
-    fn cut_into_unit(&mut self, instance: crate::model::UnitInstanceKey, ei: usize) -> crate::model::BodyKey {
+    fn cut_into_unit(&mut self, instance: crate::model::UnitInstanceKey, ei: crate::model::ExtrusionKey) -> crate::model::BodyKey {
         let existing = self.doc.bodies.iter().find_map(|(k, b)| {
             matches!(b.source,
                 crate::model::BodySource::UnitCut { instance: i, .. } if i == instance)
@@ -3862,7 +3859,7 @@ impl AppState {
         }
     }
 
-    fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> crate::model::BodyKey {
+    fn attach_new_extrusion_to_body(&mut self, ei: crate::model::ExtrusionKey, mode: ExtrudeBodyMode) -> crate::model::BodyKey {
         match mode {
             ExtrudeBodyMode::MergeInto(bi) => {
                 // Merging into a read-only unit is refused (#726): fall through to a new
@@ -4387,7 +4384,7 @@ impl AppState {
     /// skipped; an all-invalid selection is an error. Undo is the standard document checkpoint.
     fn commit_edge_treatment_op(
         &mut self,
-        edges: Vec<(usize, ExtrusionEdgeRef)>,
+        edges: Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
     ) -> ActionResult {
@@ -4404,7 +4401,10 @@ impl AppState {
         let mut treated: Vec<TreatedEdge> = Vec::new();
         // Per-extrusion treatment lists, accumulated so an intra-operation corner conflict is
         // caught (two treated edges meeting at one corner), mirroring the old in-place check.
-        let mut per_extrusion: std::collections::HashMap<usize, Vec<EdgeTreatment>> =
+        let mut per_extrusion: std::collections::HashMap<
+            crate::model::ExtrusionKey,
+            Vec<EdgeTreatment>,
+        > =
             std::collections::HashMap::new();
         let mut first_error: Option<String> = None;
         for (extrusion, edge) in edges {
@@ -4416,7 +4416,7 @@ impl AppState {
             if require_element_editable(&self.document_health, SceneElement::Extrusion(extrusion))
                 .is_err()
             {
-                reject(format!("Extrusion {extrusion} isn't editable"), &mut first_error);
+                reject(format!("Extrusion {} isn't editable", extrusion.index()), &mut first_error);
                 continue;
             }
             if !crate::extrude::extrusion_edge_exists(&self.doc, extrusion, edge) {
@@ -4449,7 +4449,7 @@ impl AppState {
             }
             let Some(body) = crate::model::body_index_for_extrusion(&self.doc, extrusion) else {
                 reject(
-                    format!("Extrusion {extrusion} has no body to treat"),
+                    format!("Extrusion {} has no body to treat", extrusion.index()),
                     &mut first_error,
                 );
                 continue;
@@ -4599,7 +4599,7 @@ impl AppState {
     /// The material a new body from extrusion `ei` should start as (#926): whatever the
     /// body its sketch sits on is made of. `None` when the sketch is on a plane or a
     /// profile — there's no source body to inherit from.
-    fn extrusion_source_material(&self, ei: usize) -> Option<crate::model::MaterialKey> {
+    fn extrusion_source_material(&self, ei: crate::model::ExtrusionKey) -> Option<crate::model::MaterialKey> {
         let extrusion = self.doc.extrusions.get(ei)?;
         let face = self.doc.sketch_face(extrusion.sketch)?;
         let bi = crate::model::body_index_for_face(&self.doc, &face)?;
@@ -5838,7 +5838,7 @@ fn validate_repeat_inputs(
     doc: &Document,
     targets: &[crate::model::BodyKey],
     plane_targets: &[usize],
-    extrusion_targets: &[usize],
+    extrusion_targets: &[crate::model::ExtrusionKey],
     sketch_targets: &[usize],
 ) -> Result<(), String> {
     if targets.is_empty()
@@ -5849,8 +5849,8 @@ fn validate_repeat_inputs(
         return Err("Pick at least one body, plane, cut, or sketch to repeat".to_string());
     }
     for &ei in extrusion_targets {
-        if doc.extrusions.get(ei).filter(|e| !e.deleted).is_none() {
-            return Err(format!("Extrusion {ei} not found"));
+        if doc.extrusions.get(ei).is_none() {
+            return Err(format!("Extrusion {} not found", ei.index()));
         }
     }
     for &si in sketch_targets {
@@ -5962,7 +5962,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Circle(i) => format!("Circle {i}"),
         SceneElement::Constraint(i) => format!("Constraint {i}"),
         SceneElement::Point(_) => "Point".to_string(),
-        SceneElement::Extrusion(i) => format!("Extrusion {i}"),
+        SceneElement::Extrusion(i) => format!("Extrusion {}", i.index()),
         SceneElement::Body(i) => format!("Body {}", i.index()),
         SceneElement::FaceEdge(_) => "Face edge".to_string(),
         SceneElement::BodyEdge { .. } => "Body edge".to_string(),
@@ -5972,7 +5972,9 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyAxis { body, .. } => format!("Axis of Body {}", body.index()),
         SceneElement::SketchFace(_) => "Face".to_string(),
         SceneElement::MovePoint(_) => "Point".to_string(),
-        SceneElement::ExtrusionEdge { extrusion, .. } => format!("Edge of extrusion {extrusion}"),
+        SceneElement::ExtrusionEdge { extrusion, .. } => {
+            format!("Edge of extrusion {}", extrusion.index())
+        }
         SceneElement::RepeatedFace { instance, .. } => format!("Repeated face (copy {instance})"),
         // The slot number, which is what the ordinal was before anything was removed (#1055).
         SceneElement::Image(i) => format!("Image {}", i.index()),
@@ -9469,7 +9471,7 @@ impl AppState {
                 };
                 let expression = expression.unwrap_or_default();
                 let mut cut_note = None;
-                let mut extrusion_index = 0;
+                let mut extrusion_index = None;
                 for group in &groups {
                     let mut ext = Extrusion {
                         sketch,
@@ -9479,25 +9481,25 @@ impl AppState {
                         expression: expression.clone(),
                         symmetric,
                         name: None,
-                        deleted: false,
                         edge_treatments: Vec::new(),
                     };
                     // #380: a cut must actually bite — flip an outward cut inward, or warn.
                     if let ExtrudeBodyMode::Cut(bi) = body_mode {
                         cut_note = self.resolve_cut_direction(&mut ext, bi).or(cut_note);
                     }
-                    self.doc.extrusions.push(ext);
+                    let key = self.doc.extrusions.insert(ext);
                     self.doc.shape_order.push(ShapeKind::Extrusion);
-                    extrusion_index = self.doc.extrusions.len() - 1;
-                    self.attach_new_extrusion_to_body(extrusion_index, body_mode);
+                    extrusion_index = Some(key);
+                    self.attach_new_extrusion_to_body(key, body_mode);
                 }
                 self.refresh_document_health();
                 // A target-snapped extrusion stores a placeholder distance; report the
                 // depth the target actually resolves to (#404).
-                let distance = crate::extrude::effective_distance(
-                    &self.doc,
-                    &self.doc.extrusions[extrusion_index],
-                );
+                let distance = extrusion_index
+                    .map(|key| {
+                        crate::extrude::effective_distance(&self.doc, &self.doc.extrusions[key])
+                    })
+                    .unwrap_or(distance);
                 let shown = crate::value::format_length_display_in(
                     distance,
                     crate::model::effective_length_unit(&self.doc, sketch),
@@ -9533,13 +9535,8 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 }
-                let Some(ext) = self
-                    .doc
-                    .extrusions
-                    .get_mut(extrusion)
-                    .filter(|e| !e.deleted)
-                else {
-                    return ActionResult::Err(format!("No extrusion {extrusion}"));
+                let Some(ext) = self.doc.extrusions.get_mut(extrusion) else {
+                    return ActionResult::Err(format!("No extrusion {}", extrusion.index()));
                 };
                 if let Some(d) = distance {
                     ext.distance = d;
@@ -9554,7 +9551,7 @@ impl AppState {
                     ext.target = target;
                 }
                 self.refresh_document_health();
-                self.status = format!("Updated extrusion {extrusion}");
+                self.status = format!("Updated extrusion {}", extrusion.index());
                 ActionResult::Ok
             }
             Action::ToggleExtrudeFace { face } => {
@@ -9736,9 +9733,6 @@ impl AppState {
                 let Some(extrusion) = self.doc.extrusions.get(index) else {
                     return ActionResult::Err("Extrusion not found".to_string());
                 };
-                if extrusion.deleted {
-                    return ActionResult::Err("Extrusion was deleted".to_string());
-                }
                 let merge_candidate = crate::model::body_index_for_extrusion(&self.doc, index);
                 // Preserve the extrusion's current role: an extrusion already subtracted from
                 // its body opens in Cut mode (#35), not MergeInto — otherwise re-committing
@@ -9768,7 +9762,7 @@ impl AppState {
                     symmetric: extrusion.symmetric,
                 });
                 self.tool = Tool::Extrude;
-                self.status = format!("Editing extrusion {index}");
+                self.status = format!("Editing extrusion {}", index.index());
                 ActionResult::Ok
             }
             Action::CommitExtrusion => {
@@ -9848,7 +9842,7 @@ impl AppState {
                         _ => vec![ce.faces.clone()],
                     };
                     let mut cut_note = None;
-                    let mut ei = 0;
+                    let mut ei = None;
                     for group in &groups {
                         let mut ext = Extrusion {
                             sketch: ce.sketch,
@@ -9858,21 +9852,23 @@ impl AppState {
                             expression: distance_expr.clone(),
                             symmetric: ce.symmetric,
                             name: None,
-                            deleted: false,
                             edge_treatments: Vec::new(),
                         };
                         // #380: a cut must actually bite — flip an outward cut inward, or warn.
                         if let ExtrudeBodyMode::Cut(bi) = ce.body_mode {
                             cut_note = self.resolve_cut_direction(&mut ext, bi).or(cut_note);
                         }
-                        self.doc.extrusions.push(ext);
+                        let key = self.doc.extrusions.insert(ext);
                         self.doc.shape_order.push(ShapeKind::Extrusion);
-                        ei = self.doc.extrusions.len() - 1;
-                        self.attach_new_extrusion_to_body(ei, ce.body_mode);
+                        ei = Some(key);
+                        self.attach_new_extrusion_to_body(key, ce.body_mode);
                     }
                     // Report the target-resolved depth, not the stored placeholder (#404).
-                    let distance =
-                        crate::extrude::effective_distance(&self.doc, &self.doc.extrusions[ei]);
+                    let distance = ei
+                        .map(|key| {
+                            crate::extrude::effective_distance(&self.doc, &self.doc.extrusions[key])
+                        })
+                        .unwrap_or(distance);
                     let shown = crate::value::format_length_display_in(distance, unit);
                     self.status = match (cut_note, groups.len()) {
                         (Some(note), _) => note.to_string(),
@@ -15728,7 +15724,7 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     use crate::model::ComponentMember as CM;
     let mut members = Vec::new();
     members.extend((0..doc.construction_planes.len()).map(CM::ConstructionPlane));
-    members.extend((0..doc.extrusions.len()).map(CM::Extrusion));
+    members.extend(doc.extrusions.keys().map(CM::Extrusion));
     members.extend(doc.lofts.keys().map(CM::Loft));
     members.extend(doc.boolean_ops.keys().map(CM::BooleanOp));
     members.extend(doc.move_ops.keys().map(CM::MoveOp));
@@ -15941,6 +15937,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::component_key_for_slot as ckey;
@@ -16959,7 +16956,7 @@ mod tests {
             symmetric: false,
         });
         // CreateExtrusion commits; re-open for live distance edits.
-        state.apply(Action::EditExtrusion { index: 0 });
+        state.apply(Action::EditExtrusion { index: xkey(0) });
         assert!(state.creating_extrusion.is_some());
         let undo_before = state.undo_stack.len();
         let start = std::time::Instant::now();
@@ -17218,9 +17215,9 @@ mod tests {
             "a `depth` parameter should have been defined"
         );
         assert!(
-            (state.doc.extrusions[0].distance.abs() - 20.0).abs() < 1e-3,
+            (state.doc.extrusions[xkey(0)].distance.abs() - 20.0).abs() < 1e-3,
             "distance={}",
-            state.doc.extrusions[0].distance
+            state.doc.extrusions[xkey(0)].distance
         );
     }
 
@@ -17241,9 +17238,9 @@ mod tests {
             ce.user_edited = true;
         }
         state.apply(Action::CommitExtrusion);
-        assert!((state.doc.extrusions[0].distance.abs() - 20.0).abs() < 1e-3);
+        assert!((state.doc.extrusions[xkey(0)].distance.abs() - 20.0).abs() < 1e-3);
         // The extrusion tracks the parameter by expression, not a baked literal.
-        assert_eq!(state.doc.extrusions[0].expression, "foo");
+        assert_eq!(state.doc.extrusions[xkey(0)].expression, "foo");
 
         let idx = state
             .doc
@@ -17256,9 +17253,9 @@ mod tests {
             expression: "40mm".to_string(),
         });
         assert!(
-            (state.doc.extrusions[0].distance.abs() - 40.0).abs() < 1e-3,
+            (state.doc.extrusions[xkey(0)].distance.abs() - 40.0).abs() < 1e-3,
             "extrusion should follow foo → 40mm, got {}",
-            state.doc.extrusions[0].distance
+            state.doc.extrusions[xkey(0)].distance
         );
     }
 
@@ -17499,7 +17496,7 @@ mod tests {
         });
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 10.0,
@@ -17507,11 +17504,10 @@ mod tests {
             expression: "width".to_string(),
             symmetric: false,
             name: None,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(xkey(0)),
             material: None,
             name: None,
             shadow: false,
@@ -17930,7 +17926,7 @@ mod tests {
             name: "x".to_string(),
             expression: format!("{first}.width * 2"),
         });
-        state.doc.extrusions.push(crate::model::Extrusion {
+        state.doc.extrusions.insert(crate::model::Extrusion {
             sketch: 0,
             faces: Vec::new(),
             distance: 10.0,
@@ -17938,7 +17934,6 @@ mod tests {
             expression: format!("{first}.width + 1"),
             symmetric: false,
             name: None,
-            deleted: true,
             edge_treatments: Vec::new(),
         });
         state.doc.unit_instances[uikey(1)].parameter_overrides =
@@ -17956,7 +17951,7 @@ mod tests {
             "a spaced new name rewrites into its backticked spelling"
         );
         assert_eq!(
-            state.doc.extrusions.last().unwrap().expression,
+            state.doc.extrusions.values().last().unwrap().expression,
             "`left bracket`.width + 1",
             "tool fields rewrite too"
         );
@@ -18089,7 +18084,7 @@ mod tests {
         });
         let mut v2 = state.doc.units[ukey(0)].document.clone();
         v2.parameters.values_mut().next().unwrap().name = "w".to_string();
-        v2.extrusions[0].expression = "w * 2".to_string();
+        v2.extrusions[xkey(0)].expression = "w * 2".to_string();
         std::thread::sleep(std::time::Duration::from_millis(1100)); // move the mtime second
         crate::storage::save(&unit_path.to_string_lossy(), &v2).unwrap();
 
@@ -18119,7 +18114,7 @@ mod tests {
         // A static unit does not sync by itself — only when told.
         state.doc.units[ukey(0)].link = crate::model::LinkMode::Static;
         let mut v3 = v2.clone();
-        v3.extrusions[0].expression = "w * 3".to_string();
+        v3.extrusions[xkey(0)].expression = "w * 3".to_string();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         crate::storage::save(&unit_path.to_string_lossy(), &v3).unwrap();
         assert_eq!(state.sync_stale_dynamic_units(), 0, "static units never auto-sync");
@@ -18867,7 +18862,7 @@ mod tests {
         let mut state = AppState::default();
         for ei in 0..2 {
             state.doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::single(ei),
+                source: crate::model::BodySource::single(xkey(ei)),
                 material: None,
                 name: None,
                 shadow: false,
@@ -20726,7 +20721,7 @@ mod tests {
 
         // A fresh body reuses the freed slot, and must not answer to the old key.
         let reused = state.doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Extrusion(99),
+            source: crate::model::BodySource::Extrusion(xkey(99)),
             name: None,
             material: None,
             shadow: false,
@@ -20745,7 +20740,7 @@ mod tests {
         assert!(name_of(&state, second).is_some(), "and its neighbour is untouched");
         assert_ne!(
             name_of(&state, reused),
-            Some(format!("{:?}", crate::model::BodySource::Extrusion(99))),
+            Some(format!("{:?}", crate::model::BodySource::Extrusion(xkey(99)))),
             "the scratch body's key does not resolve to it in the restored document"
         );
 
@@ -22026,15 +22021,15 @@ mod tests {
         state.apply(Action::SetTool(Tool::Repeat));
         arm_repeat_targets(&mut state);
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Extrusion(0),
+            element: SceneElement::Extrusion(xkey(0)),
             additive: false,
         });
         assert_eq!(
             state.creating_repeat.as_ref().unwrap().extrusion_targets,
-            vec![0],
+            vec![xkey(0)],
         );
         state.apply(Action::ClickSceneElement {
-            element: SceneElement::Extrusion(0),
+            element: SceneElement::Extrusion(xkey(0)),
             additive: false,
         });
         assert!(state.creating_repeat.as_ref().unwrap().extrusion_targets.is_empty());
@@ -22230,7 +22225,7 @@ mod tests {
             target: None,
             symmetric: false,
         });
-        let cap = FaceId::ExtrudeCap { extrusion: 0, profile, top: true };
+        let cap = FaceId::ExtrudeCap { extrusion: xkey(0), profile, top: true };
         state.apply(Action::BeginSketch { face: cap.clone(), viewport: None });
         let cap_sketch = state.sketch_session.unwrap().sketch;
         state
@@ -22294,7 +22289,7 @@ mod tests {
         // #199: the face's own edges are pickable in the same sketch — click an edge midpoint.
         let loop_ = crate::extrude::face_boundary_loop_world(
             &state.doc,
-            &FaceId::ExtrudeCap { extrusion: 0, profile: ExtrudeFace::Polygon(rect.to_vec()), top: true },
+            &FaceId::ExtrudeCap { extrusion: xkey(0), profile: ExtrudeFace::Polygon(rect.to_vec()), top: true },
         )
         .expect("cap boundary loop");
         let edge_mid = (loop_[0] + loop_[1]) * 0.5;
@@ -22535,10 +22530,10 @@ mod tests {
     #[test]
     fn extrude_body_face_pushes_a_box_side_wall_directly() {
         let mut state = box_extrusion_state();
-        let profile = state.doc.extrusions[0].faces[0].clone();
+        let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
         let sketches_before = state.doc.sketches.len();
         let face_id = FaceId::ExtrudeSide {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile,
             edge: 0,
         };
@@ -22592,9 +22587,9 @@ mod tests {
     #[test]
     fn cancelling_body_face_extrude_discards_orphan_sketch() {
         let mut state = box_extrusion_state();
-        let profile = state.doc.extrusions[0].faces[0].clone();
+        let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
         let face_id = FaceId::ExtrudeSide {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile,
             edge: 0,
         };
@@ -22630,7 +22625,7 @@ mod tests {
         });
         let circles_before = state.doc.circles.len();
         let face_id = FaceId::ExtrudeCap {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile,
             top: true,
         };
@@ -22682,10 +22677,10 @@ mod tests {
     #[test]
     fn initial_extrude_distance_follows_camera_side_of_face() {
         let mut state = box_extrusion_state();
-        let profile = state.doc.extrusions[0].faces[0].clone();
+        let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
         // Top cap of the box (z = 5), normal +Z.
         let top = crate::model::FaceId::ExtrudeCap {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile: profile.clone(),
             top: true,
         };
@@ -22720,9 +22715,9 @@ mod tests {
         use crate::model::FaceId;
         let mut state = box_extrusion_state();
         crate::parameters::add_parameter(&mut state.doc, "cutD".into(), "4mm".into()).unwrap();
-        let profile = state.doc.extrusions[0].faces[0].clone();
+        let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
         let side = FaceId::ExtrudeSide {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile,
             edge: 0,
         };
@@ -22740,7 +22735,7 @@ mod tests {
             symmetric: false,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let cut = state.doc.extrusions.last().unwrap();
+        let cut = state.doc.extrusions.values().last().unwrap();
         assert!(
             cut.distance < 0.0,
             "expression cut should flip inward, got {} (expr={})",
@@ -22758,8 +22753,8 @@ mod tests {
         use crate::model::FaceId;
         // Box 10×10×5 (body 0); its y=0 side wall's frame points out of the solid (−Y).
         let mut state = box_extrusion_state();
-        let profile = state.doc.extrusions[0].faces[0].clone();
-        let side = FaceId::ExtrudeSide { extrusion: 0, profile, edge: 0 };
+        let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
+        let side = FaceId::ExtrudeSide { extrusion: xkey(0), profile, edge: 0 };
         let s2 = state.doc.add_sketch(side);
         state.doc.circles.push(crate::model::Circle::from_local_center_radius(
             s2, 5.0, 2.5, 2.0, 0.0,
@@ -22778,7 +22773,7 @@ mod tests {
             symmetric: false,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let cut = state.doc.extrusions.last().unwrap();
+        let cut = state.doc.extrusions.values().last().unwrap();
         assert!(cut.distance < 0.0, "outward cut flips inward, got {}", cut.distance);
         let after = crate::extrude::body_solid_mesh(&state.doc, bkey(0))
             .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
@@ -22789,8 +22784,8 @@ mod tests {
         // A circle far off the wall (v = 20, way above the 5mm-tall box) can't bite in
         // either direction: the distance stays as given and the status warns.
         let mut state = box_extrusion_state();
-        let profile = state.doc.extrusions[0].faces[0].clone();
-        let side = FaceId::ExtrudeSide { extrusion: 0, profile, edge: 0 };
+        let profile = state.doc.extrusions[xkey(0)].faces[0].clone();
+        let side = FaceId::ExtrudeSide { extrusion: xkey(0), profile, edge: 0 };
         let s2 = state.doc.add_sketch(side);
         state.doc.circles.push(crate::model::Circle::from_local_center_radius(
             s2, 5.0, 20.0, 2.0, 0.0,
@@ -22804,7 +22799,7 @@ mod tests {
             target: None,
             symmetric: false,
         });
-        let cut = state.doc.extrusions.last().unwrap();
+        let cut = state.doc.extrusions.values().last().unwrap();
         assert!((cut.distance - 4.0).abs() < 1e-6, "a hopeless cut keeps its distance");
         assert!(
             state.status.contains("removed no material"),
@@ -22832,7 +22827,7 @@ mod tests {
             symmetric: false,
         });
         state.apply(Action::ExtrudeBodyFace {
-            face_id: FaceId::ExtrudeCap { extrusion: 0, profile, top: true },
+            face_id: FaceId::ExtrudeCap { extrusion: xkey(0), profile, top: true },
         });
         let bi = state.creating_extrusion.as_ref().unwrap().merge_candidate.unwrap();
         // Default forward drag adds to the body.
@@ -23316,8 +23311,8 @@ mod tests {
     fn commit_edge_treatments_applies_the_whole_set_in_one_undo_group() {
         let mut state = box_extrusion_state();
         let edges = vec![
-            (0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
-            (0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
+            (xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+            (xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
         ];
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: edges.clone(),
@@ -23344,7 +23339,7 @@ mod tests {
             state.doc.edge_treatment_ops.is_empty(),
             "one undo must remove the whole operation"
         );
-        assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive the undo");
+        assert!(state.doc.extrusions.contains(xkey(0)), "the extrusion must survive the undo");
         assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "the input body is no longer shadowed");
     }
 
@@ -23355,7 +23350,7 @@ mod tests {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -23368,7 +23363,7 @@ mod tests {
             "undo removes the operation"
         );
         assert!(!state.doc.bodies.values().nth(0).unwrap().shadow, "the input body is released from shadow");
-        assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive");
+        assert!(state.doc.extrusions.contains(xkey(0)), "the extrusion must survive");
     }
 
     /// #157/#166: switching to the Chamfer tool with treatable body edges already selected
@@ -23413,7 +23408,7 @@ mod tests {
             .triangles
             .len();
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -23436,7 +23431,7 @@ mod tests {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true };
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
         });
@@ -23452,7 +23447,7 @@ mod tests {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
@@ -23468,14 +23463,14 @@ mod tests {
             .creating_edge_treatment
             .as_ref()
             .expect("gizmo edit is in progress");
-        assert_eq!(cet.edges, vec![(0, edge)]);
+        assert_eq!(cet.edges, vec![(xkey(0), edge)]);
         assert_eq!(cet.kind, VertexTreatmentKind::Chamfer);
         assert_eq!(cet.amount_live, 3.0);
         assert!(cet.pending_focus);
 
         // Committing a new amount rebuilds the operation (the old one stays tombstoned).
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.5,
         });
@@ -23495,13 +23490,13 @@ mod tests {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
         state.apply(Action::EditEdgeTreatmentOp { op: etkey(0) });
         state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, edge)],
+            edges: vec![(xkey(0), edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 2.5,
         });
@@ -23523,8 +23518,8 @@ mod tests {
         // Vertical edge 0 and base cap edge 0 share profile vertex 1.
         let result = state.apply(Action::CommitEdgeTreatments {
             edges: vec![
-                (0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
-                (0, crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false }),
+                (xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+                (xkey(0), crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false }),
             ],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
@@ -23543,14 +23538,14 @@ mod tests {
     fn commit_edge_treatment_rejects_nonpositive_amount_and_out_of_range_edge() {
         let mut state = box_extrusion_state();
         let bad_amount = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 0.0,
         });
         assert!(matches!(bad_amount, ActionResult::Err(_)));
 
         let out_of_range = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
+            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -23566,7 +23561,7 @@ mod tests {
     fn commit_edge_treatment_rejects_a_kernel_infeasible_amount() {
         let mut state = box_extrusion_state();
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount: 500.0,
         });
@@ -23612,21 +23607,20 @@ mod tests {
             ExtrudeFace::Polygon(outer.to_vec()),
             ExtrudeFace::Polygon(inner.to_vec()),
         ] {
-            state.doc.extrusions.push(Extrusion {
+            state.doc.extrusions.insert(Extrusion {
                 sketch,
                 faces: vec![face],
                 distance: 5.0,
                 target: None,
                 expression: String::new(),
                 name: None,
-                deleted: false,
                 symmetric: false,
             edge_treatments: Vec::new(),
             });
             state.doc.shape_order.push(ShapeKind::Extrusion);
         }
         state.doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -23637,7 +23631,7 @@ mod tests {
             "sanity: the untreated cut body builds in the kernel"
         );
         // Bypass commit validation: splice the impossible fillet straight into the document.
-        state.doc.extrusions[0].edge_treatments.push(EdgeTreatment {
+        state.doc.extrusions[xkey(0)].edge_treatments.push(EdgeTreatment {
             edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
             kind: VertexTreatmentKind::Fillet,
             amount: 500.0,
@@ -23662,7 +23656,7 @@ mod tests {
         // valid chamfer on a far edge commits fine: the kernel trial only rejects when the
         // *base* shape builds, and this document's base is already kernel-infeasible.)
         let result = reopened.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
+            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
@@ -23694,7 +23688,7 @@ mod tests {
             symmetric: false,
         });
         let result = state.apply(Action::CommitEdgeTreatments {
-            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
+            edges: vec![(xkey(0), crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });

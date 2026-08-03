@@ -149,7 +149,7 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             top,
         } => {
             let ext = doc.extrusions.get(extrusion)?;
-            if ext.deleted || !ext.faces.contains(&profile) {
+            if !ext.faces.contains(&profile) {
                 return None;
             }
             let base = sketch_frame(doc, profile.face_id())?;
@@ -751,11 +751,11 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
             extrusion, top, ..
         } => {
             let end = if top { "top" } else { "bottom" };
-            format!("Extrusion {extrusion} {end} face")
+            format!("Extrusion {} {end} face", extrusion.index())
         }
         FaceId::ExtrudeSide {
             extrusion, edge, ..
-        } => format!("Extrusion {extrusion} side face {edge}"),
+        } => format!("Extrusion {} side face {edge}", extrusion.index()),
         FaceId::RevolveCap {
             revolution, end, ..
         } => {
@@ -987,10 +987,7 @@ pub fn pick_sketch_face(
 
     // Planar caps of extruded bodies (so sketches can be placed on them). Tested
     // before construction planes since a solid cap occludes the datum plane.
-    for (ei, extrusion) in doc.extrusions.iter().enumerate().rev() {
-        if extrusion.deleted {
-            continue;
-        }
+    for (ei, extrusion) in doc.extrusions.iter().collect::<Vec<_>>().into_iter().rev() {
         for profile in &extrusion.faces {
             for top in [true, false] {
                 if let Some((dist, c)) =
@@ -1162,10 +1159,7 @@ pub fn sketch_faces_near(
             }
         }
     }
-    for (ei, extrusion) in doc.extrusions.iter().enumerate() {
-        if extrusion.deleted {
-            continue;
-        }
+    for (ei, extrusion) in doc.extrusions.iter() {
         for profile in &extrusion.faces {
             for top in [true, false] {
                 if let Some((dist, c)) =
@@ -1386,7 +1380,7 @@ fn cap_face_pick_distance(
     screen: eframe::egui::Pos2,
     project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     profile: crate::model::ExtrudeFace,
     top: bool,
 ) -> Option<(f32, Vec3)> {
@@ -1399,7 +1393,7 @@ fn side_face_pick_distance(
     screen: eframe::egui::Pos2,
     project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
     doc: &Document,
-    extrusion: usize,
+    extrusion: crate::model::ExtrusionKey,
     profile: crate::model::ExtrudeFace,
     edge: usize,
 ) -> Option<(f32, Vec3)> {
@@ -1538,6 +1532,7 @@ mod pick_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use super::*;
     use crate::model::Sketch;
 
@@ -1692,7 +1687,7 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let rect_lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 20.0, 20.0, [false; 4]);
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 10.0,
@@ -1700,7 +1695,6 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         doc
@@ -1873,7 +1867,7 @@ mod tests {
             matches!(
                 face,
                 Some(FaceId::ExtrudeCap {
-                    extrusion: 0,
+                    extrusion: _,
                     top: true,
                     ..
                 })
@@ -1906,7 +1900,7 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.circles
             .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Circle(0)],
             distance: 8.0,
@@ -1914,12 +1908,11 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
         let profile = crate::model::ExtrudeFace::Circle(0);
         assert_eq!(crate::extrude::side_face_count(&profile), 0);
-        assert!(crate::extrude::side_quad_world(&doc, 0, &profile, 0).is_none());
+        assert!(crate::extrude::side_quad_world(&doc, xkey(0), &profile, 0).is_none());
     }
 
     #[test]
@@ -1930,7 +1923,7 @@ mod tests {
         let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.z));
         let face = pick_sketch_face(eframe::egui::pos2(10.0, 5.0), &project, &doc, Vec3::new(0.0, 0.0, 100.0));
         assert!(
-            matches!(face, Some(FaceId::ExtrudeSide { extrusion: 0, .. })),
+            matches!(face, Some(FaceId::ExtrudeSide { extrusion, .. }) if extrusion == xkey(0)),
             "clicking a side wall should pick it, got {face:?}"
         );
     }
@@ -1946,11 +1939,11 @@ mod tests {
         let mut doc = doc_with_extruded_box();
         let profile = crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
         let host = FaceId::ExtrudeSide {
-            extrusion: 0,
+            extrusion: xkey(0),
             profile: profile.clone(),
             edge: 0,
         };
-        let wall = crate::extrude::side_quad_world(&doc, 0, &profile, 0).expect("wall face exists");
+        let wall = crate::extrude::side_quad_world(&doc, xkey(0), &profile, 0).expect("wall face exists");
         let (a, b, d) = (wall[0], wall[1], wall[3]);
         let world_pt = |s: f32, t: f32| a + (b - a) * s + (d - a) * t;
 
@@ -2023,7 +2016,7 @@ mod tests {
     }
 
     fn extrude_loop(doc: &mut Document, sketch: SketchId, lines: Vec<usize>) {
-        doc.extrusions.push(crate::model::Extrusion {
+        doc.extrusions.insert(crate::model::Extrusion {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
             distance: 10.0,
@@ -2031,7 +2024,6 @@ mod tests {
             expression: String::new(),
             name: None,
             symmetric: false,
-            deleted: false,
             edge_treatments: Vec::new(),
         });
     }
@@ -2045,7 +2037,7 @@ mod tests {
             let frame = sketch_frame(
                 doc,
                 FaceId::ExtrudeSide {
-                    extrusion: 0,
+                    extrusion: xkey(0),
                     profile: profile.clone(),
                     edge: edge as u8,
                 },
@@ -2111,13 +2103,13 @@ mod tests {
         let profile = crate::model::ExtrudeFace::Polygon(lines);
         let f2 = sketch_frame(
             &doc,
-            FaceId::ExtrudeSide { extrusion: 0, profile: profile.clone(), edge: 2 },
+            FaceId::ExtrudeSide { extrusion: xkey(0), profile: profile.clone(), edge: 2 },
         )
         .unwrap();
         assert!(f2.normal.dot(Vec3::Y) > 0.99, "edge 2 outward is +Y, got {:?}", f2.normal);
         let f3 = sketch_frame(
             &doc,
-            FaceId::ExtrudeSide { extrusion: 0, profile, edge: 3 },
+            FaceId::ExtrudeSide { extrusion: xkey(0), profile, edge: 3 },
         )
         .unwrap();
         assert!(f3.normal.dot(Vec3::X) > 0.99, "edge 3 outward is +X, got {:?}", f3.normal);
@@ -2146,7 +2138,7 @@ mod tests {
             let frame = sketch_frame(
                 &doc,
                 FaceId::ExtrudeSide {
-                    extrusion: 0,
+                    extrusion: xkey(0),
                     profile: profile.clone(),
                     edge,
                 },

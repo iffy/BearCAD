@@ -106,10 +106,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Constraint(index));
         }
     }
-    for (index, extrusion) in doc.extrusions.iter().enumerate() {
-        if extrusion.deleted {
-            continue;
-        }
+    for (index, extrusion) in doc.extrusions.iter() {
         if name_matches(extrusion.name.as_deref(), query) {
             return Some(SceneElement::Extrusion(index));
         }
@@ -255,7 +252,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let extrusion = doc
                 .extrusions
                 .get_mut(index)
-                .ok_or_else(|| format!("extrusion {index} not found"))?;
+                .ok_or_else(|| format!("extrusion {} not found", index.index()))?;
             extrusion.name = stored;
         }
         SceneElement::Body(index) => {
@@ -505,7 +502,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             let unit = extrusion
                 .map(|e| effective_length_unit(doc, e.sketch))
                 .unwrap_or(doc.default_length_unit);
-            format!("Extrusion {i} ({})", format_length_display_in(distance, unit))
+            format!(
+                "Extrusion {} ({})",
+                i.index(),
+                format_length_display_in(distance, unit)
+            )
         }
         HierarchyNode::Body(i) => format!("Body {}", i.index()),
         HierarchyNode::Image(i) => doc
@@ -732,7 +733,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                 },
             )
         }
-        SceneElement::Extrusion(i) => format!("Extrusion {i}"),
+        SceneElement::Extrusion(i) => format!("Extrusion {}", i.index()),
         SceneElement::Body(i) => format!("Body {}", i.index()),
         SceneElement::FaceEdge(_) => "Edge".to_string(),
         SceneElement::BodyEdge { body, .. } => format!("Edge of {}", body_label(doc, *body)),
@@ -754,7 +755,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::ExtrusionEdge { extrusion, edge } => {
             let owner = element_name(doc, SceneElement::Extrusion(*extrusion))
                 .map(|n| n.to_string())
-                .unwrap_or_else(|| format!("Extrusion {extrusion}"));
+                .unwrap_or_else(|| format!("Extrusion {}", extrusion.index()));
             let which = match edge {
                 crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => {
                     format!("vertical {edge}")

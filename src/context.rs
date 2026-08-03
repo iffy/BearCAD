@@ -67,7 +67,7 @@ pub struct ContextInput<'a> {
     /// Selection-picker rows for the active tool (#157/#167): `Some` whenever the tool
     /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
     /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
-    pub edge_treatment_edges: Option<Vec<(usize, crate::model::ExtrusionEdgeRef)>>,
+    pub edge_treatment_edges: Option<Vec<(crate::model::ExtrusionKey, crate::model::ExtrusionEdgeRef)>>,
     /// Selection-picker rows for the Loft tool (#loft): one row per picked cross section,
     /// `Some` (possibly empty) whenever the Loft tool is active outside a sketch.
     pub loft_sections: Option<Vec<crate::model::LoftSection>>,
@@ -520,7 +520,7 @@ pub struct RepeatControl {
     /// Picked sketches to repeat as offset copies (#231/#234).
     pub sketch_targets: Vec<usize>,
     /// Picked cut/add extrusions whose effect is replayed at each offset (#220/#235).
-    pub extrusion_targets: Vec<usize>,
+    pub extrusion_targets: Vec<crate::model::ExtrusionKey>,
     /// The picked path (#439/#955): a straight reference, or a circle to ride round (#840).
     pub path: Option<crate::hierarchy::SceneElement>,
     /// Repeat **around** the path instead of along it (#839). While set, Distance becomes an
@@ -7387,6 +7387,7 @@ fn orientation_pick_to_drawing(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
 
@@ -7853,7 +7854,7 @@ mod tests {
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         let base = ContextInput {
             tool: Tool::Chamfer,
-            edge_treatment_edges: Some(vec![(0, edge)]),
+            edge_treatment_edges: Some(vec![(xkey(0), edge)]),
             ..input(&doc, &selection)
         };
         let picker = |input: &ContextInput<'_>| {
@@ -7865,7 +7866,7 @@ mod tests {
         let view = picker(&base).expect("the edge picker");
         assert_eq!(
             view.picker.picked(),
-            &[SceneElement::ExtrusionEdge { extrusion: 0, edge }]
+            &[SceneElement::ExtrusionEdge { extrusion: xkey(0), edge }]
         );
         assert!(view.picker.accepts(
             &doc,
@@ -8078,7 +8079,7 @@ mod tests {
         let unobtainium = doc.default_material().expect("the seeded palette");
         for material in [Some(brass), None] {
             doc.bodies.insert(crate::model::Body {
-                source: crate::model::BodySource::Extrusion(0),
+                source: crate::model::BodySource::Extrusion(xkey(0)),
                 material,
                 name: None,
                 shadow: false,
@@ -8750,7 +8751,7 @@ mod tests {
             crate::names::scene_element_label(
                 &doc,
                 &SceneElement::ExtrusionEdge {
-                    extrusion: 3,
+                    extrusion: xkey(3),
                     edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 },
                 }
             ),
@@ -8760,7 +8761,7 @@ mod tests {
             crate::names::scene_element_label(
                 &doc,
                 &SceneElement::ExtrusionEdge {
-                    extrusion: 0,
+                    extrusion: xkey(0),
                     edge: crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true },
                 }
             ),

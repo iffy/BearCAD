@@ -1235,6 +1235,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::joint_key_for_slot as jkey;
@@ -1457,11 +1458,11 @@ mod tests {
 
     #[test]
     fn an_extrusion_edge_is_an_edge_a_picker_can_hold() {
-        // #952: the 3D Chamfer/Fillet set is `Vec<(usize, ExtrusionEdgeRef)>` — the analytic
+        // #952: the 3D Chamfer/Fillet set is `Vec<(crate::model::ExtrusionKey, ExtrusionEdgeRef)>` — the analytic
         // edge, not the quantized mesh `BodyEdge` — so it had no element and kept its own state
         // behind the legacy row-list picker.
         let edge = SceneElement::ExtrusionEdge {
-            extrusion: 2,
+            extrusion: xkey(2),
             edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 1 },
         };
         assert_eq!(ElementKind::of(&edge), ElementKind::Edge);

@@ -141,8 +141,10 @@ fn pane_element_for_constraint_line(line: crate::model::ConstraintLine) -> crate
     match line {
         ConstraintLine::Line(index) => SceneElement::Line(index),
         // A face's own edge tracks the feature that produced its face, same as elsewhere.
-        ConstraintLine::FaceEdge { face, .. } => crate::hierarchy::face_owner_element(&face)
-            .unwrap_or(SceneElement::Extrusion(usize::MAX)),
+        // No owning feature means nothing to point the pane at (#1055): the origin stands in.
+        ConstraintLine::FaceEdge { face, .. } => {
+            crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
+        }
         ConstraintLine::OriginAxis(_) => SceneElement::ConstructionPlane(0),
     }
 }
@@ -157,8 +159,9 @@ fn pane_element_for_constraint_point(
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
         ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
-        ConstraintPoint::FaceVertex { face, .. } => crate::hierarchy::face_owner_element(&face)
-            .unwrap_or(SceneElement::Extrusion(usize::MAX)),
+        ConstraintPoint::FaceVertex { face, .. } => {
+            crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
+        }
     }
 }
 
@@ -214,10 +217,8 @@ pub fn elements_using_parameter(
         }
     }
     // Extrusions whose distance expression references the parameter (#620).
-    for (ei, ext) in doc.extrusions.iter().enumerate() {
-        if !ext.deleted
-            && !parameter_names_referenced_in_expression(&ext.expression, &known).is_empty()
-        {
+    for (ei, ext) in doc.extrusions.iter() {
+        if !parameter_names_referenced_in_expression(&ext.expression, &known).is_empty() {
             elements.insert(SceneElement::Extrusion(ei));
         }
     }
@@ -822,7 +823,7 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
 /// Move/Repeat tool fields, text sizes, and unit placements/overrides.
 fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
     propagate_parameter_rename(doc, old, new);
-    for extrusion in &mut doc.extrusions {
+    for extrusion in doc.extrusions.values_mut() {
         extrusion.expression = substitute_parameter_name(&extrusion.expression, old, new);
     }
     for op in doc.move_ops.values_mut() {
@@ -940,12 +941,12 @@ pub fn rebake_sketch_texts(doc: &mut Document) {
 /// Extrusions with no expression (plain gizmo-set distances) keep their baked value. The drag
 /// direction (sign) is preserved; magnitude comes from the expression.
 pub fn rebake_extrusion_distances(doc: &mut Document) {
-    for i in 0..doc.extrusions.len() {
-        let (deleted, expr, dist) = {
+    for i in doc.extrusions.keys().collect::<Vec<_>>() {
+        let (expr, dist) = {
             let e = &doc.extrusions[i];
-            (e.deleted, e.expression.clone(), e.distance)
+            (e.expression.clone(), e.distance)
         };
-        if deleted || expr.trim().is_empty() {
+        if expr.trim().is_empty() {
             continue;
         }
         if let Some(mag) = crate::value::eval_length_mm_in_doc(&expr, doc) {
