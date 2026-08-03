@@ -1518,7 +1518,7 @@ fn corners_rounded(app: &AppState) -> bool {
 }
 
 fn label_engraved(app: &AppState) -> bool {
-    app.doc.sketch_texts.iter().any(|t| !t.deleted) && cut_extrusion_count(app) >= 2
+    !app.doc.sketch_texts.is_empty() && cut_extrusion_count(app) >= 2
 }
 
 fn bend_angle_changed(app: &AppState) -> bool {
@@ -1842,7 +1842,7 @@ fn assist_position_holes(app: &mut AppState) {
 fn assist_engrave(app: &mut AppState) {
     use crate::actions::ExtrudeBodyChoice;
     use crate::model::{ExtrudeFace, FaceId};
-    if app.doc.sketch_texts.iter().any(|t| !t.deleted) && cut_extrusion_count(app) >= 2 {
+    if !app.doc.sketch_texts.is_empty() && cut_extrusion_count(app) >= 2 {
         return;
     }
     let lines = profile_lines(app);
@@ -1882,15 +1882,7 @@ fn assist_engrave(app: &mut AppState) {
         rotation: 0.0,
         wrap_width: None,
     });
-    let Some(text) = app
-        .doc
-        .sketch_texts
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, t)| !t.deleted)
-        .map(|(i, _)| i)
-    else {
+    let Some(text) = app.doc.sketch_texts.keys().last() else {
         return;
     };
     let sketch = session.sketch;

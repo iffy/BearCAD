@@ -2494,13 +2494,13 @@ pub enum Action {
     /// handle, the shifted origin) and re-wrap the glyphs. Only meaningful for a text that
     /// already has a wrap width.
     ResizeSketchText {
-        index: usize,
+        index: crate::model::SketchTextKey,
         origin: (f32, f32),
         wrap_width: f32,
     },
     /// Re-bake / re-point an existing sketch text (#282): string, font, size, style, position.
     EditSketchText {
-        index: usize,
+        index: crate::model::SketchTextKey,
         text: String,
         font_family: String,
         bold: bool,
@@ -5987,7 +5987,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {}", i.index()),
         SceneElement::SketchVertexTreatmentOp(i) => format!("Sketch chamfer/fillet {}", i.index()),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {}", i.index()),
-        SceneElement::SketchText(i) => format!("Text {i}"),
+        SceneElement::SketchText(i) => format!("Text {}", i.index()),
         SceneElement::SliceOp(i) => format!("Slice operation {}", i.index()),
         SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {}", i.index()),
         SceneElement::Revolution(i) => format!("Revolve operation {}", i.index()),
@@ -11200,7 +11200,7 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                self.doc.sketch_texts.push(crate::model::SketchText {
+                self.doc.sketch_texts.insert(crate::model::SketchText {
                     sketch,
                     text,
                     font_family,
@@ -11217,15 +11217,14 @@ label_hidden: false,
                     font_bytes,
                     pin: None,
                     name: None,
-                    deleted: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SketchText);
                 self.status = "Added text".to_string();
                 ActionResult::Ok
             }
             Action::ResizeSketchText { index, origin, wrap_width } => {
-                let Some(t) = self.doc.sketch_texts.get(index).filter(|t| !t.deleted) else {
-                    let e = format!("Sketch text {index} not found");
+                let Some(t) = self.doc.sketch_texts.get(index) else {
+                    let e = format!("Sketch text {} not found", index.index());
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -11259,8 +11258,8 @@ label_hidden: false,
                 rotation,
                 wrap_width,
             } => {
-                let Some(existing) = self.doc.sketch_texts.get(index).filter(|t| !t.deleted) else {
-                    let e = format!("Sketch text {index} not found");
+                let Some(existing) = self.doc.sketch_texts.get(index) else {
+                    let e = format!("Sketch text {} not found", index.index());
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
@@ -15700,7 +15699,7 @@ pub struct GizmoInfo {
 pub const MIN_TEXT_WRAP_MM: f32 = 2.0;
 
 /// The single selected sketch text, if the selection is exactly one text (#286/#409).
-pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
+pub fn single_selected_sketch_text(state: &AppState) -> Option<crate::model::SketchTextKey> {
     let mut only = None;
     for element in state.scene_selection.iter() {
         match element {
@@ -15708,7 +15707,7 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
             _ => return None,
         }
     }
-    only.filter(|&i| state.doc.sketch_texts.get(i).is_some_and(|t| !t.deleted))
+    only.filter(|&i| state.doc.sketch_texts.contains(i))
 }
 
 /// Every element a component can be told to hold (#429), read before an action so whatever
@@ -15937,6 +15936,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::drawing_key_for_slot as dkey;
@@ -16868,7 +16868,7 @@ mod tests {
         // No gizmo until the text is selected.
         assert!(available_gizmos(&state).is_empty());
         state.apply(Action::ClickSceneElement {
-            element: crate::hierarchy::SceneElement::SketchText(0),
+            element: crate::hierarchy::SceneElement::SketchText(tkey(0)),
             additive: false,
         });
         let gizmos = available_gizmos(&state);
@@ -16876,14 +16876,14 @@ mod tests {
         assert_eq!(gizmos[0].name, "text_width");
         assert!((gizmos[0].value - 60.0).abs() < 1e-3);
 
-        let min_y_before = state.doc.sketch_texts[0]
+        let min_y_before = state.doc.sketch_texts[tkey(0)]
             .contours
             .iter()
             .flatten()
             .map(|&(_, y)| y)
             .fold(f32::MAX, f32::min);
         assert!(set_gizmo(&mut state, "text_width", 20.0));
-        let t = &state.doc.sketch_texts[0];
+        let t = &state.doc.sketch_texts[tkey(0)];
         assert_eq!(t.wrap_width, Some(20.0));
         // Narrower box → more wrapped lines → the block grows downward (single words may
         // still overflow the width: word wrap never splits a word).
@@ -16895,7 +16895,7 @@ mod tests {
 
         // The minimum width clamps.
         assert!(set_gizmo(&mut state, "text_width", 0.1));
-        assert_eq!(state.doc.sketch_texts[0].wrap_width, Some(MIN_TEXT_WRAP_MM));
+        assert_eq!(state.doc.sketch_texts[tkey(0)].wrap_width, Some(MIN_TEXT_WRAP_MM));
     }
 
     /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by
@@ -21371,14 +21371,14 @@ mod tests {
             wrap_width: None,
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
-        let t = &state.doc.sketch_texts[0];
+        let t = &state.doc.sketch_texts[tkey(0)];
         assert!(!t.contours.is_empty(), "outlines baked");
         assert!(!t.font_bytes.is_empty(), "font embedded for portability");
         let a_contours = t.contours.len();
 
         // Editing to a longer string re-bakes (more contours).
         let result = state.apply(Action::EditSketchText {
-            index: 0,
+            index: tkey(0),
             text: "AbAb".to_string(),
             font_family: family.to_string(),
             bold: false,
@@ -21391,7 +21391,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         assert!(
-            state.doc.sketch_texts[0].contours.len() > a_contours,
+            state.doc.sketch_texts[tkey(0)].contours.len() > a_contours,
             "re-bake reflects the longer string"
         );
     }
@@ -21426,17 +21426,17 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{}", state.status);
         // The raw template is stored; the outlines are baked from the interpolated string.
-        assert_eq!(state.doc.sketch_texts[0].text, "W={foo}");
-        let baked_20 = state.doc.sketch_texts[0].contours.len();
+        assert_eq!(state.doc.sketch_texts[tkey(0)].text, "W={foo}");
+        let baked_20 = state.doc.sketch_texts[tkey(0)].contours.len();
         assert!(baked_20 > 0, "outlines baked from the interpolated string");
 
         // Changing foo to a longer value re-bakes with more glyphs ("W=200.0 mm" vs "W=20.0 mm").
         let pi = crate::parameters::parameter_index_by_name(&state.doc, "foo").unwrap();
         crate::parameters::set_parameter_expression(&mut state.doc, pi, "200mm".to_string())
             .unwrap();
-        assert_eq!(state.doc.sketch_texts[0].text, "W={foo}", "template unchanged");
+        assert_eq!(state.doc.sketch_texts[tkey(0)].text, "W={foo}", "template unchanged");
         assert!(
-            state.doc.sketch_texts[0].contours.len() > baked_20,
+            state.doc.sketch_texts[tkey(0)].contours.len() > baked_20,
             "re-bake reflects the longer interpolated value"
         );
     }
@@ -21478,7 +21478,7 @@ mod tests {
             sketch,
             kind: crate::model::ConstraintKind::Coincident {
                 a: crate::model::ConstraintEntity::Point(crate::model::ConstraintPoint::TextAnchor {
-                    text: 0,
+                    text: tkey(0),
                     anchor: crate::model::TextAnchor::Center,
                 }),
                 b: crate::model::ConstraintEntity::Point(crate::model::ConstraintPoint::LineEndpoint {
@@ -21495,7 +21495,7 @@ mod tests {
         // The text's centre anchor now sits on (30, 40) and the line did not move.
         assert_eq!(state.doc.lines[0].x0, 30.0);
         assert_eq!(state.doc.lines[0].y0, 40.0);
-        let t = &state.doc.sketch_texts[0];
+        let t = &state.doc.sketch_texts[tkey(0)];
         let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
         for c in &t.contours {
             for &(x, y) in c {

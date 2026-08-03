@@ -73,7 +73,9 @@ pub fn scene_element_from_kind(
         "constraint" => Some(SceneElement::Constraint(index)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
-        "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
+        "sketch_text" | "text" => {
+            Some(SceneElement::SketchText(doc.sketch_texts.keys().nth(index)?))
+        }
         "joint" => Some(SceneElement::Joint(doc.joints.keys().nth(index)?)),
         _ => None,
     }
@@ -205,8 +207,8 @@ pub fn scene_element_selection_index(
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
-        | SceneElement::Constraint(i)
-        | SceneElement::SketchText(i) => Some(*i),
+        | SceneElement::Constraint(i) => Some(*i),
+        SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
         SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
         SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
         SceneElement::UnitInstance(key) => doc.unit_instances.keys().position(|k| k == *key),
@@ -1767,7 +1769,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 "drawing" => doc.drawings.len(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
-                    doc.sketch_texts.iter().filter(|e| !e.deleted).count()
+                    doc.sketch_texts.len()
                 }
                 other => {
                     return Err(format!(

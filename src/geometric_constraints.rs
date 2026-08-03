@@ -344,7 +344,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Point(ConstraintPoint::FaceVertex { index, .. }) => (6, index, 0, 0),
         ConstraintRef::Line(ConstraintLine::FaceEdge { index, .. }) => (7, index, 0, 0),
         ConstraintRef::Point(ConstraintPoint::TextAnchor { text, anchor }) => {
-            (8, text, anchor as u8, 0)
+            (8, text.index() as usize, anchor as u8, 0)
         }
         ConstraintRef::Point(ConstraintPoint::ImageCalibrationPoint { image, index }) => {
             (9, image.index() as usize, index as u8, 0)
@@ -651,10 +651,9 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
             let entity = doc
                 .sketch_texts
                 .get(*text)
-                .filter(|t| !t.deleted)
-                .ok_or_else(|| format!("Text {text} not found"))?;
+                .ok_or_else(|| format!("Text {} not found", text.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Text {text} is not in sketch {sketch}"));
+                return Err(format!("Text {} is not in sketch {sketch}", text.index()));
             }
         }
         // Valid only in sketches hosted on the image's own plane (#425).
@@ -881,8 +880,7 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
             let entity = doc
                 .sketch_texts
                 .get(text)
-                .filter(|t| !t.deleted)
-                .ok_or_else(|| format!("Text {text} not found"))?;
+                .ok_or_else(|| format!("Text {} not found", text.index()))?;
             Ok(crate::text::sketch_text_anchor_uv(entity, anchor))
         }
     }
@@ -947,8 +945,7 @@ pub fn set_point_uv(
             let entity = doc
                 .sketch_texts
                 .get_mut(text)
-                .filter(|t| !t.deleted)
-                .ok_or_else(|| format!("Text {text} not found"))?;
+                .ok_or_else(|| format!("Text {} not found", text.index()))?;
             let (ax, ay) = crate::text::sketch_text_anchor_offset(&entity.contours, anchor);
             let (sin, cos) = entity.rotation.sin_cos();
             entity.origin = (u - (ax * cos - ay * sin), v - (ax * sin + ay * cos));

@@ -94,10 +94,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::Shape(index) => doc.primitives.contains(index),
         SceneElement::SweepOp(index) => doc.sweeps.contains(index),
         SceneElement::Image(index) => doc.tracing_images.contains(index),
-        SceneElement::SketchText(index) => doc
-            .sketch_texts
-            .get(index)
-            .is_some_and(|t| !t.deleted),
+        SceneElement::SketchText(index) => doc.sketch_texts.contains(index),
         SceneElement::Joint(index) => doc.joints.contains(index),
     }
 }
@@ -124,7 +121,7 @@ fn point_owner_alive(
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
         }
         ConstraintPoint::TextAnchor { text, .. } => {
-            doc.sketch_texts.get(*text).is_some_and(|t| !t.deleted)
+            doc.sketch_texts.contains(*text)
         }
         ConstraintPoint::ImageCalibrationPoint { image, index } => doc
             .tracing_images
@@ -556,13 +553,9 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::Image(index) => {
             changed = doc.tracing_images.remove(index).is_some();
         }
+        // A sketch text is removed outright (#1055), like a tracing image.
         SceneElement::SketchText(index) => {
-            if let Some(t) = doc.sketch_texts.get_mut(index) {
-                if !t.deleted {
-                    t.deleted = true;
-                    changed = true;
-                }
-            }
+            changed = doc.sketch_texts.remove(index).is_some();
         }
     }
     changed
@@ -869,7 +862,7 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
         }
         ConstraintPoint::TextAnchor { text, .. } => {
-            doc.sketch_texts.get(*text).is_some_and(|t| !t.deleted)
+            doc.sketch_texts.contains(*text)
         }
         ConstraintPoint::ImageCalibrationPoint { image, index } => doc
             .tracing_images

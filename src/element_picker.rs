@@ -427,7 +427,7 @@ pub fn element_in_sketch(
 ) -> bool {
     let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
     let circle_in = |ci: usize| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
-    let text_in = |ti: usize| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
+    let text_in = |ti: crate::model::SketchTextKey| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
     let host_face = doc.sketch_face(sketch);
     let constraint_line_in = |cl: &crate::model::ConstraintLine| match cl {
         crate::model::ConstraintLine::Line(li) => line_in(*li),

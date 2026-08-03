@@ -486,7 +486,6 @@ mod tests {
             font_bytes: Vec::new(),
             pin: None,
             name: None,
-            deleted: false,
         };
         let pts = sketch_text_anchor_points(&text);
         let idx = |a: A| A::ALL.iter().position(|x| *x == a).unwrap();

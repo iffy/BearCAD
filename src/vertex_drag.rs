@@ -33,7 +33,7 @@ pub struct SelectionDragSession {
     /// Drag-start position of every point in the selection's coincident closure.
     pub initial_positions: HashMap<ConstraintPoint, (f32, f32)>,
     /// Drag-start origin of every selected text.
-    pub initial_text_origins: Vec<(usize, (f32, f32))>,
+    pub initial_text_origins: Vec<(crate::model::SketchTextKey, (f32, f32))>,
 }
 
 /// Capture a selection drag (#306): seed points from every selected line/circle in `sketch`,
@@ -65,7 +65,7 @@ pub fn begin_selection_drag_session(
                 if doc
                     .sketch_texts
                     .get(*ti)
-                    .is_some_and(|t| !t.deleted && t.sketch == sketch)
+                    .is_some_and(|t| t.sketch == sketch)
                 {
                     texts.push(*ti);
                 }
@@ -360,7 +360,7 @@ fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
         ConstraintPoint::LineEndpoint { line, end } => (0, line, end as u8, 0),
         ConstraintPoint::CircleCenter(circle) => (2, circle, 0, 0),
         ConstraintPoint::FaceVertex { index, .. } => (3, index, 0, 0),
-        ConstraintPoint::TextAnchor { text, anchor } => (4, text, anchor as u8, 0),
+        ConstraintPoint::TextAnchor { text, anchor } => (4, text.index() as usize, anchor as u8, 0),
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
             (5, image.index() as usize, index as u8, 0)
         }
@@ -1009,6 +1009,7 @@ fn project_endpoint_with_length(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_text_key_for_slot as tkey;
     use super::*;
     use crate::constraints::{add_distance_constraint, solve_document_constraints};
     use crate::geometric_constraints::{
@@ -1071,7 +1072,7 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 6.0, [false; 4]);
-        doc.sketch_texts.push(crate::model::SketchText {
+        doc.sketch_texts.insert(crate::model::SketchText {
             sketch,
             text: "A".to_string(),
             font_family: String::new(),
@@ -1088,12 +1089,11 @@ mod tests {
             font_bytes: Vec::new(),
             pin: None,
             name: None,
-            deleted: false,
         });
         let elements: Vec<SceneElement> = lines
             .iter()
             .map(|&li| SceneElement::Line(li))
-            .chain(std::iter::once(SceneElement::SketchText(0)))
+            .chain(std::iter::once(SceneElement::SketchText(tkey(0))))
             .collect();
         let len0: Vec<f32> = lines.iter().map(|&li| doc.lines[li].chord_length()).collect();
 
@@ -1104,8 +1104,8 @@ mod tests {
         for (&li, &l0) in lines.iter().zip(&len0) {
             assert!((doc.lines[li].chord_length() - l0).abs() < 1e-3, "edge {li} resized");
         }
-        assert!((doc.sketch_texts[0].origin.0 - 9.0).abs() < 1e-3);
-        assert!((doc.sketch_texts[0].origin.1 - (-1.0)).abs() < 1e-3);
+        assert!((doc.sketch_texts[tkey(0)].origin.0 - 9.0).abs() < 1e-3);
+        assert!((doc.sketch_texts[tkey(0)].origin.1 - (-1.0)).abs() < 1e-3);
         // The bottom-left corner rode along too (0,0) -> (7,-3).
         let bl = doc
             .lines

@@ -329,7 +329,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let t = doc
                 .sketch_texts
                 .get_mut(index)
-                .ok_or_else(|| format!("sketch text {index} not found"))?;
+                .ok_or_else(|| format!("sketch text {} not found", index.index()))?;
             t.name = stored;
         }
         SceneElement::SliceOp(index) => {
@@ -543,7 +543,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             if short.len() < content.len() {
                 short.push('…');
             }
-            format!("Text {i} (\"{short}\")")
+            format!("Text {} (\"{short}\")", i.index())
         }
         HierarchyNode::SliceOp(i) => format!("Slice {}", i.index()),
         HierarchyNode::EdgeTreatmentOp(i) => {
@@ -800,7 +800,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
             format!("{} {}", sketch_vertex_treatment_label(doc, *i), i.index())
         }
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {}", i.index()),
-        SceneElement::SketchText(i) => format!("Text {i}"),
+        SceneElement::SketchText(i) => format!("Text {}", i.index()),
         SceneElement::SliceOp(i) => format!("Slice {}", i.index()),
         SceneElement::EdgeTreatmentOp(i) => match doc.edge_treatment_ops.get(*i).map(|o| o.kind) {
             Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {}", i.index()),

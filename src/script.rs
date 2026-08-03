@@ -2023,9 +2023,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i.index() as usize,
             point: None,
         },
+        // The text's arena slot, not its ordinal (#1070).
         SceneElement::SketchText(i) => ElementScriptTokens {
             kind: "sketch_text",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
@@ -3421,7 +3422,7 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
             format!("{{boolean = {}}}", boolean_face_lua_table(*op, a, b))
         }
         ExtrudeFace::TextGlyph { text, glyph } => {
-            format!("{{text_glyph = {{text = {text}, glyph = {glyph}}}}}")
+            format!("{{text_glyph = {{text = {}, glyph = {glyph}}}}}", text.index())
         }
         // A plane region (#993) names its sketch and the seed point that picks it out.
         ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
@@ -3677,7 +3678,10 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
         // #408: mirrors `lua_script::parse_constraint_point_table`'s `"sketch_text"` shape.
         ConstraintPoint::TextAnchor { text, anchor } => {
             let anchor = anchor.lua_name();
-            format!("kind = \"sketch_text\", index = {text}, anchor = \"{anchor}\"")
+            format!(
+                "kind = \"sketch_text\", index = {}, anchor = \"{anchor}\"",
+                text.index()
+            )
         }
         // #425: mirrors the `"image"` + `point` shape.
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
@@ -3841,7 +3845,10 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
             *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
         ),
         ExtrudeFace::TextGlyph { text, glyph } => {
-            format!("profile = \"text_glyph\", profile_index = {text}, glyph = {glyph}")
+            format!(
+                "profile = \"text_glyph\", profile_index = {}, glyph = {glyph}",
+                text.index()
+            )
         }
     }
 }

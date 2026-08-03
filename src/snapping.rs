@@ -247,10 +247,7 @@ pub fn all_sketch_vertices(doc: &Document) -> Vec<ConstraintPoint> {
         }
         points.push(ConstraintPoint::CircleCenter(index));
     }
-    for (index, text) in doc.sketch_texts.iter().enumerate() {
-        if text.deleted {
-            continue;
-        }
+    for (index, _text) in doc.sketch_texts.iter() {
         for anchor in crate::model::TextAnchor::ALL {
             points.push(ConstraintPoint::TextAnchor { text: index, anchor });
         }
@@ -282,8 +279,8 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
     }
     // A text's nine anchor points (#408): snapping a dragged vertex onto one holds it there
     // with a coincident constraint, like any other vertex.
-    for (index, text) in doc.sketch_texts.iter().enumerate() {
-        if text.deleted || text.sketch != sketch {
+    for (index, text) in doc.sketch_texts.iter() {
+        if text.sketch != sketch {
             continue;
         }
         for anchor in crate::model::TextAnchor::ALL {

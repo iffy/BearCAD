@@ -59,7 +59,7 @@ pub enum HierarchyNode {
     /// A 2D in-sketch slice (#224/#229); its fragment lines nest under it.
     SketchSliceOp(crate::model::SketchSliceOpKey),
     /// A sketch text element (#282/#286); nests under its sketch like a line.
-    SketchText(usize),
+    SketchText(crate::model::SketchTextKey),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(crate::model::SliceOpKey),
     /// An edge chamfer/fillet operation on bodies (#531); its beveled output bodies nest under
@@ -199,7 +199,7 @@ pub enum SceneElement {
     /// A 2D in-sketch slice (#224/#229).
     SketchSliceOp(crate::model::SketchSliceOpKey),
     /// A sketch text element (#282): selecting it selects the whole text.
-    SketchText(usize),
+    SketchText(crate::model::SketchTextKey),
     /// A slice operation on bodies (Slice tool).
     SliceOp(crate::model::SliceOpKey),
     /// An edge chamfer/fillet operation on bodies (#531).
@@ -2769,7 +2769,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     out.insert(SceneElement::Constraint(ci));
                 }
             }
-            for (ti, text) in doc.sketch_texts.iter().enumerate() {
+            for (ti, text) in doc.sketch_texts.iter() {
                 if text.sketch == sketch {
                     out.insert(SceneElement::SketchText(ti));
                 }
@@ -3631,8 +3631,8 @@ fn build_sketch_entry(
                 children: vec![],
             });
         }
-        for (ti, text) in doc.sketch_texts.iter().enumerate() {
-            if text.deleted || text.sketch != sketch {
+        for (ti, text) in doc.sketch_texts.iter() {
+            if text.sketch != sketch {
                 continue;
             }
             children.push(HierarchyEntry {

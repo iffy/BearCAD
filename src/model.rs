@@ -877,7 +877,7 @@ pub enum ConstraintPoint {
     /// One of a sketch text's nine anchor points (#408): the bounding-box corners, edge
     /// midpoints, or centre. Solving moves the text's `origin` (the whole text translates
     /// rigidly); its rotation and size never change from constraints.
-    TextAnchor { text: usize, anchor: TextAnchor },
+    TextAnchor { text: SketchTextKey, anchor: TextAnchor },
     /// One of a tracing image's two calibration reference points (#425). Solving moves the
     /// image's `origin` (the whole image translates rigidly); its scale never changes from
     /// constraints. Only valid in sketches hosted on the image's plane.
@@ -1133,7 +1133,7 @@ pub enum ExtrudeFace {
     /// One glyph region of a sketch text (#285): `text` indexes `Document::sketch_texts`, `glyph`
     /// indexes the grouped glyph regions (`text::group_glyphs`) — an outer loop plus its counters
     /// (holes). Extruding a whole text toggles one of these per glyph into `Extrusion::faces`.
-    TextGlyph { text: usize, glyph: usize },
+    TextGlyph { text: SketchTextKey, glyph: usize },
     /// One region of a **hosted sketch's plane** (#993): the sketch's own lines together with the
     /// boundary of the face it is drawn on divide that face into regions, and this names the one
     /// containing `(seed_u, seed_v)` — a point in sketch-local coordinates.
@@ -1703,6 +1703,12 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
 /// The same for a joint (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn joint_key_for_slot(n: usize) -> JointKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a sketch text (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn sketch_text_key_for_slot(n: usize) -> SketchTextKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -3151,9 +3157,10 @@ pub struct SketchText {
     pub pin: Option<(ConstraintPoint, TextAnchor)>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// A sketch text's identity (#1055): stable across deletions of other texts.
+pub type SketchTextKey = crate::arena::Key<SketchText>;
 
 /// Serde codec storing [`SketchText::font_bytes`] as base64 (same rationale as the tracing-image
 /// codec — raw byte arrays would bloat the JSON 4x).
@@ -4095,7 +4102,7 @@ pub struct Document {
     pub sketch_vertex_treatment_ops: crate::arena::Arena<SketchVertexTreatmentOperation>,
     /// Sketch text elements (#282): baked glyph outlines + embedded font, per sketch.
     #[serde(default)]
-    pub sketch_texts: Vec<SketchText>,
+    pub sketch_texts: crate::arena::Arena<SketchText>,
     /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
     #[serde(default)]
     pub drawings: crate::arena::Arena<Drawing>,
@@ -4329,7 +4336,7 @@ impl Default for Document {
             sketch_mirror_ops: crate::arena::Arena::new(),
             sketch_vertex_treatment_ops: crate::arena::Arena::new(),
             sketch_slice_ops: crate::arena::Arena::new(),
-            sketch_texts: Vec::new(),
+            sketch_texts: crate::arena::Arena::new(),
             drawings: crate::arena::Arena::new(),
             joints: crate::arena::Arena::new(),
             shape_order: Vec::new(),

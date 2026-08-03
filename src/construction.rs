@@ -2329,7 +2329,7 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
             crate::extrude::face_boundary_loop_world(doc, &face)?.get(index).copied()
         }
         ConstraintPoint::TextAnchor { text, anchor } => {
-            let entity = doc.sketch_texts.get(text).filter(|t| !t.deleted)?;
+            let entity = doc.sketch_texts.get(text)?;
             let frame = sketch_geometry_frame(doc, entity.sketch)?;
             let (u, v) = crate::text::sketch_text_anchor_uv(entity, anchor);
             Some(local_to_world(&frame, u, v))
@@ -2399,8 +2399,8 @@ pub fn nearest_sketch_point_in_sketch(
     }
 
     // A text's nine anchor points (#408) are constrainable vertices too.
-    for (ti, text) in doc.sketch_texts.iter().enumerate() {
-        if text.deleted || text.sketch != sketch {
+    for (ti, text) in doc.sketch_texts.iter() {
+        if text.sketch != sketch {
             continue;
         }
         if let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) {
@@ -2599,10 +2599,7 @@ fn nearest_sketch_point(
 
     // A text's nine anchor points (#408): pickable like any vertex, so the constraint tool
     // can hold a text's corner or centre to other geometry.
-    for (ti, text) in doc.sketch_texts.iter().enumerate() {
-        if text.deleted {
-            continue;
-        }
+    for (ti, text) in doc.sketch_texts.iter() {
         let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) else {
             continue;
         };
@@ -2942,10 +2939,7 @@ pub fn collect_pick_candidates(
             push_point(&mut raw, ConstraintPoint::CircleCenter(ci), center);
         }
     }
-    for (ti, text) in doc.sketch_texts.iter().enumerate() {
-        if text.deleted {
-            continue;
-        }
+    for (ti, text) in doc.sketch_texts.iter() {
         if let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) {
             for anchor in crate::model::TextAnchor::ALL {
                 let (u, v) = crate::text::sketch_text_anchor_uv(text, anchor);

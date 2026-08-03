@@ -819,7 +819,7 @@ struct PlaneResizeDrag {
 /// field reads the model each frame, so it stays in sync automatically.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TextRotationDrag {
-    index: usize,
+    index: model::SketchTextKey,
     start_cursor_angle: f32,
     /// Model rotation (radians) when the grab started.
     start_rotation: f32,
@@ -847,7 +847,7 @@ struct VertexDrag {
 /// nearest `(x0,y0)` vs. nearest `(x1,y1)`.
 /// An in-progress drag of a wrapped text box's width handle (#409).
 struct TextWidthDrag {
-    text: usize,
+    text: model::SketchTextKey,
     /// True when the left edge handle is held (the origin shifts); false for the right.
     left: bool,
 }
@@ -7636,7 +7636,7 @@ impl App {
 
     /// The single selected sketch text (#286), if the selection is exactly one text: what the
     /// context text editor and the Move tool's text rotation ring operate on.
-    fn single_selected_sketch_text(&self) -> Option<usize> {
+    fn single_selected_sketch_text(&self) -> Option<model::SketchTextKey> {
         let mut only = None;
         for element in self.state.scene_selection.iter() {
             match element {
@@ -7644,13 +7644,13 @@ impl App {
                 _ => return None,
             }
         }
-        only.filter(|&i| self.state.doc.sketch_texts.get(i).is_some_and(|t| !t.deleted))
+        only.filter(|&i| self.state.doc.sketch_texts.contains(i))
     }
 
     /// Rotation-ring geometry for the selected sketch text (#286): `(text index, ring centre,
     /// sketch-plane normal, radius)`. The ring sits in the text's sketch plane, centred on the
     /// text origin — the point `rotation` turns about.
-    fn text_rotation_geom(&self) -> Option<(usize, Vec3, Vec3, f32)> {
+    fn text_rotation_geom(&self) -> Option<(model::SketchTextKey, Vec3, Vec3, f32)> {
         let index = self.single_selected_sketch_text()?;
         let text = self.state.doc.sketch_texts.get(index)?;
         let frame = sketch_geometry_frame(&self.state.doc, text.sketch)?;
@@ -7706,7 +7706,7 @@ impl App {
                         .doc
                         .sketch_texts
                         .get(ti)
-                        .filter(|t| !t.deleted && t.sketch == session.sketch)
+                        .filter(|t| t.sketch == session.sketch)
                     {
                         acc(t.origin.0, t.origin.1);
                     }
@@ -9991,10 +9991,7 @@ impl App {
         viewport: egui::Rect,
         vp: &glam::Mat4,
     ) -> Option<Vec<model::ExtrudeFace>> {
-        for (ti, text) in self.state.doc.sketch_texts.iter().enumerate() {
-            if text.deleted {
-                continue;
-            }
+        for (ti, text) in self.state.doc.sketch_texts.iter() {
             let Some(frame) = crate::face::sketch_geometry_frame(&self.state.doc, text.sketch) else {
                 continue;
             };
@@ -10111,11 +10108,12 @@ impl App {
         });
         // Select the new text so its context editor opens right away.
         if self.state.doc.sketch_texts.len() > before {
-            let idx = self.state.doc.sketch_texts.len() - 1;
-            self.state.apply(Action::ClickSceneElement {
-                element: SceneElement::SketchText(idx),
-                additive: false,
-            });
+            if let Some(idx) = self.state.doc.sketch_texts.keys().last() {
+                self.state.apply(Action::ClickSceneElement {
+                    element: SceneElement::SketchText(idx),
+                    additive: false,
+                });
+            }
         }
     }
 
@@ -19111,7 +19109,7 @@ fn handle_text_width_drag(
     ui: &egui::Ui,
     drag: &mut Option<TextWidthDrag>,
     state: &mut AppState,
-    selected_text: Option<usize>,
+    selected_text: Option<model::SketchTextKey>,
     session: SketchSession,
     viewport: egui::Rect,
     vp: &glam::Mat4,
@@ -19134,7 +19132,7 @@ fn handle_text_width_drag(
                     .doc
                     .sketch_texts
                     .get(active.text)
-                    .filter(|t| !t.deleted && t.wrap_width.is_some())
+                    .filter(|t| t.wrap_width.is_some())
                 {
                     let frame = sketch_geometry_frame(&state.doc, session.sketch).unwrap();
                     let (u, v) = world_to_local(&frame, world);
@@ -19165,7 +19163,7 @@ fn handle_text_width_drag(
                 .doc
                 .sketch_texts
                 .get(ti)
-                .filter(|t| !t.deleted && t.sketch == session.sketch)
+                .filter(|t| t.sketch == session.sketch)
                 .and_then(crate::text::wrap_width_handles_local)
                 .and_then(|handles| {
                     let frame = sketch_geometry_frame(&state.doc, session.sketch)?;

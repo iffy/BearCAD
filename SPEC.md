@@ -1722,6 +1722,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   transient snapshot marker, #168 — calibration can adopt the same mechanism).
 
 ### 3.4.3 Sketch text (#282)
+- **Text identity (#1055):** `Document::sketch_texts` is an `arena::Arena`, and a text is
+  named by a `SketchTextKey` — `SceneElement::SketchText`, `HierarchyNode::SketchText`,
+  `ConstraintPoint::TextAnchor`, and `ExtrudeFace::TextGlyph`. Deleting a text removes it, so
+  an anchor constraint or an extruded glyph face on it reads as gone rather than sliding onto
+  whichever text used to sit after it. A script names a text by its **ordinal** among the live
+  ones, resolved to a key at the script boundary.
 - **Text tool:** with a sketch open, the **Text** tool (sketch toolbar, or the **T** shortcut
   — #311; T still means the Tangent constraint while drawing a line, with a sketch vertex
   selected, or in the Constraint tool) places a `SketchText`

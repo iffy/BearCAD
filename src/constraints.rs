@@ -675,10 +675,9 @@ fn validate_point_in_sketch(
             let entity = doc
                 .sketch_texts
                 .get(text)
-                .filter(|t| !t.deleted)
-                .ok_or_else(|| format!("Text {text} not found"))?;
+                .ok_or_else(|| format!("Text {} not found", text.index()))?;
             if entity.sketch != sketch {
-                return Err(format!("Text {text} is not in sketch {sketch}"));
+                return Err(format!("Text {} is not in sketch {sketch}", text.index()));
             }
             Ok(())
         }

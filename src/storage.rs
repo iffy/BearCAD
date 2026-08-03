@@ -45,13 +45,10 @@ pub(crate) fn fixup_loaded_document(doc: &mut Document) -> Result<()> {
 /// anchor point and the pin target (#408), so old documents keep their behaviour under the
 /// constraint solver. The pin field is cleared and never written back.
 fn migrate_text_pins(doc: &mut Document) {
-    for i in 0..doc.sketch_texts.len() {
+    for i in doc.sketch_texts.keys().collect::<Vec<_>>() {
         let Some((point, anchor)) = doc.sketch_texts[i].pin.take() else {
             continue;
         };
-        if doc.sketch_texts[i].deleted {
-            continue;
-        }
         doc.constraints.push(crate::model::Constraint {
             sketch: doc.sketch_texts[i].sketch,
             kind: crate::model::ConstraintKind::Coincident {
@@ -264,7 +261,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
         &doc.sketch_vertex_treatment_ops,
     )?;
     save_arena_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
-    save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
+    save_arena_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_arena_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     save_arena_nodes(&tx, &mut row_id, "joint", &doc.joints)?;
     save_arena_nodes(&tx, &mut row_id, "unit", &doc.units)?;
@@ -599,7 +596,7 @@ pub fn open(path: &str) -> Result<Document> {
     let sketch_vertex_treatment_ops =
         load_arena_entities(&conn, "sketch_vertex_treatment_op")?;
     let sketch_slice_ops = load_arena_entities(&conn, "sketch_slice_op")?;
-    let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
+    let sketch_texts = load_arena_entities(&conn, "sketch_text")?;
     let drawings = load_arena_entities(&conn, "drawing")?;
     let joints = load_arena_entities(&conn, "joint")?;
     let units = load_arena_entities(&conn, "unit")?;
@@ -659,6 +656,7 @@ pub fn open(path: &str) -> Result<Document> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::component_key_for_slot as ckey;
@@ -680,7 +678,7 @@ mod tests {
         let sketch = plane_sketch(&mut doc);
         doc.lines
             .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
-        doc.sketch_texts.push(crate::model::SketchText {
+        doc.sketch_texts.insert(crate::model::SketchText {
             sketch,
             text: "Hi".to_string(),
             font_family: String::new(),
@@ -703,29 +701,28 @@ mod tests {
                 crate::model::TextAnchor::Center,
             )),
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(crate::model::ShapeKind::SketchText);
         crate::storage::fixup_loaded_document(&mut doc).expect("fixup");
-        assert!(doc.sketch_texts[0].pin.is_none(), "the pin is cleared");
+        assert!(doc.sketch_texts[tkey(0)].pin.is_none(), "the pin is cleared");
         let migrated = doc.constraints.iter().any(|c| {
             matches!(
                 &c.kind,
                 crate::model::ConstraintKind::Coincident {
                     a: crate::model::ConstraintEntity::Point(
                         crate::model::ConstraintPoint::TextAnchor {
-                            text: 0,
+                            text,
                             anchor: crate::model::TextAnchor::Center,
                         }
                     ),
                     ..
-                }
+                } if *text == tkey(0)
             )
         });
         assert!(migrated, "a coincident constraint replaces the pin");
         // The solve ran as part of load: the centre anchor sits on the line start.
         let (cx, cy) = crate::text::sketch_text_anchor_uv(
-            &doc.sketch_texts[0],
+            &doc.sketch_texts[tkey(0)],
             crate::model::TextAnchor::Center,
         );
         assert!((cx - 30.0).abs() < 1e-2 && (cy - 40.0).abs() < 1e-2, "centre at ({cx}, {cy})");
@@ -913,6 +910,80 @@ mod tests {
                 loaded.bodies[out].source,
                 crate::model::BodySource::Boolean { op: kept, solid: 0 },
                 "{suffix}: its output body still names it"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #1055: sketch texts keep their keys across a save, and so do the anchor constraints
+    /// and glyph faces that name one.
+    #[test]
+    fn sketch_text_keys_survive_a_save_and_reload() {
+        let text = |content: &str| crate::model::SketchText {
+            sketch: 0,
+            text: content.to_string(),
+            font_family: "Helvetica".to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: String::new(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+            baseline_line: None,
+            contours: Vec::new(),
+            font_bytes: Vec::new(),
+            pin: None,
+            name: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.sketch_texts.insert(text("doomed"));
+        let kept = doc.sketch_texts.insert(text("kept"));
+        assert!(doc.sketch_texts.remove(doomed).is_some());
+        doc.constraints.push(crate::model::Constraint {
+            sketch: 0,
+            kind: crate::model::ConstraintKind::Coincident {
+                a: crate::model::ConstraintEntity::Point(
+                    crate::model::ConstraintPoint::TextAnchor {
+                        text: kept,
+                        anchor: crate::model::TextAnchor::Center,
+                    },
+                ),
+                b: crate::model::ConstraintEntity::Point(
+                    crate::model::ConstraintPoint::CircleCenter(0),
+                ),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_text_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.sketch_texts.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.sketch_texts.get(kept).map(|t| t.text.clone()),
+                Some("kept".to_string()),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert!(
+                loaded.constraints.iter().any(|c| matches!(
+                    &c.kind,
+                    crate::model::ConstraintKind::Coincident {
+                        a: crate::model::ConstraintEntity::Point(
+                            crate::model::ConstraintPoint::TextAnchor { text, .. }
+                        ),
+                        ..
+                    } if *text == kept
+                )),
+                "{suffix}: the anchor constraint still names it"
             );
             let _ = std::fs::remove_file(&path);
         }

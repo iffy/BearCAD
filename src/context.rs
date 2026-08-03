@@ -823,7 +823,7 @@ pub enum DrawingViewEdit {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchTextControl {
-    pub index: usize,
+    pub index: crate::model::SketchTextKey,
     pub text: String,
     pub font_family: String,
     /// Installed font families for the chooser.

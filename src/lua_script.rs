@@ -207,8 +207,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
-        | SceneElement::SketchText(i)
         => i,
+        SceneElement::SketchText(key) => {
+            doc.sketch_texts.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::Extrusion(key) => {
             doc.extrusions.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -271,7 +273,9 @@ pub fn scene_element_from_kind(
             Some(SceneElement::BooleanOp(doc.boolean_ops.keys().nth(index)?))
         }
         "move_op" | "move" => Some(SceneElement::MoveOp(doc.move_ops.keys().nth(index)?)),
-        "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
+        "sketch_text" | "text" => {
+            Some(SceneElement::SketchText(doc.sketch_texts.keys().nth(index)?))
+        }
         "component" => Some(SceneElement::Component(doc.components.keys().nth(index)?)),
         "sketch_offset_op" | "offset" => {
             Some(SceneElement::SketchOffsetOp(doc.sketch_offset_ops.keys().nth(index)?))
@@ -357,6 +361,18 @@ fn body_key_from_ordinal(lua: &Lua, ordinal: usize) -> mlua::Result<crate::model
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let key = unsafe { tick.state().doc.body_at(ordinal) };
     key.ok_or_else(|| mlua::Error::external(format!("no body {ordinal}")))
+}
+
+/// The sketch text a script ordinal names (#1055) — texts are keyed, scripts count.
+fn sketch_text_key_from_ordinal(
+    lua: &Lua,
+    ordinal: usize,
+) -> mlua::Result<crate::model::SketchTextKey> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let key = unsafe { tick.state().doc.sketch_texts.keys().nth(ordinal) };
+    key.ok_or_else(|| mlua::Error::external(format!("no sketch text {ordinal}")))
 }
 
 /// The extrusion a script ordinal names (#1055) — extrusions are keyed, scripts count.
@@ -804,7 +820,7 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
             let anchor =
                 parse_text_anchor(&table.get::<Option<String>>("anchor")?.unwrap_or_default())?;
             Ok(ConstraintPoint::TextAnchor {
-                text: index,
+                text: sketch_text_key_from_ordinal(lua, index)?,
                 anchor,
             })
         }
@@ -2502,7 +2518,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "drawing" => doc.drawings.len(),
                 "parameter" => doc.parameters.len(),
                 "sketch_text" | "text" => {
-                    doc.sketch_texts.iter().filter(|e| !e.deleted).count()
+                    doc.sketch_texts.len()
                 }
                 "component" => doc.components.len(),
                 "image" => doc.tracing_images.len(),
@@ -4098,10 +4114,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     wrap,
                 })?;
             }
-            let element = SceneElement::SketchText(unsafe {
-                tick.state().doc.sketch_texts.len().saturating_sub(1)
-            });
-            apply_optional_name(lua, element, Some(opts))
+            // The text just committed (#1055): the newest live one.
+            let Some(key) = (unsafe { tick.state().doc.sketch_texts.keys().last() }) else {
+                return Ok(());
+            };
+            apply_optional_name(lua, SceneElement::SketchText(key), Some(opts))
         })?,
     )?;
 
@@ -4195,16 +4212,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // `text = index`: extrude/engrave a whole sketch text — every glyph region of it,
             // counters (letter holes) preserved (#285/#355).
             if let Some(ti) = opts.get::<Option<usize>>("text")? {
+                let text = sketch_text_key_from_ordinal(lua, ti)?;
                 let glyphs = unsafe {
                     tick.state()
                         .doc
                         .sketch_texts
-                        .get(ti)
+                        .get(text)
                         .map(|t| crate::text::group_glyphs(&t.contours).len())
                         .ok_or_else(|| mlua::Error::external(format!("no sketch text {ti}")))?
                 };
                 for glyph in 0..glyphs {
-                    faces.push(crate::model::ExtrudeFace::TextGlyph { text: ti, glyph });
+                    faces.push(crate::model::ExtrudeFace::TextGlyph { text, glyph });
                 }
             }
             // `boolean = {op = "intersection"|"difference", a = <face spec>, b = <face
@@ -5658,6 +5676,7 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::drawing_key_for_slot as dkey;
     use crate::model::body_key_for_slot as bkey;
@@ -9600,7 +9619,7 @@ mod tests {
             bearcad.add_geometric_constraint("coincident")
         "#,
         );
-        let t = &state.doc.sketch_texts[0];
+        let t = &state.doc.sketch_texts[tkey(0)];
         let (cx, cy) = crate::text::sketch_text_anchor_uv(t, crate::model::TextAnchor::Center);
         assert!((cx - 30.0).abs() < 1e-2 && (cy - 40.0).abs() < 1e-2, "centre at ({cx}, {cy})");
         // The line stayed put — the text is the mover.
@@ -9637,7 +9656,7 @@ mod tests {
         assert!(
             ex.faces
                 .iter()
-                .all(|f| matches!(f, crate::model::ExtrudeFace::TextGlyph { text: 0, .. })),
+                .all(|f| matches!(f, crate::model::ExtrudeFace::TextGlyph { .. })),
             "extruded faces are the text's glyphs"
         );
         assert!(!ex.faces.is_empty(), "a 4-letter word has glyph faces");

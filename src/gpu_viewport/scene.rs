@@ -1155,11 +1155,10 @@ impl ViewportScene {
 
         // Sketch text (#282): draw each baked glyph contour as a closed polyline, transformed by
         // the text's origin/rotation onto its sketch plane. Selected text uses the selection color.
-        for (ti, text) in input.doc.sketch_texts.iter().enumerate() {
-            if text.deleted
-                || !input
-                    .element_visibility
-                    .effective_visible(input.doc, SceneElement::SketchText(ti))
+        for (ti, text) in input.doc.sketch_texts.iter() {
+            if !input
+                .element_visibility
+                .effective_visible(input.doc, SceneElement::SketchText(ti))
             {
                 continue;
             }
@@ -3445,7 +3444,7 @@ impl<'a> SceneMesh<'a> {
             // A hovered sketch text (#307): trace its glyph outlines in the hover color, so
             // the Extrude tool's "click picks the whole string" affordance is visible.
             SceneElement::SketchText(ti) => {
-                let Some(text) = doc.sketch_texts.get(ti).filter(|t| !t.deleted) else {
+                let Some(text) = doc.sketch_texts.get(ti) else {
                     return;
                 };
                 let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) else {

@@ -4998,10 +4998,10 @@ fn face_center_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec3, Vec3)>
 /// missing.
 fn text_glyph_region_uv(
     doc: &Document,
-    text_index: usize,
+    text_index: crate::model::SketchTextKey,
     glyph_index: usize,
 ) -> Option<(Vec<(f32, f32)>, Vec<Vec<(f32, f32)>>)> {
-    let t = doc.sketch_texts.get(text_index).filter(|t| !t.deleted)?;
+    let t = doc.sketch_texts.get(text_index)?;
     let regions = crate::text::group_glyphs(&t.contours);
     let region = regions.get(glyph_index)?;
     let (sin, cos) = t.rotation.sin_cos();
@@ -6441,6 +6441,7 @@ fn extrude_profile_with_treatments(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use crate::model::move_op_key_for_slot as mopkey;
@@ -7982,7 +7983,7 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let (shaped, bytes) =
             crate::text::shape_with_system_font(family, false, false, 20.0, "o").expect("shape o");
-        doc.sketch_texts.push(crate::model::SketchText {
+        doc.sketch_texts.insert(crate::model::SketchText {
             sketch,
             text: "o".to_string(),
             font_family: family.to_string(),
@@ -7999,9 +8000,8 @@ mod tests {
             font_bytes: bytes,
             pin: None,
             name: None,
-            deleted: false,
         });
-        let glyph_face = ExtrudeFace::TextGlyph { text: 0, glyph: 0 };
+        let glyph_face = ExtrudeFace::TextGlyph { text: tkey(0), glyph: 0 };
         // Solid fill of just the outer boundary, for comparison.
         let (outer, holes, _n) = face_region_world(&doc, &glyph_face).expect("region");
         assert_eq!(holes.len(), 1, "o has a counter hole");

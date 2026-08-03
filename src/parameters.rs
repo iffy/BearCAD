@@ -836,7 +836,7 @@ fn substitute_name_everywhere(doc: &mut Document, old: &str, new: &str) {
             *expr = substitute_parameter_name(expr, old, new);
         }
     }
-    for text in &mut doc.sketch_texts {
+    for text in doc.sketch_texts.values_mut() {
         text.size_expr = substitute_parameter_name(&text.size_expr, old, new);
     }
     for instance in doc.unit_instances.values_mut() {
@@ -901,11 +901,8 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
 /// `size_expr` follow parameter edits. Text with no `{` and a constant/blank `size_expr` still
 /// re-bakes harmlessly (identical result); a font that's since gone leaves the existing outlines.
 pub fn rebake_sketch_texts(doc: &mut Document) {
-    for i in 0..doc.sketch_texts.len() {
+    for i in doc.sketch_texts.keys().collect::<Vec<_>>() {
         let t = &doc.sketch_texts[i];
-        if t.deleted {
-            continue;
-        }
         let (template, family, bold, italic, wrap, size_expr, cur_size) = (
             t.text.clone(),
             t.font_family.clone(),
