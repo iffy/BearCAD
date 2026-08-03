@@ -36,7 +36,7 @@ pub enum HierarchyNode {
     Sketch(SketchId),
     Line(usize),
     Circle(usize),
-    Constraint(usize),
+    Constraint(crate::model::ConstraintKey),
     Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
     /// A tracing image (#163/#169).
@@ -131,7 +131,7 @@ pub enum SceneElement {
     Line(usize),
     Circle(usize),
     Point(ConstraintPoint),
-    Constraint(usize),
+    Constraint(crate::model::ConstraintKey),
     Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
     /// An edge of an extrusion-backed body face's own boundary loop (#26/#27), for
@@ -2764,7 +2764,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     out.insert(SceneElement::Circle(ci));
                 }
             }
-            for (ci, constraint) in doc.constraints.iter().enumerate() {
+            for (ci, constraint) in doc.constraints.iter() {
                 if constraint.sketch == sketch {
                     out.insert(SceneElement::Constraint(ci));
                 }
@@ -3051,10 +3051,12 @@ fn constraint_kind_touches_element(kind: &ConstraintKind, element: &SceneElement
     }
 }
 
-fn constraints_for_element(doc: &Document, element: SceneElement) -> Vec<usize> {
+fn constraints_for_element(
+    doc: &Document,
+    element: SceneElement,
+) -> Vec<crate::model::ConstraintKey> {
     doc.constraints
         .iter()
-        .enumerate()
         .filter_map(|(index, constraint)| {
             constraint_kind_touches_element(&constraint.kind, &element).then_some(index)
         })
@@ -3065,7 +3067,7 @@ fn constraints_for_element(doc: &Document, element: SceneElement) -> Vec<usize> 
 pub fn selection_related_constraints(
     doc: &Document,
     selection: &SceneSelection,
-) -> HashSet<usize> {
+) -> HashSet<crate::model::ConstraintKey> {
     let mut related = HashSet::new();
     for element in selection.iter() {
         let anchor = selection_anchor(&element);
@@ -3172,7 +3174,7 @@ fn row_style(
     element: SceneElement,
     selection: &SceneSelection,
     context: &HashSet<SceneElement>,
-    related_constraints: &HashSet<usize>,
+    related_constraints: &HashSet<crate::model::ConstraintKey>,
     style_selection: bool,
     health: &DocumentHealth,
     highlight_elements: &HashSet<SceneElement>,
@@ -3622,8 +3624,8 @@ fn build_sketch_entry(
                 children: nested,
             });
         }
-        for (ci, constraint) in doc.constraints.iter().enumerate() {
-            if constraint.deleted || constraint.sketch != sketch {
+        for (ci, constraint) in doc.constraints.iter() {
+            if constraint.sketch != sketch {
                 continue;
             }
             children.push(HierarchyEntry {
@@ -4205,7 +4207,7 @@ fn show_graph_view(
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
-    related_constraints: &HashSet<usize>,
+    related_constraints: &HashSet<crate::model::ConstraintKey>,
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
@@ -4672,7 +4674,7 @@ fn show_component_row(
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
-    related_constraints: &HashSet<usize>,
+    related_constraints: &HashSet<crate::model::ConstraintKey>,
     style_selection: bool,
     highlight_elements: &HashSet<SceneElement>,
     rolled_back: &HashSet<SceneElement>,
@@ -4834,7 +4836,7 @@ fn show_row(
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
-    related_constraints: &HashSet<usize>,
+    related_constraints: &HashSet<crate::model::ConstraintKey>,
     style_selection: bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
@@ -5458,6 +5460,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::drawing_key_for_slot as dkey;
@@ -6451,8 +6454,8 @@ label_hidden: false,
         )
         .unwrap();
         let list = build_element_list(&doc, Some(SketchSession { sketch }));
-        assert!(list.contains(&HierarchyNode::Constraint(0)));
-        assert!(!build_element_list(&doc, None).contains(&HierarchyNode::Constraint(0)));
+        assert!(list.contains(&HierarchyNode::Constraint(nkey(0))));
+        assert!(!build_element_list(&doc, None).contains(&HierarchyNode::Constraint(nkey(0))));
     }
 
     #[test]
@@ -6756,8 +6759,8 @@ label_hidden: false,
         );
         let context = selection_context_elements(&doc, &selection);
         let related = selection_related_constraints(&doc, &selection);
-        assert!(context.contains(&SceneElement::Constraint(0)));
-        assert!(related.contains(&0));
+        assert!(context.contains(&SceneElement::Constraint(nkey(0))));
+        assert!(related.contains(&nkey(0)));
     }
 
     #[test]
@@ -6788,7 +6791,7 @@ label_hidden: false,
         let health = DocumentHealth::default();
         assert_eq!(
             row_style(
-                SceneElement::Constraint(0),
+                SceneElement::Constraint(nkey(0)),
                 &selection,
                 &context,
                 &related,
@@ -6827,7 +6830,7 @@ label_hidden: false,
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         let line_b = 1;
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(line_a),
@@ -6836,7 +6839,6 @@ label_hidden: false,
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         tombstone_element(&mut doc, SceneElement::Line(line_a));
         let health = crate::document_health::recompute_document_health(&doc);
@@ -6850,7 +6852,7 @@ label_hidden: false,
         let related = selection_related_constraints(&doc, &selection);
         assert_eq!(
             row_style(
-                SceneElement::Constraint(0),
+                SceneElement::Constraint(nkey(0)),
                 &selection,
                 &context,
                 &related,
@@ -6888,7 +6890,7 @@ label_hidden: false,
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -6897,7 +6899,6 @@ label_hidden: false,
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         tombstone_element(&mut doc, SceneElement::Line(0));
         let health = crate::document_health::recompute_document_health(&doc);
@@ -6905,17 +6906,17 @@ label_hidden: false,
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
             &mut selection,
-            SceneElement::Constraint(0),
+            SceneElement::Constraint(nkey(0)),
             false,
         );
         assert!(row_shows_selection(
-            &SceneElement::Constraint(0),
+            &SceneElement::Constraint(nkey(0)),
             &selection,
             true
         ));
         assert_eq!(
             row_style(
-                SceneElement::Constraint(0),
+                SceneElement::Constraint(nkey(0)),
                 &selection,
                 &HashSet::new(),
                 &HashSet::new(),
@@ -7169,7 +7170,8 @@ label_hidden: false,
     /// overflowing the width.
     #[test]
     fn declutter_wraps_wide_bands_into_rows() {
-        let nodes: Vec<HierarchyNode> = (0..8).map(HierarchyNode::Constraint).collect();
+        let nodes: Vec<HierarchyNode> =
+            (0..8).map(|i| HierarchyNode::Constraint(nkey(i))).collect();
         let positions: Vec<GraphNodePosition> = nodes
             .iter()
             .enumerate()
@@ -7193,9 +7195,9 @@ label_hidden: false,
     #[test]
     fn declutter_preserves_order_and_leaves_spread_bands_be() {
         let nodes = [
-            HierarchyNode::Constraint(0),
-            HierarchyNode::Constraint(1),
-            HierarchyNode::Constraint(2),
+            HierarchyNode::Constraint(nkey(0)),
+            HierarchyNode::Constraint(nkey(1)),
+            HierarchyNode::Constraint(nkey(2)),
         ];
         let positions: Vec<GraphNodePosition> = nodes
             .iter()

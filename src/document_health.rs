@@ -220,7 +220,7 @@ pub fn require_dimension_target_editable(
 pub fn require_constraint_editable(
     health: &DocumentHealth,
     doc: &Document,
-    constraint: usize,
+    constraint: crate::model::ConstraintKey,
 ) -> Result<(), String> {
     require_element_editable(health, SceneElement::Constraint(constraint))?;
     let Some(kind) = doc.constraints.get(constraint).map(|c| c.kind.clone()) else {
@@ -265,7 +265,7 @@ pub fn require_element_editable(
 /// Viewport/UI color for a constraint dimension from its health status.
 pub fn constraint_annotation_color(
     health: &DocumentHealth,
-    constraint: usize,
+    constraint: crate::model::ConstraintKey,
     base: Color32,
 ) -> Color32 {
     match health.element_status(SceneElement::Constraint(constraint)) {
@@ -388,10 +388,7 @@ fn geometry_elements_for_line(line: &ConstraintLine) -> Vec<SceneElement> {
 }
 
 fn mark_invalid_constraints_and_unstable_geometry(doc: &Document, health: &mut DocumentHealth) {
-    for (index, constraint) in doc.constraints.iter().enumerate() {
-        if constraint.deleted {
-            continue;
-        }
+    for (index, constraint) in doc.constraints.iter() {
         let element = SceneElement::Constraint(index);
         match &constraint.kind {
             ConstraintKind::Distance { target } => {
@@ -718,6 +715,7 @@ fn capture_geometry_snapshot(doc: &Document, element: SceneElement) -> Option<El
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::document_lifecycle::tombstone_element;
     use crate::model::{Constraint, ConstraintKind, ConstraintLine, Document, Line, ShapeKind};
@@ -732,7 +730,7 @@ mod tests {
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
         let line_b = 1;
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(line_a),
@@ -741,7 +739,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
         (doc, line_a, line_b)
@@ -754,7 +751,7 @@ mod tests {
         tombstone_element(&mut doc, SceneElement::Line(line_a));
         let health = recompute_document_health(&doc);
         assert_eq!(
-            health.element_status(SceneElement::Constraint(0)),
+            health.element_status(SceneElement::Constraint(nkey(0))),
             HealthStatus::Invalid
         );
         assert_eq!(
@@ -802,7 +799,7 @@ mod tests {
         let health = recompute_document_health(&doc);
         let base = Color32::from_rgb(180, 188, 204);
         assert_eq!(
-            constraint_annotation_color(&health, 0, base),
+            constraint_annotation_color(&health, nkey(0), base),
             INVALID_DISPLAY
         );
     }

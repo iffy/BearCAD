@@ -1885,9 +1885,10 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        // The constraint's arena slot, not its ordinal (#1070).
         SceneElement::Constraint(i) => ElementScriptTokens {
             kind: "constraint",
-            index: i,
+            index: i.index() as usize,
             point: None,
         },
         SceneElement::Point(point) => ElementScriptTokens {
@@ -2523,10 +2524,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 // (n-3) edges; carry their expressions so a parametric rect replays
                 // parametrically (#402).
                 let dim_expr = |line: usize| {
-                    doc.constraints.iter().rev().find_map(|c| match &c.kind {
+                    doc.constraints.values().collect::<Vec<_>>().into_iter().rev().find_map(|c| match &c.kind {
                         crate::model::ConstraintKind::Distance {
                             target: crate::model::DistanceTarget::LineLength(i),
-                        } if *i == line && !c.deleted => Some(c.expression.clone()),
+                        } if *i == line => Some(c.expression.clone()),
                         _ => None,
                     })
                 };
@@ -2545,10 +2546,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             // carry its expression so replaying the log recreates the same constraint
             // (and click-drawn lines replay unconstrained, as drawn).
             let index = doc.lines.len() - 1;
-            let dimension = doc.constraints.iter().rev().find_map(|c| match &c.kind {
+            let dimension = doc.constraints.values().collect::<Vec<_>>().into_iter().rev().find_map(|c| match &c.kind {
                 crate::model::ConstraintKind::Distance {
                     target: crate::model::DistanceTarget::LineLength(i),
-                } if *i == index && !c.deleted => Some(c.expression.clone()),
+                } if *i == index => Some(c.expression.clone()),
                 _ => None,
             });
             Instruction::CreateLine {
@@ -2563,10 +2564,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::CommitCircle => doc.circles.last().map(|c| {
             // Carry a typed diameter's expression like CommitLine does (#402).
             let index = doc.circles.len() - 1;
-            let diameter_expr = doc.constraints.iter().rev().find_map(|c| match &c.kind {
+            let diameter_expr = doc.constraints.values().collect::<Vec<_>>().into_iter().rev().find_map(|c| match &c.kind {
                 crate::model::ConstraintKind::Distance {
                     target: crate::model::DistanceTarget::CircleDiameter(i),
-                } if *i == index && !c.deleted => Some(c.expression.clone()),
+                } if *i == index => Some(c.expression.clone()),
                 _ => None,
             });
             Instruction::CreateCircle {

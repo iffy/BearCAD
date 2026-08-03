@@ -180,10 +180,7 @@ pub fn elements_using_parameter(
             elements.extend(derived_source_elements(source));
         }
     }
-    for (index, constraint) in doc.constraints.iter().enumerate() {
-        if constraint.deleted {
-            continue;
-        }
+    for (index, constraint) in doc.constraints.iter() {
         if parameter_names_referenced_in_expression(&constraint.expression, &known).is_empty() {
             continue;
         }

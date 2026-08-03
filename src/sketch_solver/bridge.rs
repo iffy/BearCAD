@@ -38,7 +38,7 @@ pub struct SketchBridge {
     point_vars: HashMap<ConstraintPoint, (VarId, VarId)>,
     circle_radius: HashMap<usize, VarId>,
     hold_references: bool,
-    constraint_equations: HashMap<usize, Vec<usize>>,
+    constraint_equations: HashMap<crate::model::ConstraintKey, Vec<usize>>,
 }
 
 impl SketchBridge {
@@ -105,8 +105,8 @@ impl SketchBridge {
     }
 
     fn add_constraints(&mut self, doc: &Document) -> Result<(), String> {
-        for (index, constraint) in doc.constraints.iter().enumerate() {
-            if constraint.deleted || constraint.sketch != self.sketch {
+        for (index, constraint) in doc.constraints.iter() {
+            if constraint.sketch != self.sketch {
                 continue;
             }
             if !constraint_kind_applicable(doc, &constraint.kind) {
@@ -120,7 +120,7 @@ impl SketchBridge {
     fn add_constraint(
         &mut self,
         doc: &Document,
-        constraint_id: usize,
+        constraint_id: crate::model::ConstraintKey,
         constraint: &crate::model::Constraint,
     ) -> Result<(), String> {
         let eq_start = self.system.equations.len();
@@ -669,7 +669,7 @@ impl SketchBridge {
 pub fn sketch_conflicting_constraints(
     doc: &Document,
     sketch: SketchId,
-) -> Result<Vec<usize>, String> {
+) -> Result<Vec<crate::model::ConstraintKey>, String> {
     let outcome = super::slvs::solve_sketch(doc, sketch, &[])?;
     if outcome.success {
         return Ok(Vec::new());
@@ -826,10 +826,8 @@ pub fn solve_document_sketches(
 
 fn sketches_to_solve(doc: &Document, pins: &[(ConstraintPoint, (f32, f32))]) -> Vec<SketchId> {
     let mut sketches = HashSet::new();
-    for constraint in &doc.constraints {
-        if !constraint.deleted {
-            sketches.insert(constraint.sketch);
-        }
+    for constraint in doc.constraints.values() {
+        sketches.insert(constraint.sketch);
     }
     // Points being dragged are always sketch-native (a `FaceVertex` is fixed, never a drag
     // pin), so `point_sketch` alone — no need for a `point_uv` existence check too — decides
@@ -949,13 +947,12 @@ mod tests {
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(Line::from_local_endpoints(sketch, 30.0, 5.0, 42.0, 9.0));
         let mut push = |kind: ConstraintKind| {
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind,
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         };
         // Line 0: start pinned to the origin, horizontal, length locked → zero freedom.
@@ -970,7 +967,7 @@ mod tests {
             line_a: crate::model::ConstraintLine::Line(0),
             line_b: crate::model::ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
         });
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Distance {
                 target: DistanceTarget::LineLength(0),
@@ -978,7 +975,6 @@ mod tests {
             expression: "10".to_string(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         solve_document_sketches(&mut doc, &[]).expect("solve");
 
@@ -993,9 +989,9 @@ mod tests {
         let dist = doc
             .constraints
             .iter()
-            .position(|c| matches!(c.kind, ConstraintKind::Distance { .. }))
+            .find_map(|(key, c)| matches!(c.kind, ConstraintKind::Distance { .. }).then_some(key))
             .unwrap();
-        doc.constraints[dist].deleted = true;
+        doc.constraints.remove(dist);
         solve_document_sketches(&mut doc, &[]).expect("solve");
         let all = fully_constrained_lines(&doc);
         assert!(!all.contains(&0), "removing the dimension must drop the line from the set");
@@ -1020,13 +1016,12 @@ mod tests {
             ],
         );
         let mut push = |kind: ConstraintKind| {
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind,
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
             doc.shape_order.push(crate::model::ShapeKind::Constraint);
             solve_document_sketches(&mut doc, &[]).unwrap();
@@ -1099,7 +1094,7 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Distance {
                 target: DistanceTarget::LineLength(0),
@@ -1107,9 +1102,8 @@ mod tests {
             expression: "10mm".to_string(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Distance {
                 target: DistanceTarget::LineLength(0),
@@ -1117,13 +1111,12 @@ mod tests {
             expression: "12mm".to_string(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
 
         let failed = sketch_conflicting_constraints(&doc, sketch).unwrap();
         assert_eq!(failed.len(), 2);
-        assert!(failed.contains(&0));
-        assert!(failed.contains(&1));
+        assert!(failed.contains(&crate::model::constraint_key_for_slot(0)));
+        assert!(failed.contains(&crate::model::constraint_key_for_slot(1)));
     }
 
     #[test]
@@ -1346,13 +1339,12 @@ mod tests {
             doc.lines.push(Line::from_local_endpoints(sketch, x0, y0, x1, y1));
         }
         let push = |doc: &mut Document, kind: ConstraintKind, expression: &str| {
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind,
                 expression: expression.to_string(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         };
         let end = |line: usize| {

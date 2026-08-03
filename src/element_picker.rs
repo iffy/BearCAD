@@ -426,7 +426,7 @@ pub fn element_in_sketch(
     element: &SceneElement,
 ) -> bool {
     let line_in = |li: usize| doc.lines.get(li).is_some_and(|l| l.sketch == sketch);
-    let circle_in = |ci: usize| doc.circles.get(ci).is_some_and(|c| c.sketch == sketch);
+    let circle_in = |ci: usize| doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| c.sketch == sketch);
     let text_in = |ti: crate::model::SketchTextKey| doc.sketch_texts.get(ti).is_some_and(|t| t.sketch == sketch);
     let host_face = doc.sketch_face(sketch);
     let constraint_line_in = |cl: &crate::model::ConstraintLine| match cl {
@@ -1235,6 +1235,7 @@ pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::component_key_for_slot as ckey;
     use crate::model::body_key_for_slot as bkey;
@@ -1852,7 +1853,7 @@ mod tests {
             SceneElement::Origin,
             SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] },
             body_face(0),
-            SceneElement::Constraint(0),
+            SceneElement::Constraint(nkey(0)),
             SceneElement::Body(bkey(0)),
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
             SceneElement::Joint(jkey(0)),

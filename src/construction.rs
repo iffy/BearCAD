@@ -1353,7 +1353,7 @@ pub enum PickTargetKind {
     /// near the geometry it governs — so this is only ever produced for the Selection Exploder
     /// crowd (never by `resolve_pick_target`), letting a constraint icon buried under overlapping
     /// geometry be fanned out and selected like anything else.
-    Constraint(usize),
+    Constraint(crate::model::ConstraintKey),
     /// An analytic sketchable face (#625) — exactly what `face::pick_sketch_face` picks: a
     /// sketch profile (circle/polygon), a body cap/side wall, or a revolve's flat face. Like
     /// `Constraint`, this is only ever produced for the Selection Exploder crowd, so tools
@@ -3293,7 +3293,7 @@ pub fn add_line_polygon(doc: &mut Document, sketch: SketchId, points: &[(f32, f3
     }
     let idx: Vec<usize> = (base..base + n).collect();
     for i in 0..n {
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -3308,7 +3308,6 @@ pub fn add_line_polygon(doc: &mut Document, sketch: SketchId, points: &[(f32, f3
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
     }
@@ -3354,13 +3353,12 @@ pub fn add_line_rectangle(
     }
     let idx = [base, base + 1, base + 2, base + 3];
     let mut push = |kind: ConstraintKind| {
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind,
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
     };
@@ -3391,6 +3389,7 @@ pub fn add_line_rectangle(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
@@ -3939,7 +3938,7 @@ mod tests {
         let mut curve = Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 10.0);
         curve.bezier = Some([(10.0, 5.0), (15.0, 10.0)]);
         doc.lines.push(curve);
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -3954,7 +3953,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
 
         let candidates = vertex_normal_candidates(
@@ -4170,8 +4168,8 @@ mod tests {
         use crate::hierarchy::SceneElement;
         // A fanned-out constraint badge (#568) selects the constraint itself.
         assert_eq!(
-            scene_element_from_pick(&PickTargetKind::Constraint(4)),
-            Some(SceneElement::Constraint(4))
+            scene_element_from_pick(&PickTargetKind::Constraint(nkey(4))),
+            Some(SceneElement::Constraint(nkey(4)))
         );
     }
 
@@ -4630,7 +4628,7 @@ mod tests {
         // left/right) rather than the old Horizontal/Vertical constraints.
         let parallel_to = |axis: SketchAxis| {
             doc.constraints
-                .iter()
+                .values()
                 .filter(|c| {
                     matches!(&c.kind, ConstraintKind::Parallel { line_b, .. }
                         if *line_b == ConstraintLine::OriginAxis(axis))
@@ -4641,19 +4639,19 @@ mod tests {
         assert_eq!(parallel_to(SketchAxis::Y), 2, "left + right parallel to Y");
         let coincident = doc
             .constraints
-            .iter()
+            .values()
             .filter(|c| matches!(c.kind, ConstraintKind::Coincident { .. }))
             .count();
         assert_eq!(coincident, 4, "four shared corners join the loop");
         // Bottom edge (0) is parallel to X; right edge (1) parallel to Y.
-        assert!(doc.constraints.iter().any(|c| matches!(
+        assert!(doc.constraints.values().any(|c| matches!(
             &c.kind,
             ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::OriginAxis(SketchAxis::X)
             }
         )));
-        assert!(doc.constraints.iter().any(|c| matches!(
+        assert!(doc.constraints.values().any(|c| matches!(
             &c.kind,
             ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(1),

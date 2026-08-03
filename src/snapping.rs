@@ -187,8 +187,8 @@ pub fn snap_constraint_already_present(
 ) -> bool {
     let kind = snap_constraint_kind(point, target);
     doc.constraints
-        .iter()
-        .any(|c| !c.deleted && constraint_equivalent(&c.kind, &kind))
+        .values()
+        .any(|c| constraint_equivalent(&c.kind, &kind))
 }
 
 fn constraint_equivalent(a: &ConstraintKind, b: &ConstraintKind) -> bool {

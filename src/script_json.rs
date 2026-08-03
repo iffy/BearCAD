@@ -70,7 +70,7 @@ pub fn scene_element_from_kind(
         "sketch" => Some(SceneElement::Sketch(index)),
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
-        "constraint" => Some(SceneElement::Constraint(index)),
+        "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "sketch_text" | "text" => {
@@ -206,8 +206,8 @@ pub fn scene_element_selection_index(
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
-        | SceneElement::Circle(i)
-        | SceneElement::Constraint(i) => Some(*i),
+        | SceneElement::Circle(i) => Some(*i),
+        SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
         SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
         SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
         SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
@@ -1760,7 +1760,7 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
                 "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
                 "sketch" => doc.sketches.iter().filter(|e| !e.deleted).count(),
-                "constraint" => doc.constraints.iter().filter(|e| !e.deleted).count(),
+                "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
                 }
@@ -1854,7 +1854,9 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             }
         }
         "constraint" => {
-            let Some(constraint) = doc.constraints.get(index).filter(|e| !e.deleted) else {
+            // The script's `index` is the constraint's ordinal (#1055).
+            let Some(constraint) = doc.constraints.keys().nth(index).map(|k| &doc.constraints[k])
+            else {
                 return Ok(Value::Null);
             };
             t.insert("kind".into(), json!(constraint_kind_name(&constraint.kind)));
@@ -2872,6 +2874,22 @@ mod tests {
                 symmetric: false,
                 name: None,
                 edge_treatments: Vec::new(),
+            });
+        }
+        for _ in 0..4 {
+            doc.constraints.insert(crate::model::Constraint {
+                sketch: 0,
+                kind: crate::model::ConstraintKind::Coincident {
+                    a: crate::model::ConstraintEntity::Line(
+                        crate::model::ConstraintLine::Line(0),
+                    ),
+                    b: crate::model::ConstraintEntity::Line(
+                        crate::model::ConstraintLine::Line(1),
+                    ),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
             });
         }
         for (kind, idx) in [("plane", 2), ("sketch", 0), ("line", 5), ("circle", 1),

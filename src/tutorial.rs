@@ -222,7 +222,7 @@ pub fn tutorial_from_query(query: &str) -> Option<usize> {
 // --- Bracket predicates -----------------------------------------------------------
 
 fn live_constraints(app: &AppState) -> impl Iterator<Item = &crate::model::Constraint> {
-    app.doc.constraints.iter().filter(|c| !c.deleted)
+    app.doc.constraints.values()
 }
 
 fn param_exists(app: &AppState, name: &str) -> bool {

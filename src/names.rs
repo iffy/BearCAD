@@ -98,10 +98,7 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Circle(index));
         }
     }
-    for (index, constraint) in doc.constraints.iter().enumerate() {
-        if constraint.deleted {
-            continue;
-        }
+    for (index, constraint) in doc.constraints.iter() {
         if name_matches(constraint.name.as_deref(), query) {
             return Some(SceneElement::Constraint(index));
         }
@@ -245,7 +242,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
             let constraint = doc
                 .constraints
                 .get_mut(index)
-                .ok_or_else(|| format!("constraint {index} not found"))?;
+                .ok_or_else(|| format!("constraint {} not found", index.index()))?;
             constraint.name = stored;
         }
         SceneElement::Extrusion(index) => {
@@ -708,7 +705,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Origin => "Origin".to_string(),
         SceneElement::GlobalAxis(axis) => axis.label().to_string(),
         SceneElement::Point(_) => "Point".to_string(),
-        SceneElement::Constraint(i) => format!("Constraint {i}"),
+        SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
         // The same label the Elements pane gives the row (#967), so the picker and the pane
         // name the thing identically.
         SceneElement::DrawingElement { drawing, element } => {
@@ -824,6 +821,7 @@ pub fn node_label(doc: &Document, node: HierarchyNode) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::constraints::add_distance_constraint;
     use crate::model::{Document, FaceId, Line};
@@ -873,10 +871,10 @@ mod tests {
             "10mm".to_string(),
         )
         .unwrap();
-        set_element_name(&mut doc, SceneElement::Constraint(0), "Length lock".to_string())
+        set_element_name(&mut doc, SceneElement::Constraint(nkey(0)), "Length lock".to_string())
             .unwrap();
         assert_eq!(
-            node_label(&doc, HierarchyNode::Constraint(0)),
+            node_label(&doc, HierarchyNode::Constraint(nkey(0))),
             "Length lock"
         );
     }

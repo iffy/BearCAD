@@ -20,8 +20,8 @@ pub fn circle_alive(doc: &Document, index: usize) -> bool {
     doc.circles.get(index).is_some_and(|c| !c.deleted)
 }
 
-pub fn constraint_alive(doc: &Document, index: usize) -> bool {
-    doc.constraints.get(index).is_some_and(|c| !c.deleted)
+pub fn constraint_alive(doc: &Document, index: crate::model::ConstraintKey) -> bool {
+    doc.constraints.contains(index)
 }
 
 pub fn construction_plane_alive(doc: &Document, index: usize) -> bool {
@@ -361,9 +361,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     }
                     // The reflected corner-coincidences go with it too (#547).
                     for &ci in &op.constraint_outputs {
-                        if let Some(c) = doc.constraints.get_mut(ci) {
-                            c.deleted = true;
-                        }
+                        doc.constraints.remove(ci);
                     }
                     changed = true;
                 }
@@ -387,9 +385,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &ci in &op.constraint_outputs {
-                        if let Some(c) = doc.constraints.get_mut(ci) {
-                            c.deleted = true;
-                        }
+                        doc.constraints.remove(ci);
                     }
                     changed = true;
                 }
@@ -678,11 +674,10 @@ fn tombstone_sketch(doc: &mut Document, sketch: SketchId) -> bool {
     for ci in circles {
         tombstone_circle(doc, ci);
     }
-    let constraints: Vec<usize> = doc
+    let constraints: Vec<crate::model::ConstraintKey> = doc
         .constraints
         .iter()
-        .enumerate()
-        .filter(|(_, c)| c.sketch == sketch && !c.deleted)
+        .filter(|(_, c)| c.sketch == sketch)
         .map(|(i, _)| i)
         .collect();
     for ci in constraints {
@@ -791,15 +786,14 @@ fn detach_line_from_sketch_ops(doc: &mut Document, line: usize) {
     }
 }
 
-fn tombstone_constraint(doc: &mut Document, index: usize) -> bool {
-    let Some(constraint) = doc.constraints.get_mut(index) else {
+fn tombstone_constraint(doc: &mut Document, index: crate::model::ConstraintKey) -> bool {
+    // The history-tape marker to drop is the one for this constraint's place among the live
+    // ones, read before the removal (#1055).
+    let Some(ordinal) = doc.constraints.keys().position(|k| k == index) else {
         return false;
     };
-    if constraint.deleted {
-        return false;
-    }
-    constraint.deleted = true;
-    remove_shape_order_entry(doc, ShapeKind::Constraint, index);
+    doc.constraints.remove(index);
+    remove_shape_order_entry(doc, ShapeKind::Constraint, ordinal);
     true
 }
 
@@ -914,6 +908,7 @@ pub fn remove_shape_order_entry(doc: &mut Document, kind: ShapeKind, ordinal: us
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
     use crate::model::unit_instance_key_for_slot as uikey;
@@ -1067,7 +1062,7 @@ mod tests {
     #[test]
     fn tombstone_line_preserves_index_for_constraint_refs() {
         let (mut doc, sketch, line_a, line_b) = sketch_with_two_lines();
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(line_a),
@@ -1076,7 +1071,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
         assert!(tombstone_line(&mut doc, line_a));
@@ -1084,7 +1078,7 @@ mod tests {
         assert!(!line_alive(&doc, line_a));
         assert!(line_alive(&doc, line_b));
         assert_eq!(doc.lines.len(), 2);
-        let constraint = &doc.constraints[0];
+        let constraint = &doc.constraints[nkey(0)];
         assert!(matches!(
             constraint.kind,
             ConstraintKind::Parallel {

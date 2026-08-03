@@ -757,7 +757,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         }
     }
 
@@ -777,17 +776,17 @@ mod tests {
         doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(0, 10.0, 0.0, 5.0, 8.0));
         doc.lines.push(line(0, 5.0, 8.0, 0.0, 0.0));
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(0, LineEnd::End),
             point(1, LineEnd::Start),
         ));
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(1, LineEnd::End),
             point(2, LineEnd::Start),
         ));
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(2, LineEnd::End),
             point(0, LineEnd::Start),
@@ -828,7 +827,7 @@ mod tests {
             (2, LineEnd::Start, 5, LineEnd::End),
         ];
         for (la, ea, lb, eb) in joins {
-            doc.constraints.push(coincident(0, point(la, ea), point(lb, eb)));
+            doc.constraints.insert(coincident(0, point(la, ea), point(lb, eb)));
         }
         let loops = closed_line_loops(&doc, 0);
         assert_eq!(loops.len(), 2, "bowtie is two faces, got {loops:?}");
@@ -840,7 +839,7 @@ mod tests {
         doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(line(0, 10.0, 0.0, 5.0, 8.0));
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(0, LineEnd::End),
             point(1, LineEnd::Start),
@@ -868,17 +867,17 @@ mod tests {
         doc.lines.push(line(0, 10.0, 0.0, 5.0, 8.0));
         doc.lines.push(line(0, 5.0, 8.0, 0.0, 0.0));
         doc.lines[2].deleted = true;
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(0, LineEnd::End),
             point(1, LineEnd::Start),
         ));
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(1, LineEnd::End),
             point(2, LineEnd::Start),
         ));
-        doc.constraints.push(coincident(
+        doc.constraints.insert(coincident(
             0,
             point(2, LineEnd::End),
             point(0, LineEnd::Start),
@@ -896,7 +895,7 @@ mod tests {
         doc.lines.push(line(0, 10.0, 10.0, 0.0, 10.0));
         doc.lines.push(line(0, 0.0, 10.0, 0.0, 0.0));
         for i in 0..4 {
-            doc.constraints.push(coincident(
+            doc.constraints.insert(coincident(
                 0,
                 point(i, LineEnd::End),
                 point((i + 1) % 4, LineEnd::Start),
@@ -955,15 +954,15 @@ mod tests {
         doc.lines.push(line(0, 10.0, 5.0, 6.0, 8.0)); // P-E
         doc.lines.push(line(0, 6.0, 8.0, 2.0, 6.0)); // E-F
         doc.lines.push(line(0, 2.0, 6.0, 0.0, 0.0)); // F-A
-        doc.constraints.push(coincident(0, point(0, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(1, LineEnd::End), point(2, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(2, LineEnd::End), point(3, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(3, LineEnd::End), point(0, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(4, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(4, LineEnd::Start), point(0, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(5, LineEnd::End), point(6, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(6, LineEnd::End), point(7, LineEnd::Start)));
-        doc.constraints.push(coincident(0, point(7, LineEnd::End), point(4, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(0, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(1, LineEnd::End), point(2, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(2, LineEnd::End), point(3, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(3, LineEnd::End), point(0, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(4, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(4, LineEnd::Start), point(0, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(5, LineEnd::End), point(6, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(6, LineEnd::End), point(7, LineEnd::Start)));
+        doc.constraints.insert(coincident(0, point(7, LineEnd::End), point(4, LineEnd::Start)));
 
         let loops = closed_line_loops(&doc, 0);
         assert!(loops.len() >= 2, "expected outer and inner loops, got {loops:?}");

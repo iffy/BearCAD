@@ -15,7 +15,7 @@ use crate::value::{
 };
 
 /// Index into [`Document::constraints`].
-pub type ConstraintId = usize;
+pub type ConstraintId = crate::model::ConstraintKey;
 
 fn constraint_sign_from_scalar(sign: f32) -> crate::model::ConstraintSign {
     if sign >= 0.0 { 1 } else { -1 }
@@ -195,19 +195,20 @@ pub fn add_distance_constraint(
     let target = finalize_distance_target(doc, sketch, target)?;
     validate_distance_target(doc, sketch, target.clone())?;
     if let Some(index) = find_distance_constraint(doc, target.clone()) {
-        return Err(format!("Constraint already exists for {target:?} (index {index})"));
+        return Err(format!(
+            "Constraint already exists for {target:?} (index {})",
+            index.index()
+        ));
     }
     eval_length_mm_in_doc(&expression, doc)
         .filter(|v| *v > 0.0)
         .ok_or_else(|| format!("Invalid constraint expression '{expression}'"))?;
-    let id = doc.constraints.len();
-    doc.constraints.push(Constraint {
+    let id = doc.constraints.insert(Constraint {
         sketch,
         kind: ConstraintKind::Distance { target },
         expression,
         dim_offset: None,
         name: None,
-        deleted: false,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
     solve_document_constraints(doc)?;
@@ -228,7 +229,7 @@ pub fn set_constraint_expression(
         .constraints
         .get(index)
         .map(|c| c.kind.clone())
-        .ok_or_else(|| format!("Constraint {index} not found"))?;
+        .ok_or_else(|| format!("Constraint {} not found", index.index()))?;
     validate_constraint_expression(doc, &kind, &expression)?;
     doc.constraints[index].expression = expression;
     solve_document_constraints(doc)
@@ -257,7 +258,7 @@ fn validate_constraint_expression(
 
 pub fn set_constraint_dim_offset(doc: &mut Document, index: ConstraintId, offset: f32) -> Result<(), String> {
     if doc.constraints.get(index).is_none() {
-        return Err(format!("Constraint {index} not found"));
+        return Err(format!("Constraint {} not found", index.index()));
     }
     doc.constraints[index].dim_offset = Some(offset);
     solve_document_constraints(doc)
@@ -265,9 +266,9 @@ pub fn set_constraint_dim_offset(doc: &mut Document, index: ConstraintId, offset
 
 pub fn find_distance_constraint(doc: &Document, target: DistanceTarget) -> Option<ConstraintId> {
     let target = normalize_distance_target(target);
-    doc.constraints.iter().position(|c| {
-        !c.deleted
-            && matches!(&c.kind, ConstraintKind::Distance { target: t } if normalize_distance_target(t.clone()) == target)
+    doc.constraints.iter().find_map(|(key, c)| {
+        matches!(&c.kind, ConstraintKind::Distance { target: t } if normalize_distance_target(t.clone()) == target)
+            .then_some(key)
     })
 }
 
@@ -277,16 +278,16 @@ pub fn find_angle_constraint(
     line_b: ConstraintLine,
 ) -> Option<ConstraintId> {
     let (line_a, line_b) = normalize_line_pair(line_a, line_b);
-    doc.constraints.iter().position(|c| {
-        !c.deleted
-            && matches!(
-                &c.kind,
-                ConstraintKind::Angle {
-                    line_a: a,
-                    line_b: b,
-                    ..
-                } if *a == line_a && *b == line_b
-            )
+    doc.constraints.iter().find_map(|(key, c)| {
+        matches!(
+            &c.kind,
+            ConstraintKind::Angle {
+                line_a: a,
+                line_b: b,
+                ..
+            } if *a == line_a && *b == line_b
+        )
+        .then_some(key)
     })
 }
 
@@ -413,7 +414,7 @@ fn measured_angle_between_lines(
 
 pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
     let Some(constraint) = doc.constraints.get(index) else {
-        return format!("Constraint {index}");
+        return format!("Constraint {}", index.index());
     };
     let value = match &constraint.kind {
         ConstraintKind::Distance {
@@ -446,9 +447,9 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
     };
     match &constraint.kind {
         ConstraintKind::Distance { .. } | ConstraintKind::Angle { .. } => {
-            format!("Constraint {index} ({target_label}, {value})")
+            format!("Constraint {} ({target_label}, {value})", index.index())
         }
-        _ => format!("Constraint {index} ({target_label})"),
+        _ => format!("Constraint {} ({target_label})", index.index()),
     }
 }
 
@@ -802,7 +803,7 @@ pub fn add_angle_constraint_with_sign(
         return Err("Angle constraint requires non-parallel lines".to_string());
     }
     if let Some(index) = find_angle_constraint(doc, line_a.clone(), line_b.clone()) {
-        return Err(format!("Angle constraint already exists (index {index})"));
+        return Err(format!("Angle constraint already exists (index {})", index.index()));
     }
     let kind = ConstraintKind::Angle {
         line_a,
@@ -810,14 +811,12 @@ pub fn add_angle_constraint_with_sign(
         rotation_sign,
     };
     validate_constraint_expression(doc, &kind, &expression)?;
-    let id = doc.constraints.len();
-    doc.constraints.push(Constraint {
+    let id = doc.constraints.insert(Constraint {
         sketch,
         kind,
         expression,
         dim_offset: None,
         name: None,
-        deleted: false,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
     solve_document_constraints(doc)?;
@@ -945,8 +944,7 @@ pub fn solve_document_constraints_with_pins(
     if pins.is_empty() {
         let dimension_flags: Vec<_> = doc
             .constraints
-            .iter()
-            .filter(|constraint| !constraint.deleted)
+            .values()
             .filter_map(|constraint| match &constraint.kind {
                 ConstraintKind::Distance { target } => Some((
                     target.clone(),
@@ -1054,14 +1052,12 @@ fn add_distance_constraint_internal(
     expression: String,
     dim_offset: Option<f32>,
 ) -> Result<ConstraintId, String> {
-    let id = doc.constraints.len();
-    doc.constraints.push(Constraint {
+    let id = doc.constraints.insert(Constraint {
         sketch,
         kind: ConstraintKind::Distance { target },
         expression,
         dim_offset,
         name: None,
-        deleted: false,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
     Ok(id)
@@ -1397,33 +1393,34 @@ fn is_point_on_line(
 /// midpoint) makes an earlier generic point-on-line coincidence for that same point and line
 /// redundant. Mark such constraints deleted so the more specific constraint wins (#23).
 /// `new_index` is the just-added constraint that should be kept.
-pub fn remove_subsumed_point_on_line(doc: &mut Document, sketch: SketchId, new_index: usize) {
+pub fn remove_subsumed_point_on_line(
+    doc: &mut Document,
+    sketch: SketchId,
+    new_index: ConstraintId,
+) {
     let Some(new) = doc.constraints.get(new_index) else {
         return;
     };
-    if new.deleted || new.sketch != sketch {
+    if new.sketch != sketch {
         return;
     }
     let pins = point_line_pins(&new.kind);
     if pins.is_empty() {
         return;
     }
-    for i in 0..doc.constraints.len() {
-        if i == new_index {
-            continue;
-        }
-        let c = &doc.constraints[i];
-        if c.deleted || c.sketch != sketch {
-            continue;
-        }
-        if let ConstraintKind::Coincident { a, b } = &c.kind {
-            if pins
-                .iter()
-                .any(|(point, line)| is_point_on_line(a, b, point, line))
-            {
-                doc.constraints[i].deleted = true;
-            }
-        }
+    let doomed: Vec<_> = doc
+        .constraints
+        .iter()
+        .filter(|(key, c)| {
+            *key != new_index
+                && c.sketch == sketch
+                && matches!(&c.kind, ConstraintKind::Coincident { a, b }
+                    if pins.iter().any(|(point, line)| is_point_on_line(a, b, point, line)))
+        })
+        .map(|(key, _)| key)
+        .collect();
+    for key in doomed {
+        doc.constraints.remove(key);
     }
 }
 
@@ -1431,7 +1428,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
     if old == new {
         return;
     }
-    for constraint in &mut doc.constraints {
+    for constraint in doc.constraints.values_mut() {
         constraint.expression =
             crate::value::substitute_parameter_name(&constraint.expression, old, new);
     }
@@ -1439,6 +1436,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line, ShapeKind};
 
@@ -1460,7 +1458,7 @@ mod tests {
         doc.lines
             .push(Line::from_local_endpoints(sketch, 2.0, 5.0, 8.0, 7.0));
         doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Line(ConstraintLine::Line(0)),
@@ -1469,7 +1467,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         solve_document_constraints(&mut doc).unwrap();
         // The two lines are now collinear: line 1's endpoints lie on line 0's infinite line
@@ -1502,7 +1499,7 @@ mod tests {
         doc.lines
             .push(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -1514,7 +1511,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         solve_document_constraints(&mut doc).unwrap();
         assert!(
@@ -1524,7 +1520,7 @@ mod tests {
         );
 
         // Now pin the *end* to the Y axis (u = 0).
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -1536,7 +1532,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         solve_document_constraints(&mut doc).unwrap();
         assert!(
@@ -1559,7 +1554,7 @@ mod tests {
             "5mm".to_string(),
         )
         .unwrap();
-        assert_eq!(id, 0);
+        assert_eq!(id.index(), 0);
         assert!((doc.lines[0].length() - 5.0).abs() < 1e-3);
         assert!(doc.lines[0].length_locked);
     }
@@ -1587,15 +1582,13 @@ mod tests {
         assert!((doc.lines[0].chord_length() - 5.0).abs() < 1e-3);
     }
 
-    fn push_coincident(doc: &mut Document, sketch: SketchId, kind: ConstraintKind) -> usize {
-        let id = doc.constraints.len();
-        doc.constraints.push(Constraint {
+    fn push_coincident(doc: &mut Document, sketch: SketchId, kind: ConstraintKind) -> ConstraintId {
+        let id = doc.constraints.insert(Constraint {
             sketch,
             kind,
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
         id
@@ -1634,8 +1627,8 @@ mod tests {
             },
         );
         remove_subsumed_point_on_line(&mut doc, sketch, specific);
-        assert!(doc.constraints[on_line].deleted, "generic point-on-line should be removed");
-        assert!(!doc.constraints[specific].deleted, "specific coincidence is kept");
+        assert!(!doc.constraints.contains(on_line), "generic point-on-line should be removed");
+        assert!(doc.constraints.contains(specific), "specific coincidence is kept");
     }
 
     #[test]
@@ -1673,8 +1666,8 @@ mod tests {
             },
         );
         remove_subsumed_point_on_line(&mut doc, sketch, mid);
-        assert!(doc.constraints[on_line0].deleted, "midpoint subsumes point-on-line-0");
-        assert!(!doc.constraints[on_line1].deleted, "point-on-line-1 is unrelated");
+        assert!(!doc.constraints.contains(on_line0), "midpoint subsumes point-on-line-0");
+        assert!(doc.constraints.contains(on_line1), "point-on-line-1 is unrelated");
     }
 
     #[test]
@@ -1698,7 +1691,7 @@ mod tests {
             "10mm".to_string(),
         )
         .unwrap();
-        set_constraint_expression(&mut doc, 0, "15mm".to_string()).unwrap();
+        set_constraint_expression(&mut doc, nkey(0), "15mm".to_string()).unwrap();
         assert!((doc.lines[0].length() - 15.0).abs() < 1e-3);
     }
 
@@ -1714,7 +1707,7 @@ mod tests {
             "10mm".to_string(),
         )
         .unwrap();
-        let label = constraint_label(&doc, 0);
+        let label = constraint_label(&doc, nkey(0));
         assert!(label.starts_with("Constraint 0"));
         assert!(label.contains("Line 0 length"));
         assert!(label.contains("10.0 mm"));
@@ -1764,7 +1757,7 @@ mod tests {
             "10mm".to_string(),
         )
         .unwrap();
-        let label = constraint_label(&doc, 0);
+        let label = constraint_label(&doc, nkey(0));
         assert!(label.contains("Ø10.0 mm"));
         assert!(label.contains("Circle 0 diameter"));
     }
@@ -1779,7 +1772,7 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 25.4, 0.0));
         add_distance_constraint(&mut doc, sketch, DistanceTarget::LineLength(0), "25.4mm".to_string())
             .unwrap();
-        let label = constraint_label(&doc, 0);
+        let label = constraint_label(&doc, nkey(0));
         assert!(label.contains("1.0 in"), "expected inches in {label:?}");
         assert!(!label.contains("mm"), "should not show mm: {label:?}");
     }
@@ -1799,7 +1792,7 @@ mod tests {
             "304.8mm".to_string(),
         )
         .unwrap();
-        let label = constraint_label(&doc, 0);
+        let label = constraint_label(&doc, nkey(0));
         assert!(label.contains("1.0 ft"), "expected feet in {label:?}");
     }
 
@@ -1989,13 +1982,13 @@ mod tests {
                 DistanceTarget::LineLineDistance {
                     side, ..
                 },
-        } = doc.constraints[0].kind
+        } = doc.constraints[nkey(0)].kind
         else {
             panic!("expected line spacing constraint");
         };
         assert_eq!(side, 1);
         assert!((doc.lines[1].y0 - 5.0).abs() < 0.2);
-        set_constraint_expression(&mut doc, 0, "12mm".to_string()).unwrap();
+        set_constraint_expression(&mut doc, nkey(0), "12mm".to_string()).unwrap();
         assert!((doc.lines[1].y0 - 12.0).abs() < 0.2, "y0={}", doc.lines[1].y0);
     }
 
@@ -2026,13 +2019,13 @@ mod tests {
                 DistanceTarget::LineLineDistance {
                     side, ..
                 },
-        } = doc.constraints[0].kind
+        } = doc.constraints[nkey(0)].kind
         else {
             panic!("expected line spacing constraint");
         };
         assert_eq!(side, -1);
         assert!(doc.lines[1].y0 < -0.5, "y0={}", doc.lines[1].y0);
-        set_constraint_expression(&mut doc, 0, "3mm".to_string()).unwrap();
+        set_constraint_expression(&mut doc, nkey(0), "3mm".to_string()).unwrap();
         assert!(
             doc.lines[1].y0 < -0.5 && (doc.lines[1].y0 + 3.0).abs() < 0.2,
             "y0={}",
@@ -2071,7 +2064,7 @@ mod tests {
                 DistanceTarget::PointLineDistance {
                     side, ..
                 },
-        } = doc.constraints[0].kind
+        } = doc.constraints[nkey(0)].kind
         else {
             panic!("expected point-line distance constraint");
         };
@@ -2119,7 +2112,7 @@ mod tests {
                     dir_v,
                     ..
                 },
-        } = doc.constraints[0].kind
+        } = doc.constraints[nkey(0)].kind
         else {
             panic!("expected point-point distance constraint");
         };
@@ -2233,7 +2226,7 @@ mod tests {
         .unwrap();
         let ConstraintKind::Angle {
             rotation_sign, ..
-        } = doc.constraints[0].kind
+        } = doc.constraints[nkey(0)].kind
         else {
             panic!("expected angle constraint");
         };

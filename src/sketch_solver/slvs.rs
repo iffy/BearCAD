@@ -256,7 +256,7 @@ pub struct SlvsOutcome {
     #[allow(dead_code)]
     pub dof: i32,
     /// Document constraint indices libslvs blames for a failed solve.
-    pub failed_constraints: Vec<usize>,
+    pub failed_constraints: Vec<crate::model::ConstraintKey>,
     /// New `(point, (u, v))` positions for every free sketch point.
     moved_points: Vec<(ConstraintPoint, (f32, f32))>,
     /// New radii per circle index.
@@ -484,9 +484,8 @@ impl<'a> Builder<'a> {
         // The radius is only a solver unknown when a diameter dimension drives it;
         // otherwise it is whatever the user set, and constraints like point-on-circle
         // must move the point, not quietly resize the circle.
-        let has_diameter_dim = self.doc.constraints.iter().any(|c| {
-            !c.deleted
-                && c.sketch == self.sketch
+        let has_diameter_dim = self.doc.constraints.values().any(|c| {
+            c.sketch == self.sketch
                 && matches!(
                     c.kind,
                     ConstraintKind::Distance {
@@ -952,8 +951,12 @@ pub fn solve_sketch(
         b.ensure_circle(index)?;
     }
 
-    for (doc_index, constraint) in doc.constraints.iter().enumerate() {
-        if constraint.deleted || constraint.sketch != sketch {
+    // Solver handles are dense small integers, so a constraint enters as its **ordinal**
+    // among the live ones; `handle_keys` maps a failed handle back to its key (#1055).
+    let mut handle_keys: Vec<crate::model::ConstraintKey> = Vec::new();
+    for (doc_index, (key, constraint)) in doc.constraints.iter().enumerate() {
+        handle_keys.push(key);
+        if constraint.sketch != sketch {
             continue;
         }
         if !crate::document_lifecycle::constraint_kind_applicable(doc, &constraint.kind) {
@@ -1018,8 +1021,8 @@ pub fn solve_sketch(
         }
     };
     let mut held_centers: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for constraint in doc.constraints.iter() {
-        if constraint.deleted || constraint.sketch != sketch {
+    for constraint in doc.constraints.values() {
+        if constraint.sketch != sketch {
             continue;
         }
         use crate::geometric_constraints::parallel_reference_and_movable;
@@ -1140,18 +1143,18 @@ pub fn solve_sketch(
     let failed_constraints = if success {
         Vec::new()
     } else {
-        let mut indices: Vec<usize> = raw
+        let mut indices: Vec<crate::model::ConstraintKey> = raw
             .failed
             .iter()
             .filter(|&&h| h > 0)
             .filter(|&&h| h <= SECONDARY_HANDLE_BASE * 2)
-            .map(|&h| {
+            .filter_map(|&h| {
                 let h = if h > SECONDARY_HANDLE_BASE {
                     h - SECONDARY_HANDLE_BASE
                 } else {
                     h
                 };
-                h as usize - 1
+                handle_keys.get(h as usize - 1).copied()
             })
             .collect();
         indices.sort_unstable();

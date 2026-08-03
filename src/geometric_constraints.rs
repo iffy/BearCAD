@@ -381,7 +381,7 @@ pub fn add_geometric_constraint_from_selection(
     sketch: SketchId,
     kind: GeometricConstraintType,
     selection: &SceneSelection,
-) -> Result<usize, String> {
+) -> Result<crate::model::ConstraintKey, String> {
     let refs = selected_constraint_refs(selection);
     let rows = constraint_pane_rows(selection);
     let enabled = rows
@@ -395,14 +395,12 @@ pub fn add_geometric_constraint_from_selection(
 
     let constraint_kind = build_constraint_kind(kind, &refs)?;
     validate_constraint_kind(doc, sketch, constraint_kind.clone())?;
-    let id = doc.constraints.len();
-    doc.constraints.push(Constraint {
+    let id = doc.constraints.insert(Constraint {
         sketch,
         kind: constraint_kind,
         expression: String::new(),
         dim_offset: None,
         name: None,
-        deleted: false,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
     crate::constraints::remove_subsumed_point_on_line(doc, sketch, id);
@@ -956,6 +954,7 @@ pub fn set_point_uv(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line, ShapeKind};
     use crate::selection::{click_scene_selection, SceneSelection};
@@ -990,13 +989,12 @@ mod tests {
     }
 
     fn push_constraint(doc: &mut Document, sketch: SketchId, kind: ConstraintKind) {
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind,
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
         crate::constraints::solve_document_constraints(doc).unwrap();
@@ -1366,7 +1364,7 @@ mod tests {
             pu.hypot(pv)
         );
         assert!(matches!(
-            doc.constraints[0].kind,
+            doc.constraints[nkey(0)].kind,
             ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(_),
                 b: ConstraintEntity::Circle(0),
@@ -1417,8 +1415,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(doc.constraints[on_line].deleted, "point-on-line should be superseded");
-        assert!(!doc.constraints[specific].deleted);
+        assert!(!doc.constraints.contains(on_line), "point-on-line should be superseded");
+        assert!(doc.constraints.contains(specific));
     }
 
     #[test]
@@ -1493,7 +1491,7 @@ mod tests {
         assert!((doc.lines[1].x0 - 5.0).abs() < EPS);
         assert!(doc.lines[1].y0.abs() < EPS);
         assert!(matches!(
-            doc.constraints[0].kind,
+            doc.constraints[nkey(0)].kind,
             ConstraintKind::Midpoint {
                 point: ConstraintPoint::LineEndpoint {
                     line: 1,

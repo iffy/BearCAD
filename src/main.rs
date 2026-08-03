@@ -6809,7 +6809,7 @@ impl App {
                 let lines = match face {
                     Some(model::FaceId::Polygon(lines)) => lines,
                     Some(model::FaceId::Circle(ci))
-                        if self.state.doc.circles.get(ci).is_some_and(|c| {
+                        if self.state.doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| {
                             !c.deleted && c.sketch == session.sketch
                         }) =>
                     {
@@ -17685,8 +17685,7 @@ fn build_committed_dim_layouts(
     for (index, constraint) in doc
         .constraints
         .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.deleted && c.sketch == session.sketch)
+        .filter(|(_, c)| c.sketch == session.sketch)
     {
         let ConstraintKind::Distance { target } = constraint.kind.clone() else {
             continue;
@@ -17747,8 +17746,7 @@ fn build_committed_dim_layouts(
     for (index, constraint) in doc
         .constraints
         .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.deleted && c.sketch == session.sketch)
+        .filter(|(_, c)| c.sketch == session.sketch)
     {
         let ConstraintKind::Distance {
             target: DistanceTarget::CircleDiameter(i),
@@ -17787,8 +17785,7 @@ fn build_committed_dim_layouts(
     for (index, constraint) in doc
         .constraints
         .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.deleted && c.sketch == session.sketch)
+        .filter(|(_, c)| c.sketch == session.sketch)
     {
         let ConstraintKind::Angle {
             line_a,
@@ -22150,7 +22147,7 @@ impl App {
         if angle_gizmo_constraint.is_none() {
             self.angle_gizmo_drag = None;
         }
-        let angle_dim_constraints: HashSet<usize> = layouts_slice
+        let angle_dim_constraints: HashSet<model::ConstraintKey> = layouts_slice
             .iter()
             .filter(|layout| layout.arc_geom.is_some())
             .map(|layout| layout.target)
@@ -25359,7 +25356,7 @@ impl App {
             // Which constraint badges to light up: the pointer-hovered one normally, or — while the
             // exploder is open — its hovered constraint leaf and hovered group's constraint members
             // (#568), so hovering a constraint loupe glows its real badge in the overlay.
-            let mut hovered_constraints: HashSet<usize> = HashSet::new();
+            let mut hovered_constraints: HashSet<model::ConstraintKey> = HashSet::new();
             if exploder_active {
                 if let Some(ex) = self.exploder.as_ref() {
                     if let Some((construction::PickTargetKind::Constraint(i), _)) =
@@ -28619,7 +28616,7 @@ mod tests {
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -28634,7 +28631,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
         (sketch, point)
@@ -29744,7 +29740,7 @@ mod tests {
             // The two whose content is a single spot by nature: a point on the ground, and a
             // constraint, whose visual is its badge glyph drawn at the loupe's centre.
             PK::Ground(Vec3::ZERO),
-            PK::Constraint(0),
+            PK::Constraint(model::constraint_key_for_slot(0)),
         ] {
             let (segments, points) = pick_target_loupe_wireframe(&doc, &kind, Vec3::ZERO);
             assert!(
@@ -30685,7 +30681,7 @@ mod tests {
     fn exploder_offers_constraints_only_to_pickers_that_take_them() {
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
         use construction::PickTargetKind as K;
-        let c = [K::Constraint(0)];
+        let c = [K::Constraint(model::constraint_key_for_slot(0))];
         // A constraint badge can only be selected (#568), so it reaches the fan exactly where a
         // picker takes constraints — not because of a list of tools.
         assert_eq!(fanned(&ElementPicker::select_everything(), &c), c.to_vec());

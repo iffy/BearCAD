@@ -5426,22 +5426,32 @@ pub(crate) fn chained_curve_handles(
     }
 }
 
+/// Drop every constraint added since `keep` was captured (#1055): the rollback path for a
+/// shape whose typed dimension turned out not to apply.
+fn retain_constraints(doc: &mut Document, keep: &[crate::model::ConstraintKey]) {
+    for key in doc.constraints.keys().collect::<Vec<_>>() {
+        if !keep.contains(&key) {
+            doc.constraints.remove(key);
+        }
+    }
+}
+
 /// The live [`ConstraintKind::Tangent`] joint at `point`, if one exists (#473) — matched
 /// against the two incident line-ends in either order.
 pub(crate) fn tangent_joint_constraint(
     doc: &Document,
     sketch: SketchId,
     point: ConstraintPoint,
-) -> Option<usize> {
+) -> Option<crate::model::ConstraintKey> {
     let [(line1, end1), (line2, end2)] =
         vertex_drag::incident_two_lines(doc, sketch, point)?;
     let pa = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
     let pb = ConstraintPoint::LineEndpoint { line: line2, end: end2 };
-    doc.constraints.iter().position(|c| {
-        !c.deleted
-            && c.sketch == sketch
+    doc.constraints.iter().find_map(|(key, c)| {
+        (c.sketch == sketch
             && matches!(&c.kind, crate::model::ConstraintKind::Tangent { a, b }
-                if (*a == pa && *b == pb) || (*a == pb && *b == pa))
+                if (*a == pa && *b == pb) || (*a == pb && *b == pa)))
+            .then_some(key)
     })
 }
 
@@ -5960,7 +5970,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),
-        SceneElement::Constraint(i) => format!("Constraint {i}"),
+        SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Extrusion(i) => format!("Extrusion {}", i.index()),
         SceneElement::Body(i) => format!("Body {}", i.index()),
@@ -7047,7 +7057,7 @@ impl AppState {
                                         sm.line_targets.push(li);
                                     }
                                     crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                        if self.doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| {
                                             !c.deleted && c.sketch == session.sketch
                                         }) =>
                                     {
@@ -7100,7 +7110,7 @@ impl AppState {
                                         co.line_targets.push(li);
                                     }
                                     crate::hierarchy::SceneElement::Circle(ci)
-                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                        if self.doc.circles.get(ci).filter(|c| !c.deleted).is_some_and(|c| {
                                             !c.deleted && c.sketch == session.sketch
                                         }) =>
                                     {
@@ -7581,7 +7591,7 @@ impl AppState {
                     let construction_edges = if cr.construction { [true; 4] } else { [false; 4] };
                     // Snapshot for rollback if a typed width/height constraint fails to apply.
                     let lines_before = self.doc.lines.len();
-                    let constraints_before = self.doc.constraints.len();
+                    let constraints_before: Vec<_> = self.doc.constraints.keys().collect();
                     let shape_order_before = self.doc.shape_order.len();
                     // A rectangle is now four plain lines (bottom, right, top, left) forming a
                     // closed loop with Horizontal/Vertical/Coincident constraints (#66 polygon).
@@ -7620,7 +7630,7 @@ impl AppState {
                         }
                     }
                     if let Some(e) = constraint_err {
-                        self.doc.constraints.truncate(constraints_before);
+                        retain_constraints(&mut self.doc, &constraints_before);
                         self.doc.lines.truncate(lines_before);
                         self.doc.shape_order.truncate(shape_order_before);
                         self.rect_origin_snap = None;
@@ -9163,9 +9173,7 @@ impl AppState {
                             }
                         }
                         for &ci in &ob_op.constraint_outputs {
-                            if let Some(c) = self.doc.constraints.get_mut(ci) {
-                                c.deleted = true;
-                            }
+                            self.doc.constraints.remove(ci);
                         }
                         let ordinal = self
                             .doc
@@ -9290,7 +9298,7 @@ impl AppState {
                     );
                 }
                 let lines_before = self.doc.lines.len();
-                let constraints_before = self.doc.constraints.len();
+                let constraints_before: Vec<_> = self.doc.constraints.keys().collect();
                 let shape_order_before = self.doc.shape_order.len();
                 // A rectangle is four plain lines forming a closed loop (#66 polygon); width
                 // drives the bottom edge, height the right edge, as length dimensions.
@@ -9314,7 +9322,7 @@ impl AppState {
                 if let Err(e) = add_dim(lines[0], width, width_expr)
                     .and_then(|_| add_dim(lines[1], height, height_expr))
                 {
-                    self.doc.constraints.truncate(constraints_before);
+                    retain_constraints(&mut self.doc, &constraints_before);
                     self.doc.lines.truncate(lines_before);
                     self.doc.shape_order.truncate(shape_order_before);
                     self.status = e.clone();
@@ -9348,7 +9356,9 @@ impl AppState {
                 ) {
                     while self.doc.shape_order.last() == Some(&ShapeKind::Constraint) {
                         self.doc.shape_order.pop();
-                        self.doc.constraints.pop();
+                        if let Some(last) = self.doc.constraints.keys().last() {
+                            self.doc.constraints.remove(last);
+                        }
                     }
                     self.doc.circles.pop();
                     self.doc.shape_order.pop();
@@ -12851,7 +12861,7 @@ label_hidden: false,
                     return self.apply(Action::ConvertVertexToBezier { point });
                 }
                 if let Some(ci) = tangent_joint_constraint(&self.doc, sketch, point.clone()) {
-                    self.doc.constraints[ci].deleted = true;
+                    self.doc.constraints.remove(ci);
                 }
                 let Some([(line1, end1), (line2, end2)]) =
                     vertex_drag::incident_two_lines(&self.doc, sketch, point.clone())
@@ -13088,7 +13098,7 @@ label_hidden: false,
                     Ok(index) => {
                         self.refresh_document_health();
                         self.status =
-                            format!("Added {} constraint {index}", kind.label());
+                            format!("Added {} constraint {}", kind.label(), index.index());
                         ActionResult::Ok
                     }
                     Err(e) => ActionResult::Err(e),
@@ -13251,22 +13261,20 @@ label_hidden: false,
     ) {
         let pa = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
         let pb = ConstraintPoint::LineEndpoint { line: line2, end: end2 };
-        let exists = self.doc.constraints.iter().any(|c| {
-            !c.deleted
-                && c.sketch == sketch
+        let exists = self.doc.constraints.values().any(|c| {
+            c.sketch == sketch
                 && matches!(&c.kind, crate::model::ConstraintKind::Tangent { a, b }
                     if (*a == pa && *b == pb) || (*a == pb && *b == pa))
         });
         if exists {
             return;
         }
-        self.doc.constraints.push(crate::model::Constraint {
+        self.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: crate::model::ConstraintKind::Tangent { a: pa, b: pb },
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         self.doc.shape_order.push(ShapeKind::Constraint);
     }
@@ -13360,19 +13368,19 @@ label_hidden: false,
             return Ok(());
         }
         let kind = crate::snapping::snap_constraint_kind(point, target);
-        self.doc.constraints.push(crate::model::Constraint {
+        self.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind,
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         self.doc
             .shape_order
             .push(crate::model::ShapeKind::Constraint);
-        let new_index = self.doc.constraints.len() - 1;
-        crate::constraints::remove_subsumed_point_on_line(&mut self.doc, sketch, new_index);
+        if let Some(new_index) = self.doc.constraints.keys().last() {
+            crate::constraints::remove_subsumed_point_on_line(&mut self.doc, sketch, new_index);
+        }
         crate::constraints::solve_document_constraints(&mut self.doc)?;
         self.refresh_document_health();
         Ok(())
@@ -13415,13 +13423,12 @@ label_hidden: false,
         let new_line = ConstraintLine::Line(new_line_index);
 
         let push_constraint = |doc: &mut Document, kind: ConstraintKind| {
-            doc.constraints.push(crate::model::Constraint {
+            doc.constraints.insert(crate::model::Constraint {
                 sketch,
                 kind,
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
             doc.shape_order.push(ShapeKind::Constraint);
         };
@@ -14124,11 +14131,9 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: crate::model
         }
     }
     for &ci in &op.constraint_outputs {
-        if let Some(c) = doc.constraints.get_mut(ci) {
-            c.deleted = true;
-        }
+        doc.constraints.remove(ci);
     }
-    let mut constraint_outputs: Vec<usize> = Vec::new();
+    let mut constraint_outputs: Vec<crate::model::ConstraintKey> = Vec::new();
     let mut outputs = Vec::new();
     for &a in &op.line_targets {
         let al = doc.lines[a].clone();
@@ -14250,7 +14255,7 @@ fn slice_face_loop(
     loop_lines: &[usize],
     cutter_lines: &[usize],
     outputs: &mut Vec<usize>,
-    constraint_outputs: &mut Vec<usize>,
+    constraint_outputs: &mut Vec<crate::model::ConstraintKey>,
 ) {
     use crate::model::{ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
     // Find boundary edges crossed by a cutter (interior crossing), and the crossing point on each.
@@ -14321,8 +14326,7 @@ fn slice_face_loop(
     outputs.push(chord);
 
     let mut glue = |doc: &mut crate::model::Document, a: ConstraintPoint, b: ConstraintPoint| {
-        constraint_outputs.push(doc.constraints.len());
-        doc.constraints.push(crate::model::Constraint {
+        constraint_outputs.push(doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(a),
@@ -14331,8 +14335,7 @@ fn slice_face_loop(
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
-        });
+        }));
     };
     let ep = |line: usize, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
     // Pieces inherit the crossed edge's corner coincidences.
@@ -14449,7 +14452,7 @@ fn ensure_offset_joint_coincidences(
             if crate::vertex_drag::coincident_group(doc, sketch, a.clone()).contains(&b) {
                 continue;
             }
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(a),
@@ -14458,7 +14461,6 @@ fn ensure_offset_joint_coincidences(
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
             doc.shape_order
                 .push(crate::model::ShapeKind::Constraint);
@@ -14684,9 +14686,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
     // `Coincident` between two mirrored source endpoints maps to one between the matching output
     // endpoints. Old ones are tombstoned first, so a rebuild stays idempotent.
     for &ci in &op.constraint_outputs {
-        if let Some(c) = doc.constraints.get_mut(ci) {
-            c.deleted = true;
-        }
+        doc.constraints.remove(ci);
     }
     let src_to_out: std::collections::HashMap<usize, usize> =
         want_lines.iter().copied().zip(line_outputs.iter().copied()).collect();
@@ -14698,14 +14698,12 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
             _ => None,
         }
     };
-    let mut constraint_outputs: Vec<usize> = Vec::new();
+    let mut constraint_outputs: Vec<crate::model::ConstraintKey> = Vec::new();
     let existing: Vec<crate::model::Constraint> = doc
         .constraints
-        .iter()
+        .values()
         .filter(|c| {
-            !c.deleted
-                && c.sketch == op.sketch
-                && matches!(&c.kind, ConstraintKind::Coincident { .. })
+            c.sketch == op.sketch && matches!(&c.kind, ConstraintKind::Coincident { .. })
         })
         .cloned()
         .collect();
@@ -14716,8 +14714,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
         } = &c.kind
         {
             if let (Some(oa), Some(ob)) = (map_end(pa), map_end(pb)) {
-                constraint_outputs.push(doc.constraints.len());
-                doc.constraints.push(crate::model::Constraint {
+                constraint_outputs.push(doc.constraints.insert(crate::model::Constraint {
                     sketch: op.sketch,
                     kind: ConstraintKind::Coincident {
                         a: ConstraintEntity::Point(oa),
@@ -14726,8 +14723,7 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
                     expression: String::new(),
                     dim_offset: None,
                     name: None,
-                    deleted: false,
-                });
+                }));
                 doc.shape_order.push(crate::model::ShapeKind::Constraint);
             }
         }
@@ -14790,9 +14786,7 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
         }
     }
     for &ci in &op.constraint_outputs {
-        if let Some(c) = doc.constraints.get_mut(ci) {
-            c.deleted = true;
-        }
+        doc.constraints.remove(ci);
     }
     if op.line_targets.is_empty() || op.corners.is_empty() {
         let entry = &mut doc.sketch_vertex_treatment_ops[op_index];
@@ -14923,11 +14917,10 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
     }
 
     // Stitch coincidences (regenerated fresh each rebuild).
-    let mut constraint_outputs: Vec<usize> = Vec::new();
+    let mut constraint_outputs: Vec<crate::model::ConstraintKey> = Vec::new();
     let ep = |line: usize, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
     let mut glue = |doc: &mut crate::model::Document, a: ConstraintPoint, b: ConstraintPoint| {
-        constraint_outputs.push(doc.constraints.len());
-        doc.constraints.push(Constraint {
+        constraint_outputs.push(doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(a),
@@ -14936,8 +14929,7 @@ pub(crate) fn rebuild_sketch_vertex_treatment(
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
-        });
+        }));
         doc.shape_order.push(ShapeKind::Constraint);
     };
     // Each bridge end joins the treated end of its edge's trimmed copy.
@@ -15936,6 +15928,7 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use crate::model::sketch_text_key_for_slot as tkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::unit_key_for_slot as ukey;
@@ -16330,7 +16323,7 @@ mod tests {
             (3, LineEnd::End, 4, LineEnd::Start),
             (4, LineEnd::End, 1, LineEnd::Start),
         ] {
-            state.doc.constraints.push(Constraint {
+            state.doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: la, end: ea }),
@@ -16339,7 +16332,6 @@ mod tests {
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         }
         // Before mirroring: exactly one closed loop (the square).
@@ -17166,12 +17158,11 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         };
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        state.doc.constraints.push(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
-        state.doc.constraints.push(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
-        state.doc.constraints.push(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
         state.refresh_document_health();
 
         let loops = crate::polygon::closed_line_loops(&state.doc, sketch);
@@ -18687,7 +18678,7 @@ mod tests {
         let target = crate::snapping::SnapTarget::NormalAtMidpoint(anchor.clone());
 
         let lines_before = state.doc.lines.len();
-        let constraints_before = state.doc.constraints.len();
+        let constraints_before: Vec<_> = state.doc.constraints.keys().collect();
         let result = state.apply(Action::ApplySnapConstraint { point: point.clone(), target });
         assert_eq!(result, ActionResult::Ok);
 
@@ -18698,11 +18689,14 @@ mod tests {
 
         // Three new constraints were added: Midpoint, Perpendicular, and a point-on-line
         // Coincident pinning the placed point to the new line's carrier.
-        assert_eq!(state.doc.constraints.len(), constraints_before + 3);
+        assert_eq!(state.doc.constraints.len(), constraints_before.len() + 3);
         let new_line = ConstraintLine::Line(new_line_index);
-        let kinds: Vec<_> = state.doc.constraints[constraints_before..]
+        let kinds: Vec<_> = state
+            .doc
+            .constraints
             .iter()
-            .map(|c| c.kind.clone())
+            .filter(|(key, _)| !constraints_before.contains(key))
+            .map(|(_, c)| c.kind.clone())
             .collect();
         assert!(kinds.iter().any(|k| matches!(
             k,
@@ -19111,7 +19105,7 @@ mod tests {
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         for (li, len) in [(0usize, "10"), (1, "10")] {
-            state.doc.constraints.push(crate::model::Constraint {
+            state.doc.constraints.insert(crate::model::Constraint {
                 sketch,
                 kind: ConstraintKind::Distance {
                     target: DistanceTarget::LineLength(li),
@@ -19119,10 +19113,9 @@ mod tests {
                 expression: len.to_string(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         }
-        state.doc.constraints.push(crate::model::Constraint {
+        state.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -19137,7 +19130,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         let result = state.apply(Action::CommitVertexTreatment {
             point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
@@ -19156,10 +19148,9 @@ mod tests {
         let dim0 = state
             .doc
             .constraints
-            .iter()
+            .values()
             .find(|c| {
-                !c.deleted
-                    && matches!(
+                matches!(
                         &c.kind,
                         ConstraintKind::Distance { target: DistanceTarget::LineLength(0) }
                     )
@@ -19845,8 +19836,8 @@ mod tests {
             state
                 .doc
                 .constraints
-                .iter()
-                .any(|c| !c.deleted && matches!(c.kind, crate::model::ConstraintKind::Coincident { .. })),
+                .values()
+                .any(|c| matches!(c.kind, crate::model::ConstraintKind::Coincident { .. })),
             "commit should have added the snap coincident constraint"
         );
 
@@ -19915,7 +19906,7 @@ mod tests {
         state.apply(Action::ApplyConstraintShortcut('1'));
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(matches!(
-            state.doc.constraints[0].kind,
+            state.doc.constraints[nkey(0)].kind,
             crate::model::ConstraintKind::Parallel { .. }
         ));
     }
@@ -19955,7 +19946,7 @@ mod tests {
             construction: false,
             anchor: RectAnchor::Corner,
         });
-        let result = state.apply(Action::BeginEditCommittedDim { target: 0 });
+        let result = state.apply(Action::BeginEditCommittedDim { target: nkey(0) });
         assert!(matches!(result, ActionResult::Err(_)));
         assert!(state.editing_committed_dim.is_none());
     }
@@ -20129,7 +20120,7 @@ mod tests {
         state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 5.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(point.clone()),
@@ -20141,7 +20132,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         state.doc.shape_order.push(ShapeKind::Constraint);
         assert!(matches!(
@@ -20206,7 +20196,7 @@ mod tests {
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -20221,7 +20211,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
         let result = state.apply(Action::ConvertVertexToBezier { point });
@@ -20261,7 +20250,7 @@ mod tests {
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -20276,7 +20265,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         state.doc.shape_order.push(ShapeKind::Constraint);
         let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
@@ -20514,9 +20502,8 @@ mod tests {
             amount: "3.0".to_string(),
         });
         // The original coincidence between line 0's End and line 1's Start is still live.
-        let vertex_coincidence_live = state.doc.constraints.iter().any(|c| {
-            !c.deleted
-                && c.sketch == sketch
+        let vertex_coincidence_live = state.doc.constraints.values().any(|c| {
+            c.sketch == sketch
                 && matches!(
                     &c.kind,
                     ConstraintKind::Coincident { a, b }
@@ -20636,7 +20623,7 @@ mod tests {
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        state.doc.constraints.push(crate::model::Constraint {
+        state.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -20651,7 +20638,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
         let result = state.apply(Action::CommitVertexTreatment {
@@ -21474,7 +21460,7 @@ mod tests {
         });
         // Constrain the text's centre anchor coincident with the line's start (#408), then
         // solve: the text translates so its anchor sits on the point.
-        state.doc.constraints.push(crate::model::Constraint {
+        state.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: crate::model::ConstraintKind::Coincident {
                 a: crate::model::ConstraintEntity::Point(crate::model::ConstraintPoint::TextAnchor {
@@ -21489,7 +21475,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
         // The text's centre anchor now sits on (30, 40) and the line did not move.
@@ -23139,7 +23124,7 @@ mod tests {
             .doc
             .lines
             .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
-        state.doc.constraints.push(crate::model::Constraint {
+        state.doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::ImageCalibrationPoint {
@@ -23154,7 +23139,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
         let img = &state.doc.tracing_images[image];
@@ -23167,7 +23151,7 @@ mod tests {
         assert_eq!(state.doc.lines[0].x0, 30.0);
 
         // Origin coincidence works the same way through the generic entity.
-        state.doc.constraints[0].kind = ConstraintKind::Coincident {
+        state.doc.constraints[nkey(0)].kind = ConstraintKind::Coincident {
             a: ConstraintEntity::Point(ConstraintPoint::ImageCalibrationPoint {
                 image,
                 index: 1,
@@ -23814,8 +23798,8 @@ mod tests {
         assert!(state
             .doc
             .constraints
-            .iter()
-            .any(|c| !c.deleted && matches!(c.kind, crate::model::ConstraintKind::Coincident { .. })));
+            .values()
+            .any(|c| matches!(c.kind, crate::model::ConstraintKind::Coincident { .. })));
     }
 
     #[test]
@@ -23952,7 +23936,7 @@ mod tests {
             .expect("variable dia created");
         assert_eq!(param.expression, "30");
         assert_eq!(
-            state.doc.constraints.iter().find(|c| !c.deleted).unwrap().expression,
+            state.doc.constraints.values().next().unwrap().expression,
             "dia"
         );
     }
@@ -24073,14 +24057,14 @@ mod tests {
             None
         );
         state.editing_committed_dim = Some(EditingCommittedDim {
-            target: DimEditTarget::Constraint(0),
+            target: DimEditTarget::Constraint(nkey(0)),
             text: "90deg".to_string(),
             pending_focus: true,
             dim_offset: None,
         });
         assert_eq!(
             angle_gizmo_constraint_for_edit(state.editing_committed_dim.as_ref(), &state.doc),
-            Some(0)
+            Some(nkey(0))
         );
         state.editing_committed_dim = Some(EditingCommittedDim {
             target: DimEditTarget::New(DimensionTarget::Angle {
@@ -24953,7 +24937,7 @@ mod tests {
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -24962,7 +24946,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         state.apply(Action::ClickSceneElement {
             element: SceneElement::Line(0),
@@ -24984,7 +24967,7 @@ mod tests {
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -24993,7 +24976,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         tombstone_element(&mut state.doc, SceneElement::Line(0));
         state.refresh_document_health();
@@ -25063,7 +25045,7 @@ mod tests {
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -25072,7 +25054,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
         tombstone_element(&mut doc, SceneElement::Line(0));
@@ -25083,7 +25064,7 @@ mod tests {
         assert!(!loaded.lines[1].deleted);
         let health_after_load = crate::document_health::recompute_document_health(&loaded);
         assert_eq!(
-            health_after_load.element_status(SceneElement::Constraint(0)),
+            health_after_load.element_status(SceneElement::Constraint(nkey(0))),
             crate::document_health::HealthStatus::Invalid
         );
         assert_eq!(
@@ -25094,7 +25075,7 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::Open { path: path.clone() });
         assert_eq!(
-            state.document_health.element_status(SceneElement::Constraint(0)),
+            state.document_health.element_status(SceneElement::Constraint(nkey(0))),
             crate::document_health::HealthStatus::Invalid
         );
         assert_eq!(

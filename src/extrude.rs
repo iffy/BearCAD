@@ -9166,12 +9166,11 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         };
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        doc.constraints.push(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
-        doc.constraints.push(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
-        doc.constraints.push(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        doc.constraints.insert(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.insert(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
+        doc.constraints.insert(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
 
         let loops = crate::polygon::closed_line_loops(&doc, sketch);
         assert_eq!(loops.len(), 1);
@@ -9218,7 +9217,7 @@ mod tests {
         }
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
         for i in 0..n {
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(point(i, LineEnd::End)),
@@ -9227,7 +9226,6 @@ mod tests {
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         }
         let loops = crate::polygon::closed_line_loops(doc, sketch);
@@ -9268,7 +9266,7 @@ mod tests {
         }
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
         for k in 0..3 {
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(point(base + k, LineEnd::End)),
@@ -9277,7 +9275,6 @@ mod tests {
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         }
         let loop_ = crate::polygon::closed_line_loops(doc, sketch)

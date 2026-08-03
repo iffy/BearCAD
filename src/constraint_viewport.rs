@@ -28,7 +28,7 @@ pub struct ConstraintConnector {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConstraintIconPlacement {
-    pub constraint_index: usize,
+    pub constraint_index: crate::model::ConstraintKey,
     pub world: Vec3,
     pub icon: IconId,
     /// When set, the icon is drawn offset from `world` toward this partner (coincident).
@@ -37,14 +37,14 @@ pub struct ConstraintIconPlacement {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConstraintViewportGraphic {
-    pub constraint_index: usize,
+    pub constraint_index: crate::model::ConstraintKey,
     pub connectors: Vec<ConstraintConnector>,
     pub icons: Vec<ConstraintIconPlacement>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConstraintIconHit {
-    pub constraint_index: usize,
+    pub constraint_index: crate::model::ConstraintKey,
     pub rect: Rect,
 }
 
@@ -86,7 +86,7 @@ fn entity_world_position(
     }
 }
 
-fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraphic> {
+fn build_graphic(doc: &Document, index: crate::model::ConstraintKey) -> Option<ConstraintViewportGraphic> {
     if !constraint_alive(doc, index) {
         return None;
     }
@@ -184,7 +184,7 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
 /// (before any screen-space nudge). Used by the Selection Exploder as the crowd candidate's anchor
 /// — where the loupe's leader line attaches. `None` for constraints with no on-screen icon
 /// (dimensions, tangents) or that are deleted.
-pub fn constraint_icon_anchor(doc: &Document, index: usize) -> Option<Vec3> {
+pub fn constraint_icon_anchor(doc: &Document, index: crate::model::ConstraintKey) -> Option<Vec3> {
     build_graphic(doc, index)?.icons.first().map(|p| p.world)
 }
 
@@ -192,7 +192,7 @@ pub fn viewport_constraints_for_selection(
     doc: &Document,
     visibility: &ElementVisibility,
     selection: &SceneSelection,
-    exclude: &HashSet<usize>,
+    exclude: &HashSet<crate::model::ConstraintKey>,
 ) -> Vec<ConstraintViewportGraphic> {
     let mut indices = HashSet::new();
     indices.extend(selection_related_constraints(doc, selection));
@@ -262,7 +262,10 @@ pub fn build_constraint_icon_hits(
     hits
 }
 
-pub fn pointer_over_constraint_icon(hits: &[ConstraintIconHit], pointer: Pos2) -> Option<usize> {
+pub fn pointer_over_constraint_icon(
+    hits: &[ConstraintIconHit],
+    pointer: Pos2,
+) -> Option<crate::model::ConstraintKey> {
     // Among every icon whose hitbox is under the cursor, pick the one whose centre is **closest**
     // to the cursor (#569). Order-independent, so overlapping icons no longer flip-flop (flash)
     // between frames the way `.rev().find` did when the graphics list re-ordered.
@@ -316,7 +319,7 @@ pub fn draw_constraint_icons(
     graphics: &[ConstraintViewportGraphic],
     // Every constraint index to render highlighted: the pointer-hovered icon plus, while the
     // Selection Exploder is open, its hovered constraint leaf and hovered group's members (#568).
-    hovered: &std::collections::HashSet<usize>,
+    hovered: &std::collections::HashSet<crate::model::ConstraintKey>,
     base_color: Color32,
     selected_color: Color32,
 ) {
@@ -353,19 +356,20 @@ pub fn draw_constraint_icons(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use super::*;
     use crate::model::{
         Constraint, ConstraintEntity, ConstraintLine, ConstraintPoint, FaceId, Line, ShapeKind,
     };
 
-    fn doc_with_parallel_lines() -> (Document, usize) {
+    fn doc_with_parallel_lines() -> (Document, crate::model::ConstraintKey) {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.constraints.push(Constraint {
+        let key = doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -374,10 +378,9 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        (doc, 0)
+        (doc, key)
     }
 
     #[test]
@@ -397,7 +400,7 @@ mod tests {
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.constraints.push(Constraint {
+        let key = doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -412,9 +415,8 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
-        let graphic = build_graphic(&doc, 0).unwrap();
+        let graphic = build_graphic(&doc, key).unwrap();
         // One constraint → one icon (not one per endpoint).
         assert_eq!(graphic.icons.len(), 1);
         assert!(graphic.icons[0].offset_toward.is_some());
@@ -438,12 +440,12 @@ mod tests {
     #[test]
     fn constraint_icon_hit_detects_pointer_over_rect() {
         let hits = vec![ConstraintIconHit {
-            constraint_index: 3,
+            constraint_index: nkey(3),
             rect: Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(30.0, 30.0)),
         }];
         assert_eq!(
             pointer_over_constraint_icon(&hits, Pos2::new(20.0, 20.0)),
-            Some(3)
+            Some(nkey(3))
         );
         assert_eq!(pointer_over_constraint_icon(&hits, Pos2::new(0.0, 0.0)), None);
     }
@@ -454,22 +456,22 @@ mod tests {
         // whose centre is closest to the cursor, and it must NOT depend on list order (#569):
         // reversing the hits yields the same answer, so hovering can't flash between them.
         let near = ConstraintIconHit {
-            constraint_index: 1,
+            constraint_index: nkey(1),
             rect: Rect::from_center_size(Pos2::new(22.0, 20.0), egui::vec2(20.0, 20.0)),
         };
         let far = ConstraintIconHit {
-            constraint_index: 2,
+            constraint_index: nkey(2),
             rect: Rect::from_center_size(Pos2::new(28.0, 20.0), egui::vec2(20.0, 20.0)),
         };
         let pointer = Pos2::new(21.0, 20.0); // closer to `near`'s centre
         assert_eq!(
             pointer_over_constraint_icon(&[near, far], pointer),
-            Some(1)
+            Some(nkey(1))
         );
         // Order-independent: same winner regardless of which was pushed last.
         assert_eq!(
             pointer_over_constraint_icon(&[far, near], pointer),
-            Some(1)
+            Some(nkey(1))
         );
     }
 }

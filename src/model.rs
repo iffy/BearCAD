@@ -1096,9 +1096,10 @@ pub struct Constraint {
     /// User-visible label in the Elements pane; empty uses the default.
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub deleted: bool,
 }
+
+/// A constraint's identity (#1055): stable across deletions of other constraints.
+pub type ConstraintKey = crate::arena::Key<Constraint>;
 
 /// A boolean combination of two coplanar sketch faces (#16/#62): the atomic regions a user
 /// can toggle when two shapes overlap (their shared intersection, or one minus the other).
@@ -1703,6 +1704,12 @@ pub fn edge_treatment_op_key_for_slot(n: usize) -> EdgeTreatmentOpKey {
 /// The same for a joint (#1055) — tests only, same caveat.
 #[cfg(test)]
 pub fn joint_key_for_slot(n: usize) -> JointKey {
+    crate::arena::Key::from_bits((n as u64) << 32)
+}
+
+/// The same for a constraint (#1055) — tests only, same caveat.
+#[cfg(test)]
+pub fn constraint_key_for_slot(n: usize) -> ConstraintKey {
     crate::arena::Key::from_bits((n as u64) << 32)
 }
 
@@ -3014,7 +3021,7 @@ pub struct SketchMirrorOperation {
     /// outputs (#547), so a mirrored polygon's reflected edges join into a fillable face.
     /// Tombstoned and regenerated on every rebuild, like the output geometry.
     #[serde(default)]
-    pub constraint_outputs: Vec<usize>,
+    pub constraint_outputs: Vec<ConstraintKey>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -3055,7 +3062,7 @@ pub struct SketchSliceOperation {
     /// Generated coincidence-constraint indices (#238) that stitch a face slice's fragments into
     /// two loops. Tombstoned and regenerated on every rebuild, like `line_outputs`.
     #[serde(default)]
-    pub constraint_outputs: Vec<usize>,
+    pub constraint_outputs: Vec<ConstraintKey>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -3100,7 +3107,7 @@ pub struct SketchVertexTreatmentOperation {
     pub bridge_outputs: Vec<usize>,
     /// Generated stitch coincidence constraints; tombstoned+regenerated each rebuild.
     #[serde(default)]
-    pub constraint_outputs: Vec<usize>,
+    pub constraint_outputs: Vec<ConstraintKey>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -4038,7 +4045,7 @@ pub struct Document {
     pub sketches: Vec<Sketch>,
     pub lines: Vec<Line>,
     pub circles: Vec<Circle>,
-    pub constraints: Vec<Constraint>,
+    pub constraints: crate::arena::Arena<Constraint>,
     pub construction_planes: Vec<ConstructionPlane>,
     #[serde(default)]
     pub extrusions: crate::arena::Arena<Extrusion>,
@@ -4314,7 +4321,7 @@ impl Default for Document {
             sketches: Vec::new(),
             lines: Vec::new(),
             circles: Vec::new(),
-            constraints: Vec::new(),
+            constraints: crate::arena::Arena::new(),
             construction_planes: crate::face::default_datum_planes(),
             extrusions: crate::arena::Arena::new(),
             bodies: crate::arena::Arena::new(),

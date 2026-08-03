@@ -473,10 +473,7 @@ fn project_point_point_distance_drag(
     fixed_u: Option<f32>,
     fixed_v: Option<f32>,
 ) -> Result<Option<(f32, f32)>, String> {
-    for (index, constraint) in doc.constraints.iter().enumerate() {
-        if constraint.deleted {
-            continue;
-        }
+    for (index, constraint) in doc.constraints.iter() {
         let ConstraintKind::Distance {
             target:
                 DistanceTarget::PointPointDistance {
@@ -556,10 +553,7 @@ fn project_drag_uv(
             };
             let other_fixed =
                 !crate::sketch_solver::sketch_point_movable(doc, sketch, other).unwrap_or(true);
-            for constraint in &doc.constraints {
-                if constraint.deleted {
-                    continue;
-                }
+            for constraint in doc.constraints.values() {
                 match &constraint.kind {
                     // A line constrained **parallel to a sketch axis** (#577) is the axis-based
                     // replacement for Horizontal/Vertical, so its drag projection freezes the fixed
@@ -640,10 +634,7 @@ fn project_onto_anchoring_constraint(
     u: f32,
     v: f32,
 ) -> Result<Option<(f32, f32)>, String> {
-    for constraint in &doc.constraints {
-        if constraint.deleted {
-            continue;
-        }
+    for constraint in doc.constraints.values() {
         match &constraint.kind {
             ConstraintKind::Midpoint { point, line } if *point == dragged => {
                 let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, sketch, line.clone())?;
@@ -695,10 +686,7 @@ fn constrained_line_direction(doc: &Document, line_index: usize) -> Option<(f32,
     let this = ConstraintLine::Line(line_index);
     let sketch = doc.lines.get(line_index)?.sketch;
     let (cur_du, cur_dv) = line_direction_uv(doc, sketch, this.clone())?;
-    for (index, constraint) in doc.constraints.iter().enumerate() {
-        if constraint.deleted {
-            continue;
-        }
+    for (index, constraint) in doc.constraints.iter() {
         let candidates: Vec<(f32, f32)> = match &constraint.kind {
             ConstraintKind::Parallel { line_a, line_b } => {
                 let Some(reference) = direction_reference(this.clone(), line_a.clone(), line_b.clone())
@@ -803,8 +791,8 @@ pub fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint)
     let mut changed = true;
     while changed {
         changed = false;
-        for constraint in &doc.constraints {
-            if constraint.deleted || constraint.sketch != sketch {
+        for constraint in doc.constraints.values() {
+            if constraint.sketch != sketch {
                 continue;
             }
             let ConstraintKind::Coincident { a, b } = constraint.kind.clone() else {
@@ -1037,7 +1025,7 @@ mod tests {
         let lines =
             crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         // Pin the bottom edge's left corner to the origin.
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -1049,7 +1037,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         solve_document_constraints(&mut doc).unwrap();
         let len0 = doc.lines[lines[0]].chord_length();
@@ -1602,7 +1589,7 @@ mod tests {
         assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
 
         // Pin its start to the origin and fix its direction: now truly rigid.
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(point.clone()),
@@ -1611,9 +1598,8 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(1),
@@ -1622,7 +1608,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         assert!(!can_drag_point(&doc, sketch, point));
         assert!(!can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
@@ -1827,7 +1812,7 @@ mod tests {
     }
 
     fn push_coincident(doc: &mut Document, sketch: SketchId, a: ConstraintPoint, b: ConstraintPoint) {
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(a),
@@ -1836,7 +1821,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
     }
 

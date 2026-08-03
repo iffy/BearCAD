@@ -1994,7 +1994,7 @@ mod tests {
                 .push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
         }
         for i in 0..n {
-            doc.constraints.push(Constraint {
+            doc.constraints.insert(Constraint {
                 sketch,
                 kind: ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -2009,7 +2009,6 @@ mod tests {
                 expression: String::new(),
                 dim_offset: None,
                 name: None,
-                deleted: false,
             });
         }
         (base..doc.lines.len()).collect()

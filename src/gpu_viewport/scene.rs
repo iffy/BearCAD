@@ -4982,6 +4982,7 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::constraint_key_for_slot as nkey;
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::joint_key_for_slot as jkey;
     use crate::model::body_key_for_slot as bkey;
@@ -5995,7 +5996,7 @@ mod tests {
             );
         }
         // The two that draw elsewhere in the frame, by design.
-        assert_eq!(drawn(PickTargetKind::Constraint(0)), 0);
+        assert_eq!(drawn(PickTargetKind::Constraint(nkey(0))), 0);
         assert_eq!(drawn(PickTargetKind::Body(bkey(0))), 0);
     }
 
@@ -6527,12 +6528,11 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         };
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        state.doc.constraints.push(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
-        state.doc.constraints.push(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
-        state.doc.constraints.push(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
+        state.doc.constraints.insert(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
     }
 
     /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
@@ -7943,7 +7943,7 @@ mod tests {
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         state.doc.shape_order.push(ShapeKind::Line);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -7952,7 +7952,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         let mut selection = SceneSelection::default();
         crate::selection::click_scene_selection(
@@ -8172,7 +8171,10 @@ mod tests {
         let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
         // The rectangle is four lines plus geometric constraints (#66); the width dimension
         // is the first constraint that carries an evaluated length.
-        let width_dim = (0..state.doc.constraints.len())
+        let width_dim = state
+            .doc
+            .constraints
+            .keys()
             .find(|&i| crate::constraints::constraint_evaluated_length(&state.doc, i).is_some())
             .expect("rectangle should have a width dimension constraint");
         let (a, b) = crate::constraints::constraint_segment_endpoints(&state.doc, width_dim).unwrap();

@@ -49,7 +49,7 @@ fn migrate_text_pins(doc: &mut Document) {
         let Some((point, anchor)) = doc.sketch_texts[i].pin.take() else {
             continue;
         };
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch: doc.sketch_texts[i].sketch,
             kind: crate::model::ConstraintKind::Coincident {
                 a: crate::model::ConstraintEntity::Point(
@@ -60,7 +60,6 @@ fn migrate_text_pins(doc: &mut Document) {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(crate::model::ShapeKind::Constraint);
     }
@@ -235,7 +234,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "line", &doc.lines)?;
     save_indexed_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
     save_arena_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
-    save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
+    save_arena_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_arena_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_arena_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     save_arena_nodes(&tx, &mut row_id, "material", &doc.materials)?;
@@ -458,7 +457,7 @@ fn load_legacy_document_nodes(
     Vec<Sketch>,
     Vec<Line>,
     Vec<Circle>,
-    Vec<Constraint>,
+    crate::arena::Arena<Constraint>,
     Vec<ConstructionPlane>,
     Vec<ShapeKind>,
 )> {
@@ -478,7 +477,7 @@ fn load_legacy_document_nodes(
     let mut sketches = Vec::new();
     let mut lines = Vec::new();
     let mut circles = Vec::new();
-    let mut constraints = Vec::new();
+    let mut constraints = crate::arena::Arena::new();
     let mut construction_planes = Vec::new();
     let mut shape_order = Vec::new();
     for row in rows {
@@ -507,7 +506,7 @@ fn load_legacy_document_nodes(
             "constraint" => {
                 let constraint: Constraint =
                     serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                constraints.push(constraint);
+                constraints.insert(constraint);
                 shape_order.push(ShapeKind::Constraint);
             }
             "construction_plane" => {
@@ -556,7 +555,7 @@ pub fn open(path: &str) -> Result<Document> {
         let sketches = load_indexed_entities(&conn, "sketch")?;
         let lines = load_indexed_entities(&conn, "line")?;
         let circles = load_indexed_entities(&conn, "circle")?;
-        let constraints = load_indexed_entities(&conn, "constraint")?;
+        let constraints = load_arena_entities(&conn, "constraint")?;
         let dag_planes = load_indexed_entities(&conn, "construction_plane")?;
         (
             parameters,
@@ -705,7 +704,7 @@ mod tests {
         doc.shape_order.push(crate::model::ShapeKind::SketchText);
         crate::storage::fixup_loaded_document(&mut doc).expect("fixup");
         assert!(doc.sketch_texts[tkey(0)].pin.is_none(), "the pin is cleared");
-        let migrated = doc.constraints.iter().any(|c| {
+        let migrated = doc.constraints.values().any(|c| {
             matches!(
                 &c.kind,
                 crate::model::ConstraintKind::Coincident {
@@ -915,6 +914,59 @@ mod tests {
         }
     }
 
+    /// #1055: constraints keep their keys across a save, and so do the in-sketch operations
+    /// that name the stitch coincidences they generated.
+    #[test]
+    fn constraint_keys_survive_a_save_and_reload() {
+        let coincident = |line: usize| crate::model::Constraint {
+            sketch: 0,
+            kind: crate::model::ConstraintKind::Coincident {
+                a: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(line)),
+                b: crate::model::ConstraintEntity::Line(crate::model::ConstraintLine::Line(
+                    line + 1,
+                )),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+        };
+        let mut doc = Document::default();
+        let doomed = doc.constraints.insert(coincident(0));
+        let kept = doc.constraints.insert(coincident(4));
+        assert!(doc.constraints.remove(doomed).is_some());
+        let op = doc.sketch_slice_ops.insert(crate::model::SketchSliceOperation {
+            sketch: 0,
+            line_targets: Vec::new(),
+            cutter_lines: Vec::new(),
+            circle_targets: Vec::new(),
+            face_targets: Vec::new(),
+            line_outputs: Vec::new(),
+            constraint_outputs: vec![kept],
+            name: None,
+        });
+
+        for suffix in [".bearcad", ".bearcad.json"] {
+            let path = std::env::temp_dir().join(format!("bearcad_constraint_keys_test{suffix}"));
+            let path = path.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&path);
+            save(&path, &doc).unwrap();
+            let loaded = open(&path).unwrap();
+
+            assert_eq!(loaded.constraints.len(), 1, "{suffix}");
+            assert_eq!(
+                loaded.constraints.get(kept).map(|c| c.kind.clone()),
+                Some(coincident(4).kind),
+                "{suffix}: the survivor did not shift into the hole"
+            );
+            assert_eq!(
+                loaded.sketch_slice_ops.get(op).map(|o| o.constraint_outputs.clone()),
+                Some(vec![kept]),
+                "{suffix}: the op still names the constraint it generated"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// #1055: sketch texts keep their keys across a save, and so do the anchor constraints
     /// and glyph faces that name one.
     #[test]
@@ -941,7 +993,7 @@ mod tests {
         let doomed = doc.sketch_texts.insert(text("doomed"));
         let kept = doc.sketch_texts.insert(text("kept"));
         assert!(doc.sketch_texts.remove(doomed).is_some());
-        doc.constraints.push(crate::model::Constraint {
+        doc.constraints.insert(crate::model::Constraint {
             sketch: 0,
             kind: crate::model::ConstraintKind::Coincident {
                 a: crate::model::ConstraintEntity::Point(
@@ -957,7 +1009,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
 
         for suffix in [".bearcad", ".bearcad.json"] {
@@ -974,7 +1025,7 @@ mod tests {
                 "{suffix}: the survivor did not shift into the hole"
             );
             assert!(
-                loaded.constraints.iter().any(|c| matches!(
+                loaded.constraints.values().any(|c| matches!(
                     &c.kind,
                     crate::model::ConstraintKind::Coincident {
                         a: crate::model::ConstraintEntity::Point(
@@ -2272,7 +2323,7 @@ mod tests {
         doc.shape_order.push(ShapeKind::Line);
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         doc.shape_order.push(ShapeKind::Line);
-        doc.constraints.push(Constraint {
+        doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Parallel {
                 line_a: ConstraintLine::Line(0),
@@ -2281,7 +2332,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
         tombstone_element(&mut doc, SceneElement::Line(0));

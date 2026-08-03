@@ -25,7 +25,9 @@ pub struct CommandLog {
     revolution_count_before: usize,
     sweep_count_before: usize,
     edge_treatment_op_count_before: usize,
-    constraint_count_before: usize,
+    /// Constraints alive before the action ran (#1055): anything not in this set afterwards
+    /// was added by it.
+    constraints_before: Vec<crate::model::ConstraintKey>,
 }
 
 impl CommandLog {
@@ -123,7 +125,7 @@ impl CommandLog {
             self.edge_treatment_op_count_before = doc.edge_treatment_ops.len();
         }
         if Self::can_add_snap_constraint(action) {
-            self.constraint_count_before = doc.constraints.len();
+            self.constraints_before = doc.constraints.keys().collect();
         }
         if Self::should_log(action) && !Self::is_camera_action(action) {
             self.flush_camera(cam);
@@ -173,8 +175,8 @@ impl CommandLog {
             self.emit(instruction);
         }
         if Self::can_add_snap_constraint(&action) {
-            for constraint in &doc.constraints[self.constraint_count_before..] {
-                if constraint.deleted {
+            for (key, constraint) in doc.constraints.iter() {
+                if self.constraints_before.contains(&key) {
                     continue;
                 }
                 if let Some(extra) = instructions_for_snap_constraint(&constraint.kind) {

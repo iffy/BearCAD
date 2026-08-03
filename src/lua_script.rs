@@ -206,8 +206,10 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
-        | SceneElement::Constraint(i)
         => i,
+        SceneElement::Constraint(key) => {
+            doc.constraints.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::SketchText(key) => {
             doc.sketch_texts.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -266,7 +268,7 @@ pub fn scene_element_from_kind(
         "sketch" => Some(SceneElement::Sketch(index)),
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
-        "constraint" => Some(SceneElement::Constraint(index)),
+        "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "boolean_op" | "boolean" => {
@@ -2473,8 +2475,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 crate::constraints::sketch_conflicting_constraints(&state.doc, sketch)
                     .map_err(mlua::Error::external)?;
             let table = lua.create_table()?;
+            // A script sees a constraint's ordinal among the live ones (#1055).
             for (i, index) in conflicts.iter().enumerate() {
-                table.set(i + 1, *index)?;
+                let ordinal = state.doc.constraints.keys().position(|k| k == *index);
+                table.set(i + 1, ordinal)?;
             }
             Ok(table)
         })?,
@@ -2509,7 +2513,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
                 "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
                 "sketch" => doc.sketches.iter().filter(|e| !e.deleted).count(),
-                "constraint" => doc.constraints.iter().filter(|e| !e.deleted).count(),
+                "constraint" => doc.constraints.len(),
                 "construction_plane" | "plane" => {
                     doc.construction_planes.iter().filter(|e| !e.deleted).count()
                 }
@@ -2596,7 +2600,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                 }
                 "constraint" => {
-                    let Some(constraint) = doc.constraints.get(index).filter(|e| !e.deleted)
+                    // The script's `index` is the constraint's ordinal (#1055).
+                    let Some(constraint) =
+                        doc.constraints.keys().nth(index).map(|k| &doc.constraints[k])
                     else {
                         return Ok(Value::Nil);
                     };
@@ -6570,8 +6576,7 @@ mod tests {
         let expressions: Vec<String> = state
             .doc
             .constraints
-            .iter()
-            .filter(|c| !c.deleted)
+            .values()
             .map(|c| c.expression.clone())
             .collect();
         assert!(expressions.iter().any(|e| e == "leg"), "got {expressions:?}");
@@ -6698,8 +6703,8 @@ mod tests {
             state
                 .doc
                 .constraints
-                .iter()
-                .any(|c| !c.deleted && matches!(c.kind, crate::model::ConstraintKind::Equal { .. })),
+                .values()
+                .any(|c| matches!(c.kind, crate::model::ConstraintKind::Equal { .. })),
             "an Equal constraint should have been created"
         );
     }
@@ -6729,9 +6734,8 @@ mod tests {
             end: LineEnd::Start,
         });
         assert!(
-            state.doc.constraints.iter().any(|c| {
-                !c.deleted
-                    && matches!(
+            state.doc.constraints.values().any(|c| {
+                matches!(
                         &c.kind,
                         crate::model::ConstraintKind::Coincident { a, b }
                             if (*a == end_point && *b == start_point)
@@ -6794,7 +6798,7 @@ mod tests {
             .lines
             .push(Line::from_local_endpoints(sketch, 10.0, 0.0, b_far.0, b_far.1));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
-        state.doc.constraints.push(Constraint {
+        state.doc.constraints.insert(Constraint {
             sketch,
             kind: ConstraintKind::Coincident {
                 a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -6809,7 +6813,6 @@ mod tests {
             expression: String::new(),
             dim_offset: None,
             name: None,
-            deleted: false,
         });
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
@@ -7909,7 +7912,7 @@ mod tests {
         let exprs: Vec<&str> = state
             .doc
             .constraints
-            .iter()
+            .values()
             .map(|c| c.expression.as_str())
             .collect();
         assert!(exprs.contains(&"w"), "rect width constraint: {exprs:?}");

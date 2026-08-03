@@ -2631,6 +2631,16 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 BearCAD has a geometric **constraint solver** supporting both 2D (sketch) and 3D constraints,
 modeled on SolveSpace (https://solvespace.com).
 
+**Constraint identity (#1055):** `Document::constraints` is an `arena::Arena`, and a
+constraint is named by a `ConstraintKey` (`constraints::ConstraintId`) — `SceneElement`/
+`HierarchyNode::Constraint`, `PickTargetKind::Constraint`, `DimEditTarget::Constraint`, the
+dimension-label targets, the in-sketch operations' `constraint_outputs`, and the solver's
+failed-constraint report. Deleting a constraint removes it, so a stale reference reads as
+gone rather than naming whichever constraint took its place. The libslvs bridge still hands
+the solver dense small handles — a constraint enters as its **ordinal** among the live ones,
+and a failed handle maps back through that same ordering. A script names a constraint by its
+ordinal too.
+
 ### 6.0 Constraint tool (implemented subset)
 
 - **Tool:** Constraint, shortcut **`C`**. Distance/dimensional constraints remain on the
