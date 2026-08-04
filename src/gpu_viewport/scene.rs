@@ -280,14 +280,9 @@ pub struct ViewportScene {
     /// z = 0 along the scene's fixed light. Drawn through a stencil so the silhouette's own
     /// overlaps paint once — a self-overlapping shadow blended twice reads as blotches.
     pub shadow_indices: Vec<u32>,
-    /// Committed construction-plane fills (#1044). Drawn **before** the opaque scene, so a
-    /// body always paints over the plane rather than being tinted by it. A datum plane is a
-    /// reference, not a surface: a translucent one blending over a body it passes through
-    /// left a hard-edged pale crescent — geometrically correct, and reading as an artefact.
-    /// Depth-tested (so nothing already drawn is lost) but never depth-writing.
-    pub datum_plane_indices: Vec<u32>,
-    /// Translucent solids — shadow bodies, previews, ghosts, faded bodies — drawn after the
-    /// opaque scene, because those *are* meant to tint what they cover.
+    /// Construction-plane fills and translucent solids — shadow bodies, previews, ghosts,
+    /// faded bodies — drawn after the opaque scene, so they tint what they cover. A datum
+    /// plane is a reference that shows through the bodies it bisects (#1087).
     pub plane_fill_indices: Vec<u32>,
     /// Strokes, selection, hover, and previews (drawn on top of plane fills).
     pub overlay_indices: Vec<u32>,
@@ -1161,7 +1156,7 @@ impl ViewportScene {
             plane_draws.push((i, plane.clone(), color, plane_camera_depth(plane, input.cam)));
         }
         plane_draws.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
-        mesh.set_index_layer(MeshIndexLayer::DatumPlane);
+        mesh.set_index_layer(MeshIndexLayer::PlaneFill);
         let plane_opacity = input.palette.construction_plane_opacity;
         for (i, plane, color, _) in plane_draws {
             mesh.push_plane(&plane, i, color, plane_opacity, input.cam);
@@ -1814,8 +1809,7 @@ enum MeshIndexLayer {
     SketchFill,
     /// Contact shadows on the build plane (#1041).
     GroundShadow,
-    /// Committed construction-plane fills, drawn before the opaque scene (#1044).
-    DatumPlane,
+
     PlaneFill,
     Overlay,
     /// Manipulation gizmos, drawn last with the depth test disabled (#36).
@@ -1846,7 +1840,7 @@ impl<'a> SceneMesh<'a> {
             MeshIndexLayer::Base => &mut self.scene.indices,
             MeshIndexLayer::SketchFill => &mut self.scene.sketch_fill_indices,
             MeshIndexLayer::GroundShadow => &mut self.scene.shadow_indices,
-            MeshIndexLayer::DatumPlane => &mut self.scene.datum_plane_indices,
+
             MeshIndexLayer::PlaneFill => &mut self.scene.plane_fill_indices,
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
             MeshIndexLayer::Gizmo => &mut self.scene.gizmo_indices,
@@ -7157,42 +7151,30 @@ mod tests {
 
         let with_plane = build_scene_for_doc(&AppState::default());
         let without_plane = build_scene_for_doc(&hidden);
-        // Committed plane fills have their own layer, drawn before the opaque scene (#1044).
         let plane_indices =
-            with_plane.datum_plane_indices.len() - without_plane.datum_plane_indices.len();
+            with_plane.plane_fill_indices.len() - without_plane.plane_fill_indices.len();
         assert_eq!(
             plane_indices, 6,
             "each construction plane should add only two fill triangles"
         );
-        assert_eq!(
-            with_plane.plane_fill_indices.len(),
-            without_plane.plane_fill_indices.len(),
-            "a datum plane is not a translucent solid — it must not join that layer"
-        );
     }
 
-    /// #1044: a body a datum plane passes through must not be tinted by it. A translucent
-    /// plane blending over the far half of a sphere left a hard-edged pale crescent —
-    /// geometrically correct for a translucent surface, and reading as a rendering artefact.
-    /// A datum plane is a **reference**, so its fill goes in a layer of its own that the
-    /// opaque scene paints over; the body wins every pixel they share.
+    /// #1087: a datum plane shows through the body it passes through — it is a reference
+    /// that is part of the scene, not a surface hidden by the geometry it bisects. Its fill
+    /// lives in the translucent `plane_fill` layer, drawn after the opaque scene, so the
+    /// plane reads over the body everywhere it crosses it.
     #[test]
-    fn a_datum_plane_never_tints_a_body_it_passes_through() {
+    fn a_datum_plane_is_drawn_with_the_translucent_fills() {
         // A body, and the default datum planes crossing the space around it.
         let scene = build_scene_for_doc(&state_with_one_body());
 
-        // The plane's fill is in the datum layer, which the renderer draws first...
-        assert!(!scene.datum_plane_indices.is_empty(), "the ground plane fills");
-        // ...and the body is in the opaque base layer, drawn after it.
-        assert!(!scene.indices.is_empty(), "the sphere is opaque geometry");
-        // The two never share a layer, which is what would put the plane over the body.
+        // The plane's fill is in the plane-fill layer, which the renderer draws **after**
+        // the opaque scene — that is what lets it show through the body it bisects.
         assert!(
-            scene
-                .datum_plane_indices
-                .iter()
-                .all(|i| !scene.indices.contains(i)),
-            "a datum plane's triangles must not also be opaque scene geometry"
+            scene.plane_fill_indices.len() >= 6,
+            "the datum planes fill in the translucent layer"
         );
+        assert!(!scene.indices.is_empty(), "the body is opaque geometry");
     }
 
     #[test]

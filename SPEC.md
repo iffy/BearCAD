@@ -159,14 +159,11 @@ features in dependency order.
   inches under feet, then tens of feet for imperial ones. As the camera zooms in the
   next-finer rung **fades in** continuously (8→32 px screen spacing), and every line
   sits on a fixed world multiple of its step, so zooming never pops or slides lines.
-- **A datum plane never tints a body (#1044).** Committed construction-plane fills draw in a
-  layer of their own, **before** the opaque scene, so a body paints over the plane rather than
-  the plane blending over the body. A translucent plane passing through a solid used to leave
-  a hard-edged pale crescent on the far half of it — geometrically correct for a translucent
-  surface, and reading as a rendering artefact. A datum plane is a *reference*: it shows
-  everywhere a body doesn't cover it, and nowhere a body does. Translucent **solids** (shadow
-  bodies, previews, ghosts, faded bodies) keep drawing after the opaque scene, because those
-  are meant to tint what they cover.
+- **A datum plane is part of the scene (#1087).** Committed construction-plane fills draw in a
+  translucent layer **after** the opaque scene, so a plane shows through the body it bisects —
+  a datum plane is a *reference* the user is pointing at, and it reads over the geometry it
+  crosses rather than being hidden by it. Translucent **solids** (shadow bodies, previews,
+  ghosts, faded bodies) share that layer, because they too are meant to tint what they cover.
 - **The origin axes are widened on screen (#1072).** Each axis quad's corners carry both of
   the segment's world endpoints and a signed half-width in **pixels**; `vs_axis` projects
   both, then steps the corner sideways in screen space. A fixed-world-width quad is only the

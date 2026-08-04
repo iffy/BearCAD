@@ -1120,8 +1120,6 @@ impl ViewportGpuResources {
         }
 
         let vertex_bytes = (scene.vertices.len() * std::mem::size_of::<GpuVertex>()) as u64;
-        // Committed datum planes go **first** (#1044), so the opaque scene paints over them.
-        let datum_plane_index_count = scene.datum_plane_indices.len();
         let base_index_count = scene.indices.len();
         // Contact shadows (#1041) sit between the opaque scene and the coplanar fills: after
         // the ground they lie on, before the decals that sit on top of everything.
@@ -1134,8 +1132,7 @@ impl ViewportGpuResources {
         // need to stay visible "through" bodies), so it shares the final draw call below
         // rather than getting a dedicated pipeline and boundary.
         let wireframe_index_count = scene.wireframe_indices.len();
-        let total_index_count = datum_plane_index_count
-            + base_index_count
+        let total_index_count = base_index_count
             + shadow_index_count
             + sketch_fill_index_count
             + plane_fill_index_count
@@ -1182,7 +1179,6 @@ impl ViewportGpuResources {
         }
         if total_index_count > 0 {
             let mut combined_indices = Vec::with_capacity(total_index_count);
-            combined_indices.extend_from_slice(&scene.datum_plane_indices);
             combined_indices.extend_from_slice(&scene.indices);
             combined_indices.extend_from_slice(&scene.shadow_indices);
             combined_indices.extend_from_slice(&scene.sketch_fill_indices);
@@ -1412,24 +1408,15 @@ impl ViewportGpuResources {
                     self.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
-                let datum_end = datum_plane_index_count as u32;
-                let base_end = datum_end + base_index_count as u32;
+                let base_end = base_index_count as u32;
                 let shadow_end = base_end + shadow_index_count as u32;
                 let sketch_fill_end = shadow_end + sketch_fill_index_count as u32;
                 let plane_end = sketch_fill_end + plane_fill_index_count as u32;
                 let overlay_end = plane_end + overlay_index_count as u32;
                 let total_end = total_index_count as u32;
-                // Datum planes before the opaque scene (#1044): they are references, not
-                // surfaces, so a body paints over one rather than being tinted by it. Same
-                // depth-tested, non-writing pipeline the translucent solids use — only the
-                // order differs, which is the whole fix.
-                if datum_end > 0 {
-                    pass.set_pipeline(&self.scene_transparent_pipeline);
-                    pass.draw_indexed(0..datum_end, 0, 0..1);
-                }
-                if base_end > datum_end {
+                if base_end > 0 {
                     pass.set_pipeline(&self.scene_pipeline);
-                    pass.draw_indexed(datum_end..base_end, 0, 0..1);
+                    pass.draw_indexed(0..base_end, 0, 0..1);
                 }
                 if shadow_end > base_end {
                     // Reference 0b10 against bit 1: a fragment passes while that bit is
