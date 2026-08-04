@@ -3508,6 +3508,48 @@ pub fn face_group_center(tris: &[[Vec3; 3]]) -> Vec3 {
     tris.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count
 }
 
+/// A face group's **area centroid** (#1080): the area-weighted mean of its triangles' own
+/// centroids, which is the geometric centre of the region whatever way it was triangulated.
+///
+/// [`face_group_center`] averages triangle *vertices* instead, so a vertex shared by several
+/// triangles is counted several times and the answer drifts with the mesh — on a square plate
+/// with a central hole, a couple of tenths of a millimetre off the true middle. That average
+/// stays the face's **key** (it is what every stored `BodyFace`/`OnFace` reference is matched
+/// by, and changing it would invalidate them), but nothing that has to be *accurate* should
+/// use it. Mating does.
+pub fn face_group_area_centroid(tris: &[[Vec3; 3]]) -> Vec3 {
+    let mut weighted = Vec3::ZERO;
+    let mut total = 0.0f32;
+    for t in tris {
+        let area = (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5;
+        weighted += (t[0] + t[1] + t[2]) / 3.0 * area;
+        total += area;
+    }
+    if total <= f32::EPSILON {
+        return face_group_center(tris);
+    }
+    weighted / total
+}
+
+/// The stored offset for "the middle of this face" (#1080): the **area** centroid expressed
+/// in the face's own axes, relative to the key's vertex-average centroid. `[0, 0]` when the
+/// face doesn't resolve, which is the same fallback every other face lookup takes.
+///
+/// Naming a face without naming a point on it — what a script's `face = {}` does, and what a
+/// pane pick does before its point lands — means its middle, and the middle has to be the
+/// accurate one or seating a peg in a hole comes out visibly off-centre.
+pub fn face_middle_uv(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> [i32; 2] {
+    let Some(tris) = body_face_triangles(doc, body, centroid, normal) else {
+        return [0, 0];
+    };
+    face_world_uv(&tris, face_group_area_centroid(&tris))
+}
+
 /// A face group's own in-plane axes (#1074): [`crate::construction::plane_basis`] of its
 /// normal, so the frame is the same one a sketch on that face would get and a point keeps
 /// meaning the same thing across rebuilds.
@@ -3575,7 +3617,9 @@ pub fn face_snap_points(tris: &[[Vec3; 3]]) -> Vec<Vec3> {
     for i in 0..corners.len() {
         points.push((corners[i] + corners[(i + 1) % corners.len()]) * 0.5);
     }
-    points.push(face_group_center(tris));
+    // The **accurate** centre (#1080), not the vertex average the key is built from: seating
+    // a peg in a hole is the commonest thing this point is for, and it has to land dead on.
+    points.push(face_group_area_centroid(tris));
     points
 }
 
@@ -10238,6 +10282,36 @@ mod tests {
             move_op_transform(&doc, &op(MoveTranslateMode::InPlace, "90", "10")),
             Some(glam::Mat4::IDENTITY)
         );
+    }
+
+    /// #1080: the centre a mate lands on is the face's **area** centroid — the same point
+    /// whatever way the mesh triangulated it. The face's *key* averages triangle vertices,
+    /// which counts a shared vertex once per triangle, so on a plate with a hole it drifts a
+    /// couple of tenths off the true middle and a peg seats visibly off-centre.
+    #[test]
+    fn a_faces_mating_centre_is_its_area_centroid_not_its_vertex_average() {
+        // A square, triangulated lopsidedly: three triangles, so the shared corner (0, 0) is
+        // counted three times by a vertex average and drags it off centre.
+        let sq = |x: f32, y: f32| Vec3::new(x, y, 0.0);
+        let tris = vec![
+            [sq(0.0, 0.0), sq(10.0, 0.0), sq(10.0, 5.0)],
+            [sq(0.0, 0.0), sq(10.0, 5.0), sq(10.0, 10.0)],
+            [sq(0.0, 0.0), sq(10.0, 10.0), sq(0.0, 10.0)],
+        ];
+        let exact = face_group_area_centroid(&tris);
+        assert!(
+            (exact - sq(5.0, 5.0)).length() < 1e-4,
+            "the area centroid is the square's real middle, got {exact:?}"
+        );
+        // The vertex average is not — which is why the key is not what a mate lands on.
+        let averaged = face_group_center(&tris);
+        assert!(
+            (averaged - sq(5.0, 5.0)).length() > 0.5,
+            "the vertex average drifts with the triangulation, got {averaged:?}"
+        );
+        // And the centre among the nine candidates is the accurate one.
+        let centre = *face_snap_points(&tris).last().expect("the centre candidate");
+        assert!((centre - exact).length() < 1e-4, "{centre:?}");
     }
 
     /// #1083: a rectangular face offers exactly nine points to mate on — its four corners,

@@ -15775,8 +15775,13 @@ pub fn apply_pick(
             let crate::model::MateRef::Face { body, centroid, normal } = pick else {
                 return false;
             };
-            let point =
-                crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] };
+            // A face with no point yet means its **middle**, accurately (#1080).
+            let point = crate::model::MovePointRef::OnFace {
+                body,
+                centroid,
+                normal,
+                uv: crate::extrude::face_middle_uv(&state.doc, body, centroid, normal),
+            };
             let cj = state.creating_joint.get_or_insert_with(CreatingJoint::default);
             cj.placement.translate_mode = crate::model::MoveTranslateMode::FaceSnap;
             let slot = match target {

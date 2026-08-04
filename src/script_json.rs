@@ -1507,7 +1507,13 @@ fn mate_from_json(
     };
     let point = |r: Option<crate::model::MateRef>| match r {
         Some(crate::model::MateRef::Face { body, centroid, normal }) => Ok(Some(
-            crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] },
+            crate::model::MovePointRef::OnFace {
+                body,
+                centroid,
+                normal,
+                // The face's **middle**, accurately (#1080).
+                uv: crate::extrude::face_middle_uv(doc, body, centroid, normal),
+            },
         )),
         Some(_) => Err("a joint's `face` picks must be flat faces".to_string()),
         None => Ok(None),

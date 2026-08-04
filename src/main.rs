@@ -9463,7 +9463,8 @@ impl App {
                         body,
                         centroid,
                         normal,
-                        uv: [0, 0],
+                        // The face's **middle**, accurately (#1080).
+                        uv: extrude::face_middle_uv(&self.state.doc, body, centroid, normal),
                     })
                 });
             }
@@ -9780,11 +9781,16 @@ impl App {
         let construction::PickTargetKind::BodyFace { body, triangles, normal } = &kind else {
             return None;
         };
-        allowed(*body).then(|| model::MovePointRef::OnFace {
-            body: *body,
-            centroid: hierarchy::quantize_body_point(extrude::face_group_center(triangles)),
-            normal: hierarchy::quantize_body_point(*normal),
-            uv: [0, 0],
+        allowed(*body).then(|| {
+            let centroid = hierarchy::quantize_body_point(extrude::face_group_center(triangles));
+            let normal = hierarchy::quantize_body_point(*normal);
+            model::MovePointRef::OnFace {
+                body: *body,
+                centroid,
+                normal,
+                // The face's **middle**, accurately (#1080).
+                uv: extrude::face_middle_uv(&self.state.doc, *body, centroid, normal),
+            }
         })
     }
 

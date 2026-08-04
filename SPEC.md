@@ -1591,7 +1591,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     to point with.
 
     A face offers **nine points** to mate on (#1083, `extrude::face_snap_points`): its
-    corners, the midpoint of each boundary edge, and its centre — so a rectangular face gives
+    corners, the midpoint of each boundary edge, and its centre — the **area** centroid
+    (#1080, `face_group_area_centroid`), which is the same point whatever way the mesh
+    triangulated the face. The face's *key* averages triangle vertices instead, counting a
+    shared vertex once per triangle, so on a plate with a hole it sits a couple of tenths off
+    the true middle and a peg seated there came out visibly off-centre. The key keeps that
+    average — every stored face reference is matched by it — but nothing that has to be
+    accurate uses it, and naming a face without a point (a script's `face = {}`, a pane pick
+    before its point lands) means the accurate middle — so a rectangular face gives
     the nine a user reaches for. Collinear boundary vertices are dropped, because a mesh
     splits a straight edge into several triangles and each would otherwise contribute a
     midpoint. The pick is the candidate **nearest on screen** within the usual point-hit

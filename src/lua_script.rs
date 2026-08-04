@@ -1292,9 +1292,19 @@ fn parse_mate(lua: &Lua, opts: &Table) -> mlua::Result<crate::model::MoveOperati
         return Ok(placement);
     };
     check_keys(&face, "joint face", &["moving", "fixed", "flip", "offset", "spin"])?;
+    // Naming a face and no point means its **middle** — the accurate one (#1080).
+    let middle_uv = |body, centroid, normal| {
+        let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+        crate::extrude::face_middle_uv(unsafe { &tick.state().doc }, body, centroid, normal)
+    };
     let point = |r: Option<crate::model::MateRef>| match r {
         Some(crate::model::MateRef::Face { body, centroid, normal }) => {
-            Ok(Some(crate::model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] }))
+            Ok(Some(crate::model::MovePointRef::OnFace {
+                body,
+                centroid,
+                normal,
+                uv: middle_uv(body, centroid, normal),
+            }))
         }
         Some(_) => Err(mlua::Error::external(
             "a joint's `face` picks must be flat faces".to_string(),
@@ -8536,12 +8546,12 @@ mod tests {
         // middle on that face's middle — which, on a square plate with a central hole, is the
         // hole's own centre (20, 20). So the peg comes out concentric with it (#1079).
         assert!((min.z - 6.0).abs() < 0.05, "peg sits on the plate, got {min}");
-        // Only as exact as the meshed face's centroid: a square plate with a round hole
-        // triangulates to a centroid a fraction off its true centre, so mating centre-on-centre
-        // lands the peg a couple of tenths out. #1080 tracks mating on a hole's own centre.
+        // Exact (#1080): the centre a mate lands on is the face's **area** centroid, which is
+        // the same point whatever way the mesh happened to triangulate it. Averaging triangle
+        // vertices instead put this a couple of tenths out.
         assert!(
-            ((min.x + max.x) * 0.5 - 20.0).abs() < 0.5
-                && ((min.y + max.y) * 0.5 - 20.0).abs() < 0.5,
+            ((min.x + max.x) * 0.5 - 20.0).abs() < 0.01
+                && ((min.y + max.y) * 0.5 - 20.0).abs() < 0.01,
             "peg is concentric with the hole, spans {min}..{max}"
         );
     }
