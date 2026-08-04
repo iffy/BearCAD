@@ -2329,14 +2329,34 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 });
             }
         }
-        for (heading, target, point, on_moving, focused) in [
-            ("Start point A", PickerTarget::MoveStartA, m.start_a, true, m.start_a_focused),
-            ("End point A", PickerTarget::MoveEndA, m.end_a, false, m.end_a_focused),
-            ("Start point B", PickerTarget::MoveStartB, m.start_b, true, m.start_b_focused),
-            ("End point B", PickerTarget::MoveEndB, m.end_b, false, m.end_b_focused),
-            ("Start point C", PickerTarget::MoveStartC, m.start_c, true, m.start_c_focused),
-            ("End point C", PickerTarget::MoveEndC, m.end_c, false, m.end_c_focused),
-        ] {
+        // Only the pickers this mode actually uses (#1081). Registering all six regardless
+        // left **Start point A** live and focused beside Face Snap's own rows — so the hover
+        // offered corners while the tool was asking for a face, and two pickers claimed focus
+        // at once. A picker the pane doesn't show must not be registered either: the list is
+        // what focus, hover, the exploder and `bearcad.pickers()` all read.
+        let point_rows: &[(&'static str, PickerTarget, Option<crate::model::MovePointRef>, bool, bool)] =
+            match m.translate_mode {
+                crate::model::MoveTranslateMode::PointSnap => &[
+                    ("Start point A", PickerTarget::MoveStartA, m.start_a, true, m.start_a_focused),
+                    ("End point A", PickerTarget::MoveEndA, m.end_a, false, m.end_a_focused),
+                    ("Start point B", PickerTarget::MoveStartB, m.start_b, true, m.start_b_focused),
+                    ("End point B", PickerTarget::MoveEndB, m.end_b, false, m.end_b_focused),
+                    ("Start point C", PickerTarget::MoveStartC, m.start_c, true, m.start_c_focused),
+                    ("End point C", PickerTarget::MoveEndC, m.end_c, false, m.end_c_focused),
+                ],
+                // Free still takes a start point — the handle its typed amounts move from.
+                crate::model::MoveTranslateMode::Free => &[(
+                    "Start point A",
+                    PickerTarget::MoveStartA,
+                    m.start_a,
+                    true,
+                    m.start_a_focused,
+                )],
+                // Face Snap has its own two staged rows above; In place picks nothing.
+                crate::model::MoveTranslateMode::FaceSnap
+                | crate::model::MoveTranslateMode::InPlace => &[],
+            };
+        for &(heading, target, point, on_moving, focused) in point_rows {
             let rule = if on_moving {
                 PickRule::OnBodies(moving.clone())
             } else {
@@ -8328,6 +8348,104 @@ mod tests {
         assert!(context_pane_content(&tool_input).material.is_none());
     }
 
+    /// #1081: a mode only registers the pickers it actually offers. Registering all six point
+    /// rows regardless left **Start point A** live and focused beside Face Snap's own two,
+    /// so the hover offered corners while the tool was asking for a face — and two pickers
+    /// claimed focus at once. The registered list is what focus, hover, the exploder and
+    /// `bearcad.pickers()` all read, so a row the pane doesn't show must not be in it.
+    #[test]
+    fn each_move_mode_registers_only_its_own_pickers() {
+        use crate::model::MoveTranslateMode as M;
+        let doc = crate::model::Document::default();
+        let selection = crate::selection::SceneSelection::default();
+        let names = |mode: M| -> Vec<PickerTarget> {
+            let control = MoveControl {
+                plane_targets: Vec::new(),
+                image_targets: Vec::new(),
+                angle_snap_deg: crate::actions::MAX_ANGLE_SNAP_DEG,
+                translate_mode: mode,
+                allow_in_place: true,
+                bodies_focused: true,
+                start_a: None,
+                start_a_focused: false,
+                end_a: None,
+                end_a_focused: false,
+                start_b: None,
+                start_b_focused: false,
+                end_b: None,
+                end_b_focused: false,
+                start_c: None,
+                start_c_focused: false,
+                end_c: None,
+                end_c_focused: false,
+                targets: vec![bkey(1)],
+                tx: String::new(),
+                ty: String::new(),
+                tz: String::new(),
+                rx: String::new(),
+                ry: String::new(),
+                rz: String::new(),
+                roll_angle: String::new(),
+                face_flip: false,
+                face_spin: String::new(),
+                face_offset: String::new(),
+                face_a: None,
+                face_b: None,
+                editing: false,
+                can_commit: true,
+            };
+            let input = ContextInput {
+                tool: Tool::Move,
+                in_drawing_workbench: false,
+                open_drawing: None,
+                move_op: Some(control),
+                ..input(&doc, &selection)
+            };
+            context_pane_content(&input)
+                .tool_pickers
+                .iter()
+                .map(|v| v.target)
+                .collect()
+        };
+
+        // Face Snap takes a face and a point per side, and nothing else — in particular no
+        // point picker, which is what made it read as "pick a point" straight away.
+        let face = names(M::FaceSnap);
+        assert!(face.contains(&PickerTarget::MoveFaceMoving));
+        assert!(face.contains(&PickerTarget::MoveFaceFixed));
+        assert!(
+            !face.contains(&PickerTarget::MoveStartA) && !face.contains(&PickerTarget::MoveEndA),
+            "Point Snap's rows have no business being live in Face Snap: {face:?}"
+        );
+
+        // Point Snap keeps all six pairs and none of Face Snap's.
+        let point = names(M::PointSnap);
+        for t in [
+            PickerTarget::MoveStartA,
+            PickerTarget::MoveEndA,
+            PickerTarget::MoveStartB,
+            PickerTarget::MoveEndB,
+            PickerTarget::MoveStartC,
+            PickerTarget::MoveEndC,
+        ] {
+            assert!(point.contains(&t), "{t:?} missing from Point Snap: {point:?}");
+        }
+        assert!(!point.contains(&PickerTarget::MoveFaceMoving));
+
+        // Free takes the one start point its typed amounts move from.
+        let free = names(M::Free);
+        assert!(free.contains(&PickerTarget::MoveStartA));
+        assert!(!free.contains(&PickerTarget::MoveEndA), "{free:?}");
+
+        // In place picks nothing at all — that is the whole mode.
+        let in_place = names(M::InPlace);
+        assert_eq!(
+            in_place,
+            vec![PickerTarget::MoveTargets],
+            "In place offers only the bodies it isn't moving"
+        );
+    }
+
     #[test]
     fn move_and_repeat_yield_body_pickers_without_cut_override() {
         use crate::hierarchy::SceneElement;
@@ -8376,9 +8494,14 @@ mod tests {
             ..input(&doc, &selection)
         };
         let pickers = context_pane_content(&move_input).tool_pickers;
-        // Bodies plus the six point pickers (#958): they render inline among the tool's own
-        // controls but are registered like every other picker, so find this one by target.
-        assert_eq!(pickers.len(), 7, "Bodies plus the six point pickers");
+        // Only the pickers this mode uses are registered (#1081) — Free takes a start point
+        // and nothing else. They render inline among the tool's own controls but are
+        // registered like every other picker, so find this one by target.
+        assert_eq!(
+            pickers.len(),
+            2,
+            "Free registers Bodies and Start point A, and no rows it does not offer"
+        );
         assert_eq!(
             pickers
                 .iter()

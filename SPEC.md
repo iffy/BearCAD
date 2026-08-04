@@ -1567,6 +1567,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`extrude::move_op_transform`, the same call the Move tool resolves through) that the kind's
   freedoms then act on top of, and has no bearing on how the joint moves.
 
+  - **Only the mode's own pickers are registered (#1081).** The registered list is what
+    focus, hover, the Selection Exploder and `bearcad.pickers()` all read, so a row the pane
+    doesn't show must not be in it: Face Snap registers its two staged rows, Point Snap its
+    six point rows, Free the one start point its typed amounts move from, and In place
+    nothing. Registering all six regardless left **Start point A** live and focused beside
+    Face Snap's rows, so the hover offered corners while the tool was asking for a face.
   - **Face on face, in two picks a side.** Each of **Moving face** and **Fixed face** is a
     staged picker (#1075): the **face** first, then a **point on that face**. The face shows
     in the row on its own while its point is being chosen, and the side isn't finished until
