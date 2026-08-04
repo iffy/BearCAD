@@ -5593,6 +5593,7 @@ impl App {
                     let modes = model::MoveTranslateMode::for_tool(false);
                     let at = modes.iter().position(|m| *m == cm.translate_mode).unwrap_or(0);
                     cm.translate_mode = modes[(at + 1) % modes.len()];
+                    self.state.move_translate_mode = cm.translate_mode; // #1086
                     self.state.status =
                         format!("Move: {}", cm.translate_mode.label().to_lowercase());
                 }
@@ -13702,7 +13703,10 @@ impl eframe::App for App {
                             context::MoveEdit::FaceFlip(v) => cm.face_flip = v,
                             context::MoveEdit::FaceSpin(v) => cm.face_spin = v,
                             context::MoveEdit::FaceOffset(v) => cm.face_offset = v,
-                            context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
+                            context::MoveEdit::TranslateMode(m) => {
+                                cm.translate_mode = m;
+                                self.state.move_translate_mode = m; // #1086
+                            }
                             context::MoveEdit::ClearStartA => cm.start_point_a = None,
                             context::MoveEdit::ClearEndA => cm.end_point_a = None,
                             // Dropping start B drops end B with it — end B is only meaningful

@@ -190,6 +190,11 @@ pub const PREVIEW_FILL_DEPTH_BIAS: f32 = 0.2;
 /// (reduced depth-buffer precision), which is why it showed up as the ground grid appearing to
 /// slice through the middle of a body when orbiting below the ground and zooming out (#78).
 pub const GRID_DEPTH_BIAS: f32 = -0.05;
+/// Contact shadows on the build plane (#1041): dark and mostly transparent, so the grid and
+/// the ground's own colour still read through rather than being blacked out.
+pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 90);
+/// Lift a contact shadow off the plane it lies on, so it doesn't z-fight the ground fill.
+pub const GROUND_SHADOW_DEPTH_BIAS: f32 = 0.04;
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
@@ -271,6 +276,10 @@ pub struct ViewportScene {
     /// Committed coplanar sketch-shape fills, drawn with a stencil mask so each
     /// pixel is painted once (avoids translucent overlaps darkening — #3).
     pub sketch_fill_indices: Vec<u32>,
+    /// Contact shadows on the build plane (#1041): each body's triangles projected onto
+    /// z = 0 along the scene's fixed light. Drawn through a stencil so the silhouette's own
+    /// overlaps paint once — a self-overlapping shadow blended twice reads as blotches.
+    pub shadow_indices: Vec<u32>,
     /// Committed construction-plane fills (#1044). Drawn **before** the opaque scene, so a
     /// body always paints over the plane rather than being tinted by it. A datum plane is a
     /// reference, not a surface: a translucent one blending over a body it passes through
@@ -1077,6 +1086,10 @@ impl ViewportScene {
                 }
                 crate::camera::ShadingMode::Realistic => {
                     mesh.push_solid_realistic(solid, normals, fill, input.cam, cap_plane);
+                    // A contact shadow on the build plane (#1041), Realistic only. Without
+                    // one a part resting on the ground and a part hovering 50 mm above it
+                    // look identical — there is no cue for where geometry sits at all.
+                    mesh.push_ground_shadow(solid, input.cam);
                 }
             }
         }
@@ -1799,6 +1812,8 @@ enum MeshIndexLayer {
     /// pixel is painted exactly once, preventing translucent overlap regions from
     /// being alpha-blended twice (which made overlaps render darker — #3).
     SketchFill,
+    /// Contact shadows on the build plane (#1041).
+    GroundShadow,
     /// Committed construction-plane fills, drawn before the opaque scene (#1044).
     DatumPlane,
     PlaneFill,
@@ -1830,6 +1845,7 @@ impl<'a> SceneMesh<'a> {
         match self.index_layer {
             MeshIndexLayer::Base => &mut self.scene.indices,
             MeshIndexLayer::SketchFill => &mut self.scene.sketch_fill_indices,
+            MeshIndexLayer::GroundShadow => &mut self.scene.shadow_indices,
             MeshIndexLayer::DatumPlane => &mut self.scene.datum_plane_indices,
             MeshIndexLayer::PlaneFill => &mut self.scene.plane_fill_indices,
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
@@ -1902,6 +1918,47 @@ impl<'a> SceneMesh<'a> {
         cap_plane: Option<(Vec3, Vec3)>,
     ) {
         self.push_shaded_solid(solid, normals, base, cam, cap_plane, ShadingModel::Lambert);
+    }
+
+    /// A body's contact shadow on the build plane (#1041): its triangles projected onto
+    /// z = 0 along the scene's fixed light direction, drawn dark and translucent.
+    ///
+    /// The receiver is one known plane, so this needs no shadow map and no second depth pass
+    /// — the projection is a line-plane intersection per vertex. Triangles that dip below the
+    /// plane are dropped rather than projected backwards through the light, so a half-buried
+    /// part shadows only the half that is above it.
+    ///
+    /// A silhouette overlaps itself, and overlapping translucent triangles blend twice into
+    /// blotches; the stencil pass this layer draws through paints each pixel once, exactly as
+    /// coplanar sketch fills do (#3).
+    fn push_ground_shadow(&mut self, solid: &crate::extrude::SolidMesh, cam: &Camera) {
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        // A light parallel to the plane casts no shadow onto it.
+        if light.z.abs() < 1e-3 {
+            return;
+        }
+        let prev = self.index_layer;
+        self.set_index_layer(MeshIndexLayer::GroundShadow);
+        let eye = cam.eye();
+        for tri in &solid.triangles {
+            if tri.iter().any(|p| p.z < 0.0) {
+                continue;
+            }
+            let flat: [Vec3; 3] = std::array::from_fn(|i| {
+                let p = tri[i];
+                p - light * (p.z / light.z)
+            });
+            // Lifted off the plane the same way every other decal is, or it z-fights the
+            // ground fill it sits on.
+            let lifted = offset_corners_toward_camera(
+                [flat[0], flat[1], flat[2], flat[0]],
+                Vec3::Z,
+                eye,
+                GROUND_SHADOW_DEPTH_BIAS,
+            );
+            self.push_triangle(lifted[0], lifted[1], lifted[2], GROUND_SHADOW_FILL);
+        }
+        self.set_index_layer(prev);
     }
 
     /// Push a solid mesh lit as `ShadingMode::Realistic` (#83): ambient + diffuse plus a

@@ -73,6 +73,9 @@ pub struct ViewportGpuResources {
     /// Stencil-masked pipeline for coplanar sketch fills: each pixel is painted
     /// exactly once so translucent overlaps don't double-blend (#3).
     sketch_fill_pipeline: wgpu::RenderPipeline,
+    /// Contact shadows on the build plane (#1041): the same single-paint trick on its own
+    /// stencil bit, depth-tested but never depth-writing.
+    ground_shadow_pipeline: wgpu::RenderPipeline,
     scene_transparent_pipeline: wgpu::RenderPipeline,
     /// The ground grid (#1073): one footprint quad whose fragment shader draws the lattice
     /// in pixel-measured widths. Depth-tested so bodies occlude it, but never depth-writing
@@ -360,6 +363,63 @@ impl ViewportGpuResources {
             depth_fail_op: wgpu::StencilOperation::Keep,
             pass_op: wgpu::StencilOperation::IncrementClamp,
         };
+        // Contact shadows (#1041) paint each pixel once for the same reason sketch fills do:
+        // a body's silhouette overlaps itself, and translucent overlaps blend twice into
+        // blotches. Bit 1 of the stencil, so the two single-paint passes stay independent —
+        // pass where the bit is clear, and set it.
+        let shadow_stencil = wgpu::StencilFaceState {
+            compare: wgpu::CompareFunction::NotEqual,
+            fail_op: wgpu::StencilOperation::Keep,
+            depth_fail_op: wgpu::StencilOperation::Keep,
+            pass_op: wgpu::StencilOperation::Replace,
+        };
+        let ground_shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_ground_shadow_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: VIEWPORT_DEPTH_FORMAT,
+                // A shadow lies *on* the ground: depth-tested so a body in front of it wins,
+                // never depth-writing, because it occludes nothing.
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState {
+                    front: shadow_stencil,
+                    back: shadow_stencil,
+                    read_mask: 0b10,
+                    write_mask: 0b10,
+                },
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: multisample_state(msaa_sample_count),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let sketch_fill_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bearcad_viewport_sketch_fill_pipeline"),
             layout: Some(&scene_pipeline_layout),
@@ -395,8 +455,11 @@ impl ViewportGpuResources {
                 stencil: wgpu::StencilState {
                     front: sketch_fill_stencil,
                     back: sketch_fill_stencil,
-                    read_mask: 0xff,
-                    write_mask: 0xff,
+                    // Bit 0 only. Contact shadows (#1041) run their own single-paint pass in
+                    // the same render pass and so share the stencil buffer; giving each its
+                    // own bit is what stops one pass's marks rejecting the other's fragments.
+                    read_mask: 0b01,
+                    write_mask: 0b01,
                 },
                 // Slope-scaled bias toward the camera: sketch fills are decals on the
                 // face beneath them, and the fixed millimetre world-space lifts alone
@@ -818,6 +881,7 @@ impl ViewportGpuResources {
             overlay_pipeline,
             gizmo_pipeline,
             sketch_fill_pipeline,
+            ground_shadow_pipeline,
             scene_transparent_pipeline,
             grid_pipeline,
             grid_vertex_buffer,
@@ -1059,6 +1123,9 @@ impl ViewportGpuResources {
         // Committed datum planes go **first** (#1044), so the opaque scene paints over them.
         let datum_plane_index_count = scene.datum_plane_indices.len();
         let base_index_count = scene.indices.len();
+        // Contact shadows (#1041) sit between the opaque scene and the coplanar fills: after
+        // the ground they lie on, before the decals that sit on top of everything.
+        let shadow_index_count = scene.shadow_indices.len();
         let sketch_fill_index_count = scene.sketch_fill_indices.len();
         let plane_fill_index_count = scene.plane_fill_indices.len();
         let overlay_index_count = scene.overlay_indices.len();
@@ -1069,6 +1136,7 @@ impl ViewportGpuResources {
         let wireframe_index_count = scene.wireframe_indices.len();
         let total_index_count = datum_plane_index_count
             + base_index_count
+            + shadow_index_count
             + sketch_fill_index_count
             + plane_fill_index_count
             + overlay_index_count
@@ -1116,6 +1184,7 @@ impl ViewportGpuResources {
             let mut combined_indices = Vec::with_capacity(total_index_count);
             combined_indices.extend_from_slice(&scene.datum_plane_indices);
             combined_indices.extend_from_slice(&scene.indices);
+            combined_indices.extend_from_slice(&scene.shadow_indices);
             combined_indices.extend_from_slice(&scene.sketch_fill_indices);
             combined_indices.extend_from_slice(&scene.plane_fill_indices);
             combined_indices.extend_from_slice(&scene.overlay_indices);
@@ -1345,7 +1414,8 @@ impl ViewportGpuResources {
                 );
                 let datum_end = datum_plane_index_count as u32;
                 let base_end = datum_end + base_index_count as u32;
-                let sketch_fill_end = base_end + sketch_fill_index_count as u32;
+                let shadow_end = base_end + shadow_index_count as u32;
+                let sketch_fill_end = shadow_end + sketch_fill_index_count as u32;
                 let plane_end = sketch_fill_end + plane_fill_index_count as u32;
                 let overlay_end = plane_end + overlay_index_count as u32;
                 let total_end = total_index_count as u32;
@@ -1361,13 +1431,21 @@ impl ViewportGpuResources {
                     pass.set_pipeline(&self.scene_pipeline);
                     pass.draw_indexed(datum_end..base_end, 0, 0..1);
                 }
-                if sketch_fill_end > base_end {
-                    // Stencil ref 0: only fragments where the stencil is still 0 pass,
-                    // and each one bumps the stencil to 1, so coplanar sketch fills paint
-                    // each pixel exactly once instead of double-blending overlaps (#3).
+                if shadow_end > base_end {
+                    // Reference 0b10 against bit 1: a fragment passes while that bit is
+                    // clear and then sets it, so a silhouette's self-overlap paints once
+                    // rather than blending into blotches (#1041).
+                    pass.set_pipeline(&self.ground_shadow_pipeline);
+                    pass.set_stencil_reference(0b10);
+                    pass.draw_indexed(base_end..shadow_end, 0, 0..1);
+                }
+                if sketch_fill_end > shadow_end {
+                    // Stencil ref 0 against bit 0: only fragments where that bit is still
+                    // clear pass, and each one sets it, so coplanar sketch fills paint each
+                    // pixel exactly once instead of double-blending overlaps (#3).
                     pass.set_pipeline(&self.sketch_fill_pipeline);
                     pass.set_stencil_reference(0);
-                    pass.draw_indexed(base_end..sketch_fill_end, 0, 0..1);
+                    pass.draw_indexed(shadow_end..sketch_fill_end, 0, 0..1);
                 }
                 if plane_end > sketch_fill_end {
                     pass.set_pipeline(&self.scene_transparent_pipeline);

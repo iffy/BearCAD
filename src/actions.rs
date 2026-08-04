@@ -3268,6 +3268,11 @@ pub struct AppState {
     /// on the Move tool's End-point-B sphere and End-point-C circle sit. Sticky across
     /// moves like the snapping toggle, clamped to `0..=MAX_ANGLE_SNAP_DEG`.
     pub move_angle_snap_deg: f32,
+    /// The Move tool's last translate mode (#1086): PointSnap, FaceSnap, or Free. Lives
+    /// here rather than on `CreatingMove` so it survives switching tools — the in-progress
+    /// move is discarded when the user leaves the tool, but the mode comes back when they
+    /// return. Session-only, never persisted.
+    pub move_translate_mode: crate::model::MoveTranslateMode,
     /// Joint preview animation (#906): while a joint is created or edited, its ghost sweeps
     /// through the joint's range. One app-wide switch — turning it off on any joint's pane
     /// turns it off for every joint — on to begin with. UI-only state, never persisted.
@@ -3513,6 +3518,7 @@ impl Default for AppState {
             auto_zoom: false,
             animate_joints: true,
             move_angle_snap_deg: MAX_ANGLE_SNAP_DEG,
+            move_translate_mode: crate::model::MoveTranslateMode::default(),
             help_mode: false,
             settings_open: false,
             mcmaster_open: false,
@@ -7198,6 +7204,7 @@ impl AppState {
                     // Whatever the outgoing picker held that can be moved (#956).
                     self.creating_move = Some(CreatingMove {
                         targets: handoff_bodies(&self.doc, &handoff),
+                        translate_mode: self.move_translate_mode,
                         ..CreatingMove::default()
                     });
                 }
@@ -7655,7 +7662,10 @@ impl AppState {
                 }) {
                     // Esc drops the in-progress move (#749): the destination ghost and
                     // point marks follow the picked state, so clearing it clears them.
-                    self.creating_move = Some(CreatingMove::default());
+                    self.creating_move = Some(CreatingMove {
+                        translate_mode: self.move_translate_mode,
+                        ..CreatingMove::default()
+                    });
                     self.status = "Cancelled move".to_string();
                 } else if self.creating_joint.as_ref().is_some_and(|c| {
                     !c.members.is_empty()
@@ -11700,7 +11710,10 @@ label_hidden: false,
                 if matches!(result, ActionResult::Err(_)) {
                     self.creating_move = Some(cm);
                 } else {
-                    self.creating_move = Some(CreatingMove::default());
+                    self.creating_move = Some(CreatingMove {
+                        translate_mode: self.move_translate_mode,
+                        ..CreatingMove::default()
+                    });
                 }
                 result
             }
@@ -16059,6 +16072,7 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
             match state.creating_move.as_mut() {
                 Some(cm) => {
                     cm.translate_mode = mode;
+                    state.move_translate_mode = mode; // #1086
                     Ok(())
                 }
                 None => Err("the Move tool has nothing in progress to set a mode on".to_string()),
@@ -16851,6 +16865,40 @@ mod tests {
         state.apply(Action::SetTool(Tool::Select));
         state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(0)), additive: false });
         assert!(state.scene_selection.is_selected(SceneElement::Body(bkey(0))));
+    }
+
+    /// #1086: the Move tool's translate mode is sticky for the session. Set it (via the
+    /// scripted mode setter), leave the tool, come back — the fresh in-progress move
+    /// starts in the mode it was left in, not back at Point Snap.
+    #[test]
+    fn move_translate_mode_survives_switching_tools() {
+        use crate::model::MoveTranslateMode as M;
+        let mut state = AppState::default();
+        assert_eq!(state.move_translate_mode, M::default());
+
+        state.apply(Action::SetTool(Tool::Move));
+        assert_eq!(
+            state.creating_move.as_ref().unwrap().translate_mode,
+            M::default(),
+            "a first entry starts at the default"
+        );
+
+        // Switch to Face Snap through the scripted mode setter (#672), which records the
+        // sticky session mode.
+        set_tool_mode(&mut state, "face_snap").unwrap();
+        assert_eq!(state.move_translate_mode, M::FaceSnap);
+        assert_eq!(state.creating_move.as_ref().unwrap().translate_mode, M::FaceSnap);
+
+        // Leave the tool and come back: the in-progress move is discarded and recreated,
+        // but the fresh one opens in Face Snap.
+        state.apply(Action::SetTool(Tool::Select));
+        assert!(state.creating_move.is_none(), "leaving Move drops the in-progress move");
+        state.apply(Action::SetTool(Tool::Move));
+        assert_eq!(
+            state.creating_move.as_ref().unwrap().translate_mode,
+            M::FaceSnap,
+            "the mode came back with the tool (#1086)"
+        );
     }
 
     /// #217: a Move op can target a construction plane, transforming its frame in place; the
