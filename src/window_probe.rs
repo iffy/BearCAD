@@ -74,14 +74,33 @@ pub fn appkit_window_state() -> Option<String> {
 /// painted" — same occlusion, same suppressed updates.
 #[cfg(target_os = "macos")]
 pub fn activate_app() -> bool {
-    use objc2_app_kit::NSApplication;
     use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
-    NSApplication::sharedApplication(mtm).activate();
-    true
+    let app = NSApplication::sharedApplication(mtm);
+    // **Regular** first (#1082). A binary run straight from the terminal has no bundle, so
+    // AppKit gives it an activation policy that cannot become frontmost at all — and then
+    // `activate()` is simply refused, which is why the window stayed occluded however many
+    // times we asked. Setting the policy is what makes the request answerable.
+    if app.activationPolicy() != NSApplicationActivationPolicy::Regular {
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    }
+    app.activate();
+    // Activation is **cooperative** on macOS 14+: it defers to whatever app is currently
+    // active, and `ignoringOtherApps` is documented as having no effect there — so a launch
+    // from a terminal that keeps focus cannot be made active at all. That is the system's
+    // call and not ours to override.
+    //
+    // Ordering the *window* front is a different request, and one the window server does
+    // honour: the window comes out from behind whatever was covering it even while the app
+    // stays inactive. That is what matters here, because it is **occlusion** — not focus —
+    // that makes the window server stop handing out drawable updates and leaves the surface
+    // showing its uninitialised contents (#1032/#1082).
+    let ordered = app.windows().iter().next().inspect(|w| w.orderFrontRegardless()).is_some();
+    ordered || app.isActive()
 }
 
 #[cfg(not(target_os = "macos"))]

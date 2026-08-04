@@ -25,7 +25,17 @@ fn main() {
     let sha = git(&["rev-parse", "--short=9", "HEAD"]).unwrap_or_default();
     println!("cargo:rustc-env=BEARCAD_GIT_DESCRIBE={describe}");
     println!("cargo:rustc-env=BEARCAD_GIT_SHA={sha}");
+    // `.git/HEAD` only changes when the *branch* does — committing on one rewrites the ref
+    // file it points at, not HEAD itself. Watching HEAD alone let the baked hash go stale for
+    // days while the binary was current, which made a bug report's log name a commit four
+    // days older than the code it came from (#1082). Watch the ref too.
     println!("cargo:rerun-if-changed=.git/HEAD");
+    if let Some(git_ref) = std::fs::read_to_string(".git/HEAD")
+        .ok()
+        .and_then(|h| h.strip_prefix("ref: ").map(|r| r.trim().to_string()))
+    {
+        println!("cargo:rerun-if-changed=.git/{git_ref}");
+    }
 
     // OCCT kernel (#86, unconditional since todoer #471). On wasm32 the kernel
     // ships as a separate Emscripten-built module (see scripts/build-occt-wasm.sh)
