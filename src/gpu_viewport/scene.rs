@@ -104,8 +104,11 @@ pub const SOLID_FILL_OPACITY: f32 = 0.25;
 pub const CONSTRUCTION_FILL_OPACITY: f32 = 0.18;
 /// Default semi-transparent fill for construction planes.
 pub const DEFAULT_CONSTRUCTION_PLANE_OPACITY: f32 = 0.18;
-/// Lift plane fills slightly toward the camera so they win over the ground grid.
-pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
+/// Lift plane fills toward the camera so they win over the ground grid. Kept at zero: any
+/// bias here visibly detaches a plane from the body it passes through — a sphere created on
+/// a plane read as poking through it (#1088). The grid wins its own overlap via the depth
+/// bias on the ground pipeline instead.
+pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.0;
 /// Base depth lift for sketch shape fills toward the camera.
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
