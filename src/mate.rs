@@ -30,21 +30,6 @@ pub fn mate_ref_direction(doc: &Document, r: &MateRef) -> Option<Vec3> {
     }
 }
 
-/// A resolved pick's representative point — where its mark is drawn.
-pub fn geom_point(g: &MateGeom) -> Vec3 {
-    g.point()
-}
-
-impl MateGeom {
-    /// A representative point — what a line-up row projects when the pick isn't a line.
-    fn point(&self) -> Vec3 {
-        match self {
-            MateGeom::Plane { origin, .. } | MateGeom::Line { origin, .. } => *origin,
-            MateGeom::Point(p) => *p,
-        }
-    }
-}
-
 /// Resolve a mate pick in un-posed world space — body-local keys re-found on the live mesh,
 /// world-fixed references (a datum plane, a world axis, the origin) as they are. `None` when
 /// the reference no longer resolves, which mates as identity (#1019).

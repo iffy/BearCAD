@@ -56,9 +56,11 @@ Move slides whole bodies to a new place, producing moved copies.
      the line from end point A to end point B, which is often quicker than finding a point
      that says the same thing.
    - **Face Snap** — for **Moving face** and again for **Fixed face**, click a face, then
-     click the point on that face that should meet the other. Once a face is picked, only
-     points on it are selectable. The part lands with the one point on the other and the two
-     surfaces together. **Flip** puts it on the
+     click the point on that face that should meet the other. A face offers its corners, the
+     middle of each edge, and its centre — nine points on a rectangular one — and you can
+     reach a corner from just outside the face. Once a face is picked, only points on it are
+     on offer, and what highlights is always what a click takes. The part lands with the one
+     point on the other and the two surfaces together. **Flip** puts it on the
      other side instead, and **Turn** spins it about the fixed face — type a value or drag the
      ring that appears at the mate point. A **yellow line** connects the two spots, and the
      ghost shows where the part lands.

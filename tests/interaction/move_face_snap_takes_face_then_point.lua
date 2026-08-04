@@ -52,8 +52,27 @@ assert(#picker("Moving face").items == 1,
 assert(picker("Moving face").focused, "the side still wants its point, so focus stays")
 assert(#picker("Fixed face").items == 0, "the other side is untouched")
 
--- Click two: a point on that same face. Only now does the side finish and the ring move on.
-bearcad.ui.click_ground(65, 5)
+-- Stage two offers nine points on a rectangular face: four corners, four edge midpoints and
+-- the centre (#1083). Hovering an edge midpoint highlights it — the block spans x 60..80,
+-- y 0..20, so (70, 0) is the middle of its near edge.
+bearcad.ui.move_ground(70, 0)
+bearcad.ui.wait(8)
+local h = bearcad.hovered()
+assert(h and h.kind == "body_vertex",
+  "an edge midpoint should highlight, got " .. tostring(h and h.kind))
+
+-- And a corner reached from **outside** the face still highlights and picks: a corner sits on
+-- the outline, so requiring the cursor be inside made the very points you aim at unpickable.
+bearcad.ui.move_ground(58, -2)
+bearcad.ui.wait(8)
+local h = bearcad.hovered()
+assert(h and h.kind == "body_vertex",
+  "a corner approached from off the face should highlight, got " .. tostring(h and h.kind))
+
+-- Click two: one of those nine points — the corner at (60, 0), taken from off the face. Only
+-- now does the side finish and the ring move on. A spot that is *not* one of the nine is not
+-- a pick: a mate lands on a feature of the face, not wherever the cursor happened to be.
+bearcad.ui.click_ground(58, -2)
 bearcad.ui.wait(8)
 assert(#picker("Moving face").items == 2,
   "the second click takes a point on that face, got " .. #picker("Moving face").items)
@@ -64,17 +83,27 @@ bearcad.ui.click_ground(15, 15)
 bearcad.ui.wait(8)
 assert(#picker("Fixed face").items == 1, "the fixed side takes its face first")
 assert(picker("Fixed face").focused, "and still wants its point")
-bearcad.ui.click_ground(10, 10)
+-- The slab's top face spans 0..30 both ways, so (15, 15) is its centre — one of its nine.
+bearcad.ui.click_ground(15, 15)
 bearcad.ui.wait(8)
 assert(#picker("Fixed face").items == 2, "then a point on that face")
 
 -- Committing lands the moving block's picked spot on the fixed slab's, surfaces together.
 bearcad.ui.key("Enter")
 bearcad.ui.wait(8)
--- A Move makes an output body; the input becomes shadow, so read the last one.
+-- A Move makes an output body; the input becomes shadow, so read the last one. The block's
+-- picked corner lands on the slab's picked centre, surfaces together.
 local placed = bearcad.body_stats(bearcad.count("body") - 1).bbox
 assert(math.abs(placed.min[3] - 10) < 0.05,
   "the block should sit on the slab's top face (z = 10), got " .. placed.min[3])
+-- Landing flips the part (the two normals end up opposed), so which corner of the bounding
+-- box the picked one becomes depends on the turn; what must hold is that a corner is there.
+local function touches(lo, hi, v)
+  return math.abs(lo - v) < 0.05 or math.abs(hi - v) < 0.05
+end
+assert(touches(placed.min[1], placed.max[1], 15) and touches(placed.min[2], placed.max[2], 15),
+  "its picked corner should land on the slab's centre (15, 15), spans x "
+  .. placed.min[1] .. ".." .. placed.max[1] .. ", y " .. placed.min[2] .. ".." .. placed.max[2])
 
 print("ok: Face Snap takes a face, then a point on that face")
 bearcad.quit()

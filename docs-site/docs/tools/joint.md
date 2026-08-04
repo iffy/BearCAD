@@ -46,9 +46,13 @@ relationship and nothing moves.
 
 Mating is a **move** — the same one the [Move tool](./move.md) makes, in the same modes. Most
 joints want **Face Snap**: for each side, click a **face**, then click the **point on that
-face** that should meet the other. The moving part lands with its point on the fixed one's,
-surfaces together. Once you've picked a face, only points on that face are selectable, so the
-second click can't land anywhere it doesn't belong. **Flip** puts it on the other side, **Gap** holds it off by a distance, and
+face** that should meet the other. A face offers its corners, the middle of each edge, and its
+centre — nine points on a rectangular one. The moving part lands with its point on the fixed
+one's, surfaces together.
+
+Once you've picked a face, only points on that face are on offer, so the second click can't
+land anywhere it doesn't belong. You can reach a corner from just outside the face, and what
+highlights is always what a click takes. A line joins the two points once both are picked. **Flip** puts it on the other side, **Gap** holds it off by a distance, and
 **Turn** spins it about the face it sits on. All of them are expressions, like any other.
 
 The other modes are there when a joint isn't going flat onto anything: **Point Snap** lands a

@@ -3524,6 +3524,61 @@ pub fn face_uv_world(tris: &[[Vec3; 3]], uv: [i32; 2]) -> Vec3 {
     face_group_center(tris) + u * (uv[0] as f32 / 100.0) + v * (uv[1] as f32 / 100.0)
 }
 
+/// The points a Face Snap mate can land on within a face (#1083): its **corners**, the
+/// **midpoint of each boundary edge**, and the face's **centre**. A rectangular face
+/// therefore offers the nine points a user reaches for; a round one offers its rim's
+/// vertices, their midpoints, and the centre.
+///
+/// Collinear boundary vertices — a mesh may split a straight edge into several — are dropped,
+/// so a rectangle's edge gives one midpoint rather than one per triangle it happens to span.
+pub fn face_snap_points(tris: &[[Vec3; 3]]) -> Vec<Vec3> {
+    let boundary = crate::construction::coplanar_face_boundary(tris);
+    if boundary.is_empty() {
+        return vec![face_group_center(tris)];
+    }
+    // Chain the boundary segments into a loop so "corner" means a real turn, not a mesh seam.
+    let mut loops: Vec<Vec3> = Vec::new();
+    let mut remaining = boundary.clone();
+    let mut current = remaining.pop().map(|(a, b)| {
+        loops.push(a);
+        b
+    });
+    while let Some(at) = current {
+        loops.push(at);
+        let next = remaining
+            .iter()
+            .position(|(a, b)| (*a - at).length() < 1e-3 || (*b - at).length() < 1e-3)
+            .map(|i| {
+                let (a, b) = remaining.swap_remove(i);
+                if (a - at).length() < 1e-3 { b } else { a }
+            });
+        match next {
+            Some(p) if (p - loops[0]).length() > 1e-3 => current = Some(p),
+            _ => break,
+        }
+    }
+    // Drop points that merely continue a straight run: only real corners count.
+    let n = loops.len();
+    let corners: Vec<Vec3> = (0..n)
+        .filter(|&i| {
+            let prev = loops[(i + n - 1) % n];
+            let next = loops[(i + 1) % n];
+            let a = (loops[i] - prev).normalize_or_zero();
+            let b = (next - loops[i]).normalize_or_zero();
+            a.cross(b).length() > 1e-3
+        })
+        .map(|i| loops[i])
+        .collect();
+    let corners = if corners.len() >= 3 { corners } else { loops };
+
+    let mut points = corners.clone();
+    for i in 0..corners.len() {
+        points.push((corners[i] + corners[(i + 1) % corners.len()]) * 0.5);
+    }
+    points.push(face_group_center(tris));
+    points
+}
+
 /// Whether a world point lies **on** a face group (#1075): in its plane, and inside one of
 /// its triangles. The tolerance is the same 0.01 mm the quantized body-point keys round to,
 /// so a point derived from a mesh vertex of this face always counts as on it.
@@ -10183,6 +10238,43 @@ mod tests {
             move_op_transform(&doc, &op(MoveTranslateMode::InPlace, "90", "10")),
             Some(glam::Mat4::IDENTITY)
         );
+    }
+
+    /// #1083: a rectangular face offers exactly nine points to mate on — its four corners,
+    /// the midpoint of each edge, and its centre. A mesh splits a straight edge into several
+    /// triangles, so the boundary has more vertices than the face has corners; only the real
+    /// turns count, or a rectangle would offer a midpoint per triangle instead of per edge.
+    #[test]
+    fn a_rectangular_face_offers_nine_points_to_mate_on() {
+        let (mut doc, _sketch, ext) = box_doc(); // 10x10 footprint, 5 tall
+        doc.extrusions.insert(ext);
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let solid = body_solid_mesh(&doc, bkey(0)).unwrap();
+        let cap = crate::gpu_viewport::solid_mesh_coplanar_faces(&solid)
+            .into_iter()
+            .find(|t| {
+                (t[0][1] - t[0][0]).cross(t[0][2] - t[0][0]).normalize_or_zero().z > 0.9
+            })
+            .expect("the top cap");
+
+        let points = face_snap_points(&cap);
+        assert_eq!(points.len(), 9, "four corners, four edge midpoints, the centre: {points:?}");
+        let has = |p: Vec3| points.iter().any(|q| (*q - p).length() < 1e-3);
+        // The four corners.
+        for (x, y) in [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)] {
+            assert!(has(Vec3::new(x, y, 5.0)), "corner ({x}, {y}) missing from {points:?}");
+        }
+        // The four edge midpoints — the ones that were missing entirely.
+        for (x, y) in [(5.0, 0.0), (10.0, 5.0), (5.0, 10.0), (0.0, 5.0)] {
+            assert!(has(Vec3::new(x, y, 5.0)), "midpoint ({x}, {y}) missing from {points:?}");
+        }
+        // And the centre.
+        assert!(has(Vec3::new(5.0, 5.0, 5.0)), "the face centre is missing from {points:?}");
     }
 
     /// #1074: a point on a face is stored as an offset in the **face's own axes**, resolved

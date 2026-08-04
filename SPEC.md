@@ -1590,6 +1590,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the face alone and takes its middle, which is the sensible default when there is no cursor
     to point with.
 
+    A face offers **nine points** to mate on (#1083, `extrude::face_snap_points`): its
+    corners, the midpoint of each boundary edge, and its centre — so a rectangular face gives
+    the nine a user reaches for. Collinear boundary vertices are dropped, because a mesh
+    splits a straight edge into several triangles and each would otherwise contribute a
+    midpoint. The pick is the candidate **nearest on screen** within the usual point-hit
+    radius, with no requirement that the cursor be over the face: a corner sits *on* the
+    outline, so insisting on that made the very points you aim at unpickable. A spot that is
+    none of the nine is not a pick — a mate lands on a feature of the face, not wherever the
+    cursor happened to be. Hover and click share the search, so what lights up is what a
+    click takes; the picked point is marked, and the moving-to-fixed connector draws for the
+    Joint tool exactly as it does for the Move tool.
+
     Face Snap then lands the moving point **on** the fixed one, with the normals opposed so
     the surfaces touch. **Flip** puts
     the part on the other side, **Gap** holds it off along the normal, and **Turn** spins it

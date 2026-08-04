@@ -8083,7 +8083,7 @@ impl App {
                     if on_moving { c.pending_face_a } else { c.pending_face_b }
                 });
                 match pending {
-                    Some(face) => match self.pick_point_on_mate_face(pp, cam, viewport, vp, &face) {
+                    Some(face) => match self.pick_point_on_mate_face(pp, project, &face) {
                         Some(point) => {
                             let label = self.move_point_label(&point);
                             if let Some(cm) = self.state.creating_move.as_mut() {
@@ -8094,7 +8094,8 @@ impl App {
                         }
                         None => {
                             self.state.status =
-                                "Pick a point on the face you chose".to_string();
+                                "Pick a corner, an edge midpoint or the middle of that face"
+                                    .to_string();
                         }
                     },
                     None => match self.pick_move_face(pp, project, pick_occlusion, side) {
@@ -8316,7 +8317,7 @@ impl App {
                 });
             match pending {
                 // Stage two: a spot on the face already chosen.
-                Some(face) => match self.pick_point_on_mate_face(pp, cam, viewport, vp, &face) {
+                Some(face) => match self.pick_point_on_mate_face(pp, project, &face) {
                     Some(point) => {
                         let label = self.move_point_label(&point);
                         if let Some(cj) = self.state.creating_joint.as_mut() {
@@ -8327,7 +8328,8 @@ impl App {
                     }
                     None => {
                         self.state.status =
-                            "Pick a point on the face you chose".to_string();
+                            "Pick a corner, an edge midpoint or the middle of that face"
+                                .to_string();
                     }
                 },
                 // Stage one: the face itself.
@@ -8687,8 +8689,17 @@ impl App {
                 start_c: cm.start_point_c,
                 end_c: cm.end_point_c,
             }),
-            // The Joint tool's mate has no point pairs to draw lines between (#1021): the
-            // ghost of where the part lands is the preview (#1017).
+            // The Joint tool's placement *is* a move (#1079), so its mate points draw the
+            // same connector — the line from the moving point to the fixed one that says
+            // where the part is about to go (#1083).
+            Tool::Joint => self.state.creating_joint.as_ref().map(|cj| SnapPreviewPoints {
+                start_a: cj.placement.start_point_a,
+                end_a: cj.placement.end_point_a,
+                start_b: None,
+                end_b: None,
+                start_c: None,
+                end_c: None,
+            }),
             _ => None,
         }
     }
@@ -9802,31 +9813,73 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Stage two of a Face Snap pick (#1075): the spot on **this** face the cursor is over,
-    /// as a `MovePointRef::OnFace`. `None` when the ray misses the face's own outline — a
-    /// click off the chosen face isn't a point on it, and silently taking the nearest spot
-    /// would place the mate somewhere the user didn't point at.
+    /// Stage two of a Face Snap pick (#1075/#1083): the **candidate point** on this face
+    /// nearest the cursor — one of its corners, edge midpoints or centre.
+    ///
+    /// Nearest on **screen**, and with no requirement that the cursor be over the face: a
+    /// corner sits on the face's outline, so insisting the cursor be inside made the very
+    /// points you aim at unpickable from the outside. What matters is which candidate you are
+    /// pointing at, not which side of the boundary the pixel fell.
     fn pick_point_on_mate_face(
         &self,
         pp: egui::Pos2,
-        cam: &camera::Camera,
-        viewport: egui::Rect,
-        vp: &glam::Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         face: &model::MateRef,
     ) -> Option<model::MovePointRef> {
+        let (tris, world) = self.nearest_mate_face_point(pp, project, face)?;
         let model::MateRef::Face { body, centroid, normal } = face else {
             return None;
         };
-        let tris = extrude::body_face_triangles(&self.state.doc, *body, *centroid, *normal)?;
-        let centre = extrude::face_group_center(&tris);
-        let n = hierarchy::dequantize_body_point(*normal);
-        let world = cam.ray_plane_hit(pp, viewport, vp, centre, n)?;
-        extrude::face_group_contains(&tris, world).then(|| model::MovePointRef::OnFace {
+        Some(model::MovePointRef::OnFace {
             body: *body,
             centroid: *centroid,
             normal: *normal,
             uv: extrude::face_world_uv(&tris, world),
         })
+    }
+
+    /// Which Face Snap stage the hover should follow (#1083), for whichever of the two tools
+    /// is placing something. `None` when neither is mid-placement, so the ordinary Move
+    /// hover answers.
+    fn mate_pick_hover(&self) -> Option<MovePickHover> {
+        let (placement, on_moving) = match self.state.tool {
+            Tool::Move => {
+                let cm = self.state.creating_move.as_ref()?;
+                if cm.translate_mode != model::MoveTranslateMode::FaceSnap {
+                    return None;
+                }
+                let on_moving = match self.move_focus() {
+                    MoveFocus::StartPointA => true,
+                    MoveFocus::EndPointA => false,
+                    _ => return None,
+                };
+                (cm, on_moving)
+            }
+            Tool::Joint => {
+                let cj = self.state.creating_joint.as_ref()?;
+                let on_moving = match self.joint_focus() {
+                    JointFocus::MovingFace => true,
+                    JointFocus::FixedFace => false,
+                    _ => return None,
+                };
+                (&cj.placement, on_moving)
+            }
+            _ => return None,
+        };
+        let pending = if on_moving { placement.pending_face_a } else { placement.pending_face_b };
+        Some(match pending {
+            Some(face) => MovePickHover::MateFacePoint(face),
+            None => MovePickHover::MateFace,
+        })
+    }
+
+    fn nearest_mate_face_point(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        face: &model::MateRef,
+    ) -> Option<(Vec<[Vec3; 3]>, Vec3)> {
+        nearest_face_snap_point(&self.state.doc, pp, project, face)
     }
 
     /// Stage one of a Move Face Snap pick (#1075): the planar face under the cursor, on a
@@ -16057,6 +16110,34 @@ enum MovePickHover {
     /// End point B (#744): only the constraint-sphere candidates are pickable, and they
     /// draw their own blue/gold marks — the generic point/edge hover stands down.
     EndB,
+    /// Face Snap stage one (#1083): a whole face, so the generic point hover stands down —
+    /// lighting a corner while the tool wants a face is what made the two stages unreadable.
+    MateFace,
+    /// Face Snap stage two: only the candidate points on the face already chosen.
+    MateFacePoint(crate::model::MateRef),
+}
+
+/// The face's candidate points and the one nearest the cursor (#1083), within the same hit
+/// radius every other point pick uses. Shared by the click path and the hover, so what lights
+/// up is always what a click would take — and screen-nearest, with no requirement that the
+/// cursor be over the face, because a corner sits on the outline.
+fn nearest_face_snap_point(
+    doc: &model::Document,
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    face: &model::MateRef,
+) -> Option<(Vec<[Vec3; 3]>, Vec3)> {
+    let model::MateRef::Face { body, centroid, normal } = face else {
+        return None;
+    };
+    let tris = extrude::body_face_triangles(doc, *body, *centroid, *normal)?;
+    let radius = touch::hit(construction::POINT_PICK_RADIUS_PX);
+    let best = extrude::face_snap_points(&tris)
+        .into_iter()
+        .filter_map(|p| project(p).map(|sp| (p, (sp - pp).length())))
+        .filter(|(_, d)| *d <= radius)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+    Some((tris, best.0))
 }
 
 /// The sketched-on face's own boundary edge under the cursor (#821), as a hover highlight.
@@ -16222,6 +16303,30 @@ fn resolve_viewport_hover_highlight(
         return None;
     }
     let pp = pointer_screen?;
+    // Face Snap's two stages (#1083) come first, because they are the only picks whose
+    // *allowed set* changes mid-tool. Stage two offers the candidate points on the face
+    // already chosen and nothing else, so what glows is exactly what a click takes —
+    // including a corner reached from outside the face, which is where one is easiest to
+    // point at. Stage one offers whole faces, because lighting a corner while the tool wants
+    // a face is what made the two steps unreadable.
+    if sketch_session.is_none() {
+        if let MovePickHover::MateFacePoint(face) = move_pick {
+            let (_, world) = nearest_face_snap_point(doc, pp, project, &face)?;
+            return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                construction::PickTargetKind::BodyVertex {
+                    body: face
+                        .body()
+                        .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
+                    position: world,
+                },
+            ));
+        }
+        if move_pick == MovePickHover::MateFace {
+            let kind = crate::face::pick_body_face(pp, project, doc, cam.eye())
+                .filter(|k| occlusion.is_none_or(|occ| occ.pickable(doc, k)))?;
+            return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+        }
+    }
     // The arms below are the picks the picker model can't express, and this is the whole list
     // (#958) — everything else falls to the picker-driven catch-all at the bottom:
     //
@@ -24305,7 +24410,7 @@ impl App {
             suppress_hover_highlight,
             self.state.tool,
             sketch_session,
-            match self.move_focus() {
+            self.mate_pick_hover().unwrap_or_else(|| match self.move_focus() {
                 MoveFocus::Bodies => MovePickHover::Bodies,
                 MoveFocus::StartPointA
                 | MoveFocus::EndPointA
@@ -24318,7 +24423,7 @@ impl App {
                 // hover-glow on their own — generic corner/edge hover would light up
                 // unpickable geometry.
                 MoveFocus::EndPointB => MovePickHover::EndB,
-            },
+            }),
             self.state.creating_plane.is_some(),
             self.state.editing_committed_dim.is_some(),
             over_committed_dim_label,
@@ -24831,25 +24936,24 @@ impl App {
             .as_ref()
             .filter(|_| self.state.tool == Tool::Joint && self.state.sketch_session.is_none())
             .map(|cj| {
-                // The placement's two faces (#1079), marked where they sit.
-                let face = |p: Option<model::MovePointRef>| {
-                    p.as_ref().and_then(crate::model::move_point_host_mate_ref)
-                };
-                vec![
-                    (face(cj.placement.start_point_a), theme::MOVE_START_POINT),
-                    (face(cj.placement.end_point_a), theme::MOVE_END_POINT),
+                // The placement's two **mate points** (#1079/#1083), marked where they sit.
+                // Marking the faces' middles instead left the point you actually picked
+                // unhighlighted, so nothing on screen said which of the nine you chose.
+                [
+                    (cj.placement.start_point_a, theme::MOVE_START_POINT),
+                    (cj.placement.end_point_a, theme::MOVE_END_POINT),
                 ]
                     .into_iter()
-                    .filter_map(|(pick, color)| {
-                        let pick = pick?;
-                        let geom = crate::mate::resolve(&self.state.doc, &pick)?;
+                    .filter_map(|(point, color)| {
+                        let point = point?;
+                        let position = extrude::move_point_world(&self.state.doc, &point)?;
                         Some((
                             construction::PickTargetKind::BodyVertex {
                                 // Only `position` is drawn; world geometry has no body.
-                                body: pick
-                                .body()
-                                .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
-                                position: crate::mate::geom_point(&geom),
+                                body: point
+                                    .body()
+                                    .unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX)),
+                                position,
                             },
                             color,
                         ))

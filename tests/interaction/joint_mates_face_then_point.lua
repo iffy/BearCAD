@@ -52,7 +52,7 @@ assert(#picker("Fixed face").items == 0, "the fixed side is untouched")
 
 -- The second click on that same face takes the point on it, and only then does the side
 -- finish and the ring move on.
-bearcad.ui.click_ground(65, 5)
+bearcad.ui.click_ground(58, -2)
 bearcad.ui.wait(8)
 assert(#picker("Moving face").items == 2,
   "the second click takes a point on that face, got " .. #picker("Moving face").items)
@@ -63,7 +63,7 @@ bearcad.ui.click_ground(15, 15)
 bearcad.ui.wait(8)
 assert(#picker("Fixed face").items == 1, "the fixed side takes its face first")
 assert(picker("Fixed face").focused, "and still wants its point")
-bearcad.ui.click_ground(10, 10)
+bearcad.ui.click_ground(15, 15)
 bearcad.ui.wait(8)
 assert(#picker("Fixed face").items == 2, "then a point on that face")
 
