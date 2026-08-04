@@ -8778,10 +8778,10 @@ mod perf_probe {
         // Warm up, then time.
         for _ in 0..3 { build(&empty); build(&selection); }
         let n = 20;
-        let t0 = std::time::Instant::now();
+        let t0 = crate::time::Instant::now();
         for _ in 0..n { build(&empty); }
         let base = t0.elapsed() / n;
-        let t1 = std::time::Instant::now();
+        let t1 = crate::time::Instant::now();
         for _ in 0..n { build(&selection); }
         let with_aura = t1.elapsed() / n;
         println!("scene build: base {base:?}  with aura {with_aura:?}  aura delta {:?}", with_aura.saturating_sub(base));

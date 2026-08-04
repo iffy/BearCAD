@@ -480,8 +480,8 @@ pub fn write_save_ping() {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let stamp = crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let _ = std::fs::write(path, stamp.to_string());

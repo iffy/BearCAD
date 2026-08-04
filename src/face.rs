@@ -1802,7 +1802,7 @@ mod tests {
             pick_body_face(far, &project, &doc, eye).is_none(),
             "a cursor in empty space picks nothing"
         );
-        let started = std::time::Instant::now();
+        let started = crate::time::Instant::now();
         for _ in 0..200 {
             let _ = pick_body_face(far, &project, &doc, eye);
         }

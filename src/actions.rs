@@ -4427,7 +4427,7 @@ impl AppState {
         // Timed, because this runs on the UI thread: a multi-megabyte part takes long enough
         // to read and tessellate that the window stops responding while it happens, and a
         // frozen window is indistinguishable from a broken one without a number (#1023).
-        let started = std::time::Instant::now();
+        let started = crate::time::Instant::now();
         let result = match format {
             // Through the file reader, not the byte one: only the file reader goes via the
             // kernel on native, and McMaster's CAD is SolidWorks BREP (#1023).
@@ -17227,7 +17227,7 @@ mod tests {
         state.apply(Action::EditExtrusion { index: xkey(0) });
         assert!(state.creating_extrusion.is_some());
         let undo_before = state.undo_stack.len();
-        let start = std::time::Instant::now();
+        let start = crate::time::Instant::now();
         for i in 0..200 {
             assert!(matches!(
                 state.apply(Action::SetExtrudeDistance { distance: 5.0 + i as f32 * 0.1 }),

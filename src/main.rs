@@ -32,6 +32,7 @@ mod geometric_constraints;
 mod context;
 mod construction;
 mod diag;
+mod time;
 mod dimensions;
 mod drawing;
 mod document_health;
@@ -3048,14 +3049,10 @@ struct App {
     /// In-flight in-sketch selection move on the Move tool's gizmo (#306).
     sketch_move_drag: Option<SketchMoveDrag>,
     launch_maximize_frames_remaining: u8,
-    /// When the app started, for the launch settle window (#1023).
-    /// `web_time` on wasm: `std::time::Instant::now()` panics outright on
-    /// wasm32-unknown-unknown, and this is constructed during app startup — so a plain
-    /// `std::time::Instant` here took the whole web app down before its first frame.
-    #[cfg(not(target_arch = "wasm32"))]
-    launched_at: std::time::Instant,
-    #[cfg(target_arch = "wasm32")]
-    launched_at: web_time::Instant,
+    /// When the app started, for the launch settle window (#1023). Through `crate::time`
+    /// (#1048), which is `web_time` on wasm — a raw `std::time::Instant` here is constructed
+    /// during startup and took the whole web app down before its first frame.
+    launched_at: crate::time::Instant,
     /// One-shot: the compact layout has hidden the default panes.
     compact_layout_initialized: bool,
     /// When the last touch-mode primary press landed (`Input::time`), to recognise a
@@ -4190,10 +4187,7 @@ impl App {
             selected_bezier_handle: None,
             viewport_context_menu: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
-            #[cfg(not(target_arch = "wasm32"))]
-            launched_at: std::time::Instant::now(),
-            #[cfg(target_arch = "wasm32")]
-            launched_at: web_time::Instant::now(),
+            launched_at: crate::time::Instant::now(),
             compact_layout_initialized: false,
             last_touch_press_time: f64::NEG_INFINITY,
             was_multi_touch: false,

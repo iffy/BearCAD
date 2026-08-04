@@ -1978,6 +1978,15 @@ BearCAD also compiles to **wasm32-unknown-unknown** and runs in the browser (bui
 `scripts/build-web.sh`, hosted at `/app/` on the docs site, deployed by the Website CI
 workflow). The web build is the lean configuration plus web-specific plumbing:
 
+- **The clock comes from `crate::time` (#1048).** `std::time::Instant::now()` and
+  `SystemTime::now()` compile for wasm32 and **panic at runtime** — "time not implemented on
+  this platform" — which took the web app to a black screen before its first frame, from one
+  startup timestamp. `crate::time` re-exports `web_time` on wasm and `std::time` everywhere
+  else, and a test (`no_raw_std_time_outside_this_module`) fails the build if either raw path
+  reappears anywhere else in the crate. That guard matters because **the wasm CI job only
+  builds**: a build cannot see a runtime panic, so "the wasm job is green" means it compiles,
+  not that it runs. `Duration` and a `UNIX_EPOCH` compared against a filesystem timestamp are
+  deliberately left on `std::time` — neither can panic, and the latter would be a type error.
 - **The OCCT kernel ships as a second wasm module** (`scripts/build-occt-wasm.sh`:
   OCCT + the same C++ shim compiled with Emscripten into `kernel.js`/`kernel.wasm`). The
   app — which is wasm32-unknown-unknown and can't link Emscripten C++ — calls its

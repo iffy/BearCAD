@@ -56,7 +56,7 @@ pub fn enabled() -> bool {
 static FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 static FILE_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Seconds since [`init`], for the timestamp on each line.
-static STARTED: OnceLock<std::time::Instant> = OnceLock::new();
+static STARTED: OnceLock<crate::time::Instant> = OnceLock::new();
 
 /// Where the log is written: `$BEARCAD_LOG_FILE` if set, else `bearcad.log` in the system
 /// temp directory. Somewhere predictable and always writable beats somewhere tidy — this file
@@ -95,7 +95,7 @@ pub fn init(path: PathBuf, header: impl std::fmt::Display) {
     }
     match std::fs::File::create(&path) {
         Ok(file) => {
-            let _ = STARTED.set(std::time::Instant::now());
+            let _ = STARTED.set(crate::time::Instant::now());
             let _ = FILE.set(Mutex::new(file));
             let _ = FILE_PATH.set(path.clone());
             write_line("---", header);

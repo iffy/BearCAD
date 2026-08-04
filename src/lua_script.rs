@@ -10159,7 +10159,7 @@ mod tests {
         assert!(!preview.triangles.is_empty());
         // Cached second call is effectively free; assert it stays far from the
         // seconds-per-frame territory the kernel path hit (250ms is generous for CI).
-        let t = std::time::Instant::now();
+        let t = crate::time::Instant::now();
         let _ = crate::extrude::preview_extrusion_mesh(&state.doc, ex);
         assert!(
             t.elapsed() < std::time::Duration::from_millis(250),

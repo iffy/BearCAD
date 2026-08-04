@@ -27,11 +27,8 @@ use glam::Vec3;
 #[cfg(not(target_arch = "wasm32"))]
 use mlua::Lua;
 use std::path::Path;
+use crate::time::Instant;
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 
 /// What part of the window a scripted screenshot captures.
 ///

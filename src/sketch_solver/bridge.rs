@@ -1123,7 +1123,7 @@ mod tests {
     #[test]
     #[ignore = "run with `cargo test --release solve_perf -- --ignored`"]
     fn solve_perf_100_constraints_under_5ms() {
-        use std::time::Instant;
+        use crate::time::Instant;
 
         let (mut doc, sketch) = sketch_doc();
         for i in 0..50 {
