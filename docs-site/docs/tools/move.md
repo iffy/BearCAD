@@ -55,9 +55,10 @@ Move slides whole bodies to a new place, producing moved copies.
      Or type a **Roll** angle instead of picking end point C: the part turns that far about
      the line from end point A to end point B, which is often quicker than finding a point
      that says the same thing.
-   - **Face Snap** — pick a **Moving face** on a body being moved and a **Fixed face** on one
-     that isn't; each click takes both the face and the exact spot on it you clicked. The part
-     lands with that spot on that spot and the two surfaces together. **Flip** puts it on the
+   - **Face Snap** — for **Moving face** and again for **Fixed face**, click a face, then
+     click the point on that face that should meet the other. Once a face is picked, only
+     points on it are selectable. The part lands with the one point on the other and the two
+     surfaces together. **Flip** puts it on the
      other side instead, and **Turn** spins it about the fixed face — type a value or drag the
      ring that appears at the mate point. A **yellow line** connects the two spots, and the
      ghost shows where the part lands.

@@ -293,6 +293,10 @@ pub struct MoveControl {
     pub face_flip: bool,
     pub face_spin: String,
     pub face_offset: String,
+    /// The face each Face Snap side has settled on (#1075) — shown while its point is still
+    /// being picked, and implied by the point once that lands.
+    pub face_a: Option<crate::model::MateRef>,
+    pub face_b: Option<crate::model::MateRef>,
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
     /// other pickers is armed.
     pub bodies_focused: bool,
@@ -410,10 +414,13 @@ pub struct JointControl {
     /// wrong part is simply not a pick.
     pub driven_bodies: Vec<crate::model::BodyKey>,
     pub base_bodies: Vec<crate::model::BodyKey>,
-    /// The face pair (#1014) and what it holds the part off by.
+    /// Each side of the placement (#1014/#1075): the face, and the point on it that mates.
+    /// The face alone is a half-made pick — the row shows it while the point is being chosen.
     pub moving_face: Option<crate::model::MateRef>,
+    pub moving_point: Option<crate::model::MovePointRef>,
     pub moving_face_focused: bool,
     pub fixed_face: Option<crate::model::MateRef>,
+    pub fixed_point: Option<crate::model::MovePointRef>,
     pub fixed_face_focused: bool,
     pub flip: bool,
     pub offset: String,
@@ -1955,31 +1962,24 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         });
     }
     if let Some(j) = input.joint.as_ref() {
-        // The Joint tool's mate pickers (#1014/#1015): the face pair, then a moving/fixed
-        // pair per line-up row. Inline, like the Move tool's point rows — registered so
-        // focus, hover and scripts see them.
+        // The Joint tool's placement pickers (#1014/#1075): a face and a point on it, per
+        // side. Inline, like the Move tool's point rows — registered so focus, hover and
+        // scripts see them.
         //
         // The moving side is narrowed to the driven part's bodies; the fixed side to the
         // base's, plus the document's own geometry (#1018) — `OffBodies` already counts a
         // datum plane, a world axis and the origin as stationary, so grounding the first
         // part of an assembly against the world falls out.
-        let mate_picker = |kinds: &[ElementKind], on_moving: bool, focused: bool| {
-            let rule = if on_moving {
-                PickRule::OnBodies(j.driven_bodies.clone())
-            } else {
-                PickRule::OffBodies(j.driven_bodies.clone())
-            };
-            let mut picker =
-                ElementPicker::new(ElementFilter::kinds(kinds).rule(rule), PickLimit::Finite(1));
-            picker.set_focused(focused);
-            picker
-        };
         const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
-        for (heading, target, pick, on_moving, focused) in [
+        // Each side takes **two** picks (#1075): a face, then a point on that face. The picker
+        // is staged, so once the face is in, only points on it are on offer — to the pane, the
+        // hover, the click path and the Selection Exploder alike.
+        for (heading, target, face, point, on_moving, focused) in [
             (
                 "Moving face",
                 PickerTarget::JointMovingFace,
                 j.moving_face,
+                j.moving_point,
                 true,
                 j.moving_face_focused,
             ),
@@ -1987,12 +1987,27 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 "Fixed face",
                 PickerTarget::JointFixedFace,
                 j.fixed_face,
+                j.fixed_point,
                 false,
                 j.fixed_face_focused,
             ),
         ] {
-            let mut picker = mate_picker(&FACE_KINDS, on_moving, focused);
-            picker.set_picked(input.doc, pick.as_ref().map(SceneElement::from_mate_ref));
+            let rule = if on_moving {
+                PickRule::OnBodies(j.driven_bodies.clone())
+            } else {
+                PickRule::OffBodies(j.driven_bodies.clone())
+            };
+            let mut picker = ElementPicker::face_then_point(
+                ElementFilter::kinds(&FACE_KINDS).rule(rule.clone()),
+                ElementFilter::kind(ElementKind::Vertex).rule(rule),
+            );
+            picker.set_focused(focused);
+            if let Some(face) = face {
+                picker.push(SceneElement::from_mate_ref(&face));
+                if let Some(p) = point {
+                    picker.push(SceneElement::from_move_point(p));
+                }
+            }
             tool_pickers.push(ToolPickerView {
                 heading,
                 picker,
@@ -2267,13 +2282,27 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // heading and the Angle-snap slider, so they're `Inline` — but they belong in this list
         // like every other picker (#958), or focus, hover and scripts can't see them.
         let moving = m.targets.clone();
-        // Face Snap's two staged pickers (#1077): each takes a face, then a point on it. The
-        // point it ends up holding *is* the mate point — a `MovePointRef::OnFace` already
-        // carries the face it lies on, so nothing else has to be stored to remember it.
+        // Face Snap's two staged pickers (#1075/#1077): each takes a face, then a point on
+        // it. The face shows on its own while its point is still being chosen; once the point
+        // lands it carries the face with it (a `MovePointRef::OnFace` names both).
         if m.translate_mode == crate::model::MoveTranslateMode::FaceSnap {
-            for (heading, target, point, on_moving, focused) in [
-                ("Moving face", PickerTarget::MoveFaceMoving, m.start_a, true, m.start_a_focused),
-                ("Fixed face", PickerTarget::MoveFaceFixed, m.end_a, false, m.end_a_focused),
+            for (heading, target, face, point, on_moving, focused) in [
+                (
+                    "Moving face",
+                    PickerTarget::MoveFaceMoving,
+                    m.face_a,
+                    m.start_a,
+                    true,
+                    m.start_a_focused,
+                ),
+                (
+                    "Fixed face",
+                    PickerTarget::MoveFaceFixed,
+                    m.face_b,
+                    m.end_a,
+                    false,
+                    m.end_a_focused,
+                ),
             ] {
                 let rule = if on_moving {
                     PickRule::OnBodies(moving.clone())
@@ -2285,12 +2314,11 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                     ElementFilter::kind(ElementKind::Vertex).rule(rule),
                 );
                 picker.set_focused(focused);
-                // The picked point implies its face, so a filled picker shows both rows.
-                if let Some(p) = point {
-                    if let Some(face) = crate::model::move_point_host_face(&p) {
-                        picker.push(face);
+                if let Some(face) = face {
+                    picker.push(SceneElement::from_mate_ref(&face));
+                    if let Some(p) = point {
+                        picker.push(SceneElement::from_move_point(p));
                     }
-                    picker.push(SceneElement::from_move_point(p));
                 }
                 tool_pickers.push(ToolPickerView {
                     heading,
@@ -8340,6 +8368,8 @@ mod tests {
                 face_flip: false,
                 face_spin: String::new(),
                 face_offset: String::new(),
+                face_a: None,
+                face_b: None,
                 editing: false,
                 can_commit: true,
             }),
@@ -8503,7 +8533,8 @@ mod tests {
                 driven_bodies: Vec::new(),
                 base_bodies: Vec::new(),
                 moving_face: None, moving_face_focused: false,
-                fixed_face: None, fixed_face_focused: false,
+                moving_point: None,
+                fixed_face: None, fixed_point: None, fixed_face_focused: false,
                 flip: false,
                 offset: String::new(),
                 position: String::new(),

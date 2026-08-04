@@ -1567,8 +1567,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`extrude::move_op_transform`, the same call the Move tool resolves through) that the kind's
   freedoms then act on top of, and has no bearing on how the joint moves.
 
-  - **Face on face.** Face Snap lands the moving face's point **on** the fixed face's — by
-    default each face's middle — with the normals opposed so the surfaces touch. **Flip** puts
+  - **Face on face, in two picks a side.** Each of **Moving face** and **Fixed face** is a
+    staged picker (#1075): the **face** first, then a **point on that face**. The face shows
+    in the row on its own while its point is being chosen, and the side isn't finished until
+    the point lands — which is what lets the second pick be scoped to the first, so the hover
+    and the Selection Exploder offer only points on the face already chosen. Clearing a side
+    drops both; picking a different face starts that side over. A *scripted* `face = {}` names
+    the face alone and takes its middle, which is the sensible default when there is no cursor
+    to point with.
+
+    Face Snap then lands the moving point **on** the fixed one, with the normals opposed so
+    the surfaces touch. **Flip** puts
     the part on the other side, **Gap** holds it off along the normal, and **Turn** spins it
     about that normal through the mate point. This replaced the *line-up rows* that used to
     take away what a face pair left free: a mate point plus a turn pins all three of those

@@ -1182,6 +1182,11 @@ pub struct CreatingMove {
     pub face_flip: bool,
     pub face_spin: String,
     pub face_offset: String,
+    /// Face Snap picks each side in **two steps** (#1075): a face, then a point on that face.
+    /// While only the face is picked it lives here; once the point lands it goes into
+    /// `start_point_a`/`end_point_a`, which carry the face along with them, and this clears.
+    pub pending_face_a: Option<crate::model::MateRef>,
+    pub pending_face_b: Option<crate::model::MateRef>,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<crate::model::MoveOpKey>,
 }
@@ -1268,6 +1273,61 @@ impl CreatingMove {
         }
     }
 
+    /// The face a Face Snap side has settled on (#1075): the one whose point is already
+    /// picked, else the one waiting for its point.
+    pub fn face_pick(&self, moving: bool) -> Option<crate::model::MateRef> {
+        let point = if moving { self.start_point_a } else { self.end_point_a };
+        point
+            .as_ref()
+            .and_then(crate::model::move_point_host_mate_ref)
+            .or(if moving { self.pending_face_a } else { self.pending_face_b })
+    }
+
+    /// Take a Face Snap pick (#1075): the **face** first, then a **point on that face**.
+    /// Returns whether anything changed. Picking a face again starts that side over.
+    pub fn take_face_snap_pick(
+        &mut self,
+        moving: bool,
+        face: Option<crate::model::MateRef>,
+        point: Option<crate::model::MovePointRef>,
+    ) -> bool {
+        self.translate_mode = crate::model::MoveTranslateMode::FaceSnap;
+        match (face, point) {
+            (Some(face), _) => {
+                if moving {
+                    self.pending_face_a = Some(face);
+                    self.start_point_a = None;
+                } else {
+                    self.pending_face_b = Some(face);
+                    self.end_point_a = None;
+                }
+                true
+            }
+            (None, Some(point)) => {
+                if moving {
+                    self.start_point_a = Some(point);
+                    self.pending_face_a = None;
+                } else {
+                    self.end_point_a = Some(point);
+                    self.pending_face_b = None;
+                }
+                true
+            }
+            (None, None) => false,
+        }
+    }
+
+    /// Clear one Face Snap side outright (#1075) — the face takes its point with it.
+    pub fn clear_face_snap_side(&mut self, moving: bool) {
+        if moving {
+            self.pending_face_a = None;
+            self.start_point_a = None;
+        } else {
+            self.pending_face_b = None;
+            self.end_point_a = None;
+        }
+    }
+
     /// The inverse: a stored placement loaded back into the tool (#1079).
     pub fn from_op(op: &crate::model::MoveOperation) -> Self {
         Self {
@@ -1292,6 +1352,9 @@ impl CreatingMove {
             face_flip: op.face_flip,
             face_spin: op.face_spin.clone(),
             face_offset: op.face_offset.clone(),
+            // A stored placement's points already carry their faces; nothing is half-picked.
+            pending_face_a: None,
+            pending_face_b: None,
             editing: None,
         }
     }
@@ -17331,6 +17394,8 @@ mod tests {
             face_spin: String::new(),
             roll_angle: String::new(),
             face_offset: String::new(),
+            pending_face_a: None,
+            pending_face_b: None,
         });
         let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
         assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));
@@ -22169,6 +22234,60 @@ mod tests {
             margin_mm: Some(999.0),
         });
         assert!(state.doc.drawings[dkey(0)].margin_mm <= 49.0, "margin clamped to fit");
+    }
+
+    /// #1075: a Face Snap side takes **two** picks — a face, then a point on that face. The
+    /// face alone is a half-made pick: it shows in the row, but the side isn't done until the
+    /// point lands, and clearing the side takes both away.
+    #[test]
+    fn a_face_snap_side_is_picked_in_two_steps() {
+        use crate::model::{MateRef, MovePointRef};
+        let face = MateRef::Face { body: bkey(0), centroid: [0, 0, 500], normal: [0, 0, 100] };
+        let point = MovePointRef::OnFace {
+            body: bkey(0),
+            centroid: [0, 0, 500],
+            normal: [0, 0, 100],
+            uv: [300, -200],
+        };
+        let mut cm = CreatingMove::default();
+
+        // Nothing picked at all.
+        assert_eq!(cm.face_pick(true), None);
+        assert!(cm.start_point_a.is_none());
+
+        // The face: shown in the row, but the side is not finished.
+        assert!(cm.take_face_snap_pick(true, Some(face), None));
+        assert_eq!(cm.face_pick(true), Some(face));
+        assert!(cm.start_point_a.is_none(), "no mate point yet");
+        assert_eq!(
+            cm.translate_mode,
+            crate::model::MoveTranslateMode::FaceSnap,
+            "picking a face is what puts the tool in Face Snap"
+        );
+
+        // The point on it: the side is done, and the point carries the face.
+        assert!(cm.take_face_snap_pick(true, None, Some(point)));
+        assert_eq!(cm.start_point_a, Some(point));
+        assert_eq!(cm.face_pick(true), Some(face), "the point implies its face");
+        assert!(cm.pending_face_a.is_none(), "nothing left half-picked");
+
+        // A new face starts that side over rather than keeping a point on the old one.
+        let other = MateRef::Face { body: bkey(1), centroid: [0, 0, 0], normal: [0, 0, -100] };
+        cm.take_face_snap_pick(true, Some(other), None);
+        assert_eq!(cm.face_pick(true), Some(other));
+        assert!(cm.start_point_a.is_none(), "the old point went with the old face");
+
+        // The two sides are independent.
+        assert_eq!(cm.face_pick(false), None);
+        cm.take_face_snap_pick(false, Some(face), None);
+        assert_eq!(cm.face_pick(false), Some(face));
+        assert_eq!(cm.face_pick(true), Some(other));
+
+        // Clearing a side drops its face and its point together.
+        cm.take_face_snap_pick(false, None, Some(point));
+        cm.clear_face_snap_side(false);
+        assert_eq!(cm.face_pick(false), None);
+        assert!(cm.end_point_a.is_none());
     }
 
     /// #253: DeleteElement deletes one specific element (the right-click → Delete path) and

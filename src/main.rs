@@ -8067,19 +8067,56 @@ impl App {
                     body,
                     p: hierarchy::quantize_body_point(world),
                 });
-            // Face Snap (#1077) takes the exact spot on the face under the cursor, not the
-            // nearest corner: "put this bit of this face on that bit of that one" is the whole
-            // gesture, and a click already says both which face and where on it.
+            // Face Snap (#1075/#1077) takes each side in **two** picks: the face, then the
+            // spot on that face. "Put this bit of this face on that bit of that one" is two
+            // things said, and asking for them separately is what lets the second pick be
+            // scoped to the first — the picker, the hover and the exploder all follow.
             let face_snap = self
                 .state
                 .creating_move
                 .as_ref()
-                .is_some_and(|c| c.translate_mode == model::MoveTranslateMode::FaceSnap);
-            let picked = if face_snap {
-                self.pick_move_face_point(pp, project, cam, viewport, vp, pick_occlusion, side)
-            } else {
-                candidate.or_else(|| self.pick_move_point(pp, project, pick_occlusion, side))
-            };
+                .is_some_and(|c| c.translate_mode == model::MoveTranslateMode::FaceSnap)
+                && matches!(focus, MoveFocus::StartPointA | MoveFocus::EndPointA);
+            if face_snap {
+                let on_moving = focus == MoveFocus::StartPointA;
+                let pending = self.state.creating_move.as_ref().and_then(|c| {
+                    if on_moving { c.pending_face_a } else { c.pending_face_b }
+                });
+                match pending {
+                    Some(face) => match self.pick_point_on_mate_face(pp, cam, viewport, vp, &face) {
+                        Some(point) => {
+                            let label = self.move_point_label(&point);
+                            if let Some(cm) = self.state.creating_move.as_mut() {
+                                cm.take_face_snap_pick(on_moving, None, Some(point));
+                            }
+                            self.release_satisfied_move_focus();
+                            self.state.status = format!("Move: mate point — {label}");
+                        }
+                        None => {
+                            self.state.status =
+                                "Pick a point on the face you chose".to_string();
+                        }
+                    },
+                    None => match self.pick_move_face(pp, project, pick_occlusion, side) {
+                        Some(face) => {
+                            if let Some(cm) = self.state.creating_move.as_mut() {
+                                cm.take_face_snap_pick(on_moving, Some(face), None);
+                            }
+                            self.state.status =
+                                "Move: face — now pick a point on it".to_string();
+                        }
+                        None => {
+                            self.state.status = if on_moving {
+                                "Pick a face on a body being moved".to_string()
+                            } else {
+                                "Pick a face on a body that isn't moving".to_string()
+                            };
+                        }
+                    },
+                }
+                return;
+            }
+            let picked = candidate.or_else(|| self.pick_move_point(pp, project, pick_occlusion, side));
             match picked.filter(|point| reachable(self, point)) {
                 Some(point) => {
                     let label = self.move_point_label(&point);
@@ -8265,15 +8302,65 @@ impl App {
             }
             return;
         }
-        // The mate's own pickers (#1021): a face on each part, then the line-up rows.
+        // The placement's two sides (#1021/#1075): each takes a **face**, then a **point on
+        // that face**. Once the face is in, the click means "here, on this face".
+        if matches!(focus, JointFocus::MovingFace | JointFocus::FixedFace) {
+            let on_moving = focus == JointFocus::MovingFace;
+            let side_bodies = self.joint_side_bodies(on_moving);
+            let pending = self
+                .state
+                .creating_joint
+                .as_ref()
+                .and_then(|cj| {
+                    if on_moving { cj.placement.pending_face_a } else { cj.placement.pending_face_b }
+                });
+            match pending {
+                // Stage two: a spot on the face already chosen.
+                Some(face) => match self.pick_point_on_mate_face(pp, cam, viewport, vp, &face) {
+                    Some(point) => {
+                        let label = self.move_point_label(&point);
+                        if let Some(cj) = self.state.creating_joint.as_mut() {
+                            cj.placement.take_face_snap_pick(on_moving, None, Some(point));
+                        }
+                        self.release_satisfied_joint_focus();
+                        self.state.status = format!("Joint: mate point — {label}");
+                    }
+                    None => {
+                        self.state.status =
+                            "Pick a point on the face you chose".to_string();
+                    }
+                },
+                // Stage one: the face itself.
+                None => match self
+                    .pick_mate_ref(pp, project, pick_occlusion, &side_bodies, true, !on_moving)
+                {
+                    Some(face) => {
+                        let label = self.mate_ref_label(&face);
+                        if let Some(cj) = self.state.creating_joint.as_mut() {
+                            cj.placement.take_face_snap_pick(on_moving, Some(face), None);
+                        }
+                        self.state.status = format!("Joint: face — {label}, now pick a point on it");
+                    }
+                    None => {
+                        self.state.status = if on_moving {
+                            "Pick a face on the moving part".to_string()
+                        } else {
+                            "Pick a face or plane on the fixed side".to_string()
+                        };
+                    }
+                },
+            }
+            return;
+        }
+        // The frame's axis pickers (#1079).
         if let Some((on_moving, faces_only, what)) = match focus {
-            JointFocus::MovingFace => Some((true, true, "moving face")),
-            JointFocus::FixedFace => Some((false, true, "fixed face")),
             // The frame's two axis inputs (#1079) take anything with a direction, on either
             // part — a joint may perfectly well turn about an axis on the part that moves.
             JointFocus::FramePrimary => Some((true, false, "axis")),
             JointFocus::FrameSecondary => Some((true, false, "second axis")),
-            JointFocus::Members
+            JointFocus::MovingFace
+            | JointFocus::FixedFace
+            | JointFocus::Members
             | JointFocus::SlideMinStop
             | JointFocus::SlideMaxStop
             // The frame's origin is a point, taken above.
@@ -8395,6 +8482,8 @@ impl App {
                         face_spin: String::new(),
                         roll_angle: String::new(),
                         face_offset: String::new(),
+                        pending_face_a: None,
+                        pending_face_b: None,
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
                 }
@@ -9695,20 +9784,60 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Face Snap's pick (#1077): the **exact spot** on the planar face under the cursor, as a
-    /// [`model::MovePointRef::OnFace`]. Unlike [`Self::pick_move_point`] it never falls back to
-    /// a corner or an edge midpoint — a Face Snap click means "here, on this face", and
-    /// snapping it to the nearest corner would quietly change which mate you asked for.
-    fn pick_move_face_point(
+    /// The bodies one side of a joint's placement may pick on (#1014): the driven member's
+    /// for a moving pick, the base's for a fixed one.
+    fn joint_side_bodies(&self, on_moving: bool) -> Vec<model::BodyKey> {
+        self.state
+            .creating_joint
+            .as_ref()
+            .map(|cj| {
+                let base = if cj.base < cj.members.len() { cj.base } else { 0 };
+                cj.members
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| (*i != base) == on_moving)
+                    .flat_map(|(_, m)| joints::member_bodies(&self.state.doc, *m))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Stage two of a Face Snap pick (#1075): the spot on **this** face the cursor is over,
+    /// as a `MovePointRef::OnFace`. `None` when the ray misses the face's own outline — a
+    /// click off the chosen face isn't a point on it, and silently taking the nearest spot
+    /// would place the mate somewhere the user didn't point at.
+    fn pick_point_on_mate_face(
         &self,
         pp: egui::Pos2,
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         cam: &camera::Camera,
         viewport: egui::Rect,
         vp: &glam::Mat4,
+        face: &model::MateRef,
+    ) -> Option<model::MovePointRef> {
+        let model::MateRef::Face { body, centroid, normal } = face else {
+            return None;
+        };
+        let tris = extrude::body_face_triangles(&self.state.doc, *body, *centroid, *normal)?;
+        let centre = extrude::face_group_center(&tris);
+        let n = hierarchy::dequantize_body_point(*normal);
+        let world = cam.ray_plane_hit(pp, viewport, vp, centre, n)?;
+        extrude::face_group_contains(&tris, world).then(|| model::MovePointRef::OnFace {
+            body: *body,
+            centroid: *centroid,
+            normal: *normal,
+            uv: extrude::face_world_uv(&tris, world),
+        })
+    }
+
+    /// Stage one of a Move Face Snap pick (#1075): the planar face under the cursor, on a
+    /// body this side of the move may take.
+    fn pick_move_face(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pick_occlusion: Option<&construction::PickOcclusion>,
         moving: Option<bool>,
-    ) -> Option<model::MovePointRef> {
+    ) -> Option<model::MateRef> {
         let targets: Vec<model::BodyKey> = self
             .state
             .creating_move
@@ -9723,18 +9852,10 @@ impl App {
         if moving.is_some_and(|m| targets.contains(body) != m) {
             return None;
         }
-        // Where the cursor's ray meets the face's own plane; if that misses (a ray parallel to
-        // the face), fall back to its centre, which is always on it.
-        let centre = extrude::face_group_center(triangles);
-        let uv = cam
-            .ray_plane_hit(pp, viewport, vp, centre, *normal)
-            .map(|world| extrude::face_world_uv(triangles, world))
-            .unwrap_or([0, 0]);
-        Some(model::MovePointRef::OnFace {
+        Some(model::MateRef::Face {
             body: *body,
-            centroid: hierarchy::quantize_body_point(centre),
+            centroid: hierarchy::quantize_body_point(extrude::face_group_center(triangles)),
             normal: hierarchy::quantize_body_point(*normal),
-            uv,
         })
     }
 
@@ -12520,6 +12641,8 @@ impl eframe::App for App {
                     face_flip: cm.map(|c| c.face_flip).unwrap_or(false),
                     face_spin: cm.map(|c| c.face_spin.clone()).unwrap_or_default(),
                     face_offset: cm.map(|c| c.face_offset.clone()).unwrap_or_default(),
+                    face_a: cm.and_then(|c| c.face_pick(true)),
+                    face_b: cm.and_then(|c| c.face_pick(false)),
                     editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                     can_commit: cm
                         .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
@@ -12591,15 +12714,14 @@ impl eframe::App for App {
                         .get(base)
                         .map(|m| self.joint_member_label(*m))
                         .unwrap_or_default(),
-                    // The placement's two faces (#1079): the same `start_point_a`/`end_point_a`
-                    // the Move tool's Face Snap fills, shown as the joint's own two rows.
-                    moving_face: cj
-                        .and_then(|c| c.placement.start_point_a)
-                        .and_then(|p| crate::model::move_point_host_mate_ref(&p)),
+                    // The placement's two sides (#1079), each a face plus the point on it that
+                    // mates — the same `start_point_a`/`end_point_a` the Move tool's Face Snap
+                    // fills, shown as the joint's own two rows.
+                    moving_face: cj.and_then(|c| c.placement.face_pick(true)),
+                    moving_point: cj.and_then(|c| c.placement.start_point_a),
                     moving_face_focused: joint_focus == JointFocus::MovingFace,
-                    fixed_face: cj
-                        .and_then(|c| c.placement.end_point_a)
-                        .and_then(|p| crate::model::move_point_host_mate_ref(&p)),
+                    fixed_face: cj.and_then(|c| c.placement.face_pick(false)),
+                    fixed_point: cj.and_then(|c| c.placement.end_point_a),
                     fixed_face_focused: joint_focus == JointFocus::FixedFace,
                     flip: cj.is_some_and(|c| c.placement.face_flip),
                     offset: cj.map(|c| c.placement.face_offset.clone()).unwrap_or_default(),
@@ -13708,11 +13830,13 @@ impl eframe::App for App {
                                 cj.members.clear();
                                 cj.base = 0;
                             }
+                            // Clearing a side drops its face *and* its point (#1075): the
+                            // point only ever meant "on that face".
                             context::JointEdit::ClearMovingFace => {
-                                set_mate_pick(cj, JointFocus::MovingFace, None)
+                                cj.placement.clear_face_snap_side(true)
                             }
                             context::JointEdit::ClearFixedFace => {
-                                set_mate_pick(cj, JointFocus::FixedFace, None)
+                                cj.placement.clear_face_snap_side(false)
                             }
                             context::JointEdit::Flip(on) => cj.placement.face_flip = on,
                             context::JointEdit::Offset(v) => cj.placement.face_offset = v,
@@ -15853,22 +15977,13 @@ fn set_mate_pick(
     focus: JointFocus,
     pick: Option<model::MateRef>,
 ) {
-    // A placement pick is a face, held as the point at its middle (#1079) — the same
-    // `MovePointRef::OnFace` the Move tool's Face Snap fills in.
-    let point = |r: Option<model::MateRef>| match r {
-        Some(model::MateRef::Face { body, centroid, normal }) => {
-            Some(model::MovePointRef::OnFace { body, centroid, normal, uv: [0, 0] })
-        }
-        _ => None,
-    };
     match focus {
+        // A placement side takes its **face** here (#1075); the point on it follows.
         JointFocus::MovingFace => {
-            cj.placement.translate_mode = model::MoveTranslateMode::FaceSnap;
-            cj.placement.start_point_a = point(pick);
+            cj.placement.take_face_snap_pick(true, pick, None);
         }
         JointFocus::FixedFace => {
-            cj.placement.translate_mode = model::MoveTranslateMode::FaceSnap;
-            cj.placement.end_point_a = point(pick);
+            cj.placement.take_face_snap_pick(false, pick, None);
         }
         // The frame's axis inputs take a `MateRef` as it is (#1079).
         JointFocus::FramePrimary => cj.frame.primary = pick,

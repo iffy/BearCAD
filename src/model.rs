@@ -2286,20 +2286,6 @@ pub enum MovePointRef {
     Origin,
 }
 
-/// The face a mating point sits on, as a pickable element (#1077) — `None` for a point that
-/// isn't on one. A `MovePointRef::OnFace` already carries its face's key, so a Face Snap
-/// picker can show both of its rows from the point alone.
-pub fn move_point_host_face(point: &MovePointRef) -> Option<crate::hierarchy::SceneElement> {
-    let MovePointRef::OnFace { body, centroid, normal, .. } = point else {
-        return None;
-    };
-    Some(crate::hierarchy::SceneElement::BodyFace {
-        body: *body,
-        centroid: *centroid,
-        normal: *normal,
-    })
-}
-
 /// The face a mating point sits on as a [`MateRef`] (#1079) — how the joint pane shows the
 /// two faces its placement named. `None` for a point that isn't on one.
 pub fn move_point_host_mate_ref(point: &MovePointRef) -> Option<MateRef> {

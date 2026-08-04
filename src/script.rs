@@ -5737,6 +5737,8 @@ impl ScriptRunner {
                     face_spin,
                     face_offset,
                     editing: None,
+                    pending_face_a: None,
+                    pending_face_b: None,
                 });
                 StepResult::Continue
             }
