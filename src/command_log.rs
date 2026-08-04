@@ -19,7 +19,11 @@ pub struct CommandLog {
     pending_discrete: Option<Instruction>,
     defer_baseline: bool,
     print_stdout: bool,
-    history: Vec<Instruction>,
+    /// The session as **rendered Lua**, not as instructions (#1070). An instruction naming an
+    /// element has to be spelled while a document is at hand to count live elements against —
+    /// `Instruction::as_lua` alone can only say the arena slot, which stops matching the
+    /// ordinal a replay resolves the moment anything of that kind is deleted.
+    history: Vec<String>,
     extrusion_count_before: usize,
     loft_count_before: usize,
     revolution_count_before: usize,
@@ -50,8 +54,8 @@ impl CommandLog {
         out.push_str("-- BearCAD session commands\n");
         out.push_str(&format!("-- Exported {timestamp} UTC\n"));
         out.push_str("-- Replay headless with: cargo run -- --script <file> --exit\n\n");
-        for instruction in &self.history {
-            out.push_str(&instruction.as_lua());
+        for line in &self.history {
+            out.push_str(line);
             out.push('\n');
         }
         out
@@ -164,7 +168,7 @@ impl CommandLog {
             // every treated edge (#531/#672); emit it here and yield nothing below.
             if doc.edge_treatment_ops.len() > self.edge_treatment_op_count_before {
                 for instr in crate::script::instructions_for_new_edge_treatment_op(doc) {
-                    self.emit(instr);
+                    self.emit_in(instr, Some(doc));
                 }
             }
             None
@@ -172,7 +176,7 @@ impl CommandLog {
             instruction_from_action(&action, doc)
         };
         if let Some(instruction) = instruction {
-            self.emit(instruction);
+            self.emit_in(instruction, Some(doc));
         }
         if Self::can_add_snap_constraint(&action) {
             for (key, constraint) in doc.constraints.iter() {
@@ -181,7 +185,7 @@ impl CommandLog {
                 }
                 if let Some(extra) = instructions_for_snap_constraint(&constraint.kind) {
                     for instruction in extra {
-                        self.emit(instruction);
+                        self.emit_in(instruction, Some(doc));
                     }
                 }
             }
@@ -297,11 +301,19 @@ impl CommandLog {
         self.pending_discrete = None;
     }
 
-    fn emit(&mut self, instruction: Instruction) {
+    /// Render and record one instruction. `doc` is the document it was recorded against, so
+    /// elements are named by ordinal (#1070); the camera flush passes `None`, which is safe
+    /// because a camera instruction names no elements.
+    fn emit_in(&mut self, instruction: Instruction, doc: Option<&Document>) {
+        let line = instruction.as_lua_in(doc);
         if self.print_stdout {
-            println!("{}", instruction.as_lua());
+            println!("{line}");
         }
-        self.history.push(instruction);
+        self.history.push(line);
+    }
+
+    fn emit(&mut self, instruction: Instruction) {
+        self.emit_in(instruction, None);
     }
 }
 
@@ -361,6 +373,54 @@ mod tests {
         log.note_view_instruction(Instruction::View(crate::camera::StandardView::Front));
         log.before_apply(&Action::SetTool(crate::actions::Tool::Rectangle), &Document::default(), &cam);
         assert!(log.pending_discrete.is_none());
+    }
+
+    /// #1070: an exported session names an element by its **ordinal** among the live ones,
+    /// not by its arena slot. The two agree until something is deleted — delete image 0 and
+    /// the surviving image is ordinal 0 while its slot is still 1, so an export naming the
+    /// slot replays to nothing.
+    #[test]
+    fn an_exported_session_names_an_element_by_its_ordinal_not_its_slot() {
+        use crate::hierarchy::SceneElement;
+        let cam = Camera::default();
+        let mut doc = Document::default();
+        let image = || crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: doc.construction_planes.keys().next().expect("the ground plane"),
+            origin: (0.0, 0.0),
+            base_origin: None,
+            width_mm: 10.0,
+            height_mm: 10.0,
+            name: None,
+            calibration: None,
+        };
+        let gone = doc.tracing_images.insert(image());
+        let kept = doc.tracing_images.insert(image());
+        doc.tracing_images.remove(gone);
+        assert_eq!(kept.index(), 1, "the survivor kept slot 1");
+        assert_eq!(
+            doc.tracing_images.keys().position(|k| k == kept),
+            Some(0),
+            "and is the only live image, so ordinal 0"
+        );
+
+        let mut log = CommandLog::new_recording(false);
+        let action = Action::SetElementVisible {
+            element: SceneElement::Image(kept),
+            visible: false,
+        };
+        log.before_apply(&action, &doc, &cam);
+        log.after_apply(action, &doc);
+        let script = log.session_lua_script("20260101-000000");
+        assert!(
+            script.contains("index = 0"),
+            "the export should name the ordinal a replay resolves, got:\n{script}"
+        );
+        assert!(
+            !script.contains("index = 1"),
+            "naming the slot replays to nothing, got:\n{script}"
+        );
     }
 
     #[test]

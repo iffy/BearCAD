@@ -834,8 +834,18 @@ pub enum Instruction {
 }
 
 impl Instruction {
-    /// Format this instruction as a Lua API call (for `--show-commands` logging).
+    /// Format this instruction as a Lua API call, with no document to resolve against.
+    ///
+    /// Anything naming an element then falls back to its arena **slot**, which is only the
+    /// ordinal a script wants while nothing of that kind has been deleted. Prefer
+    /// [`as_lua_in`](Self::as_lua_in) wherever a document is at hand (#1070).
     pub fn as_lua(&self) -> String {
+        self.as_lua_in(None)
+    }
+
+    /// Format this instruction as a Lua API call, naming elements by their **ordinal** among
+    /// the live ones of their kind — what a replay resolves (#1055/#1070).
+    pub fn as_lua_in(&self, doc: Option<&crate::model::Document>) -> String {
         match self {
             Instruction::New => "bearcad.new()".to_string(),
             Instruction::Open(path) => format!("bearcad.open({path:?})"),
@@ -975,7 +985,7 @@ impl Instruction {
                 };
                 let to = target
                     .as_ref()
-                    .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
+                    .map(|t| format!(", to = {}", extrude_target_lua_table(t, doc)))
                     .unwrap_or_default();
                 let distance = match expression {
                     Some(e) => format!("{e:?}"),
@@ -984,7 +994,7 @@ impl Instruction {
                 let sym = if *symmetric { ", symmetric = true" } else { "" };
                 format!(
                     "bearcad.extrude{{ {}, distance = {distance}{body}{to}{sym} }}",
-                    extrude_face_args(faces)
+                    extrude_face_args(faces, doc)
                 )
             }
             Instruction::ExtrudeBodyFace { face, distance, body, target } => {
@@ -996,11 +1006,11 @@ impl Instruction {
                 };
                 let to = target
                     .as_ref()
-                    .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
+                    .map(|t| format!(", to = {}", extrude_target_lua_table(t, doc)))
                     .unwrap_or_default();
                 format!(
                     "bearcad.extrude_face{{ face = {}, distance = {distance}{body}{to} }}",
-                    face_id_lua_ref(face)
+                    face_id_lua_ref(face, doc)
                 )
             }
             Instruction::UpdateExtrusion { extrusion, distance, target, expression } => {
@@ -1011,7 +1021,7 @@ impl Instruction {
                 };
                 let to = target
                     .as_ref()
-                    .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
+                    .map(|t| format!(", to = {}", extrude_target_lua_table(t, doc)))
                     .unwrap_or_default();
                 format!("bearcad.edit_extrusion{{ extrusion = {extrusion}{d}{to} }}")
             }
@@ -1022,13 +1032,13 @@ impl Instruction {
                 };
                 // The lines' arena slots, not their ordinals (#1070).
                 let line_list = |lines: &[crate::model::LineKey]| -> String {
-                    lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ")
+                    lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
                 };
                 let mut circles = Vec::new();
                 let mut polygons = Vec::new();
                 for face in faces {
                     match face {
-                        ExtrudeFace::Circle(i) => circles.push(i.index() as usize),
+                        ExtrudeFace::Circle(i) => circles.push(circle_ord(doc, *i)),
                         ExtrudeFace::Polygon(lines) => polygons.push(lines),
                         // Boolean regions aren't loftable sections (no interactive path
                         // constructs one), so nothing to render.
@@ -1179,13 +1189,13 @@ impl Instruction {
                 };
                 // The lines' arena slots, not their ordinals (#1070).
                 let line_list = |lines: &[crate::model::LineKey]| -> String {
-                    lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ")
+                    lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
                 };
                 let mut parts = Vec::new();
                 let circles: Vec<usize> = faces
                     .iter()
                     .filter_map(|f| match f {
-                        ExtrudeFace::Circle(i) => Some(i.index() as usize),
+                        ExtrudeFace::Circle(i) => Some(circle_ord(doc, *i)),
                         _ => None,
                     })
                     .collect();
@@ -1224,13 +1234,13 @@ impl Instruction {
                 };
                 // The lines' arena slots, not their ordinals (#1070).
                 let line_list = |lines: &[crate::model::LineKey]| -> String {
-                    lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ")
+                    lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
                 };
                 let mut parts = Vec::new();
                 let circles: Vec<usize> = faces
                     .iter()
                     .filter_map(|f| match f {
-                        ExtrudeFace::Circle(i) => Some(i.index() as usize),
+                        ExtrudeFace::Circle(i) => Some(circle_ord(doc, *i)),
                         _ => None,
                     })
                     .collect();
@@ -1277,37 +1287,37 @@ impl Instruction {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::CreateJointOp { members, base, kind, placement, frame, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.joint", None, members, *base, kind, placement, frame, position, position2, position3, limits)
+                joint_op_lua("bearcad.joint", None, doc, members, *base, kind, placement, frame, position, position2, position3, limits)
             }
             Instruction::BeginJointOp { members, base, kind, placement, frame, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.begin_joint", None, members, *base, kind, placement, frame, position, position2, position3, limits)
+                joint_op_lua("bearcad.begin_joint", None, doc, members, *base, kind, placement, frame, position, position2, position3, limits)
             }
             Instruction::EditJointOp { op, members, base, kind, placement, frame, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.edit_joint", Some(*op), members, *base, kind, placement, frame, position, position2, position3, limits)
+                joint_op_lua("bearcad.edit_joint", Some(*op), doc, members, *base, kind, placement, frame, position, position2, position3, limits)
             }
             Instruction::SetJointRest { op } => format!("bearcad.set_joint_rest({op})"),
             Instruction::RevertJoint { op } => format!("bearcad.revert_joint({op})"),
             Instruction::RevertAllJoints => "bearcad.revert_joints()".to_string(),
             Instruction::CreateMirrorOp { plane, targets, mode } => {
-                mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
+                mirror_op_lua("bearcad.mirror_bodies", None, doc, plane, targets, *mode)
             }
             Instruction::EditMirrorOp { op, plane, targets, mode } => {
-                mirror_op_lua("bearcad.edit_mirror", Some(*op), plane, targets, *mode)
+                mirror_op_lua("bearcad.edit_mirror", Some(*op), doc, plane, targets, *mode)
             }
             Instruction::CreateRepeatOp { targets, axis, around_axis, flip, mode, count, spacing, length, length_target } => {
-                repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *around_axis, *flip, *mode, count, spacing, length, length_target.as_ref())
+                repeat_op_lua("bearcad.repeat_bodies", None, doc, targets, *axis, *around_axis, *flip, *mode, count, spacing, length, length_target.as_ref())
             }
             Instruction::EditRepeatOp { op, targets, axis, around_axis, flip, mode, count, spacing, length, length_target } => {
-                repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *around_axis, *flip, *mode, count, spacing, length, length_target.as_ref())
+                repeat_op_lua("bearcad.edit_repeat", Some(*op), doc, targets, *axis, *around_axis, *flip, *mode, count, spacing, length, length_target.as_ref())
             }
             Instruction::CreateSliceOp { targets, cutters, extend_infinite } => {
-                slice_op_lua("bearcad.slice", None, targets, cutters, *extend_infinite)
+                slice_op_lua("bearcad.slice", None, doc, targets, cutters, *extend_infinite)
             }
             Instruction::EditSliceOp { op, targets, cutters, extend_infinite } => {
-                slice_op_lua("bearcad.edit_slice", Some(*op), targets, cutters, *extend_infinite)
+                slice_op_lua("bearcad.edit_slice", Some(*op), doc, targets, cutters, *extend_infinite)
             }
             Instruction::SetElementVisible { element, visible } => {
-                let target = element_lua_ref(element);
+                let target = element_lua_ref(element, doc);
                 let verb = match visible {
                     Some(true) => "show",
                     Some(false) => "hide",
@@ -1337,7 +1347,7 @@ impl Instruction {
                 format!("bearcad.set_material{{ body = {body}, material = {material} }}")
             }
             Instruction::SelectSceneElement { element, additive } => {
-                let target = element_lua_ref(element);
+                let target = element_lua_ref(element, doc);
                 if *additive {
                     format!("bearcad.select({target}, {{ additive = true }})")
                 } else {
@@ -1348,7 +1358,7 @@ impl Instruction {
             Instruction::SetShapeConstruction { element, construction } => {
                 format!(
                     "bearcad.set_construction({}, {})",
-                    element_lua_ref(element),
+                    element_lua_ref(element, doc),
                     construction
                 )
             }
@@ -1359,7 +1369,7 @@ impl Instruction {
             Instruction::SetElementName { element, name } => {
                 format!(
                     "bearcad.set_name({}, {name:?})",
-                    element_lua_ref(element)
+                    element_lua_ref(element, doc)
                 )
             }
             Instruction::FocusElementName => "bearcad.ui.focus_name()".to_string(),
@@ -1388,7 +1398,7 @@ impl Instruction {
                     Some(c) => c.to_string(),
                     None => "false".to_string(),
                 };
-                let tokens = element_script_tokens(element.clone());
+                let tokens = element_script_tokens(element.clone(), doc);
                 format!(
                     "bearcad.move_to_component{{ kind = {:?}, index = {}, component = {target} }}",
                     tokens.kind, tokens.index
@@ -1487,7 +1497,7 @@ impl Instruction {
             Instruction::DragVertex { point, u, v } => {
                 format!(
                     "bearcad.ui.drag_vertex({}, {u}, {v})",
-                    constraint_point_lua_ref(point)
+                    constraint_point_lua_ref(point, doc)
                 )
             }
             Instruction::DragLineSegment {
@@ -1498,7 +1508,7 @@ impl Instruction {
                 v,
             } => format!(
                 "bearcad.ui.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
-                constraint_line_lua_ref(target)
+                constraint_line_lua_ref(target, doc)
             ),
             Instruction::VertexTreatment { point, kind, amount } => {
                 let (fname, amount_key) = match kind {
@@ -1513,7 +1523,7 @@ impl Instruction {
                 };
                 format!(
                     "bearcad.{fname}{{ point = {}, {amount_key} = {amount_lua} }}",
-                    constraint_point_lua_ref(point)
+                    constraint_point_lua_ref(point, doc)
                 )
             }
             Instruction::EdgeTreatment { edges, kind, amount } => {
@@ -1653,12 +1663,12 @@ impl Instruction {
                 use crate::model::ParameterSource as PS;
                 let src = match source {
                     PS::LineLength(i) => {
-                        format!("kind = \"line_length\", a = {}", i.index())
+                        format!("kind = \"line_length\", a = {}", line_ord(doc, *i))
                     }
                     PS::PointDistance(a, b) => format!(
                         "kind = \"point_distance\", a = {{ {} }}, b = {{ {} }}",
-                        point_lua_fields(a),
-                        point_lua_fields(b)
+                        point_lua_fields(a, doc),
+                        point_lua_fields(b, doc)
                     ),
                     PS::LineDistance(a, b) => {
                         format!(
@@ -1668,28 +1678,28 @@ impl Instruction {
                         )
                     }
                     PS::LineAngle(a, b) => {
-                        format!("kind = \"line_angle\", a = {}, b = {}", a.index(), b.index())
+                        format!("kind = \"line_angle\", a = {}, b = {}", line_ord(doc, *a), line_ord(doc, *b))
                     }
                     // Body geometry (#647) is keyed on quantized world points; scripts spell
                     // them as plain **mm** coordinates, which the parser re-quantizes.
                     PS::BodyEdgeLength { body, a, b } => format!(
                         "kind = \"body_edge_length\", body = {}, a = {}, b = {}",
-                        body.index(),
+                        body_ord(doc, *body),
                         mm_point_lua(*a),
                         mm_point_lua(*b)
                     ),
                     PS::BodyVertexDistance { body_a, a, body_b, b } => format!(
                         "kind = \"body_vertex_distance\", body = {}, a = {}, body_b = {}, b = {}",
-                        body_a.index(),
+                        body_ord(doc, *body_a),
                         mm_point_lua(*a),
-                        body_b.index(),
+                        body_ord(doc, *body_b),
                         mm_point_lua(*b)
                     ),
                     // Analytic unit edge (#724): the face has no flat Lua spelling, so it
                     // rides as its JSON encoding; the parser feeds it back through serde.
                     PS::UnitEdgeLength { instance, face, edge } => format!(
                         "kind = \"unit_edge_length\", instance = {}, face = {:?}, edge = {edge}",
-                        instance.index(),
+                        instance_ord(doc, *instance),
                         serde_json::to_string(face).unwrap_or_default()
                     ),
                 };
@@ -1910,17 +1920,46 @@ fn eval_scalar_input(
     }
 }
 
-fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
+/// An element's **ordinal** among the live ones of its kind when a document was available to
+/// count them, else its arena **slot** (#1070). The two agree until something of that kind is
+/// deleted, at which point only the ordinal is what a replay resolves — so an export with no
+/// document to hand says the slot and is wrong exactly then.
+fn ordinal_or_slot(found: Option<Option<usize>>, slot: u32) -> usize {
+    found.flatten().unwrap_or(slot as usize)
+}
+
+/// The ordinal helpers the renderers use, one per collection a script can name (#1070).
+macro_rules! ordinal_fn {
+    ($name:ident, $key:ty, $coll:ident) => {
+        fn $name(doc: Option<&crate::model::Document>, key: $key) -> usize {
+            ordinal_or_slot(doc.map(|d| d.$coll.keys().position(|k| k == key)), key.index())
+        }
+    };
+}
+ordinal_fn!(line_ord, crate::model::LineKey, lines);
+ordinal_fn!(circle_ord, crate::model::CircleKey, circles);
+ordinal_fn!(body_ord, crate::model::BodyKey, bodies);
+ordinal_fn!(instance_ord, crate::model::UnitInstanceKey, unit_instances);
+
+fn element_script_tokens(
+    element: SceneElement,
+    doc: Option<&crate::model::Document>,
+) -> ElementScriptTokens {
     match element {
         // A drawing's three item types script by their own kind names (#363/#967); a
         // dimension has no index of its own, so it reports the view it is shown on.
-        SceneElement::DrawingElement { element, .. } => {
+        SceneElement::DrawingElement { drawing, element } => {
             use crate::context::DrawingElementRef as D;
             let (kind, index) = match element {
                 D::Projection(i) => ("projection", i),
-                // No document here to count live annotations against (#1070), so a key falls
-                // back to its slot.
-                D::Text(key) => ("annotation", key.index() as usize),
+                D::Text(key) => (
+                    "annotation",
+                    ordinal_or_slot(
+                        doc.and_then(|d| d.drawings.get(drawing))
+                            .map(|dr| dr.annotations.keys().position(|k| k == key)),
+                        key.index(),
+                    ),
+                ),
                 D::Dimension { view, .. } => ("drawing_dimension", view),
             };
             ElementScriptTokens {
@@ -1929,34 +1968,29 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
                 point: None,
             }
         }
-        // The plane's arena slot, not its ordinal (#1070).
         SceneElement::ConstructionPlane(i) => ElementScriptTokens {
             kind: "construction_plane",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.construction_planes.keys().position(|k| k == i)), i.index()),
             point: None,
         },
-        // The sketch's arena slot, not its ordinal (#1070).
         SceneElement::Sketch(i) => ElementScriptTokens {
             kind: "sketch",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketches.keys().position(|k| k == i)), i.index()),
             point: None,
         },
-        // The line's arena slot, not its ordinal (#1070).
         SceneElement::Line(i) => ElementScriptTokens {
             kind: "line",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.lines.keys().position(|k| k == i)), i.index()),
             point: None,
         },
-        // The circle's arena slot, not its ordinal (#1070).
         SceneElement::Circle(i) => ElementScriptTokens {
             kind: "circle",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.circles.keys().position(|k| k == i)), i.index()),
             point: None,
         },
-        // The constraint's arena slot, not its ordinal (#1070).
         SceneElement::Constraint(i) => ElementScriptTokens {
             kind: "constraint",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.constraints.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         SceneElement::Point(point) => ElementScriptTokens {
@@ -1964,16 +1998,14 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: Some(point),
         },
-        // The extrusion's arena slot, not its ordinal (#1070).
         SceneElement::Extrusion(i) => ElementScriptTokens {
             kind: "extrusion",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.extrusions.keys().position(|k| k == i)), i.index()),
             point: None,
         },
-        // The body's arena slot, not its ordinal (#1070).
         SceneElement::Body(i) => ElementScriptTokens {
             kind: "body",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.bodies.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // Handled directly in `element_lua_ref` before this is reached (a `FaceEdge` doesn't
@@ -2035,115 +2067,115 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
         // live images against. The two agree until an image is deleted.
         SceneElement::Image(i) => ElementScriptTokens {
             kind: "image",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.tracing_images.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::BooleanOp(i) => ElementScriptTokens {
             kind: "boolean_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.boolean_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::MoveOp(i) => ElementScriptTokens {
             kind: "move_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.move_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::MirrorOp(i) => ElementScriptTokens {
             kind: "mirror_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.mirror_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::RepeatOp(i) => ElementScriptTokens {
             kind: "repeat_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.repeat_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchOffsetOp(i) => ElementScriptTokens {
             kind: "sketch_offset_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketch_offset_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchMirrorOp(i) => ElementScriptTokens {
             kind: "sketch_mirror_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketch_mirror_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchVertexTreatmentOp(i) => ElementScriptTokens {
             kind: "sketch_vertex_treatment_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketch_vertex_treatment_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchRepeatOp(i) => ElementScriptTokens {
             kind: "sketch_repeat_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketch_repeat_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::SketchSliceOp(i) => ElementScriptTokens {
             kind: "sketch_slice_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketch_slice_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The text's arena slot, not its ordinal (#1070).
         SceneElement::SketchText(i) => ElementScriptTokens {
             kind: "sketch_text",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sketch_texts.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::SliceOp(i) => ElementScriptTokens {
             kind: "slice_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.slice_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The op's arena slot, not its ordinal (#1070).
         SceneElement::EdgeTreatmentOp(i) => ElementScriptTokens {
             kind: "edge_treatment_op",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.edge_treatment_ops.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The revolve's arena slot, not its ordinal (#1070).
         SceneElement::Revolution(i) => ElementScriptTokens {
             kind: "revolution",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.revolutions.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The shape's arena slot, not its ordinal (#1070).
         SceneElement::Shape(i) => ElementScriptTokens {
             kind: "shape",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.primitives.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The sweep's arena slot, not its ordinal (#1070).
         SceneElement::SweepOp(i) => ElementScriptTokens {
             kind: "sweep",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.sweeps.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The component's arena slot, not its ordinal (#1070).
         SceneElement::Component(i) => ElementScriptTokens {
             kind: "component",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.components.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The joint's arena slot, not its ordinal (#1070).
         SceneElement::Joint(i) => ElementScriptTokens {
             kind: "joint",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.joints.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         // The instance's arena slot, not its ordinal (#1070).
         SceneElement::UnitInstance(i) => ElementScriptTokens {
             kind: "unit_instance",
-            index: i.index() as usize,
+            index: ordinal_or_slot(doc.map(|d| d.unit_instances.keys().position(|k| k == i)), i.index()),
             point: None,
         },
         SceneElement::Origin => ElementScriptTokens {
@@ -3220,6 +3252,7 @@ fn move_op_lua(
 fn mirror_op_lua(
     call: &str,
     op: Option<usize>,
+    doc: Option<&crate::model::Document>,
     plane: &FaceId,
     targets: &[usize],
     mode: crate::model::MirrorMode,
@@ -3228,7 +3261,7 @@ fn mirror_op_lua(
     if let Some(op) = op {
         parts.push(format!("index = {op}"));
     }
-    parts.push(format!("plane = {}", face_id_lua_ref(plane)));
+    parts.push(format!("plane = {}", face_id_lua_ref(plane, doc)));
     parts.push(format!(
         "bodies = {{{}}}",
         targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
@@ -3334,6 +3367,7 @@ fn mate_lua(placement: &crate::model::MoveOperation) -> Vec<String> {
 fn joint_op_lua(
     call: &str,
     op: Option<usize>,
+    doc: Option<&crate::model::Document>,
     members: &[crate::model::JointRef],
     base: usize,
     kind: &crate::model::JointKind,
@@ -3400,7 +3434,7 @@ fn joint_op_lua(
         ("slide_max_to", &limits.slide_max_target),
     ] {
         if let Some(target) = target {
-            parts.push(format!("{name} = {}", extrude_target_lua_table(target)));
+            parts.push(format!("{name} = {}", extrude_target_lua_table(target, doc)));
         }
     }
     format!("{call}{{ {} }}", parts.join(", "))
@@ -3421,6 +3455,7 @@ pub fn mirror_mode_script_name(mode: crate::model::MirrorMode) -> Option<&'stati
 fn repeat_op_lua(
     call: &str,
     op: Option<usize>,
+    doc: Option<&crate::model::Document>,
     targets: &[usize],
     axis: crate::model::RevolveAxis,
     around_axis: bool,
@@ -3459,7 +3494,7 @@ fn repeat_op_lua(
     }));
     // A picked length target (#645) replaces the fill-length expression.
     if let Some(target) = length_target {
-        parts.push(format!("to = {}", extrude_target_lua_table(target)));
+        parts.push(format!("to = {}", extrude_target_lua_table(target, doc)));
     }
     for (name, value) in [("count", count), ("spacing", spacing), ("length", length)] {
         if !value.trim().is_empty() {
@@ -3473,6 +3508,7 @@ fn repeat_op_lua(
 fn slice_op_lua(
     call: &str,
     op: Option<usize>,
+    doc: Option<&crate::model::Document>,
     targets: &[usize],
     cutters: &[FaceId],
     extend_infinite: bool,
@@ -3487,7 +3523,7 @@ fn slice_op_lua(
     ));
     parts.push(format!(
         "cutters = {{{}}}",
-        cutters.iter().map(face_id_lua_ref).collect::<Vec<_>>().join(", ")
+        cutters.iter().map(|f| face_id_lua_ref(f, doc)).collect::<Vec<_>>().join(", ")
     ));
     if extend_infinite {
         parts.push("extend = true".to_string());
@@ -3500,14 +3536,17 @@ fn slice_op_lua(
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
 /// kind use the plural array form. Only the first polygon face is kept — the Lua API has no
 /// way to extrude more than one closed-loop face alongside the others in one call.
-fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
+fn extrude_face_args(
+    faces: &[crate::model::ExtrudeFace],
+    doc: Option<&crate::model::Document>,
+) -> String {
     use crate::model::ExtrudeFace;
     let mut circles = Vec::new();
     let mut polygon = None;
     let mut boolean = None;
     for face in faces {
         match face {
-            ExtrudeFace::Circle(i) => circles.push(i.index() as usize),
+            ExtrudeFace::Circle(i) => circles.push(circle_ord(doc, *i)),
             ExtrudeFace::Polygon(lines) => {
                 polygon.get_or_insert(lines);
             }
@@ -3534,11 +3573,11 @@ fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
     }
     if let Some(lines) = polygon {
         // The lines' arena slots, not their ordinals (#1070).
-        let idx = lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ");
+        let idx = lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ");
         parts.push(format!("polygon = {{{idx}}}"));
     }
     if let Some((op, a, b)) = boolean {
-        parts.push(format!("boolean = {}", boolean_face_lua_table(op, a, b)));
+        parts.push(format!("boolean = {}", boolean_face_lua_table(op, a, b, doc)));
     }
     parts.join(", ")
 }
@@ -3550,6 +3589,7 @@ fn boolean_face_lua_table(
     op: crate::model::BooleanOp,
     a: &crate::model::ExtrudeFace,
     b: &crate::model::ExtrudeFace,
+    doc: Option<&crate::model::Document>,
 ) -> String {
     let op_str = match op {
         crate::model::BooleanOp::Intersection => "intersection",
@@ -3557,24 +3597,27 @@ fn boolean_face_lua_table(
     };
     format!(
         "{{op = \"{op_str}\", a = {}, b = {}}}",
-        extrude_face_spec_table(a),
-        extrude_face_spec_table(b)
+        extrude_face_spec_table(a, doc),
+        extrude_face_spec_table(b, doc)
     )
 }
 
 /// Lua face-spec table for any `ExtrudeFace` (`{rect = i}`, `{circle = i}`,
 /// `{polygon = {..}}`, or a nested `{boolean = {...}}`) — the shape
 /// `lua_extrude_face_from_table` (src/lua_script.rs) parses back into an `ExtrudeFace`.
-fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
+fn extrude_face_spec_table(
+    face: &crate::model::ExtrudeFace,
+    doc: Option<&crate::model::Document>,
+) -> String {
     use crate::model::ExtrudeFace;
     match face {
-        ExtrudeFace::Circle(i) => format!("{{circle = {}}}", i.index()),
+        ExtrudeFace::Circle(i) => format!("{{circle = {}}}", circle_ord(doc, *i)),
         ExtrudeFace::Polygon(lines) => {
-            let idx = lines.iter().map(|i| i.index().to_string()).collect::<Vec<_>>().join(", ");
+            let idx = lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ");
             format!("{{polygon = {{{idx}}}}}")
         }
         ExtrudeFace::Boolean { op, a, b } => {
-            format!("{{boolean = {}}}", boolean_face_lua_table(*op, a, b))
+            format!("{{boolean = {}}}", boolean_face_lua_table(*op, a, b, doc))
         }
         ExtrudeFace::TextGlyph { text, glyph } => {
             format!("{{text_glyph = {{text = {}, glyph = {glyph}}}}}", text.index())
@@ -3589,20 +3632,23 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
 
 /// Render an [`crate::model::ExtrudeTarget`] as the `to = {...}` table
 /// `bearcad.extrude`/`bearcad.edit_extrusion` accept (#114).
-fn extrude_target_lua_table(target: &crate::model::ExtrudeTarget) -> String {
+fn extrude_target_lua_table(
+    target: &crate::model::ExtrudeTarget,
+    doc: Option<&crate::model::Document>,
+) -> String {
     use crate::model::ExtrudeTarget;
     match target {
         ExtrudeTarget::Plane(i) => format!("{{ plane = {} }}", i.index()),
-        ExtrudeTarget::Face(face) => format!("{{ face = {} }}", extrude_face_spec_table(face)),
-        ExtrudeTarget::BodyFace(face_id) => format!("{{ face = {} }}", face_id_lua_ref(face_id)),
+        ExtrudeTarget::Face(face) => format!("{{ face = {} }}", extrude_face_spec_table(face, doc)),
+        ExtrudeTarget::BodyFace(face_id) => format!("{{ face = {} }}", face_id_lua_ref(face_id, doc)),
         ExtrudeTarget::RepeatedFace { face, op, instance } => format!(
             // The repeat's arena slot, not its ordinal (#1070).
             "{{ face = {}, repeat_op = {}, instance = {instance} }}",
-            face_id_lua_ref(face),
+            face_id_lua_ref(face, doc),
             op.index()
         ),
         ExtrudeTarget::Vertex(point) => {
-            format!("{{ vertex = {} }}", constraint_point_lua_ref(point))
+            format!("{{ vertex = {} }}", constraint_point_lua_ref(point, doc))
         }
     }
 }
@@ -3788,7 +3834,7 @@ fn geometric_constraint_lua_name(
     geometric_constraint_script_name(kind)
 }
 
-fn element_lua_ref(element: &SceneElement) -> String {
+fn element_lua_ref(element: &SceneElement, doc: Option<&crate::model::Document>) -> String {
     // #26/#27: a face's own edge, matching `lua_script::parse_element_table`'s
     // `{ kind = "face", face = {...}, index = N, edge = true }` shape.
     if let SceneElement::FaceEdge(line) = element {
@@ -3796,25 +3842,28 @@ fn element_lua_ref(element: &SceneElement) -> String {
             ConstraintLine::FaceEdge { face, index } => {
                 return format!(
                     "{{ kind = \"face\", face = {}, index = {index}, edge = true }}",
-                    face_id_lua_ref(face)
+                    face_id_lua_ref(face, doc)
                 );
             }
             ConstraintLine::OriginAxis(axis) => {
                 return format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis));
             }
             ConstraintLine::Line(index) => {
-                return format!("{{ kind = \"line\", index = {} }}", index.index());
+                let ordinal = doc
+                    .and_then(|d| d.lines.keys().position(|k| k == *index))
+                    .unwrap_or(index.index() as usize);
+                return format!("{{ kind = \"line\", index = {ordinal} }}");
             }
         }
     }
-    let tokens = element_script_tokens(element.clone());
+    let tokens = element_script_tokens(element.clone(), doc);
     if let Some(point) = tokens.point {
-        return format!("{{ kind = \"point\", {} }}", point_lua_fields(&point));
+        return format!("{{ kind = \"point\", {} }}", point_lua_fields(&point, doc));
     }
     format!("{{ kind = \"{}\", index = {} }}", tokens.kind, tokens.index)
 }
 
-fn point_lua_fields(point: &ConstraintPoint) -> String {
+fn point_lua_fields(point: &ConstraintPoint, doc: Option<&crate::model::Document>) -> String {
     use crate::model::{ConstraintPoint, LineEnd};
     match point {
         ConstraintPoint::LineEndpoint { line, end } => {
@@ -3829,11 +3878,15 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
             )
         }
         ConstraintPoint::CircleCenter(circle) => {
-            format!("kind = \"circle\", index = {}", circle.index())
+            let ordinal = ordinal_or_slot(
+                doc.map(|d| d.circles.keys().position(|k| k == *circle)),
+                circle.index(),
+            );
+            format!("kind = \"circle\", index = {ordinal}")
         }
         // #26/#27: mirrors `lua_script::parse_constraint_point_table`'s `"face"` shape.
         ConstraintPoint::FaceVertex { face, index } => {
-            format!("kind = \"face\", face = {}, index = {index}", face_id_lua_ref(face))
+            format!("kind = \"face\", face = {}, index = {index}", face_id_lua_ref(face, doc))
         }
         // #408: mirrors `lua_script::parse_constraint_point_table`'s `"sketch_text"` shape.
         ConstraintPoint::TextAnchor { text, anchor } => {
@@ -3845,12 +3898,16 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
         }
         // #425: mirrors the `"image"` + `point` shape.
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
-            format!("kind = \"image\", index = {}, point = {index}", image.index())
+            let ordinal = ordinal_or_slot(
+                doc.map(|d| d.tracing_images.keys().position(|k| k == *image)),
+                image.index(),
+            );
+            format!("kind = \"image\", index = {ordinal}, point = {index}")
         }
     }
 }
 
-fn constraint_line_lua_ref(line: &ConstraintLine) -> String {
+fn constraint_line_lua_ref(line: &ConstraintLine, doc: Option<&crate::model::Document>) -> String {
     match line {
         ConstraintLine::Line(index) => {
             format!("{{ kind = \"line\", index = {} }}", index.index())
@@ -3858,7 +3915,7 @@ fn constraint_line_lua_ref(line: &ConstraintLine) -> String {
         // #26/#27: mirrors `lua_script::parse_constraint_line_table`'s `"face"` shape.
         ConstraintLine::FaceEdge { face, index } => format!(
             "{{ kind = \"face\", face = {}, index = {index} }}",
-            face_id_lua_ref(face)
+            face_id_lua_ref(face, doc)
         ),
         ConstraintLine::OriginAxis(axis) => {
             format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis))
@@ -3874,8 +3931,8 @@ fn sketch_axis_lua_name(axis: crate::model::SketchAxis) -> &'static str {
     }
 }
 
-fn constraint_point_lua_ref(point: &ConstraintPoint) -> String {
-    format!("{{ {} }}", point_lua_fields(point))
+fn constraint_point_lua_ref(point: &ConstraintPoint, doc: Option<&crate::model::Document>) -> String {
+    format!("{{ {} }}", point_lua_fields(point, doc))
 }
 
 /// A scripted move is a **snap** exactly when it names both A points (#648) — the terse form,
@@ -3975,49 +4032,77 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
 /// Lua table literal for a `FaceId`, matching `lua_script::parse_face_id_table`'s shape.
 /// Cap/side profiles are limited to `rect`/`circle` (same limitation as `face_lua_parts` and
 /// `parse_face_id_table` — a polygon profile isn't a single index, #66).
-fn face_id_lua_ref(face: &FaceId) -> String {
+fn face_id_lua_ref(face: &FaceId, doc: Option<&crate::model::Document>) -> String {
+    // Every index below is an **ordinal** among the live elements of its kind when a document
+    // was available to count them, and the arena slot otherwise (#1070).
+    let circle = |i: crate::model::CircleKey| {
+        ordinal_or_slot(doc.map(|d| d.circles.keys().position(|k| k == i)), i.index())
+    };
+    let plane = |i: crate::model::ConstructionPlaneKey| {
+        ordinal_or_slot(
+            doc.map(|d| d.construction_planes.keys().position(|k| k == i)),
+            i.index(),
+        )
+    };
+    let line = |i: crate::model::LineKey| {
+        ordinal_or_slot(doc.map(|d| d.lines.keys().position(|k| k == i)), i.index())
+    };
+    let extrusion = |i: crate::model::ExtrusionKey| {
+        ordinal_or_slot(doc.map(|d| d.extrusions.keys().position(|k| k == i)), i.index())
+    };
+    let revolution = |i: crate::model::RevolutionKey| {
+        ordinal_or_slot(doc.map(|d| d.revolutions.keys().position(|k| k == i)), i.index())
+    };
+    let instance = |i: crate::model::UnitInstanceKey| {
+        ordinal_or_slot(
+            doc.map(|d| d.unit_instances.keys().position(|k| k == i)),
+            i.index(),
+        )
+    };
     match face {
-        FaceId::Circle(i) => format!("{{ kind = \"circle\", index = {} }}", i.index()),
+        FaceId::Circle(i) => format!("{{ kind = \"circle\", index = {} }}", circle(*i)),
         FaceId::ConstructionPlane(i) => {
-            format!("{{ kind = \"construction_plane\", index = {} }}", i.index())
+            format!("{{ kind = \"construction_plane\", index = {} }}", plane(*i))
         }
         FaceId::Polygon(lines) => format!(
             "{{ kind = \"polygon\", index = {} }}",
-            lines.first().map(|l| l.index() as usize).unwrap_or(0)
+            lines.first().map(|l| line(*l)).unwrap_or(0)
         ),
-        FaceId::ExtrudeCap { extrusion, profile, top } => format!(
+        FaceId::ExtrudeCap { extrusion: e, profile, top } => format!(
             "{{ kind = \"extrude_cap\", extrusion = {}, {}, top = {top} }}",
-            extrusion.index(),
-            extrude_face_profile_lua_fields(profile)
+            extrusion(*e),
+            extrude_face_profile_lua_fields(profile, doc)
         ),
-        FaceId::ExtrudeSide { extrusion, profile, edge } => format!(
+        FaceId::ExtrudeSide { extrusion: e, profile, edge } => format!(
             "{{ kind = \"extrude_side\", extrusion = {}, {}, edge = {edge} }}",
-            extrusion.index(),
-            extrude_face_profile_lua_fields(profile)
+            extrusion(*e),
+            extrude_face_profile_lua_fields(profile, doc)
         ),
-        FaceId::RevolveCap { revolution, profile, end } => format!(
+        FaceId::RevolveCap { revolution: r, profile, end } => format!(
             "{{ kind = \"revolve_cap\", revolution = {}, {}, [\"end\"] = {end} }}",
-            revolution.index(),
-            extrude_face_profile_lua_fields(profile)
+            revolution(*r),
+            extrude_face_profile_lua_fields(profile, doc)
         ),
-        FaceId::RevolveSide { revolution, profile, edge } => format!(
+        FaceId::RevolveSide { revolution: r, profile, edge } => format!(
             "{{ kind = \"revolve_side\", revolution = {}, {}, edge = {edge} }}",
-            revolution.index(),
-            extrude_face_profile_lua_fields(profile)
+            revolution(*r),
+            extrude_face_profile_lua_fields(profile, doc)
         ),
         // The inner face rides as its JSON encoding (#725), like unit_edge_length's face.
-        FaceId::UnitFace { instance, face } => format!(
+        FaceId::UnitFace { instance: i, face } => format!(
             "{{ kind = \"unit_face\", instance = {}, face = {:?} }}",
-            instance.index(),
+            instance(*i),
             serde_json::to_string(face.as_ref()).unwrap_or_default()
         ),
     }
 }
 
-fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
+fn extrude_face_profile_lua_fields(profile: &ExtrudeFace, doc: Option<&crate::model::Document>) -> String {
     match profile {
         ExtrudeFace::Circle(i) => {
-            format!("profile = \"circle\", profile_index = {}", i.index())
+            let ordinal =
+                ordinal_or_slot(doc.map(|d| d.circles.keys().position(|k| k == *i)), i.index());
+            format!("profile = \"circle\", profile_index = {ordinal}")
         }
         // Not round-trippable: `parse_face_id_table` only accepts `rect`/`circle` profiles
         // (same limitation as `face_lua_parts`'s polygon case, #66).
@@ -4029,7 +4114,7 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
         // `profile = "boolean", boolean = {...}`.
         ExtrudeFace::Boolean { op, a, b } => format!(
             "profile = \"boolean\", boolean = {}",
-            boolean_face_lua_table(*op, a, b)
+            boolean_face_lua_table(*op, a, b, doc)
         ),
         ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!(
             "profile = \"region\", profile_index = {}, seed = {{{}, {}}}",
