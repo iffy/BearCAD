@@ -99,8 +99,24 @@ pub fn activate_app() -> bool {
     // stays inactive. That is what matters here, because it is **occlusion** — not focus —
     // that makes the window server stop handing out drawable updates and leaves the surface
     // showing its uninitialised contents (#1032/#1082).
-    let ordered = app.windows().iter().next().inspect(|w| w.orderFrontRegardless()).is_some();
-    ordered || app.isActive()
+    //
+    // Order every visible window to the front, not just the first one (#1091). Once there
+    // are multiple windows (e.g. a popped-out drawing, #276), `app.windows()` may return
+    // them in creation order with the main window first — but we order every visible one
+    // anyway so the main viewport window is never missed. `orderFrontRegardless` alone
+    // does not make the window the key window, so call `makeKeyAndOrderFront` as well —
+    // even though macOS 14+ makes activation cooperative, making the window key *and*
+    // ordering it front is a stronger signal to the window server than ordering alone.
+    // Skip invisible windows (e.g. a closed drawing popout) — making them visible would
+    // pop them onto the screen unexpectedly.
+    let windows = app.windows();
+    for w in windows.iter() {
+        if w.isVisible() {
+            w.orderFrontRegardless();
+            w.makeKeyAndOrderFront(None);
+        }
+    }
+    !windows.is_empty() || app.isActive()
 }
 
 #[cfg(not(target_os = "macos"))]
