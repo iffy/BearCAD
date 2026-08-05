@@ -1822,6 +1822,40 @@ fn axis_constraint_button(
 /// Scope a filter to the open sketch (#742): an in-sketch tool picks that sketch's own
 /// geometry and nothing else. One rule rather than the same `element_in_sketch` check written
 /// out again in each of the hover and click paths (#958).
+/// The face-then-point picker both the Joint tool's placement and the Move tool's Face
+/// Snap use (#1089). One helper, so the two tools can never disagree about what a face
+/// picker accepts — a body face or a datum plane, narrowed to the moving/fixed side by
+/// `rule` — or about how the two-stage pick (face, then a point on it) works. The first
+/// pick (a face) is `kinds(Face, Plane)`; the second (a point on that face) is a vertex.
+fn face_snap_picker_view(
+    heading: &'static str,
+    target: PickerTarget,
+    face: Option<crate::model::MateRef>,
+    point: Option<crate::model::MovePointRef>,
+    rule: PickRule,
+    focused: bool,
+) -> ToolPickerView {
+    const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
+    let mut picker = ElementPicker::face_then_point(
+        ElementFilter::kinds(&FACE_KINDS).rule(rule.clone()),
+        ElementFilter::kind(ElementKind::Vertex).rule(rule),
+    );
+    picker.set_focused(focused);
+    if let Some(face) = face {
+        picker.push(SceneElement::from_mate_ref(&face));
+        if let Some(p) = point {
+            picker.push(SceneElement::from_move_point(p));
+        }
+    }
+    ToolPickerView {
+        heading,
+        picker,
+        target,
+        separator_above: false,
+        render: PickerRender::Inline,
+    }
+}
+
 fn in_sketch(filter: ElementFilter, sketch: Option<crate::model::SketchId>) -> ElementFilter {
     match sketch {
         Some(sketch) => filter.rule(PickRule::InSketch(sketch)),
@@ -1964,16 +1998,13 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
     if let Some(j) = input.joint.as_ref() {
         // The Joint tool's placement pickers (#1014/#1075): a face and a point on it, per
         // side. Inline, like the Move tool's point rows — registered so focus, hover and
-        // scripts see them.
+        // scripts see them. Built through the same helper as the Move tool's Face Snap, so
+        // the two tools always agree on what a face picker accepts (#1089).
         //
         // The moving side is narrowed to the driven part's bodies; the fixed side to the
         // base's, plus the document's own geometry (#1018) — `OffBodies` already counts a
         // datum plane, a world axis and the origin as stationary, so grounding the first
         // part of an assembly against the world falls out.
-        const FACE_KINDS: [ElementKind; 2] = [ElementKind::Face, ElementKind::Plane];
-        // Each side takes **two** picks (#1075): a face, then a point on that face. The picker
-        // is staged, so once the face is in, only points on it are on offer — to the pane, the
-        // hover, the click path and the Selection Exploder alike.
         for (heading, target, face, point, on_moving, focused) in [
             (
                 "Moving face",
@@ -1997,24 +2028,14 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             } else {
                 PickRule::OffBodies(j.driven_bodies.clone())
             };
-            let mut picker = ElementPicker::face_then_point(
-                ElementFilter::kinds(&FACE_KINDS).rule(rule.clone()),
-                ElementFilter::kind(ElementKind::Vertex).rule(rule),
-            );
-            picker.set_focused(focused);
-            if let Some(face) = face {
-                picker.push(SceneElement::from_mate_ref(&face));
-                if let Some(p) = point {
-                    picker.push(SceneElement::from_move_point(p));
-                }
-            }
-            tool_pickers.push(ToolPickerView {
+            tool_pickers.push(face_snap_picker_view(
                 heading,
-                picker,
                 target,
-                separator_above: false,
-                render: PickerRender::Inline,
-            });
+                face,
+                point,
+                rule,
+                focused,
+            ));
         }
         // The joint's frame (#1079). An axis input takes anything with a **direction** — a
         // face or datum plane (its normal), a body edge or world axis, a hole's centre line —
@@ -2309,24 +2330,14 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
                 } else {
                     PickRule::OffBodies(moving.clone())
                 };
-                let mut picker = ElementPicker::face_then_point(
-                    ElementFilter::kind(ElementKind::Face).rule(rule.clone()),
-                    ElementFilter::kind(ElementKind::Vertex).rule(rule),
-                );
-                picker.set_focused(focused);
-                if let Some(face) = face {
-                    picker.push(SceneElement::from_mate_ref(&face));
-                    if let Some(p) = point {
-                        picker.push(SceneElement::from_move_point(p));
-                    }
-                }
-                tool_pickers.push(ToolPickerView {
+                tool_pickers.push(face_snap_picker_view(
                     heading,
-                    picker,
                     target,
-                    separator_above: false,
-                    render: PickerRender::Inline,
-                });
+                    face,
+                    point,
+                    rule,
+                    focused,
+                ));
             }
         }
         // Only the pickers this mode actually uses (#1081). Registering all six regardless
