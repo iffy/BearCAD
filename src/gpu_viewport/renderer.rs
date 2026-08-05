@@ -299,8 +299,8 @@ impl ViewportGpuResources {
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState {
-                    constant: -16,
-                    slope_scale: -4.0,
+                    constant: -9,
+                    slope_scale: -2.0,
                     clamp: 0.0,
                 },
             }),
@@ -509,16 +509,13 @@ impl ViewportGpuResources {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: VIEWPORT_DEPTH_FORMAT,
                     depth_write_enabled: Some(false),
-                    // Bias construction-plane fills away from the camera so a coplanar
-                    // sketch face (drawn first, into the depth buffer) deterministically
-                    // wins the overlap instead of z-fighting. Faces are preferred to planes.
+                    // No bias: any toward/away offset pushes the fill past the bodies it
+                    // passes through (a sphere on a plane read as poking through it, #1088).
+                    // The sketch-fill pipeline's own toward-camera bias (constant: -8) keeps
+                    // coplanar faces distinct from the plane fill without moving the plane.
                     depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 64,
-                        slope_scale: 2.0,
-                        clamp: 0.0,
-                    },
+                    bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: multisample_state(msaa_sample_count),
                 multiview_mask: None,

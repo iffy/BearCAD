@@ -203,7 +203,10 @@ pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
 /// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
 pub const STROKE_DEPTH_BIAS: f32 = 0.10;
 /// Lift construction-plane hover fills above the plane surface (avoids z-fighting).
-const HOVER_PLANE_DEPTH_LIFT: f32 = 0.02;
+/// Kept at zero: the overlay pipeline's own depth bias (constant: -16, slope_scale: -4.0)
+/// is enough to prevent z-fighting with the plane fill, and any world-space lift would
+/// make the hover highlight show through bodies that sit on the plane (#1090).
+const HOVER_PLANE_DEPTH_LIFT: f32 = 0.0;
 /// Lift sketch-face hover/active fills toward the camera so they sit above committed coplanar
 /// fills (which are themselves biased) and just under strokes — otherwise a hover over
 /// overlapping faces renders behind/at-equal-depth with those fills and shows patchy
