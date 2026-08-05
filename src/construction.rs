@@ -1682,16 +1682,25 @@ pub fn resolve_pick_target(
         }
     }
 
+    // An axis is only pickable where it isn't buried behind a body (#1099): test the point
+    // on the segment nearest the cursor, the same way edges do. Without an occlusion
+    // context (X-ray callers) the axis stays pickable through anything — the Selection
+    // Exploder reaches a buried axis through its own crowd path (`collect_pick_candidates`),
+    // which is deliberately not occlusion-gated.
     if let Some((axis, dist)) = nearest_global_axis(screen, project) {
-        consider(PickTarget {
-            kind: PickTargetKind::GlobalAxis(axis),
-            reference: PlaneReference::Axis {
-                origin: Vec3::ZERO,
-                direction: axis.direction(),
-                label: axis.label().to_string(),
-            },
-            distance_px: dist,
-        });
+        let (a, b) = global_axis_segment(axis);
+        let nearest = segment_point_nearest_screen(screen, project, a, b);
+        if pickable(&PickTargetKind::GlobalAxis(axis)) && visible(nearest) {
+            consider(PickTarget {
+                kind: PickTargetKind::GlobalAxis(axis),
+                reference: PlaneReference::Axis {
+                    origin: Vec3::ZERO,
+                    direction: axis.direction(),
+                    label: axis.label().to_string(),
+                },
+                distance_px: dist,
+            });
+        }
     }
 
     if let Some((index, dist)) = nearest_construction_plane(screen, project, &doc.construction_planes)
@@ -4098,6 +4107,68 @@ mod tests {
         let occ = PickOcclusion::new(&doc, &visibility, eye);
         let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
         assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(l)) if l == lkey(0)));
+    }
+
+    /// #1099: a world axis running through a body is not pickable on the Select tool (the body
+    /// occludes it). Without an occlusion context it still is, and the Selection Exploder keeps
+    /// reaching it through its own crowd path.
+    #[test]
+    fn occluded_global_axis_is_not_picked() {
+        let mut doc = Document::default();
+        // A blocker body whose top face at z = 10 stands between the eye (z = +100) and the
+        // X axis (z = 0). Its footprint straddles y = 0 so the cursor, sat on the X axis, is
+        // inside it.
+        let c = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+        let triangles = vec![
+            [c(0.0, -40.0, 10.0), c(80.0, -40.0, 10.0), c(80.0, 40.0, 10.0)],
+            [c(0.0, -40.0, 10.0), c(80.0, 40.0, 10.0), c(0.0, 40.0, 10.0)],
+        ];
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles,
+            source_name: "blocker".to_string(),
+            step_bytes: None,
+        });
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        // Top-down view: project drops z. The cursor sits on the +X axis, inside the blocker.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(40.0, 0.0, 100.0);
+        let cursor = Pos2::new(40.0, 0.0);
+
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &visibility, eye);
+        let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
+        assert!(
+            !matches!(
+                picked.as_ref().map(|t| &t.kind),
+                Some(PickTargetKind::GlobalAxis(_))
+            ),
+            "an axis through a body must not be picked, got {:?}",
+            picked.map(|t| t.kind)
+        );
+
+        // Without occlusion the axis is picked (the X-ray behavior the Exploder relies on).
+        let picked = resolve_pick_target(cursor, &project, None, &doc, None);
+        assert!(matches!(
+            picked.map(|t| t.kind),
+            Some(PickTargetKind::GlobalAxis(GlobalAxis::X))
+        ));
+
+        // The Exploder's crowd still offers the buried axis (collect_pick_candidates is not
+        // occlusion-gated) — that is the documented way to reach it.
+        let cands = collect_pick_candidates(cursor, &project, &doc, eye, Some(&occ));
+        assert!(
+            cands.iter().any(|c| matches!(
+                c.kind,
+                PickTargetKind::GlobalAxis(GlobalAxis::X)
+            )),
+            "the Exploder crowd must still offer the buried axis"
+        );
     }
 
     /// #258: a hidden or shadow sketch line is neither selectable nor hoverable — it drops out
