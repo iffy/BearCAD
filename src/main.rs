@@ -10671,6 +10671,35 @@ impl App {
         }
     }
 
+    /// Advance the shape tool's phase to the next step (e.g. Base → Height on Enter,
+    /// #1094). This mirrors what a click in `handle_shape_placement` does, but driven
+    /// by the Enter key in a ValueInput field.
+    fn advance_shape_phase(&mut self) {
+        use actions::ShapePhase;
+        use model::PrimitiveKind as K;
+        let Some(creating) = self.state.creating_shape.as_mut() else { return };
+        match (creating.phase, creating.shape.kind) {
+            (ShapePhase::Base, K::Sphere) => {
+                creating.phase = ShapePhase::Done;
+            }
+            (ShapePhase::Base, _) => {
+                creating.phase = ShapePhase::Height;
+                creating.phase_screen = None;
+                creating.pending_focus = true;
+                self.state.status =
+                    "Drag away from the plane to set the height, or type it".to_string();
+            }
+            (ShapePhase::Height, _) => {
+                creating.phase = ShapePhase::Done;
+            }
+            _ => {}
+        }
+        // If the phase advanced to Done, commit the shape.
+        if creating.phase == ShapePhase::Done && creating.can_commit(&self.state.doc) {
+            self.state.apply(Action::CommitShape);
+        }
+    }
+
     /// Snap a shape's placement point to the model (#913): with snapping on, the nearest
     /// body **corner** or edge **midpoint** within the pick radius wins over the raw point
     /// on the anchor plane. Off, or with nothing near, the raw point stands.
@@ -10961,6 +10990,107 @@ impl App {
                 egui::StrokeKind::Inside,
             );
             painter.galley(rect.center() - galley.size() * 0.5, galley, egui::Color32::WHITE);
+        }
+    }
+
+    /// Draw highlights for the shape tool's current step (#1094, #1095): tiny dots at
+    /// the anchor points, radius lines, and height lines that preview what the next click
+    /// will set, so the user sees what they are about to place.
+    fn draw_shape_step_highlights(
+        &self,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) {
+        use actions::ShapePhase;
+        use model::PrimitiveKind as K;
+        if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
+            return;
+        }
+        let Some(creating) = self.state.creating_shape.as_ref() else { return };
+        let Some(pp) = pointer_screen else { return };
+        let anchor_normal = Vec3::from_array(creating.shape.normal).normalize_or_zero();
+        let anchor_u = Vec3::from_array(creating.shape.u_axis).normalize_or_zero();
+        let anchor_v = anchor_normal.cross(anchor_u).normalize_or_zero();
+        let origin = Vec3::from_array(creating.shape.origin);
+        let highlight = egui::Color32::from_rgb(255, 200, 80); // gold preview colour
+
+        match (creating.phase, creating.shape.kind) {
+            // Anchor phase: show the point where the first click will land.
+            (ShapePhase::Anchor, _) => {
+                if let Some(frame) = self.shape_anchor_frame(pp, project, cam, viewport, vp) {
+                    let snap = self.snap_shape_point(pp, project, frame.0);
+                    if let Some(sp) = project(snap) {
+                        painter.circle_filled(sp, 4.0, highlight);
+                    }
+                }
+            }
+            // Base phase: show the opposite corner (cuboid) or radius line (cylinder/sphere).
+            (ShapePhase::Base, K::Cuboid) => {
+                let corner = creating.first_corner.unwrap_or(origin);
+                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
+                    let hit = self.snap_shape_point(pp, project, hit);
+                    if let (Some(cp), Some(hp)) = (project(corner), project(hit)) {
+                        // Dim the first corner
+                        painter.circle_filled(cp, 3.0, highlight);
+                        // Highlight the opposite corner
+                        painter.circle_filled(hp, 4.0, highlight);
+                        // Dashed line between them
+                        painter.add(egui::Shape::dashed_line(
+                            &[cp, hp],
+                            egui::Stroke::new(1.5, highlight),
+                            6.0, 4.0,
+                        ));
+                    }
+                }
+            }
+            (ShapePhase::Base, K::Cylinder | K::Sphere) => {
+                let corner = creating.first_corner.unwrap_or(origin);
+                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
+                    let hit = self.snap_shape_point(pp, project, hit);
+                    if let Some(cp) = project(corner) {
+                        // Center point
+                        painter.circle_filled(cp, 4.0, highlight);
+                        // Radius line
+                        draw_world_segment(painter, project, corner, hit, highlight, 2.0);
+                    }
+                }
+            }
+            // Height phase: show the height line.
+            (ShapePhase::Height, K::Cuboid) => {
+                let (w, d) = (
+                    next_length(&self.state.doc, &creating.shape.width),
+                    next_length(&self.state.doc, &creating.shape.depth),
+                );
+                let h = next_length(&self.state.doc, &creating.shape.height);
+                let half_u = anchor_u * w * 0.5;
+                let half_v = anchor_v * d * 0.5;
+                let first_corner = creating.first_corner.unwrap_or(origin - half_u - half_v);
+                let top_corner = first_corner + anchor_normal * h;
+                if let (Some(bp), Some(tp)) = (project(first_corner), project(top_corner)) {
+                    painter.circle_filled(bp, 3.0, highlight);
+                    painter.circle_filled(tp, 4.0, highlight);
+                    draw_world_segment(painter, project, first_corner, top_corner, highlight, 2.0);
+                }
+            }
+            (ShapePhase::Height, K::Cylinder) => {
+                let r = next_length(&self.state.doc, &creating.shape.radius);
+                let h = next_length(&self.state.doc, &creating.shape.height);
+                let base_center = origin;
+                let top_center = origin + anchor_normal * h;
+                if let (Some(bp), Some(tp)) = (project(base_center), project(top_center)) {
+                    painter.circle_filled(bp, 3.0, highlight);
+                    painter.circle_filled(tp, 4.0, highlight);
+                    draw_world_segment(painter, project, base_center, top_center, highlight, 2.0);
+                    // Also draw the radius at the base
+                    let edge = base_center + anchor_u * r;
+                    draw_world_segment(painter, project, base_center, edge, highlight, 1.5);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -13746,6 +13876,9 @@ impl eframe::App for App {
                     }
                     context::ShapeEdit::Dimension(field, text) => {
                         self.state.apply(Action::SetShapeDimension { field, text });
+                    }
+                    context::ShapeEdit::AdvancePhase => {
+                        self.advance_shape_phase();
                     }
                     context::ShapeEdit::Commit => {
                         self.state.apply(Action::CommitShape);
@@ -23531,6 +23664,7 @@ impl App {
         if self.state.tool == Tool::Shape {
             self.handle_shape_tool_keys(ui);
             self.handle_shape_placement(ui, &project, pointer_screen, &cam, viewport, &vp);
+            self.draw_shape_step_highlights(&painter, &project, pointer_screen, &cam, viewport, &vp);
             self.draw_shape_dimension_mirrors(&painter, &project, pointer_screen);
             self.draw_shape_snap_indicator(&painter, &project, pointer_screen);
         }

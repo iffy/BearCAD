@@ -388,6 +388,8 @@ pub struct ShapeControl {
 pub enum ShapeEdit {
     Kind(crate::model::PrimitiveKind),
     Dimension(crate::actions::ShapeDimension, String),
+    /// Advance to the next phase (e.g. Base → Height on Enter in the radius field, #1094).
+    AdvancePhase,
     Commit,
 }
 
@@ -5532,6 +5534,8 @@ pub fn show_pane(
         );
         if create || (enter_commit && control.can_commit) {
             on_shape_edit(ShapeEdit::Commit);
+        } else if enter_commit && !control.can_commit {
+            on_shape_edit(ShapeEdit::AdvancePhase);
         }
     }
 
