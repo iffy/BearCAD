@@ -226,6 +226,17 @@ fn tick_launch_maximize(
         return;
     }
     // Keep painting through the settle window even after the countdown is done.
+    // Bring the window to the front on every frame during the settle period (#1091).
+    // The first call (frame 10) orders the window front, but the Maximized(true) command
+    // that follows may cause the window server to lose the frontmost state. macOS 14+
+    // activation is cooperative, so the app can't force itself to frontmost — but
+    // `orderFrontRegardless` (called inside `activate_app`) orders the window, not the
+    // app, and the window server honours that regardless of focus. Repeated calls keep
+    // the window front through the maximize and any surface reconfigure (#1032).
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::window_probe::activate_app() {
+        diag::log("launch: asked the window server to bring us to the front");
+    }
     if *frames_remaining == 0 {
         ctx.request_repaint();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -238,16 +249,6 @@ fn tick_launch_maximize(
         // presentation fault rather than a startup one. Without a line here the last thing
         // stderr says is "frame 1", which reads like a stall whether or not it was.
         diag::info("launch: ready");
-        // Come to the front (#1032). An unbundled binary does not activate itself on macOS,
-        // and a window that never becomes frontmost is reported **occluded** by the window
-        // server, which then stops handing it drawable updates — the app keeps painting into
-        // a surface nothing displays and the window stays grey. Activating is also what makes
-        // a scripted screenshot reliable: the same occlusion is why captures intermittently
-        // reported that the window never painted.
-        #[cfg(not(target_arch = "wasm32"))]
-        if crate::window_probe::activate_app() {
-            diag::log("launch: asked the window server to bring us to the front");
-        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         // The resize maximize causes often needs a second push to reconfigure the surface
         // on a cold Metal start (#1032).
