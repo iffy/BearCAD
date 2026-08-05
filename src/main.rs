@@ -11013,8 +11013,6 @@ impl App {
         let Some(creating) = self.state.creating_shape.as_ref() else { return };
         let Some(pp) = pointer_screen else { return };
         let anchor_normal = Vec3::from_array(creating.shape.normal).normalize_or_zero();
-        let anchor_u = Vec3::from_array(creating.shape.u_axis).normalize_or_zero();
-        let anchor_v = anchor_normal.cross(anchor_u).normalize_or_zero();
         let origin = Vec3::from_array(creating.shape.origin);
         // Gold preview colour matching the preview ghost solid.
         let hl = col::PREVIEW;
@@ -11056,30 +11054,20 @@ impl App {
             }
             // Height phase: show the height line.
             (ShapePhase::Height, K::Cuboid) => {
-                let (w, d) = (
-                    next_length(&self.state.doc, &creating.shape.width),
-                    next_length(&self.state.doc, &creating.shape.depth),
-                );
-                let h = next_length(&self.state.doc, &creating.shape.height);
-                let half_u = anchor_u * w * 0.5;
-                let half_v = anchor_v * d * 0.5;
-                let first_corner = creating.first_corner.unwrap_or(origin - half_u - half_v);
-                let top_corner = first_corner + anchor_normal * h;
-                dot(painter, first_corner);
-                dot(painter, top_corner);
-                draw_world_segment(painter, project, first_corner, top_corner, hl, 2.0);
-            }
-            (ShapePhase::Height, K::Cylinder) => {
-                let r = next_length(&self.state.doc, &creating.shape.radius);
                 let h = next_length(&self.state.doc, &creating.shape.height);
                 let base_center = origin;
                 let top_center = origin + anchor_normal * h;
                 dot(painter, base_center);
                 dot(painter, top_center);
                 draw_world_segment(painter, project, base_center, top_center, hl, 2.0);
-                // Also draw the radius at the base
-                let edge = base_center + anchor_u * r;
-                draw_world_segment(painter, project, base_center, edge, hl, 2.0);
+            }
+            (ShapePhase::Height, K::Cylinder) => {
+                let h = next_length(&self.state.doc, &creating.shape.height);
+                let base_center = origin;
+                let top_center = origin + anchor_normal * h;
+                dot(painter, base_center);
+                dot(painter, top_center);
+                draw_world_segment(painter, project, base_center, top_center, hl, 2.0);
             }
             _ => {}
         }
