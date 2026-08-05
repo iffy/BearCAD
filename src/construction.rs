@@ -2999,7 +2999,12 @@ pub fn collect_pick_candidates(
                 let dist = (screen - sp).length();
                 if dist <= point_r {
                     let kind = PickTargetKind::BodyVertex { body: bi, position: p };
-                    if pickable(&kind) {
+                    if pickable(&kind)
+                        // A sphere primitive's tessellation vertices are not real features
+                        // (#1101): only the whole sphere is selectable, so the crowd offers
+                        // its face/body, not a fan of every vertex on its surface.
+                        && !crate::primitives::body_is_sphere(doc, bi)
+                    {
                         raw.push((kind, p, dist));
                     }
                 }
@@ -4168,6 +4173,38 @@ mod tests {
                 PickTargetKind::GlobalAxis(GlobalAxis::X)
             )),
             "the Exploder crowd must still offer the buried axis"
+        );
+    }
+
+    /// #1101: a sphere primitive's tessellation vertices are not offered by the Select tool's
+    /// crowd (`collect_pick_candidates`) — only the whole sphere body is selectable.
+    #[test]
+    fn sphere_primitive_vertices_are_not_in_the_crowd() {
+        use crate::model::{Body, BodySource, Primitive};
+        let mut doc = Document::default();
+        // A sphere of radius 10 resting on the ground at the world origin: its centre is at
+        // (0, 0, 10), so a top-down projection puts vertices all around (0, 10) on screen.
+        let mut sphere = Primitive::new(crate::model::PrimitiveKind::Sphere);
+        sphere.radius = "10".to_string();
+        let pi = doc.primitives.insert(sphere);
+        let _sphere_body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Right at the sphere's north pole, where many tessellation vertices sit. The
+        // Exploder crowd excludes a sphere's tessellation vertices (#1101).
+        let on_sphere = Pos2::new(0.0, 10.0);
+        let cands = collect_pick_candidates(on_sphere, &project, &doc, Vec3::new(0.0, 0.0, 100.0), None);
+        assert!(
+            cands.iter().all(|c| !matches!(
+                c.kind,
+                PickTargetKind::BodyVertex { .. }
+            )),
+            "the Exploder crowd must not offer a sphere's vertices"
         );
     }
 

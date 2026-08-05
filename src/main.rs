@@ -15947,8 +15947,15 @@ fn pickable_body_vertex(
 ) -> Option<construction::PickTargetKind> {
     // The visibility/occlusion test runs *inside* the search (#908): head-on, a body's near
     // and far corners land on the same pixel, and filtering the winner afterwards would drop
-    // the pick whenever the hidden one was found first.
+    // the pick whenever the hidden one was found first. A sphere primitive is excluded
+    // entirely (#1101): its tessellation vertices are not real features, so on the Select
+    // tool only the whole sphere body is selectable (as it is for any smooth solid).
     construction::nearest_body_vertex_where(pp, project, doc, |kind, position| {
+        if let construction::PickTargetKind::BodyVertex { body, .. } = kind {
+            if primitives::body_is_sphere(doc, *body) {
+                return false;
+            }
+        }
         occlusion.is_none_or(|occ| occ.pickable(doc, kind) && !occ.occluded(position))
     })
     .map(|(kind, _)| kind)
@@ -28432,6 +28439,59 @@ mod tests {
 
     fn test_viewport_rect() -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0))
+    }
+
+    /// #1101: a sphere primitive's tessellation vertices are not offered by the Select
+    /// tool's vertex picker — only the whole sphere body is selectable — while a cuboid's
+    /// real corners still are.
+    #[test]
+    fn pickable_body_vertex_excludes_sphere_primitives() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = crate::model::Document::default();
+        let mut sphere = Primitive::new(PrimitiveKind::Sphere);
+        sphere.radius = "10".to_string();
+        let pi = doc.primitives.insert(sphere);
+        let _sphere_body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let mut cuboid = Primitive::new(PrimitiveKind::Cuboid);
+        cuboid.width = "20".to_string();
+        cuboid.depth = "20".to_string();
+        cuboid.height = "20".to_string();
+        cuboid.origin = [60.0, 0.0, 0.0];
+        let ci = doc.primitives.insert(cuboid);
+        let _cuboid_body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(ci),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let project = |w: glam::Vec3| Some(egui::pos2(w.x, w.y));
+        // Right at the sphere's north pole, where many tessellation vertices sit.
+        let on_sphere = egui::pos2(0.0, 10.0);
+        assert!(
+            super::pickable_body_vertex(on_sphere, &project, &doc, None).is_none(),
+            "a sphere's tessellation vertices are not pickable on the Select tool"
+        );
+        // A cuboid's real corner is still pickable.
+        let on_corner = egui::pos2(50.0, -10.0);
+        let picked = super::pickable_body_vertex(on_corner, &project, &doc, None);
+        assert!(
+            matches!(
+                picked.as_ref(),
+                Some(crate::construction::PickTargetKind::BodyVertex { body, .. })
+                    if doc.primitives.get(
+                        doc.bodies.get(*body).and_then(|b| match b.source {
+                            BodySource::Primitive(pi) => Some(pi),
+                            _ => None,
+                        }).unwrap_or_else(|| crate::arena::Key::from_bits(u64::MAX))
+                    ).is_some_and(|s| s.kind == PrimitiveKind::Cuboid)
+            ),
+            "a cuboid's real corners stay pickable, got {picked:?}"
+        );
     }
 
     #[test]

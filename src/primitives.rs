@@ -256,6 +256,23 @@ pub fn sphere_mesh(center: Vec3, radius: f32) -> SolidMesh {
     SolidMesh { triangles: sphere_triangles(&r) }
 }
 
+/// Whether a body is a sphere primitive (#1101): the Select tool treats a sphere as a
+/// whole body only — its tessellation vertices are not individual selectable points the
+/// way a cuboid's corners are, since none of them is a real feature.
+pub fn body_is_sphere(doc: &crate::model::Document, body_index: crate::model::BodyKey) -> bool {
+    let body = match doc.bodies.get(body_index) {
+        Some(b) => b,
+        None => return false,
+    };
+    match body.source {
+        crate::model::BodySource::Primitive(pi) => doc
+            .primitives
+            .get(pi)
+            .is_some_and(|shape| shape.kind == PrimitiveKind::Sphere),
+        _ => false,
+    }
+}
+
 /// A **stable** in-plane axis for a face's frame (#1050).
 ///
 /// `Vec3::any_orthonormal_vector` is free to return any perpendicular, and does not agree
@@ -316,6 +333,23 @@ mod tests {
         let mut doc = Document::default();
         doc.primitives.insert(shape);
         doc
+    }
+
+    /// A document whose only body is a sphere primitive of the given radius, resting on the
+    /// ground (origin at the world origin, growing up +Z). Used by the Select-tool vertex
+    /// exclusion tests (#1101).
+    fn doc_with_sphere_body(radius: &str) -> (Document, crate::model::BodyKey) {
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(K::Sphere);
+        shape.radius = radius.to_string();
+        let pi = doc.primitives.insert(shape);
+        let bi = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        (doc, bi)
     }
 
     fn sized(kind: K, width: &str, depth: &str, height: &str, radius: &str) -> Primitive {
@@ -602,5 +636,31 @@ mod tests {
         let mesh = mesh(&doc, &shape).expect("meshes");
         let (min, max) = mesh.bounds().unwrap();
         assert!((min.x - 5.0).abs() < 1e-3 && (max.x - 11.0).abs() < 1e-3, "{min} {max}");
+    }
+
+    /// #1101: a sphere primitive body is detected as a sphere, so the Select tool can treat
+    /// it as whole-body-only.
+    #[test]
+    fn a_sphere_primitive_body_is_a_sphere() {
+        let (doc, bi) = doc_with_sphere_body("10");
+        assert!(body_is_sphere(&doc, bi));
+    }
+
+    /// #1101: a non-sphere primitive (a cuboid) is not a sphere body, and a body that is not a
+    /// primitive at all is not one either.
+    #[test]
+    fn a_cuboid_primitive_body_is_not_a_sphere() {
+        let mut doc = Document::default();
+        let shape = sized(K::Cuboid, "10", "10", "10", "");
+        let pi = doc.primitives.insert(shape.clone());
+        let bi = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        assert!(!body_is_sphere(&doc, bi));
+        // A body that does not exist is not a sphere.
+        assert!(!body_is_sphere(&doc, crate::arena::Key::from_bits(u64::MAX)));
     }
 }
