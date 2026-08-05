@@ -11014,8 +11014,9 @@ impl App {
         let Some(pp) = pointer_screen else { return };
         let anchor_normal = Vec3::from_array(creating.shape.normal).normalize_or_zero();
         let origin = Vec3::from_array(creating.shape.origin);
-        // Gold preview colour matching the preview ghost solid.
-        let hl = col::PREVIEW;
+        // Bright yellow (#1094–#1098) so the anchor points and dimension lines read
+        // clearly on top of the scene.
+        let hl = col::SHAPE_HIGHLIGHT;
 
         // Shared helper: draw a dot at the projected world point, matching the snap
         // indicator style (ring + filled centre) but in gold.
@@ -15308,6 +15309,10 @@ pub(crate) mod col {
     /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub const RECT_LINE: Color32 = Color32::from_rgb(120, 170, 240);
     pub const PREVIEW: Color32 = Color32::from_rgb(240, 200, 120);
+    /// Bright yellow for the Shape tool's step highlights (#1094–#1098): anchor dots,
+    /// radius and height lines. Deliberately more saturated than `PREVIEW`'s tan so the
+    /// user can actually see the yellow point under the cursor.
+    pub const SHAPE_HIGHLIGHT: Color32 = Color32::from_rgb(255, 225, 30);
     /// Viewport border while a sketch is open (#74) — an unmissable mode indicator distinct
     /// from every other viewport accent color in this palette.
     pub const SKETCH_MODE_BORDER: Color32 = Color32::from_rgb(255, 140, 30);
@@ -23643,9 +23648,6 @@ impl App {
         if self.state.tool == Tool::Shape {
             self.handle_shape_tool_keys(ui);
             self.handle_shape_placement(ui, &project, pointer_screen, &cam, viewport, &vp);
-            self.draw_shape_step_highlights(&painter, &project, pointer_screen, &cam, viewport, &vp);
-            self.draw_shape_dimension_mirrors(&painter, &project, pointer_screen);
-            self.draw_shape_snap_indicator(&painter, &project, pointer_screen);
         }
 
         if self.state.tool == Tool::Loft {
@@ -25687,6 +25689,16 @@ impl App {
                 "the 3D viewport built a scene but could not paint it — its GPU resources \
                  are missing. The viewport will stay empty.",
             );
+        }
+
+        // Shape tool step highlights/dimensions/snap indicator (#1094–#1098): drawn on top
+        // of the 3D scene, after the GPU paint, so the opaque background fill and the solid
+        // bodies no longer bury them. Placing these before the scene paint was why the
+        // yellow anchor dots and dimension lines never showed up.
+        if self.state.tool == Tool::Shape {
+            self.draw_shape_step_highlights(&painter, &project, pointer_screen, &cam, viewport, &vp);
+            self.draw_shape_dimension_mirrors(&painter, &project, pointer_screen);
+            self.draw_shape_snap_indicator(&painter, &project, pointer_screen);
         }
 
         // The hovered sweep's angle (#919/#947), on top of the scene so the number is readable
