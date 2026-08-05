@@ -10993,9 +10993,9 @@ impl App {
         }
     }
 
-    /// Draw highlights for the shape tool's current step (#1094, #1095): tiny dots at
-    /// the anchor points, radius lines, and height lines that preview what the next click
-    /// will set, so the user sees what they are about to place.
+    /// Draw highlights for the shape tool's current step (#1094, #1095): yellow dots at
+    /// the anchor points, yellow radius/height lines that preview what the next click will
+    /// set, so the user sees what they are about to place.
     fn draw_shape_step_highlights(
         &self,
         painter: &egui::Painter,
@@ -11016,16 +11016,24 @@ impl App {
         let anchor_u = Vec3::from_array(creating.shape.u_axis).normalize_or_zero();
         let anchor_v = anchor_normal.cross(anchor_u).normalize_or_zero();
         let origin = Vec3::from_array(creating.shape.origin);
-        let highlight = egui::Color32::from_rgb(255, 200, 80); // gold preview colour
+        // Gold preview colour matching the preview ghost solid.
+        let hl = col::PREVIEW;
+
+        // Shared helper: draw a dot at the projected world point, matching the snap
+        // indicator style (ring + filled centre) but in gold.
+        let dot = |painter: &egui::Painter, world: Vec3| {
+            if let Some(sp) = project(world) {
+                painter.circle_stroke(sp, 9.0, egui::Stroke::new(2.0, hl));
+                painter.circle_filled(sp, 4.0, hl);
+            }
+        };
 
         match (creating.phase, creating.shape.kind) {
             // Anchor phase: show the point where the first click will land.
             (ShapePhase::Anchor, _) => {
                 if let Some(frame) = self.shape_anchor_frame(pp, project, cam, viewport, vp) {
                     let snap = self.snap_shape_point(pp, project, frame.0);
-                    if let Some(sp) = project(snap) {
-                        painter.circle_filled(sp, 4.0, highlight);
-                    }
+                    dot(painter, snap);
                 }
             }
             // Base phase: show the opposite corner (cuboid) or radius line (cylinder/sphere).
@@ -11033,30 +11041,17 @@ impl App {
                 let corner = creating.first_corner.unwrap_or(origin);
                 if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
                     let hit = self.snap_shape_point(pp, project, hit);
-                    if let (Some(cp), Some(hp)) = (project(corner), project(hit)) {
-                        // Dim the first corner
-                        painter.circle_filled(cp, 3.0, highlight);
-                        // Highlight the opposite corner
-                        painter.circle_filled(hp, 4.0, highlight);
-                        // Dashed line between them
-                        painter.add(egui::Shape::dashed_line(
-                            &[cp, hp],
-                            egui::Stroke::new(1.5, highlight),
-                            6.0, 4.0,
-                        ));
-                    }
+                    dot(painter, corner);
+                    dot(painter, hit);
+                    draw_world_segment(painter, project, corner, hit, hl, 2.0);
                 }
             }
             (ShapePhase::Base, K::Cylinder | K::Sphere) => {
                 let corner = creating.first_corner.unwrap_or(origin);
                 if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
                     let hit = self.snap_shape_point(pp, project, hit);
-                    if let Some(cp) = project(corner) {
-                        // Center point
-                        painter.circle_filled(cp, 4.0, highlight);
-                        // Radius line
-                        draw_world_segment(painter, project, corner, hit, highlight, 2.0);
-                    }
+                    dot(painter, corner);
+                    draw_world_segment(painter, project, corner, hit, hl, 2.0);
                 }
             }
             // Height phase: show the height line.
@@ -11070,25 +11065,21 @@ impl App {
                 let half_v = anchor_v * d * 0.5;
                 let first_corner = creating.first_corner.unwrap_or(origin - half_u - half_v);
                 let top_corner = first_corner + anchor_normal * h;
-                if let (Some(bp), Some(tp)) = (project(first_corner), project(top_corner)) {
-                    painter.circle_filled(bp, 3.0, highlight);
-                    painter.circle_filled(tp, 4.0, highlight);
-                    draw_world_segment(painter, project, first_corner, top_corner, highlight, 2.0);
-                }
+                dot(painter, first_corner);
+                dot(painter, top_corner);
+                draw_world_segment(painter, project, first_corner, top_corner, hl, 2.0);
             }
             (ShapePhase::Height, K::Cylinder) => {
                 let r = next_length(&self.state.doc, &creating.shape.radius);
                 let h = next_length(&self.state.doc, &creating.shape.height);
                 let base_center = origin;
                 let top_center = origin + anchor_normal * h;
-                if let (Some(bp), Some(tp)) = (project(base_center), project(top_center)) {
-                    painter.circle_filled(bp, 3.0, highlight);
-                    painter.circle_filled(tp, 4.0, highlight);
-                    draw_world_segment(painter, project, base_center, top_center, highlight, 2.0);
-                    // Also draw the radius at the base
-                    let edge = base_center + anchor_u * r;
-                    draw_world_segment(painter, project, base_center, edge, highlight, 1.5);
-                }
+                dot(painter, base_center);
+                dot(painter, top_center);
+                draw_world_segment(painter, project, base_center, top_center, hl, 2.0);
+                // Also draw the radius at the base
+                let edge = base_center + anchor_u * r;
+                draw_world_segment(painter, project, base_center, edge, hl, 2.0);
             }
             _ => {}
         }
