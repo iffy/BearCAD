@@ -3782,9 +3782,14 @@ impl AppState {
         let current = crate::model::body_index_for_extrusion(&self.doc, ei);
         // The body is solely `ei`'s home (a lone added extrusion, no cuts) — removing `ei`
         // would leave it empty, so it should be removed rather than emptied.
+        // Sole owner of a body that *is* this extrusion alone — deleting the body is safe.
+        // A Solid with a primitive base still is the shape after the extrusion leaves (#1104),
+        // so it must not be deleted: only the extrusion is peeled off.
         let solely_owns = |doc: &Document, bi: crate::model::BodyKey| {
             doc.bodies.get(bi).is_some_and(|b| {
-                b.source.extrusion_indices() == [ei] && b.source.cut_extrusion_indices().is_empty()
+                b.source.extrusion_indices() == [ei]
+                    && b.source.cut_extrusion_indices().is_empty()
+                    && b.source.primitive_base().is_none()
             })
         };
         // Whether `ei` is currently a *cut* of body `bi` (vs an added extrusion).
@@ -5528,19 +5533,26 @@ fn validate_extrude_target(
 
 fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::model::BodyKey> {
     let face = doc.sketch_face(sketch)?;
-    let extrusion = match face {
-        FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => extrusion,
+    match face {
+        FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
+            crate::model::body_index_for_extrusion(doc, extrusion)
+        }
         // A sketch on a unit's face (#726) offers the unit's materialized body, so an
         // extrusion drawn there can **cut** into the unit (merging stays refused — the
         // unit is read-only; see `apply_extrude_body_mode`).
         FaceId::UnitFace { instance, .. } => {
-            return doc.bodies.iter().find_map(|(k, b)| {
+            doc.bodies.iter().find_map(|(k, b)| {
                 matches!(b.source, crate::model::BodySource::UnitInstance(i) if i == instance).then_some(k)
-            });
+            })
+        }
+        // A sketch on a primitive shape's face (#1103/#1104) offers that primitive's body,
+        // so an extrusion can merge into (add to) or cut the Shape-tool body exactly like
+        // it would an extrusion-backed one.
+        FaceId::PrimitiveFace { primitive, .. } => {
+            crate::model::body_index_for_primitive(doc, primitive)
         }
         _ => return None,
-    };
-    crate::model::body_index_for_extrusion(doc, extrusion)
+    }
 }
 
 /// Corner index (0–3) of `rect` nearest to local point `(u, v)`.
@@ -24055,7 +24067,7 @@ mod tests {
             state.doc.shape_order.push(ShapeKind::Extrusion);
         }
         state.doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,

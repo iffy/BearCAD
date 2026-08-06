@@ -582,6 +582,30 @@ fn occt_body_shape_from_indices(
     occt_subtract_cut_extrusions(doc, solid, cut_indices)
 }
 
+/// Fuse a primitive base with the additive extrusions, then subtract the cuts (#1104):
+/// the `Solid { base: Some(..), add, cut }` body's solid. The primitive is the starting
+/// solid; each additive extrusion is unioned onto it; each cut extrusion is subtracted.
+fn occt_solid_with_primitive_base(
+    doc: &Document,
+    base: crate::model::PrimitiveKey,
+    add_indices: &[crate::model::ExtrusionKey],
+    cut_indices: &[crate::model::ExtrusionKey],
+) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
+    let primitive = doc.primitives.get(base)?;
+    let mut solid = crate::primitives::kernel_shape(doc, primitive)?;
+    for &ei in add_indices {
+        let extrusion = doc.extrusions.get(ei)?;
+        let distance = effective_distance(doc, extrusion);
+        if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
+            continue;
+        }
+        let added = occt_extrusion_shape(doc, extrusion, distance)?;
+        solid = solid.boolean(&added, BoolOp::Fuse)?;
+    }
+    occt_subtract_cut_extrusions(doc, solid, cut_indices)
+}
+
 /// Subtract each cut extrusion's solid from `solid` (#35/#726). A cut that isn't
 /// kernel-representable aborts to the fallback (returns `None`); a cut contributing no
 /// geometry is a no-op. Shared by extrusion-backed bodies and unit-cut bodies.
@@ -756,6 +780,11 @@ pub fn occt_body_shape(doc: &Document, body_index: crate::model::BodyKey) -> Opt
         crate::model::BodySource::UnitCut { instance, ref cut } => {
             let solid = occt_unit_instance_shape(doc, instance)?;
             occt_subtract_cut_extrusions(doc, solid, cut)?
+        }
+        // A primitive base with extrusions added/cut (#1104): fuse the primitive with the
+        // additive extrusions, then subtract the cuts.
+        crate::model::BodySource::Solid { base: Some(base), ref add, ref cut } => {
+            occt_solid_with_primitive_base(doc, base, add, cut)?
         }
         _ => occt_body_shape_from_indices(
             doc,
@@ -3758,9 +3787,10 @@ pub fn selection_world_bounds(
                 }
             }
             SceneElement::Shape(op) => {
-                // A shape's body is linked by `BodySource::Primitive` (#909).
+                // A shape's body is linked by `BodySource::Primitive` or a Solid whose base
+                // is that shape after an add-to-body / cut (#909/#1104).
                 for bi in doc.bodies.keys().collect::<Vec<_>>() {
-                    if doc.bodies[bi].source == crate::model::BodySource::Primitive(op) {
+                    if doc.bodies[bi].source.primitive_base() == Some(op) {
                         if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
                         {
                             extend(min);
@@ -4800,6 +4830,14 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: crate::model::BodyKey) -
         return loft_mesh(doc, loft);
     }
     let mut mesh = SolidMesh::default();
+    // A `Solid` body's primitive base (#1104): its mesh joins the additive extrusions in
+    // the fallback (no boolean — the kernel path above does the real fuse; this only runs
+    // when the kernel is off or fails).
+    if let crate::model::BodySource::Solid { base: Some(base), .. } = body.source {
+        if let Some(shape) = doc.primitives.get(base).and_then(|p| crate::primitives::mesh(doc, p)) {
+            mesh.triangles.extend(shape.triangles);
+        }
+    }
     for &ei in body.source.extrusion_indices() {
         let Some(extrusion) = doc.extrusions.get(ei) else {
             continue;
@@ -8104,8 +8142,7 @@ mod tests {
         doc.extrusions.insert(extrusion(sketch, vec![outer], 5.0));
         doc.extrusions.insert(extrusion(sketch, vec![inner], 5.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid {
-                add: vec![xkey(0)],
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)],
                 cut: vec![xkey(1)],
             },
             material: None,
@@ -8205,7 +8242,7 @@ mod tests {
         let _ = sketch;
         doc.extrusions.insert(ext);
         doc.bodies.insert(Body {
-            source: BodySource::Solid { add: vec![xkey(0)], cut: vec![] },
+            source: BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![] },
             material: None,
             name: None,
             shadow: false,
@@ -8500,7 +8537,7 @@ mod tests {
         });
         doc.extrusions.insert(hole);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8531,7 +8568,7 @@ mod tests {
         doc.circles.insert(Circle::from_local_center_radius(sketch, -6.0, 0.0, 2.5, 0.0));
         doc.extrusions.insert(extrusion(sketch, vec![ExtrudeFace::Circle(rkey(0))], 6.0));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8577,7 +8614,7 @@ mod tests {
         let box_face = rect_profile(&mut doc, sketch, 0.0, 0.0, 4.0, 4.0); // 4×4
         doc.extrusions.insert(extrusion(sketch, vec![box_face], 5.0)); // ×5 = 80
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![] },
             material: None,
             name: None,
             shadow: false,
@@ -8618,7 +8655,7 @@ mod tests {
         let (mut doc, _sketch, ext) = box_doc(); // box x ∈ [0, 10]
         doc.extrusions.insert(ext);
         doc.bodies.insert(Body {
-            source: BodySource::Solid { add: vec![xkey(0)], cut: vec![] },
+            source: BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![] },
             material: None,
             name: None,
             shadow: true, // consumed by the move
@@ -8697,7 +8734,7 @@ mod tests {
         });
         doc.extrusions.insert(hole);
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -8760,7 +8797,7 @@ mod tests {
             6.0,
         ));
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![xkey(1)] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![xkey(1)] },
             material: None,
             name: None,
             shadow: false,
@@ -9735,8 +9772,7 @@ mod tests {
         doc.extrusions.insert(extrusion(sketch, vec![upper], LETTER_B_DEPTH)); // 1: upper cut
         doc.extrusions.insert(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
         doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid {
-                add: vec![xkey(0)],
+            source: crate::model::BodySource::Solid { base: None, add: vec![xkey(0)],
                 cut: vec![xkey(1), xkey(2)],
             },
             material: None,
@@ -10652,7 +10688,7 @@ mod tests {
         assert!(warning.contains("cuts are not shown"), "{warning}");
         // Without cuts there's nothing to silently drop: no warning even though the body
         // still falls back to the mesh-bevel path.
-        doc.bodies.values_mut().nth(0).unwrap().source = crate::model::BodySource::Solid { add: vec![xkey(0)], cut: vec![] };
+        doc.bodies.values_mut().nth(0).unwrap().source = crate::model::BodySource::Solid { base: None, add: vec![xkey(0)], cut: vec![] };
         assert_eq!(kernel_fallback_cut_warning(&doc), None);
     }
 }

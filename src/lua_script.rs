@@ -672,6 +672,23 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
                 })
             }
         }
+        // A flat face of a Shape-tool primitive (#1103): `primitive` is the ordinal among
+        // live shapes; `face` names which side (`"top"`/`"bottom"`/`"side"` + `edge`, or the
+        // cylinder caps / the serde snake_case tags).
+        "primitive_face" => {
+            let ordinal: usize = table.get("primitive")?;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let primitive = unsafe { &tick.state().doc }
+                .primitives
+                .keys()
+                .nth(ordinal)
+                .ok_or_else(|| mlua::Error::external(format!("no primitive {ordinal}")))?;
+            drop(tick);
+            let face = parse_primitive_face_field(&table)?;
+            Ok(FaceId::PrimitiveFace { primitive, face })
+        }
         _ => {
             let index: usize = table.get("index")?;
             let tick = lua
@@ -680,6 +697,57 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             let face = unsafe { FaceId::from_script(&tick.state().doc, &kind, index) };
             face.ok_or_else(|| mlua::Error::external(format!("unknown sketch face kind '{kind}'")))
         }
+    }
+}
+
+/// Parse a `face =` field naming a [`crate::model::PrimitiveFace`] (#1103/#1104).
+fn parse_primitive_face_field(table: &Table) -> mlua::Result<crate::model::PrimitiveFace> {
+    use crate::model::PrimitiveFace as F;
+    // `face` may be a string tag, or a table carrying `edge` for a side wall.
+    let face_val: mlua::Value = table.get("face")?;
+    match face_val {
+        mlua::Value::String(s) => {
+            let tag = s.to_str()?.to_ascii_lowercase();
+            match tag.as_str() {
+                "top" | "cuboid_top" => Ok(F::CuboidTop),
+                "bottom" | "cuboid_bottom" => Ok(F::CuboidBottom),
+                "side" | "cuboid_side" => {
+                    let edge: u8 = table.get("edge").unwrap_or(0);
+                    Ok(F::CuboidSide { edge })
+                }
+                "cylinder_top" => Ok(F::CylinderTop),
+                "cylinder_bottom" => Ok(F::CylinderBottom),
+                other => Err(mlua::Error::external(format!(
+                    "unknown primitive face '{other}' (top|bottom|side|cylinder_top|cylinder_bottom)"
+                ))),
+            }
+        }
+        mlua::Value::Table(t) => {
+            // Serde-ish: `{ cuboid_side = { edge = 2 } }` or `{ edge = 2 }` with face="side"
+            // already handled via string path; accept `{ kind = "side", edge = n }` too.
+            if let Ok(kind) = t.get::<String>("kind").or_else(|_| t.get("type")) {
+                let edge: u8 = t.get("edge").unwrap_or(0);
+                return match kind.to_ascii_lowercase().as_str() {
+                    "top" | "cuboid_top" => Ok(F::CuboidTop),
+                    "bottom" | "cuboid_bottom" => Ok(F::CuboidBottom),
+                    "side" | "cuboid_side" => Ok(F::CuboidSide { edge }),
+                    "cylinder_top" => Ok(F::CylinderTop),
+                    "cylinder_bottom" => Ok(F::CylinderBottom),
+                    other => Err(mlua::Error::external(format!(
+                        "unknown primitive face kind '{other}'"
+                    ))),
+                };
+            }
+            if let Ok(edge) = t.get::<u8>("edge") {
+                return Ok(F::CuboidSide { edge });
+            }
+            Err(mlua::Error::external(
+                "primitive face table needs kind= or edge=",
+            ))
+        }
+        _ => Err(mlua::Error::external(
+            "primitive face requires face = \"top\"|\"bottom\"|\"side\"|…",
+        )),
     }
 }
 
@@ -7787,6 +7855,98 @@ mod tests {
         assert_eq!(state.doc.extrusions.len(), 2);
         assert_eq!(state.doc.bodies.len(), 1, "the second extrusion should join body 0");
         assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0), xkey(1)]);
+    }
+
+    /// #1104: extruding from a Shape-tool cuboid face with `body = "merge"` fuses into the
+    /// cuboid's body (Solid with primitive base) instead of spawning a second body.
+    #[test]
+    fn lua_extrude_merge_into_shape_tool_cuboid() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20, name = "Block" }
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "top" }
+            bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "merge" }
+            "#,
+        );
+        assert_eq!(state.doc.primitives.len(), 1);
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(
+            state.doc.bodies.len(),
+            1,
+            "merge should not create a second body"
+        );
+        let body = state.doc.bodies.values().next().unwrap();
+        assert_eq!(
+            body.source.primitive_base(),
+            Some(state.doc.primitives.keys().next().unwrap()),
+            "body keeps the cuboid as its base"
+        );
+        assert_eq!(body.source.extrusion_indices(), [xkey(0)]);
+        assert!(body.source.cut_extrusion_indices().is_empty());
+    }
+
+    /// #1104: `body = "cut"` on a Shape-tool cuboid face subtracts from the same body.
+    #[test]
+    fn lua_extrude_cut_into_shape_tool_cuboid() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "top" }
+            bearcad.rect{ x = 10, y = 5, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = -10, body = "cut" }
+            "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 1);
+        let body = state.doc.bodies.values().next().unwrap();
+        assert_eq!(
+            body.source.primitive_base(),
+            Some(state.doc.primitives.keys().next().unwrap())
+        );
+        assert!(body.source.extrusion_indices().is_empty());
+        assert_eq!(body.source.cut_extrusion_indices(), [xkey(0)]);
+    }
+
+    /// #1104/#1105: a sketch on a Shape face + merged extrusion stay listed under the shape
+    /// in the Elements hierarchy (not dropped from the pane).
+    #[test]
+    fn lua_shape_face_sketch_and_merged_body_appear_in_hierarchy() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "side", edge = 0 }
+            bearcad.rect{ x = 2, y = 2, width = 8, height = 8 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 12, body = "merge" }
+            "#,
+        );
+        let tree = crate::hierarchy::build_hierarchy(&state.doc, None);
+        let root = &tree[0];
+        let pi = state.doc.primitives.keys().next().unwrap();
+        let shape_entry = root
+            .children
+            .iter()
+            .find(|e| e.node == crate::hierarchy::HierarchyNode::Shape(pi))
+            .expect("shape is a top-level element");
+        let bi = state.doc.bodies.keys().next().unwrap();
+        assert!(
+            shape_entry
+                .children
+                .iter()
+                .any(|c| c.node == crate::hierarchy::HierarchyNode::Body(bi)),
+            "merged body nests under the shape, children: {:?}",
+            shape_entry.children.iter().map(|c| &c.node).collect::<Vec<_>>()
+        );
+        let sketch = state.doc.sketches.keys().next().unwrap();
+        assert!(
+            shape_entry
+                .children
+                .iter()
+                .any(|c| c.node == crate::hierarchy::HierarchyNode::Sketch(sketch)),
+            "sketch on the shape face nests under the shape"
+        );
     }
 
     #[test]

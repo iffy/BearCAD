@@ -1341,7 +1341,14 @@ pub enum BodySource {
     /// this shape once it has a cut. `cut` is `#[serde(default)]` so any future add-only
     /// `Solid` serialization stays readable (existing saved files never carry a cut list —
     /// they load as `Extrusion`/`Extrusions` unchanged).
+    ///
+    /// `base` is an optional primitive solid the extrusions are fused onto (#1104): a Shape-
+    /// tool body that an extrusion is "added to" lives here, so its solid is the primitive
+    /// united with the `add` extrusions and minus the `cut` extrusions. `#[serde(default)]`
+    /// keeps old files loading as the base-less `Solid` they were.
     Solid {
+        #[serde(default)]
+        base: Option<PrimitiveKey>,
         add: Vec<ExtrusionKey>,
         #[serde(default)]
         cut: Vec<ExtrusionKey>,
@@ -1445,12 +1452,20 @@ impl BodySource {
             }
             Self::Extrusions(indices) => indices.push(extrusion),
             Self::Solid { add, .. } => add.push(extrusion),
+            // A primitive base takes its first added extrusion by becoming a `Solid` whose
+            // base is that primitive (#1104); further adds push onto the list.
+            Self::Primitive(pi) => {
+                *self = Self::Solid {
+                    base: Some(*pi),
+                    add: vec![extrusion],
+                    cut: Vec::new(),
+                };
+            }
             // An imported mesh body has no extrusion to merge into; unreachable in practice
             // since merge candidates only ever come from extrusion-backed bodies.
             Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
-            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1469,24 +1484,34 @@ impl BodySource {
         match self {
             Self::Extrusion(existing) => {
                 *self = Self::Solid {
+                    base: None,
                     add: vec![*existing],
                     cut: vec![extrusion],
                 };
             }
             Self::Extrusions(indices) => {
                 *self = Self::Solid {
+                    base: None,
                     add: std::mem::take(indices),
                     cut: vec![extrusion],
                 };
             }
             Self::Solid { cut, .. } => cut.push(extrusion),
+            // A primitive base takes its first cut by becoming a `Solid` whose base is that
+            // primitive (#1104); the cut list starts with this extrusion.
+            Self::Primitive(pi) => {
+                *self = Self::Solid {
+                    base: Some(*pi),
+                    add: Vec::new(),
+                    cut: vec![extrusion],
+                };
+            }
             // A unit-cut body takes further cuts (#726).
             Self::UnitCut { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
             Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
-            | Self::Primitive(_)
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
@@ -1511,14 +1536,23 @@ impl BodySource {
                     *self = Self::Extrusion(*only);
                 }
             }
-            Self::Solid { add, cut } => {
+            Self::Solid { base, add, cut } => {
                 add.retain(|&ei| ei != extrusion);
                 cut.retain(|&ei| ei != extrusion);
                 if cut.is_empty() {
-                    *self = match add.as_slice() {
-                        [only] => Self::Extrusion(*only),
-                        _ => Self::Extrusions(std::mem::take(add)),
-                    };
+                    if let Some(p) = *base {
+                        // No remaining extrusions: the body is the shape again (#1104).
+                        if add.is_empty() {
+                            *self = Self::Primitive(p);
+                        }
+                        // Otherwise stay `Solid { base, add, cut: [] }` — the primitive
+                        // with its fused additions.
+                    } else {
+                        *self = match add.as_slice() {
+                            [only] => Self::Extrusion(*only),
+                            _ => Self::Extrusions(std::mem::take(add)),
+                        };
+                    }
                 }
             }
             // A unit cut keeps its form with an empty list (#726): it then reads as the
@@ -1539,6 +1573,16 @@ impl BodySource {
             | Self::Sliced { .. }
             | Self::EdgeTreated { .. }
             | Self::UnitInstance(_) => {}
+        }
+    }
+
+    /// The primitive this body is built on, if any (#1104): either a pure shape body or a
+    /// `Solid` whose `base` is that shape (after an add-to-body / cut into a Shape-tool solid).
+    pub fn primitive_base(&self) -> Option<PrimitiveKey> {
+        match self {
+            Self::Primitive(p) => Some(*p),
+            Self::Solid { base: Some(p), .. } => Some(*p),
+            _ => None,
         }
     }
 }
@@ -1585,12 +1629,17 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
         }
         FaceId::UnitFace { .. } | FaceId::ConstructionPlane(_) | FaceId::Circle(_)
         | FaceId::Polygon(_) => None,
-        FaceId::PrimitiveFace { primitive, .. } => {
-            doc.bodies.iter().find_map(|(key, body)| {
-                matches!(body.source, BodySource::Primitive(p) if p == *primitive).then_some(key)
-            })
-        }
+        FaceId::PrimitiveFace { primitive, .. } => body_index_for_primitive(doc, *primitive),
     }
+}
+
+/// The body built on primitive shape `primitive` (#909/#1104): either a pure
+/// [`BodySource::Primitive`] body or a [`BodySource::Solid`] whose `base` is that shape
+/// after an extrusion was added to / cut from it.
+pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Option<BodyKey> {
+    doc.bodies.iter().find_map(|(key, body)| {
+        (body.source.primitive_base() == Some(primitive)).then_some(key)
+    })
 }
 
 /// Body index whose source is `revolution` (#621) — the revolve analogue of
@@ -5075,6 +5124,59 @@ mod tests {
         let missing = sketch_key_for_slot(99);
         assert_eq!(effective_length_unit(&doc, missing), LengthUnit::Mm);
         assert_eq!(effective_angle_unit(&doc, missing), AngleUnit::Deg);
+    }
+
+    /// #1104: adding/cutting an extrusion on a Shape-tool body turns Primitive into Solid
+    /// with that primitive as base; removing the last addition restores Primitive.
+    #[test]
+    fn primitive_body_source_grows_into_solid_with_base() {
+        let pi = PrimitiveKey::from_bits(1);
+        let ei = ExtrusionKey::from_bits(2);
+        let ej = ExtrusionKey::from_bits(3);
+        let mut src = BodySource::Primitive(pi);
+        src.append_extrusion(ei);
+        assert_eq!(
+            src,
+            BodySource::Solid {
+                base: Some(pi),
+                add: vec![ei],
+                cut: vec![],
+            }
+        );
+        src.append_extrusion(ej);
+        assert_eq!(src.extrusion_indices(), [ei, ej]);
+        src.remove_extrusion(ej);
+        src.remove_extrusion(ei);
+        assert_eq!(src, BodySource::Primitive(pi));
+
+        let mut cut_src = BodySource::Primitive(pi);
+        cut_src.append_cut_extrusion(ei);
+        assert_eq!(
+            cut_src,
+            BodySource::Solid {
+                base: Some(pi),
+                add: vec![],
+                cut: vec![ei],
+            }
+        );
+        assert_eq!(body_index_for_primitive(
+            &{
+                let mut doc = Document::default();
+                doc.bodies.insert(Body {
+                    source: BodySource::Solid {
+                        base: Some(pi),
+                        add: vec![ei],
+                        cut: vec![],
+                    },
+                    material: None,
+                    name: None,
+                    shadow: false,
+                });
+                // primitive_base lookup doesn't need the primitive arena entry.
+                doc
+            },
+            pi
+        ).is_some(), true);
     }
 }
 /// Scale for [`ExtrudeFace::SketchRegion`]'s seed point: thousandths of a sketch unit, which

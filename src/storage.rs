@@ -1329,7 +1329,7 @@ mod tests {
         let cut = doc.extrusions.insert(extrusion("cut"));
         assert!(doc.extrusions.remove(doomed).is_some());
         let body = doc.bodies.insert(crate::model::Body {
-            source: crate::model::BodySource::Solid { add: vec![kept], cut: vec![cut] },
+            source: crate::model::BodySource::Solid { base: None, add: vec![kept], cut: vec![cut] },
             material: None,
             name: None,
             shadow: false,
@@ -1360,7 +1360,7 @@ mod tests {
             );
             assert_eq!(
                 loaded.bodies[body].source,
-                crate::model::BodySource::Solid { add: vec![kept], cut: vec![cut] },
+                crate::model::BodySource::Solid { base: None, add: vec![kept], cut: vec![cut] },
                 "{suffix}: the body still names both"
             );
             assert_eq!(
@@ -2429,8 +2429,7 @@ mod tests {
             doc.shape_order.push(ShapeKind::Extrusion);
         }
         doc.bodies.insert(Body {
-            source: BodySource::Solid {
-                add: vec![xkey(0)],
+            source: BodySource::Solid { base: None, add: vec![xkey(0)],
                 cut: vec![xkey(1)],
             },
             material: None,
@@ -2443,8 +2442,7 @@ mod tests {
         let loaded = open(&path).unwrap();
         assert_eq!(
             loaded.bodies.values().nth(0).unwrap().source,
-            BodySource::Solid {
-                add: vec![xkey(0)],
+            BodySource::Solid { base: None, add: vec![xkey(0)],
                 cut: vec![xkey(1)],
             }
         );

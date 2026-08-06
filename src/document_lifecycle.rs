@@ -478,12 +478,13 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
             }
         }
         SceneElement::Shape(index) => {
-            // Deleting a shape (#909) takes its body with it.
+            // Deleting a shape (#909) takes its body with it — including a Solid whose base
+            // is that shape after an add-to-body / cut (#1104).
             if doc.primitives.remove(index).is_some() {
                 let produced: Vec<crate::model::BodyKey> = doc
                     .bodies
                     .iter()
-                    .filter(|(_, b)| b.source == crate::model::BodySource::Primitive(index))
+                    .filter(|(_, b)| b.source.primitive_base() == Some(index))
                     .map(|(k, _)| k)
                     .collect();
                 for key in produced {
