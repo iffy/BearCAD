@@ -781,12 +781,15 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Print markdown then HTML (`bearcad opsigs` / `cargo opsigs`).
-pub fn run_cli() {
-    println!("# BearCAD operation signatures\n");
-    print!("{}", render_markdown());
-    println!("\n---\n");
-    print!("{}", render_html());
+/// Print signatures (`bearcad opsigs` / `cargo opsigs`). Markdown by default;
+/// pass `html: true` (`--html`) for an HTML document instead.
+pub fn run_cli(html: bool) {
+    if html {
+        print!("{}", render_html());
+    } else {
+        println!("# BearCAD operation signatures\n");
+        print!("{}", render_markdown());
+    }
 }
 
 #[cfg(test)]

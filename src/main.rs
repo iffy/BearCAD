@@ -376,8 +376,8 @@ fn main() -> eframe::Result<()> {
             }
             return Ok(());
         }
-        script::CliOutcome::OpSigs => {
-            opsigs::run_cli();
+        script::CliOutcome::OpSigs { html } => {
+            opsigs::run_cli(html);
             return Ok(());
         }
         script::CliOutcome::Run(script_opts) => run_app(script_opts),
@@ -650,7 +650,11 @@ mod cli_tests {
         );
         assert_eq!(
             script::parse_cli(["bearcad", "opsigs"]),
-            script::CliOutcome::OpSigs
+            script::CliOutcome::OpSigs { html: false }
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "opsigs", "--html"]),
+            script::CliOutcome::OpSigs { html: true }
         );
     }
 

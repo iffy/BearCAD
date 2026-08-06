@@ -6934,7 +6934,8 @@ pub enum CliOutcome {
     /// #1022). The app runs itself under this to host the web view in a second process.
     McMaster { part: Option<String> },
     /// Print every tool operation's input/output/shadow element types (`bearcad opsigs`).
-    OpSigs,
+    /// `html` is true when `--html` was passed (HTML document instead of markdown).
+    OpSigs { html: bool },
     Run(ScriptOptions),
 }
 
@@ -6954,8 +6955,8 @@ Commands:
   uninstall-cli         Remove the `bearcad` PATH symlink
   mcmaster [part]       Browse the McMaster-Carr catalog in a window, printing each CAD
                         file it downloads. The app runs this itself when you import a part
-  opsigs                Print every tool operation's inputs, outputs, and shadows
-                        (markdown + HTML). Also: `cargo opsigs`
+  opsigs [--html]       Print every tool operation's inputs, outputs, and shadows
+                        (markdown; pass --html for HTML). Also: `cargo opsigs`
 
 Options:
   --script <path>       Run a Lua script
@@ -7008,7 +7009,10 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
         Some(crate::mcmaster::SUBCOMMAND) => {
             return CliOutcome::McMaster { part: args.get(2).cloned() }
         }
-        Some("opsigs") => return CliOutcome::OpSigs,
+        Some("opsigs") => {
+            let html = args.iter().skip(2).any(|a| a == "--html");
+            return CliOutcome::OpSigs { html };
+        }
         _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))
