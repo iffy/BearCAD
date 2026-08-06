@@ -7853,12 +7853,16 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 2);
-        assert_eq!(state.doc.bodies.len(), 1, "the second extrusion should join body 0");
-        assert_eq!(state.doc.bodies.values().nth(0).unwrap().source.extrusion_indices(), [xkey(0), xkey(1)]);
+        // #1106: host is shadowed; a new combined body is the fuse output.
+        assert_eq!(state.doc.bodies.len(), 2, "merge shadows host and creates combined body");
+        let shadow = state.doc.bodies.values().find(|b| b.shadow).expect("host shadow");
+        assert_eq!(shadow.source.extrusion_indices(), [xkey(0)]);
+        let live = state.doc.bodies.values().find(|b| !b.shadow).expect("combined live");
+        assert_eq!(live.source.extrusion_indices(), [xkey(0), xkey(1)]);
     }
 
-    /// #1104: extruding from a Shape-tool cuboid face with `body = "merge"` fuses into the
-    /// cuboid's body (Solid with primitive base) instead of spawning a second body.
+    /// #1104/#1106: extruding from a Shape-tool cuboid face with `body = "merge"` shadows
+    /// the pure cuboid body and produces a new combined Solid as the extrusion's output.
     #[test]
     fn lua_extrude_merge_into_shape_tool_cuboid() {
         let state = run_lua(
@@ -7874,20 +7878,38 @@ mod tests {
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(
             state.doc.bodies.len(),
-            1,
-            "merge should not create a second body"
+            2,
+            "merge shadows the cuboid body and creates a combined output"
         );
-        let body = state.doc.bodies.values().next().unwrap();
+        let pi = state.doc.primitives.keys().next().unwrap();
+        let (shadow_bi, shadow) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.shadow)
+            .expect("host cuboid is shadowed");
+        assert!(
+            matches!(shadow.source, crate::model::BodySource::Primitive(p) if p == pi),
+            "shadow is the pure cuboid body"
+        );
+        let (live_bi, live) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .expect("combined solid is live");
+        assert_ne!(shadow_bi, live_bi);
+        assert_eq!(live.source.primitive_base(), Some(pi));
+        assert_eq!(live.source.extrusion_indices(), [xkey(0)]);
+        assert!(live.source.cut_extrusion_indices().is_empty());
         assert_eq!(
-            body.source.primitive_base(),
-            Some(state.doc.primitives.keys().next().unwrap()),
-            "body keeps the cuboid as its base"
+            crate::model::fuse_host_of(&state.doc, live_bi),
+            Some(shadow_bi)
         );
-        assert_eq!(body.source.extrusion_indices(), [xkey(0)]);
-        assert!(body.source.cut_extrusion_indices().is_empty());
     }
 
-    /// #1104: `body = "cut"` on a Shape-tool cuboid face subtracts from the same body.
+    /// #1104: `body = "cut"` on a Shape-tool cuboid face still mutates that body into a
+    /// Solid with the cut (cut does not use the merge shadow/new-body path).
     #[test]
     fn lua_extrude_cut_into_shape_tool_cuboid() {
         let state = run_lua(
@@ -7909,8 +7931,8 @@ mod tests {
         assert_eq!(body.source.cut_extrusion_indices(), [xkey(0)]);
     }
 
-    /// #1104/#1105: a sketch on a Shape face + merged extrusion stay listed under the shape
-    /// in the Elements hierarchy (not dropped from the pane).
+    /// #1104/#1105/#1106: shape keeps its pure (shadow) body + face sketch; the combined
+    /// body nests under the extrusion as its output.
     #[test]
     fn lua_shape_face_sketch_and_merged_body_appear_in_hierarchy() {
         let state = run_lua(
@@ -7930,13 +7952,24 @@ mod tests {
             .iter()
             .find(|e| e.node == crate::hierarchy::HierarchyNode::Shape(pi))
             .expect("shape is a top-level element");
-        let bi = state.doc.bodies.keys().next().unwrap();
+        let (shadow_bi, _) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.shadow)
+            .expect("shadow host");
+        let (live_bi, _) = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .expect("live solid");
         assert!(
             shape_entry
                 .children
                 .iter()
-                .any(|c| c.node == crate::hierarchy::HierarchyNode::Body(bi)),
-            "merged body nests under the shape, children: {:?}",
+                .any(|c| c.node == crate::hierarchy::HierarchyNode::Body(shadow_bi)),
+            "pure cuboid body (shadow) nests under the shape, children: {:?}",
             shape_entry.children.iter().map(|c| &c.node).collect::<Vec<_>>()
         );
         let sketch = state.doc.sketches.keys().next().unwrap();
@@ -7947,12 +7980,101 @@ mod tests {
                 .any(|c| c.node == crate::hierarchy::HierarchyNode::Sketch(sketch)),
             "sketch on the shape face nests under the shape"
         );
+        // Walk Sketch → Extrusion → combined body.
+        let sketch_entry = shape_entry
+            .children
+            .iter()
+            .find(|c| c.node == crate::hierarchy::HierarchyNode::Sketch(sketch))
+            .unwrap();
+        let ei = state.doc.extrusions.keys().next().unwrap();
+        let extrude_entry = sketch_entry
+            .children
+            .iter()
+            .find(|c| c.node == crate::hierarchy::HierarchyNode::Extrusion(ei))
+            .expect("extrusion under sketch");
+        assert!(
+            extrude_entry
+                .children
+                .iter()
+                .any(|c| c.node == crate::hierarchy::HierarchyNode::Body(live_bi)),
+            "combined body is the extrusion's output, children: {:?}",
+            extrude_entry.children.iter().map(|c| &c.node).collect::<Vec<_>>()
+        );
+        let deps = crate::hierarchy::graph_dependency_edges(&state.doc);
+        assert!(
+            deps.contains(&(
+                crate::hierarchy::HierarchyNode::Body(shadow_bi),
+                crate::hierarchy::HierarchyNode::Extrusion(ei)
+            )),
+            "shadow host feeds the extrusion in the graph"
+        );
+    }
+
+    /// #1107: repeated fuse-merge extrudes each shadow the prior body and produce a new
+    /// combined body under that extrusion (not a single mutating solid).
+    #[test]
+    fn lua_repeated_merge_extrudes_shadow_chain() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "side", edge = 0 }
+            bearcad.rect{ x = 2, y = 2, width = 8, height = 8 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, body = "merge" }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true }
+            bearcad.rect{ x = 1, y = 1, width = 6, height = 6 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 10, body = "merge" }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 1, profile = "polygon", profile_lines = {4, 5, 6, 7}, top = true }
+            bearcad.rect{ x = 1, y = 1, width = 4, height = 4 }
+            bearcad.extrude{ polygon = {8, 9, 10, 11}, distance = 10, body = "merge" }
+            "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 3);
+        // Pure cuboid + three fused solids.
+        assert_eq!(state.doc.bodies.len(), 4);
+        let shadows: Vec<_> = state.doc.bodies.iter().filter(|(_, b)| b.shadow).collect();
+        let lives: Vec<_> = state.doc.bodies.iter().filter(|(_, b)| !b.shadow).collect();
+        assert_eq!(shadows.len(), 3, "each prior body is shadowed");
+        assert_eq!(lives.len(), 1, "one live combined body");
+        let live_bi = lives[0].0;
+        assert_eq!(
+            lives[0].1.source.extrusion_indices(),
+            [xkey(0), xkey(1), xkey(2)]
+        );
+        // Each extrusion's output body nests under it.
+        let tree = crate::hierarchy::build_hierarchy(&state.doc, None);
+        for ei in state.doc.extrusions.keys() {
+            let entry = crate::hierarchy::find_hierarchy_entry(
+                &tree,
+                crate::hierarchy::HierarchyNode::Extrusion(ei),
+            )
+            .unwrap_or_else(|| panic!("extrusion {ei:?} in tree"));
+            let produced = state
+                .doc
+                .bodies
+                .iter()
+                .find(|(_, b)| b.source.producing_extrusion() == Some(ei))
+                .map(|(k, _)| k)
+                .expect("each extrusion produces a body");
+            assert!(
+                entry
+                    .children
+                    .iter()
+                    .any(|c| c.node == crate::hierarchy::HierarchyNode::Body(produced)),
+                "extrusion {ei:?} outputs body {produced:?}"
+            );
+        }
+        // Final live body is produced by the last extrusion.
+        assert_eq!(
+            state.doc.bodies[live_bi].source.producing_extrusion(),
+            Some(xkey(2))
+        );
     }
 
     #[test]
     fn lua_extrude_with_body_cut_subtracts_from_the_existing_body() {
         // `body = "cut"` (#35) records the new extrusion as a subtraction of the extruded
-        // face's body rather than fusing it.
+        // face's body rather than fusing a new body (combine/merge is the shadow path).
         let state = run_lua(
             r#"
             bearcad.new()

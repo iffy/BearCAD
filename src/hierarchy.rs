@@ -1115,6 +1115,15 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((source, HierarchyNode::DrawingProjection { drawing: di, view: vi }));
         }
     }
+    // Fuse-merge/cut extrusions consume their host body (#1106/#1107): the prior body is a
+    // shadow input and the combined solid nests under the extrusion as output.
+    for (bi, body) in doc.bodies.iter() {
+        if let Some(ei) = body.source.producing_extrusion() {
+            if let Some(host) = crate::model::fuse_host_of(doc, bi) {
+                edges.push((HierarchyNode::Body(host), HierarchyNode::Extrusion(ei)));
+            }
+        }
+    }
     edges
 }
 
@@ -1804,7 +1813,12 @@ pub fn build_hierarchy(
     }
     // Bodies with no source extrusion (e.g. STL imports, #70) have no sketch/feature to nest
     // under, so they surface at the top level, same as an orphaned extrusion above.
+    // Bodies produced by an extrusion (including cuts-only Solids, #1106) nest under that
+    // extrusion via build_sketch_extrusions — skip them here even when `add` is empty.
     for (bi, body) in doc.bodies.iter() {
+        if body.source.producing_extrusion().is_some() {
+            continue;
+        }
         if body.source.extrusion_indices().is_empty()
             && !matches!(
                 body.source,
@@ -1819,11 +1833,8 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Revolve(_)
                     // A swept body nests under its Sweep node, not the root.
                     | crate::model::BodySource::Sweep(_)
-                    // A shape's body nests under its Shape node (#909), not the root.
+                    // A shape's pure primitive body nests under its Shape node (#909).
                     | crate::model::BodySource::Primitive(_)
-                    // A Solid built on a primitive base nests under its Shape (#1104), even
-                    // when it has no additive extrusions (cuts-only on a shape).
-                    | crate::model::BodySource::Solid { base: Some(_), .. }
                     // A unit's materialized body has no row of its own (#724): the
                     // instance row (#723) stands for it.
                     | crate::model::BodySource::UnitInstance(_)
@@ -2064,16 +2075,15 @@ pub fn build_hierarchy(
             children,
         });
     }
-    // Primitive shapes (#909): the shape is its own top-level element with its body beneath
-    // it. After an extrusion is added to / cut from the shape (#1104) the body becomes a
-    // `Solid { base, … }` — still nest under the shape. Sketches on the shape's faces
-    // (#1103/#1105) nest here too, the way a sketch on an extrude cap nests under its
-    // extrusion, so they stay reachable in the Elements pane.
+    // Primitive shapes (#909): the shape is its own top-level element with its **pure**
+    // primitive body beneath it. After a fuse-merge/cut (#1106) that pure body is a shadow
+    // and the combined solid nests under the extrusion that produced it — not under the
+    // Shape. Sketches on the shape's faces (#1103/#1105) nest here too.
     for (oi, shape) in doc.primitives.iter() {
         let mut children: Vec<HierarchyEntry> = doc
             .bodies
             .iter()
-            .filter(|(_, b)| b.source.primitive_base() == Some(oi))
+            .filter(|(_, b)| matches!(b.source, crate::model::BodySource::Primitive(p) if p == oi))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
@@ -2671,17 +2681,22 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .extrusions
             .get(index)
             .map(|extrusion| SceneElement::Sketch(extrusion.sketch)),
-        // A body depends on (and nests under) the feature that produced it; a merged body
-        // nests under its first (originating) extrusion. A shape body (#909), including one
-        // with fused extrusions on a primitive base (#1104), nests under its Shape.
+        // A body nests under the feature that produced it (#1106): a pure shape body under
+        // its Shape; a fused combine/cut solid under the extrusion that produced it (last
+        // add/cut), not under the Shape.
         SceneElement::Body(index) => doc.bodies.get(index).and_then(|body| {
-            if let Some(p) = body.source.primitive_base() {
+            if let crate::model::BodySource::Primitive(p) = body.source {
                 return Some(SceneElement::Shape(p));
             }
             body.source
-                .extrusion_indices()
-                .first()
-                .map(|&ei| SceneElement::Extrusion(ei))
+                .producing_extrusion()
+                .map(|ei| SceneElement::Extrusion(ei))
+                .or_else(|| {
+                    body.source
+                        .extrusion_indices()
+                        .first()
+                        .map(|&ei| SceneElement::Extrusion(ei))
+                })
         }),
         // A face's own edge isn't a hierarchy-pane node in its own right (it's a constraint
         // reference, not an independently listed element) — no parent to nest under.
@@ -2818,8 +2833,9 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::Extrusion(index) => {
             for (bi, body) in doc.bodies.iter() {
-                if body.source.owns_extrusion(index) {
+                if body.source.producing_extrusion() == Some(index) {
                     out.insert(SceneElement::Body(bi));
+                    collect_descendants(doc, SceneElement::Body(bi), out);
                 }
             }
             // Sketches placed on this extrusion's cap or side-wall faces.
@@ -2959,11 +2975,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
             }
         }
         SceneElement::Shape(index) => {
-            // A shape's body is linked by `BodySource::Primitive` or a `Solid` whose base is
-            // that primitive after an add-to-body / cut (#909/#1104). Sketches on its faces
-            // also descend from it (#1103/#1105).
+            // A shape's pure primitive body (#909/#1106) — the fused solid after a merge
+            // lives under its extrusion, not here. Sketches on its faces also descend (#1103).
             for (bi, body) in doc.bodies.iter() {
-                if body.source.primitive_base() == Some(index) {
+                if matches!(body.source, crate::model::BodySource::Primitive(p) if p == index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -3737,15 +3752,14 @@ fn build_sketch_extrusions(
         .iter()
         .filter(|(_, extrusion)| extrusion.sketch == sketch)
         .map(|(ei, _)| {
-            // Bodies that own this extrusion nest under it — except a Solid whose base is
-            // a Shape-tool primitive (#1104): that body stays under the Shape (its home),
-            // not duplicated under every fused extrusion.
+            // Bodies **produced** by this extrusion nest under it (#1106/#1107): the fused
+            // combine/cut result is the extrusion's output. Intermediate shadow solids that
+            // still list this extrusion further down their add list stay under their own
+            // producing extrusion.
             let mut children: Vec<HierarchyEntry> = doc
                 .bodies
                 .iter()
-                .filter(|(_, body)| {
-                    body.source.owns_extrusion(ei) && body.source.primitive_base().is_none()
-                })
+                .filter(|(_, body)| body.source.producing_extrusion() == Some(ei))
                 .map(|(bi, _)| HierarchyEntry {
                     node: HierarchyNode::Body(bi),
                     children: Vec::new(),
@@ -7494,9 +7508,9 @@ label_hidden: false,
         );
     }
 
-    /// #1104/#1105: after an extrusion is fused onto a Shape-tool body, the body (now a
-    /// Solid with that primitive as base) and the sketch on the shape's face both still
-    /// nest under the Shape — not vanish from the Elements pane.
+    /// #1104/#1105/#1106: after a fuse-merge onto a Shape-tool body, the pure cuboid body
+    /// stays under the Shape (as a shadow), the sketch stays under the Shape, and the
+    /// combined solid nests under the extrusion as its output.
     #[test]
     fn shape_with_merged_extrusion_keeps_body_and_face_sketch_in_tree() {
         use crate::model::{
@@ -7509,7 +7523,13 @@ label_hidden: false,
         shape.depth = "30".to_string();
         shape.height = "20".to_string();
         let pi = doc.primitives.insert(shape);
-        let bi = doc.bodies.insert(Body {
+        let shadow_bi = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        let live_bi = doc.bodies.insert(Body {
             source: BodySource::Solid {
                 base: Some(pi),
                 add: vec![xkey(0)],
@@ -7528,7 +7548,7 @@ label_hidden: false,
             length_unit: None,
             angle_unit: None,
         });
-        doc.extrusions.insert(Extrusion {
+        let ei = doc.extrusions.insert(Extrusion {
             sketch,
             faces: vec![ExtrudeFace::Polygon(vec![])],
             distance: 10.0,
@@ -7538,6 +7558,12 @@ label_hidden: false,
             name: None,
             edge_treatments: Vec::new(),
         });
+        // Keep body source extrusion key in sync with the real extrusion key.
+        doc.bodies[live_bi].source = BodySource::Solid {
+            base: Some(pi),
+            add: vec![ei],
+            cut: Vec::new(),
+        };
 
         let tree = build_hierarchy(&doc, None);
         let root = &tree[0];
@@ -7547,8 +7573,11 @@ label_hidden: false,
             .find(|e| e.node == HierarchyNode::Shape(pi))
             .expect("shape stays top-level");
         assert!(
-            entry.children.iter().any(|c| c.node == HierarchyNode::Body(bi)),
-            "Solid-with-base body nests under the shape, children: {:?}",
+            entry
+                .children
+                .iter()
+                .any(|c| c.node == HierarchyNode::Body(shadow_bi)),
+            "pure cuboid body (shadow) nests under the shape, children: {:?}",
             entry.children.iter().map(|c| c.node).collect::<Vec<_>>()
         );
         assert!(
@@ -7559,8 +7588,29 @@ label_hidden: false,
             "sketch on a primitive face nests under the shape"
         );
         assert_eq!(
-            parent_element(&doc, SceneElement::Body(bi)),
+            parent_element(&doc, SceneElement::Body(shadow_bi)),
             Some(SceneElement::Shape(pi))
+        );
+        assert_eq!(
+            parent_element(&doc, SceneElement::Body(live_bi)),
+            Some(SceneElement::Extrusion(ei))
+        );
+        let sketch_entry = entry
+            .children
+            .iter()
+            .find(|c| c.node == HierarchyNode::Sketch(sketch))
+            .expect("sketch under shape");
+        let extrude_entry = sketch_entry
+            .children
+            .iter()
+            .find(|c| c.node == HierarchyNode::Extrusion(ei))
+            .expect("extrusion under sketch");
+        assert!(
+            extrude_entry
+                .children
+                .iter()
+                .any(|c| c.node == HierarchyNode::Body(live_bi)),
+            "combined body is extrusion output"
         );
     }
 

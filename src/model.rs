@@ -1585,11 +1585,74 @@ impl BodySource {
             _ => None,
         }
     }
+
+    /// The extrusion that *produced* this body as its fused output (#1106/#1107): the last
+    /// added extrusion, or — when the body is cuts-only on a primitive base — the last cut.
+    /// Used so the combined body nests under that extrusion in the graph, not under the Shape.
+    pub fn producing_extrusion(&self) -> Option<ExtrusionKey> {
+        match self {
+            Self::Extrusion(e) => Some(*e),
+            Self::Extrusions(indices) => indices.last().copied(),
+            Self::Solid { add, cut, .. } => add.last().copied().or_else(|| cut.last().copied()),
+            _ => None,
+        }
+    }
+
+    /// Source that would remain if `extrusion` were peeled off as the body's producing
+    /// extrusion (#1106). `None` if `extrusion` is not this body's producer, or if peeling
+    /// would leave nothing (a lone new-body extrusion).
+    pub fn predecessor_source(&self, extrusion: ExtrusionKey) -> Option<BodySource> {
+        if self.producing_extrusion() != Some(extrusion) {
+            return None;
+        }
+        match self {
+            Self::Extrusion(_) => None,
+            Self::Extrusions(indices) => {
+                let mut left: Vec<ExtrusionKey> =
+                    indices.iter().copied().filter(|&e| e != extrusion).collect();
+                match left.len() {
+                    0 => None,
+                    1 => Some(Self::Extrusion(left.pop().unwrap())),
+                    _ => Some(Self::Extrusions(left)),
+                }
+            }
+            Self::Solid { base, add, cut } => {
+                let add: Vec<ExtrusionKey> =
+                    add.iter().copied().filter(|&e| e != extrusion).collect();
+                let cut: Vec<ExtrusionKey> =
+                    cut.iter().copied().filter(|&e| e != extrusion).collect();
+                // Producer was an add (preferred) or a cut when add was empty.
+                if add.is_empty() && cut.is_empty() {
+                    return base.map(Self::Primitive);
+                }
+                if cut.is_empty() {
+                    if let Some(p) = *base {
+                        return Some(Self::Solid {
+                            base: Some(p),
+                            add,
+                            cut: Vec::new(),
+                        });
+                    }
+                    return match add.as_slice() {
+                        [only] => Some(Self::Extrusion(*only)),
+                        _ => Some(Self::Extrusions(add)),
+                    };
+                }
+                Some(Self::Solid {
+                    base: *base,
+                    add,
+                    cut,
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Whether any live operation (boolean or move) other than the excluded ones consumes
 /// `body` on a side that shadows it — used when deleting/editing an operation to decide
-/// whether an input body stays a shadow.
+/// whether an input body stays a shadow. Also true when a fuse-merge/cut extrusion still
+/// consumes the body as its host (#1106).
 pub fn body_shadowed_by_other_ops(
     doc: &Document,
     body: BodyKey,
@@ -1606,14 +1669,43 @@ pub fn body_shadowed_by_other_ops(
         skip_slice != Some(oi) && o.targets.contains(&body)
     }) || doc.edge_treatment_ops.iter().any(|(oi, o)| {
         skip_edge_treatment != Some(oi) && o.targets.contains(&body)
-    })
+    }) || body_is_fuse_host(doc, body)
 }
 
 /// The body whose source includes `extrusion` (added or cut), if any.
+/// Prefers a live (non-shadow) body when several own the same extrusion after fuse-merge
+/// (#1106/#1107) — intermediate shadow solids keep older add lists that still name it.
 pub fn body_index_for_extrusion(doc: &Document, extrusion: ExtrusionKey) -> Option<BodyKey> {
+    let mut shadow = None;
+    for (key, body) in doc.bodies.iter() {
+        if !body.source.owns_extrusion(extrusion) {
+            continue;
+        }
+        if !body.shadow {
+            return Some(key);
+        }
+        shadow.get_or_insert(key);
+    }
+    shadow
+}
+
+/// The body that was shadowed when `body` was created by a merge/cut extrude (#1106/#1107),
+/// if any: a shadow body whose source matches this body's source with its producing
+/// extrusion peeled off.
+pub fn fuse_host_of(doc: &Document, body: BodyKey) -> Option<BodyKey> {
+    let src = &doc.bodies.get(body)?.source;
+    let producing = src.producing_extrusion()?;
+    let pred = src.predecessor_source(producing)?;
+    doc.bodies.iter().find_map(|(k, b)| {
+        (k != body && b.source == pred).then_some(k)
+    })
+}
+
+/// Whether any live body is a fuse-merge/cut result of `host` (#1106).
+pub fn body_is_fuse_host(doc: &Document, host: BodyKey) -> bool {
     doc.bodies
-        .iter()
-        .find_map(|(key, body)| body.source.owns_extrusion(extrusion).then_some(key))
+        .keys()
+        .any(|k| k != host && fuse_host_of(doc, k) == Some(host))
 }
 
 /// The body a face belongs to (#926), when it has one: a cap/side wall belongs to its
@@ -1635,11 +1727,20 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
 
 /// The body built on primitive shape `primitive` (#909/#1104): either a pure
 /// [`BodySource::Primitive`] body or a [`BodySource::Solid`] whose `base` is that shape
-/// after an extrusion was added to / cut from it.
+/// after an extrusion was added to / cut from it. Prefers a live body when fuse-merge
+/// left the pure primitive as a shadow (#1106).
 pub fn body_index_for_primitive(doc: &Document, primitive: PrimitiveKey) -> Option<BodyKey> {
-    doc.bodies.iter().find_map(|(key, body)| {
-        (body.source.primitive_base() == Some(primitive)).then_some(key)
-    })
+    let mut shadow = None;
+    for (key, body) in doc.bodies.iter() {
+        if body.source.primitive_base() != Some(primitive) {
+            continue;
+        }
+        if !body.shadow {
+            return Some(key);
+        }
+        shadow.get_or_insert(key);
+    }
+    shadow
 }
 
 /// Body index whose source is `revolution` (#621) — the revolve analogue of

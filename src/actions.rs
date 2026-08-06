@@ -3799,8 +3799,16 @@ impl AppState {
                 .is_some_and(|b| b.source.cut_extrusion_indices().contains(&ei))
         };
         let already_there = match (current, mode) {
+            // Fuse-merge: the extrusion lives on a combined body whose host is `target` (#1106).
             (Some(bi), ExtrudeBodyMode::MergeInto(target)) => {
-                bi == target && !is_cut_in(&self.doc, bi)
+                (bi == target && !is_cut_in(&self.doc, bi))
+                    || (crate::model::fuse_host_of(&self.doc, bi) == Some(target)
+                        && !is_cut_in(&self.doc, bi)
+                        && self
+                            .doc
+                            .bodies
+                            .get(bi)
+                            .is_some_and(|b| b.source.producing_extrusion() == Some(ei)))
             }
             (Some(bi), ExtrudeBodyMode::Cut(target)) => bi == target && is_cut_in(&self.doc, bi),
             (Some(bi), ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew) => {
@@ -3817,6 +3825,28 @@ impl AppState {
                     &mut self.doc,
                     SceneElement::Body(bi),
                 );
+            } else if self
+                .doc
+                .bodies
+                .get(bi)
+                .is_some_and(|b| b.source.producing_extrusion() == Some(ei))
+            {
+                // Fused output of this extrusion (#1106): drop the combined body and
+                // release its host from shadow (unless another op still consumes it).
+                let host = crate::model::fuse_host_of(&self.doc, bi);
+                crate::document_lifecycle::delete_element(
+                    &mut self.doc,
+                    SceneElement::Body(bi),
+                );
+                if let Some(h) = host {
+                    if !crate::model::body_shadowed_by_other_ops(
+                        &self.doc, h, None, None, None, None,
+                    ) {
+                        if let Some(body) = self.doc.bodies.get_mut(h) {
+                            body.shadow = false;
+                        }
+                    }
+                }
             } else if let Some(body) = self.doc.bodies.get_mut(bi) {
                 body.source.remove_extrusion(ei);
             }
@@ -3857,9 +3887,10 @@ impl AppState {
                 });
                 self.doc.shape_order.push(ShapeKind::Body);
             }
+            // Merge fuse: shadow the host and create a new combined body (#1106/#1107).
             ExtrudeBodyMode::MergeInto(bi) => {
-                if let Some(body) = self.doc.bodies.get_mut(bi) {
-                    body.source.append_extrusion(ei);
+                if self.doc.bodies.contains(bi) {
+                    self.fuse_merge_onto_body(bi, ei);
                 } else {
                     self.doc.bodies.insert(crate::model::Body {
                         source: crate::model::BodySource::single(ei),
@@ -3870,6 +3901,7 @@ impl AppState {
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
             }
+            // Cut still mutates the host (#35).
             ExtrudeBodyMode::Cut(bi) => {
                 if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_cut_extrusion(ei);
@@ -4062,14 +4094,13 @@ impl AppState {
             ExtrudeBodyMode::MergeInto(bi) => {
                 // Merging into a read-only unit is refused (#726): fall through to a new
                 // body instead of editing the unit.
-                if let Some(body) = self
+                if self
                     .doc
                     .bodies
-                    .get_mut(bi)
-                    .filter(|b| !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
+                    .get(bi)
+                    .is_some_and(|b| !matches!(b.source, crate::model::BodySource::UnitInstance(_)))
                 {
-                    body.source.append_extrusion(ei);
-                    return bi;
+                    return self.fuse_merge_onto_body(bi, ei);
                 }
             }
             ExtrudeBodyMode::Cut(bi) => {
@@ -4081,6 +4112,8 @@ impl AppState {
                 {
                     return self.cut_into_unit(instance, ei);
                 }
+                // Cut still mutates the host in place (#35) — only combine/merge shadows
+                // and produces a new body (#1106).
                 if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_cut_extrusion(ei);
                     return bi;
@@ -4092,6 +4125,35 @@ impl AppState {
             source: crate::model::BodySource::single(ei),
             // A body made off another body's face is made of the same stuff (#926).
             material: self.extrusion_source_material(ei),
+            name: None,
+            shadow: false,
+        });
+        self.doc.shape_order.push(ShapeKind::Body);
+        key
+    }
+
+    /// Fuse-merge extrusion `ei` onto host body `bi` (#1106/#1107): the host becomes a
+    /// shadow body and a **new** live body carries the combined solid (host source + the
+    /// extrusion). Matches Move/Boolean: consume input, produce output — so the node graph
+    /// shows Cuboid→shadow body, Extrusion→resulting body.
+    fn fuse_merge_onto_body(
+        &mut self,
+        bi: crate::model::BodyKey,
+        ei: crate::model::ExtrusionKey,
+    ) -> crate::model::BodyKey {
+        let (mut source, material) = {
+            let body = &self.doc.bodies[bi];
+            (body.source.clone(), body.material)
+        };
+        source.append_extrusion(ei);
+        // Material: prefer the host's, else whatever the extrusion's face carried (#926).
+        let material = material.or_else(|| self.extrusion_source_material(ei));
+        if let Some(body) = self.doc.bodies.get_mut(bi) {
+            body.shadow = true;
+        }
+        let key = self.doc.bodies.insert(crate::model::Body {
+            source,
+            material,
             name: None,
             shadow: false,
         });
@@ -23016,15 +23078,27 @@ mod tests {
 
         state.apply(Action::CommitExtrusion);
         assert_eq!(state.doc.extrusions.len(), 2, "should commit as a second extrusion");
-        // Sketching on an existing body's face merges into that body by default (#32) — the
-        // push extends the original box rather than creating a separate one, so the merged
-        // mesh's bounds grow by the default 10mm along the outward normal of the wall.
-        let merged = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).unwrap();
+        // Sketching on an existing body's face merges by default (#32/#1106): the host is
+        // shadowed and a new combined body is the extrusion's output. The combined mesh
+        // grows by the default 10mm along the outward normal of the wall.
+        let live = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("combined live body");
+        let merged = crate::extrude::body_solid_mesh(&state.doc, live).unwrap();
         let (min, max) = merged.bounds().unwrap();
         let extent = (max - min).max_element();
         assert!(
             (max - min).min_element() > 4.0 && extent > 15.0,
             "merged body should grow past the original 10×10×5 box, got {min:?}..{max:?}"
+        );
+        assert_eq!(state.doc.bodies.len(), 2, "host shadowed + combined output");
+        assert!(
+            state.doc.bodies.values().any(|b| b.shadow),
+            "original body is shadowed"
         );
     }
 

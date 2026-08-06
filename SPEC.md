@@ -736,13 +736,19 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     *backward* (negative distance) drives the profile into it — the mode auto-switches to **Cut**
     of that body; pulling forward again reverts to **Add to**. This only flips the cut toggle
     (an explicit **New body** choice is left alone on forward drags) and, like the manual Cut
-    option, only engages when the OCCT kernel is present. Deleting one extrusion of a multi-extrusion body only drops that
-    extrusion's contribution — the body survives as long as it still has at least one added
-    extrusion. Scriptable via `bearcad.extrude{ ..., body = "merge" | "cut" }` (`"merge"` joins,
-    `"cut"` subtracts from, the face's body). An explicit `"merge"`/`"cut"` requires the sketch
-    to sit on a body face: with no such body it is a hard error (#178), never a silent
-    fall-through to a new body. Omitted or any other value always creates a new body, matching
-    the declarative/OpenSCAD-style default.
+    option, only engages when the OCCT kernel is present. **Combine/merge shadows the host
+    (#1106/#1107):** committing **Add to** leaves the host as a shadow body (like Move/Boolean)
+    and creates a new live solid whose source is the host fused with the extrusion; that solid
+    nests under the extrusion as its graph output, and the host feeds the extrusion as a
+    graph input. Repeated merges chain this way (each prior body shadows, each extrusion
+    outputs the next combined solid). **Cut** still mutates the host in place. Deleting one
+    extrusion of a multi-extrusion body only drops that extrusion's contribution — the body
+    survives as long as it still has at least one added extrusion. Scriptable via
+    `bearcad.extrude{ ..., body = "merge" | "cut" }` (`"merge"` joins, `"cut"` subtracts from,
+    the face's body). An explicit `"merge"`/`"cut"` requires the sketch to sit on a body face:
+    with no such body it is a hard error (#178), never a silent fall-through to a new body.
+    Omitted or any other value always creates a new body, matching the declarative/OpenSCAD-style
+    default.
   - **One extrude, several solids (#837):** an extrude's picked profiles are grouped into the
     solids they actually make (`extrude::disjoint_face_groups`) — profiles that touch (nested,
     like a hole in its own wall, or overlapping) stay in one solid; profiles sharing nothing

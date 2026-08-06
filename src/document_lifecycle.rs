@@ -549,20 +549,53 @@ fn delete_extrusion(doc: &mut Document, index: crate::model::ExtrusionKey) -> bo
     };
     doc.extrusions.remove(index);
     remove_shape_order_entry(doc, ShapeKind::Extrusion, ordinal);
-    // A body that depends solely on this extrusion is removed with it; a body merging this
-    // extrusion with others (#32) just drops this one and keeps the rest.
+    // A body that depends solely on this extrusion is removed with it; a body that is the
+    // fused *output* of this extrusion (#1106) is removed too (releasing its host from
+    // shadow); a body that only lists this extrusion among others just drops this one.
     let dependent: Vec<crate::model::BodyKey> = doc
         .bodies
         .iter()
         .filter(|(_, body)| body.source.owns_extrusion(index))
         .map(|(i, _)| i)
         .collect();
+    let mut hosts_to_release = Vec::new();
+    let mut doomed = Vec::new();
     for bi in dependent {
-        let solely_owned = doc.bodies[bi].source.extrusion_indices() == [index];
-        if solely_owned {
-            delete_body(doc, bi);
+        let source = &doc.bodies[bi].source;
+        let solely_owned = source.extrusion_indices() == [index]
+            && source.cut_extrusion_indices().is_empty()
+            && source.primitive_base().is_none();
+        let is_producer = source.producing_extrusion() == Some(index);
+        if solely_owned || is_producer {
+            if let Some(h) = crate::model::fuse_host_of(doc, bi) {
+                hosts_to_release.push(h);
+            }
+            doomed.push(bi);
         } else {
             doc.bodies[bi].source.remove_extrusion(index);
+        }
+    }
+    // Cascade: any body fused from a doomed host dies with it (#1106 chain).
+    let mut i = 0;
+    while i < doomed.len() {
+        let host = doomed[i];
+        for (k, _) in doc.bodies.iter() {
+            if !doomed.contains(&k) && crate::model::fuse_host_of(doc, k) == Some(host) {
+                doomed.push(k);
+            }
+        }
+        i += 1;
+    }
+    for bi in doomed {
+        delete_body(doc, bi);
+    }
+    for h in hosts_to_release {
+        if doc.bodies.contains(h)
+            && !crate::model::body_shadowed_by_other_ops(doc, h, None, None, None, None)
+        {
+            if let Some(body) = doc.bodies.get_mut(h) {
+                body.shadow = false;
+            }
         }
     }
     true
