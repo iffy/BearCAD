@@ -290,6 +290,9 @@ pub struct CreatingShape {
     pub typed: [bool; 4],
     /// Ask the pane to focus this phase's field next frame.
     pub pending_focus: bool,
+    /// Which of the cuboid Base phase's two floating dimension fields (0 = Width, 1 = Depth)
+    /// currently holds the keyboard (#1102). Tab cycles between them.
+    pub focused: usize,
 }
 
 impl CreatingShape {
@@ -302,6 +305,7 @@ impl CreatingShape {
             phase_screen: None,
             typed: [false; 4],
             pending_focus: false,
+            focused: 0,
         }
     }
 
@@ -18352,6 +18356,17 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
         assert!(state.creating_shape.is_none(), "committing disarms the tool");
         assert_eq!(state.tool, Tool::Select);
+    }
+
+    /// #1102: a freshly armed cuboid's Base phase starts with the width field focused.
+    #[test]
+    fn shape_tool_cuboid_base_starts_focused_on_width() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Shape));
+        let creating = state.creating_shape.as_ref().expect("armed");
+        assert_eq!(creating.shape.kind, crate::model::PrimitiveKind::Cuboid);
+        assert_eq!(creating.focused, 0, "width is the first focused field");
+        assert_eq!(creating.phase, ShapePhase::Anchor);
     }
 
     /// #911: leaving the tool drops the in-progress shape, and Esc clears it without

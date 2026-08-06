@@ -10935,9 +10935,9 @@ impl App {
         // the radius; in Height, the radius and the height.
         let visible = |field: D| match (creating.shape.kind, creating.phase) {
             (_, ShapePhase::Done) => true,
-            (model::PrimitiveKind::Cuboid, ShapePhase::Base) => {
-                matches!(field, D::Width | D::Depth)
-            }
+            // The cuboid Base phase has its own floating W/D fields in the 3D view (#1102),
+            // and the height is not relevant yet — so no mirror labels here.
+            (model::PrimitiveKind::Cuboid, ShapePhase::Base) => false,
             (model::PrimitiveKind::Cuboid, ShapePhase::Height) => true,
             (model::PrimitiveKind::Cylinder, ShapePhase::Base) => {
                 matches!(field, D::Radius)
@@ -11034,6 +11034,8 @@ impl App {
         let Some(creating) = self.state.creating_shape.as_ref() else { return };
         let Some(pp) = pointer_screen else { return };
         let anchor_normal = Vec3::from_array(creating.shape.normal).normalize_or_zero();
+        let anchor_u = Vec3::from_array(creating.shape.u_axis).normalize_or_zero();
+        let anchor_v = anchor_normal.cross(anchor_u).normalize_or_zero();
         let origin = Vec3::from_array(creating.shape.origin);
         // Bright yellow (#1094–#1098) so the anchor points and dimension lines read
         // clearly on top of the scene.
@@ -11056,14 +11058,24 @@ impl App {
                     dot(painter, snap);
                 }
             }
-            // Base phase: show the opposite corner (cuboid) or radius line (cylinder/sphere).
+            // Base phase: a cuboid shows two highlight lines — one along the width side
+            // and one along the depth side adjacent to the first corner (#1102) — while a
+            // cylinder/sphere shows the radius line. The focused side is drawn thicker.
             (ShapePhase::Base, K::Cuboid) => {
                 let corner = creating.first_corner.unwrap_or(origin);
-                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) {
+                if let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal)
+                {
                     let hit = self.snap_shape_point(pp, project, hit);
+                    let delta = hit - corner;
+                    let du = delta.dot(anchor_u);
+                    let dv = delta.dot(anchor_v);
+                    let width_end = corner + anchor_u * du;
+                    let depth_end = corner + anchor_v * dv;
                     dot(painter, corner);
                     dot(painter, hit);
-                    draw_world_segment(painter, project, corner, hit, hl, 2.0);
+                    let (w_w, d_w) = if creating.focused == 0 { (3.5, 2.0) } else { (2.0, 3.5) };
+                    draw_world_segment(painter, project, corner, width_end, hl, w_w);
+                    draw_world_segment(painter, project, corner, depth_end, hl, d_w);
                 }
             }
             (ShapePhase::Base, K::Cylinder | K::Sphere) => {
@@ -11093,6 +11105,142 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The cuboid Base phase's two floating dimension fields (#1102): one for width beside
+    /// the width side, one for depth beside the depth side, in the 3D view (not the context
+    /// pane). The focused one takes the keyboard with its value selected for overwrite, and
+    /// Enter advances to the height phase. Tab cycles between them (`handle_in_progress_object_keyboard`).
+    fn draw_shape_base_dimension_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> Vec<SketchDimFieldResult> {
+        use actions::{ShapeDimension as D, ShapePhase};
+        use model::PrimitiveKind as K;
+        if self.state.tool != Tool::Shape || self.state.sketch_session.is_some() {
+            return Vec::new();
+        }
+        let creating = match self.state.creating_shape.as_ref() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        if creating.phase != ShapePhase::Base || creating.shape.kind != K::Cuboid {
+            return Vec::new();
+        }
+        let Some(pp) = pointer_screen else { return Vec::new() };
+        let anchor_normal = Vec3::from_array(creating.shape.normal).normalize_or_zero();
+        let anchor_u = Vec3::from_array(creating.shape.u_axis).normalize_or_zero();
+        let anchor_v = anchor_normal.cross(anchor_u).normalize_or_zero();
+        let corner = creating.first_corner.unwrap_or_else(|| Vec3::from_array(creating.shape.origin));
+        let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, corner, anchor_normal) else {
+            return Vec::new();
+        };
+        let hit = self.snap_shape_point(pp, project, hit);
+        let delta = hit - corner;
+        let du = delta.dot(anchor_u);
+        let dv = delta.dot(anchor_v);
+        let width_end = corner + anchor_u * du;
+        let depth_end = corner + anchor_v * dv;
+        let Some(c0) = project(corner) else { return Vec::new() };
+        let Some(w_end) = project(width_end) else { return Vec::new() };
+        let Some(d_end) = project(depth_end) else { return Vec::new() };
+
+        let mut width_text = creating.shape.width.clone();
+        let mut depth_text = creating.shape.depth.clone();
+        let focused = creating.focused;
+        let mut pending_focus = creating.pending_focus;
+        let id_w = egui::Id::new("shape_base_width");
+        let id_d = egui::Id::new("shape_base_depth");
+        let width_layout = line_dim_layout(c0, w_end, &width_text);
+        let depth_layout = line_dim_layout(c0, d_end, &depth_text);
+        let ctx = ui.ctx().clone();
+
+        let mut advance_phase = false;
+        let mut width_result = SketchDimFieldResult::default();
+        let mut depth_result = SketchDimFieldResult::default();
+        {
+            let doc = &mut self.state.doc;
+            egui::Area::new(egui::Id::new("shape_base_width_area"))
+                .fixed_pos(width_layout.pos)
+                .order(egui::Order::Foreground)
+                .show(&ctx, |ui| {
+                    width_result = show_sketch_dimension_field(
+                        ui,
+                        &ctx,
+                        id_w,
+                        &mut width_text,
+                        doc,
+                        None,
+                        focused == 0,
+                        &mut pending_focus,
+                        false,
+                        false,
+                    );
+                });
+        }
+        {
+            let doc = &mut self.state.doc;
+            egui::Area::new(egui::Id::new("shape_base_depth_area"))
+                .fixed_pos(depth_layout.pos)
+                .order(egui::Order::Foreground)
+                .show(&ctx, |ui| {
+                    depth_result = show_sketch_dimension_field(
+                        ui,
+                        &ctx,
+                        id_d,
+                        &mut depth_text,
+                        doc,
+                        None,
+                        focused == 1,
+                        &mut pending_focus,
+                        false,
+                        false,
+                    );
+                });
+        }
+
+        if width_result.changed {
+            self.state
+                .apply(Action::SetShapeDimension { field: D::Width, text: width_text });
+        }
+        if depth_result.changed {
+            self.state
+                .apply(Action::SetShapeDimension { field: D::Depth, text: depth_text });
+        }
+        // Enter in either floating field advances to the height phase, mirroring the
+        // context pane's Enter-to-advance (#1094).
+        if width_result.enter_commit || depth_result.enter_commit {
+            advance_phase = true;
+        }
+
+        // Track which field holds the keyboard so Tab and the highlight know. Write the
+        // field's pending-focus flag back so it clears once a field has landed focus.
+        if let Some(c) = self.state.creating_shape.as_mut() {
+            c.pending_focus = pending_focus;
+        }
+        let current = ctx.memory(|m| m.focused());
+        if current == Some(id_w) {
+            if let Some(c) = self.state.creating_shape.as_mut() {
+                c.focused = 0;
+            }
+        } else if current == Some(id_d) {
+            if let Some(c) = self.state.creating_shape.as_mut() {
+                c.focused = 1;
+            }
+        } else if pending_focus {
+            let target = if focused == 0 { id_w } else { id_d };
+            ctx.memory_mut(|m| m.request_focus(target));
+        }
+
+        if advance_phase {
+            self.advance_shape_phase();
+        }
+        vec![width_result, depth_result]
     }
 
     /// Create Shape tool (#909): while it's active, Enter commits the shape once every
@@ -12844,13 +12992,22 @@ impl eframe::App for App {
                 });
                 context::ShapeControl {
                     kind: creating.shape.kind,
-                    focus_field: creating.pending_focus.then(|| {
+                    focus_field: if creating.pending_focus {
                         match (creating.shape.kind, creating.phase) {
-                            (_, actions::ShapePhase::Height) => actions::ShapeDimension::Height,
-                            (model::PrimitiveKind::Cuboid, _) => actions::ShapeDimension::Width,
-                            _ => actions::ShapeDimension::Radius,
+                            (_, actions::ShapePhase::Height) => {
+                                Some(actions::ShapeDimension::Height)
+                            }
+                            // The cuboid Base phase has its own floating W/D fields in the
+                            // 3D view (#1102): the context pane must not steal their focus.
+                            (model::PrimitiveKind::Cuboid, actions::ShapePhase::Base) => None,
+                            (model::PrimitiveKind::Cuboid, _) => {
+                                Some(actions::ShapeDimension::Width)
+                            }
+                            _ => Some(actions::ShapeDimension::Radius),
                         }
-                    }),
+                    } else {
+                        None
+                    },
                     width: creating.shape.width.clone(),
                     depth: creating.shape.depth.clone(),
                     height: creating.shape.height.clone(),
@@ -20244,6 +20401,21 @@ impl App {
             return;
         }
 
+        // The cuboid Base phase has two floating dimension fields (W/D) in the 3D view
+        // (#1102): Tab switches between them.
+        if self.state.creating_shape.as_ref().is_some_and(|c| {
+            c.shape.kind == model::PrimitiveKind::Cuboid && c.phase == actions::ShapePhase::Base
+        }) {
+            if tab_pressed {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                if let Some(c) = self.state.creating_shape.as_mut() {
+                    c.focused = if c.focused == 0 { 1 } else { 0 };
+                    c.pending_focus = true;
+                }
+            }
+            return;
+        }
+
         if self.state.creating_line.is_some() {
             if tab_pressed {
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
@@ -23685,6 +23857,9 @@ impl App {
         if self.state.tool == Tool::Shape {
             self.handle_shape_tool_keys(ui);
             self.handle_shape_placement(ui, &project, pointer_screen, &cam, viewport, &vp);
+            let shape_fields =
+                self.draw_shape_base_dimension_fields(ui, &project, pointer_screen, &cam, viewport, &vp);
+            inline_parameter_field_results.extend(shape_fields);
         }
 
         if self.state.tool == Tool::Loft {
