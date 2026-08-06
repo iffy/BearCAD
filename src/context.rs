@@ -5495,9 +5495,24 @@ pub fn show_pane(
                 .width(90.0)
                 .show(ui, &mut text, doc);
                 // The phase's own field takes the keyboard, so its size can be typed
-                // straight after the click that asked for it (#912).
-                if control.focus_field == Some(field) && !resp.has_focus() {
+                // straight after the click that asked for it (#912). Selecting the whole
+                // value on the frame it gains focus means the next keystroke overwrites
+                // it, like the sketch Rectangle's typed dimensions do (#1100).
+                let is_focus_target = control.focus_field == Some(field);
+                if is_focus_target && !resp.has_focus() {
                     resp.request_focus();
+                }
+                if is_focus_target && resp.gained_focus() {
+                    let len = text.chars().count();
+                    if let Some(mut state) =
+                        egui::widgets::text_edit::TextEditState::load(ui.ctx(), id)
+                    {
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::default(),
+                            egui::text::CCursor::new(len),
+                        )));
+                        state.store(ui.ctx(), id);
+                    }
                 }
                 if resp.changed() {
                     pending = Some(ShapeEdit::Dimension(field, text.clone()));

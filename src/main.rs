@@ -10928,7 +10928,28 @@ impl App {
             (model::PrimitiveKind::Cuboid, _) => Some(D::Width),
             _ => Some(D::Radius),
         };
+        // Only draw the dimensions the phase is actually asking for or has already set
+        // (#1100): the height is not relevant until the Height phase, so a cuboid in its
+        // Base phase must not show the height value that the Anchor-phase ghost seeded —
+        // the height belongs to click 3, not click 2. A cylinder in its Base phase shows only
+        // the radius; in Height, the radius and the height.
+        let visible = |field: D| match (creating.shape.kind, creating.phase) {
+            (_, ShapePhase::Done) => true,
+            (model::PrimitiveKind::Cuboid, ShapePhase::Base) => {
+                matches!(field, D::Width | D::Depth)
+            }
+            (model::PrimitiveKind::Cuboid, ShapePhase::Height) => true,
+            (model::PrimitiveKind::Cylinder, ShapePhase::Base) => {
+                matches!(field, D::Radius)
+            }
+            (model::PrimitiveKind::Cylinder, ShapePhase::Height) => true,
+            (model::PrimitiveKind::Sphere, _) => matches!(field, D::Radius),
+            _ => true,
+        };
         for (field, world) in primitives::field_anchors(&self.state.doc, &creating.shape) {
+            if !visible(field) {
+                continue;
+            }
             let Some(anchor) = project(world) else { continue };
             let (label, text) = match field {
                 D::Width => ("W", creating.shape.width.clone()),
