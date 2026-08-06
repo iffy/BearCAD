@@ -6933,6 +6933,8 @@ pub enum CliOutcome {
     /// Show the McMaster-Carr catalog in a window of its own (`bearcad mcmaster [part]`,
     /// #1022). The app runs itself under this to host the web view in a second process.
     McMaster { part: Option<String> },
+    /// Print every tool operation's input/output/shadow element types (`bearcad opsigs`).
+    OpSigs,
     Run(ScriptOptions),
 }
 
@@ -6952,6 +6954,8 @@ Commands:
   uninstall-cli         Remove the `bearcad` PATH symlink
   mcmaster [part]       Browse the McMaster-Carr catalog in a window, printing each CAD
                         file it downloads. The app runs this itself when you import a part
+  opsigs                Print every tool operation's inputs, outputs, and shadows
+                        (markdown + HTML). Also: `cargo opsigs`
 
 Options:
   --script <path>       Run a Lua script
@@ -7004,6 +7008,7 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
         Some(crate::mcmaster::SUBCOMMAND) => {
             return CliOutcome::McMaster { part: args.get(2).cloned() }
         }
+        Some("opsigs") => return CliOutcome::OpSigs,
         _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))

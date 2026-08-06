@@ -59,6 +59,7 @@ mod polygon_boolean;
 
 mod model;
 mod offset;
+mod opsigs;
 mod tutorial;
 mod units;
 mod touch;
@@ -375,6 +376,10 @@ fn main() -> eframe::Result<()> {
             }
             return Ok(());
         }
+        script::CliOutcome::OpSigs => {
+            opsigs::run_cli();
+            return Ok(());
+        }
         script::CliOutcome::Run(script_opts) => run_app(script_opts),
     }
 }
@@ -642,6 +647,10 @@ mod cli_tests {
         assert_eq!(
             script::parse_cli(["bearcad", "uninstall-cli"]),
             script::CliOutcome::UninstallCli
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "opsigs"]),
+            script::CliOutcome::OpSigs
         );
     }
 

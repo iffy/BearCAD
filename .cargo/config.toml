@@ -1,2 +1,6 @@
 [build]
 rustflags = ["-D", "warnings"]
+
+# `cargo opsigs` → run the app's operation-signature table (markdown + HTML).
+[alias]
+opsigs = ["run", "--", "opsigs"]

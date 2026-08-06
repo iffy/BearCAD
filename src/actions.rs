@@ -145,8 +145,8 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// Every tool, for exhaustive checks (e.g. that no two claim the same shortcut letter).
-    #[cfg(test)]
+    /// Every tool — exhaustive checks, opsigs coverage, etc.
+    #[allow(dead_code)] // used by opsigs tests and any exhaustive tool walks
     pub const ALL: [Self; 25] = [
         Self::Select,
         Self::Rectangle,
@@ -3876,9 +3876,11 @@ impl AppState {
             }
         }
         // A new body made off another body's face is made of the same stuff (#926).
+        // Attachment effect comes from opsigs (same constants `opsigs` prints).
+        use crate::opsigs::{extrude_host_effect, HostBodyEffect};
         let inherited = self.extrusion_source_material(ei);
-        match mode {
-            ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {
+        match extrude_host_effect(mode) {
+            HostBodyEffect::None => {
                 self.doc.bodies.insert(crate::model::Body {
                     source: crate::model::BodySource::single(ei),
                     material: inherited,
@@ -3887,8 +3889,10 @@ impl AppState {
                 });
                 self.doc.shape_order.push(ShapeKind::Body);
             }
-            // Merge fuse: shadow the host and create a new combined body (#1106/#1107).
-            ExtrudeBodyMode::MergeInto(bi) => {
+            HostBodyEffect::ShadowHostAndProduce => {
+                let ExtrudeBodyMode::MergeInto(bi) = mode else {
+                    unreachable!("only ExtrudeMerge uses ShadowHostAndProduce");
+                };
                 if self.doc.bodies.contains(bi) {
                     self.fuse_merge_onto_body(bi, ei);
                 } else {
@@ -3901,8 +3905,10 @@ impl AppState {
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
             }
-            // Cut still mutates the host (#35).
-            ExtrudeBodyMode::Cut(bi) => {
+            HostBodyEffect::MutateHost => {
+                let ExtrudeBodyMode::Cut(bi) = mode else {
+                    unreachable!("only ExtrudeCut uses MutateHost");
+                };
                 if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_cut_extrusion(ei);
                 } else {
@@ -4090,8 +4096,14 @@ impl AppState {
     }
 
     fn attach_new_extrusion_to_body(&mut self, ei: crate::model::ExtrusionKey, mode: ExtrudeBodyMode) -> crate::model::BodyKey {
-        match mode {
-            ExtrudeBodyMode::MergeInto(bi) => {
+        // Body attachment is driven only by [`crate::opsigs::extrude_host_effect`] —
+        // the same constants `opsigs` prints for ExtrudeNewBody / ExtrudeMerge / ExtrudeCut.
+        use crate::opsigs::{extrude_host_effect, HostBodyEffect};
+        match extrude_host_effect(mode) {
+            HostBodyEffect::ShadowHostAndProduce => {
+                let ExtrudeBodyMode::MergeInto(bi) = mode else {
+                    unreachable!("only ExtrudeMerge uses ShadowHostAndProduce");
+                };
                 // Merging into a read-only unit is refused (#726): fall through to a new
                 // body instead of editing the unit.
                 if self
@@ -4103,7 +4115,10 @@ impl AppState {
                     return self.fuse_merge_onto_body(bi, ei);
                 }
             }
-            ExtrudeBodyMode::Cut(bi) => {
+            HostBodyEffect::MutateHost => {
+                let ExtrudeBodyMode::Cut(bi) = mode else {
+                    unreachable!("only ExtrudeCut uses MutateHost");
+                };
                 // Cutting a unit (#726) never mutates it: the cut lands on (or creates)
                 // the document's own UnitCut output body; the intact unit body shadows
                 // as the consumed input on the next sync pass.
@@ -4112,14 +4127,12 @@ impl AppState {
                 {
                     return self.cut_into_unit(instance, ei);
                 }
-                // Cut still mutates the host in place (#35) — only combine/merge shadows
-                // and produces a new body (#1106).
                 if let Some(body) = self.doc.bodies.get_mut(bi) {
                     body.source.append_cut_extrusion(ei);
                     return bi;
                 }
             }
-            ExtrudeBodyMode::NewBody | ExtrudeBodyMode::JoinNew => {}
+            HostBodyEffect::None => {}
         }
         let key = self.doc.bodies.insert(crate::model::Body {
             source: crate::model::BodySource::single(ei),

@@ -2907,9 +2907,13 @@ pub enum MirrorMode {
 
 impl MirrorMode {
     /// Whether this mode consumes its input body into the output (shadowing it), the way Move
-    /// and the edge treatments do.
+    /// and the edge treatments do. Driven by the mirror operation's [`crate::opsigs::Operation`]
+    /// `HOST_EFFECT` (Join/Cut shadow; New body does not).
     pub fn consumes_input(self) -> bool {
-        !matches!(self, MirrorMode::NewBody)
+        matches!(
+            crate::opsigs::mirror_host_effect(self),
+            crate::opsigs::HostBodyEffect::ShadowHostAndProduce
+        )
     }
 }
 
