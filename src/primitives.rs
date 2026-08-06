@@ -273,6 +273,92 @@ pub fn body_is_sphere(doc: &crate::model::Document, body_index: crate::model::Bo
     }
 }
 
+/// The flat faces a primitive shape exposes for sketching (#1103): every one a
+/// [`crate::model::FaceId::PrimitiveFace`] can name. A cuboid has six, a cylinder two caps,
+/// a sphere none (its surface is curved).
+pub fn flat_faces(shape: &Primitive) -> Vec<crate::model::PrimitiveFace> {
+    use crate::model::PrimitiveFace as F;
+    match shape.kind {
+        PrimitiveKind::Cuboid => vec![
+            F::CuboidBottom,
+            F::CuboidTop,
+            F::CuboidSide { edge: 0 },
+            F::CuboidSide { edge: 1 },
+            F::CuboidSide { edge: 2 },
+            F::CuboidSide { edge: 3 },
+        ],
+        PrimitiveKind::Cylinder => vec![F::CylinderBottom, F::CylinderTop],
+        PrimitiveKind::Sphere => Vec::new(),
+    }
+}
+
+/// The world-space polygon (CCW about the face's outward normal) of one flat face of a
+/// primitive shape (#1103), for hit-testing and sketch-frame derivation. `None` for a
+/// face the shape doesn't have (a sphere, or a cylinder's curved wall).
+pub fn face_polygon(doc: &Document, shape: &Primitive, face: crate::model::PrimitiveFace) -> Option<Vec<Vec3>> {
+    use crate::model::PrimitiveFace as F;
+    let r = resolve(doc, shape)?;
+    match face {
+        F::CuboidBottom => Some(r.cuboid_base().into_iter().rev().collect()),
+        F::CuboidTop => Some(r.cuboid_base().iter().map(|p| *p + r.normal * r.height).collect()),
+        F::CuboidSide { edge } => {
+            let i = edge as usize;
+            if i >= 4 {
+                return None;
+            }
+            let base = r.cuboid_base();
+            let j = (i + 1) % 4;
+            let top: Vec<Vec3> = base.iter().map(|p| *p + r.normal * r.height).collect();
+            // CCW about the outward normal: bottom edge i→j, then up, then back.
+            Some(vec![base[i], base[j], top[j], top[i]])
+        }
+        F::CylinderBottom | F::CylinderTop => {
+            let center = if matches!(face, F::CylinderBottom) {
+                r.origin
+            } else {
+                r.origin + r.normal * r.height
+            };
+            let mut pts = Vec::with_capacity(RADIAL_SEGMENTS);
+            for i in 0..RADIAL_SEGMENTS {
+                let a = (i as f32) / (RADIAL_SEGMENTS as f32) * std::f32::consts::TAU;
+                pts.push(center + r.u * r.radius * a.cos() + r.v * r.radius * a.sin());
+            }
+            // The bottom cap's outward normal is -normal, so wind it the other way.
+            if matches!(face, F::CylinderBottom) {
+                pts.reverse();
+            }
+            Some(pts)
+        }
+    }
+}
+
+/// The sketch frame for one flat face of a primitive shape (#1103): origin at the first
+/// polygon vertex, U along its first edge, and the outward normal. A sketch drawn here
+/// follows the primitive through edits to its frame and dimensions.
+pub fn face_frame(doc: &Document, shape: &Primitive, face: crate::model::PrimitiveFace) -> Option<crate::face::SketchFrame> {
+    let poly = face_polygon(doc, shape, face)?;
+    if poly.len() < 3 {
+        return None;
+    }
+    let origin = poly[0];
+    let normal = (poly[1] - poly[0]).cross(poly[2] - poly[0]).normalize_or_zero();
+    if normal.length_squared() < 1e-8 {
+        return None;
+    }
+    let mut u_axis = poly[1] - poly[0];
+    u_axis = (u_axis - normal * u_axis.dot(normal)).normalize_or_zero();
+    if u_axis.length_squared() < 1e-8 {
+        return None;
+    }
+    let v_axis = normal.cross(u_axis).normalize_or_zero();
+    Some(crate::face::SketchFrame {
+        origin,
+        u_axis,
+        v_axis,
+        normal,
+    })
+}
+
 /// A **stable** in-plane axis for a face's frame (#1050).
 ///
 /// `Vec3::any_orthonormal_vector` is free to return any perpendicular, and does not agree

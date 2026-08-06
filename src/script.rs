@@ -3800,6 +3800,7 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         // The revolve's arena slot, not its ordinal — this form has no document (#1070).
         FaceId::RevolveCap { revolution, .. } => ("revolve_cap", revolution.index() as usize),
         FaceId::RevolveSide { revolution, .. } => ("revolve_side", revolution.index() as usize),
+        FaceId::PrimitiveFace { primitive, .. } => ("primitive_face", primitive.index() as usize),
     }
 }
 
@@ -4090,6 +4091,11 @@ fn face_id_lua_ref(face: &FaceId, doc: Option<&crate::model::Document>) -> Strin
             "{{ kind = \"unit_face\", instance = {}, face = {:?} }}",
             instance(*i),
             serde_json::to_string(face.as_ref()).unwrap_or_default()
+        ),
+        FaceId::PrimitiveFace { primitive, face } => format!(
+            "{{ kind = \"primitive_face\", primitive = {}, face = {:?} }}",
+            primitive.index(),
+            serde_json::to_string(face).unwrap_or_default()
         ),
     }
 }

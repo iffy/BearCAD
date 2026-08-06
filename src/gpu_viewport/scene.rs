@@ -2979,7 +2979,8 @@ impl<'a> SceneMesh<'a> {
                     self.push_triangle(lift(quad[0]), lift(quad[2]), lift(quad[3]), fill);
                 }
             }
-            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. } => {
+            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. }
+            | FaceId::PrimitiveFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -2996,6 +2997,11 @@ impl<'a> SceneMesh<'a> {
                     // A unit's flat face (#725): its placed boundary polygon.
                     FaceId::UnitFace { instance, ref face } => {
                         crate::units::unit_face_world_polygon(doc, instance, face)
+                    }
+                    FaceId::PrimitiveFace { primitive, face } => {
+                        doc.primitives
+                            .get(primitive)
+                            .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
                     }
                     _ => None,
                 };
@@ -3212,7 +3218,8 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
-            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. } => {
+            FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. }
+            | FaceId::PrimitiveFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -3229,6 +3236,11 @@ impl<'a> SceneMesh<'a> {
                     // A unit's flat face (#725): its placed boundary polygon.
                     FaceId::UnitFace { instance, ref face } => {
                         crate::units::unit_face_world_polygon(doc, instance, face)
+                    }
+                    FaceId::PrimitiveFace { primitive, face } => {
+                        doc.primitives
+                            .get(primitive)
+                            .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
                     }
                     _ => None,
                 };

@@ -53,6 +53,26 @@ pub enum FaceId {
         instance: UnitInstanceKey,
         face: Box<FaceId>,
     },
+    /// A flat face of a primitive shape (#1103): a cuboid's six faces or a cylinder's two
+    /// caps. A sphere has no flat faces. A sketch hosted here follows the primitive
+    /// through edits to its frame and dimensions, exactly like one on an extrusion cap.
+    PrimitiveFace {
+        primitive: PrimitiveKey,
+        face: PrimitiveFace,
+    },
+}
+
+/// Which flat face of a primitive shape a [`FaceId::PrimitiveFace`] names (#1103).
+/// A cuboid has six (bottom, top, four sides); a cylinder has two caps; a sphere has none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimitiveFace {
+    CuboidBottom,
+    CuboidTop,
+    /// One of the four side walls, indexed by the base corner it spans (0..3).
+    CuboidSide { edge: u8 },
+    CylinderBottom,
+    CylinderTop,
 }
 
 impl Default for FaceId {
@@ -97,7 +117,8 @@ impl FaceId {
             | FaceId::ConstructionPlane(_)
             | FaceId::RevolveCap { .. }
             | FaceId::RevolveSide { .. }
-            | FaceId::UnitFace { .. } => None,
+            | FaceId::UnitFace { .. }
+            | FaceId::PrimitiveFace { .. } => None,
         }
     }
 
@@ -1564,6 +1585,11 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
         }
         FaceId::UnitFace { .. } | FaceId::ConstructionPlane(_) | FaceId::Circle(_)
         | FaceId::Polygon(_) => None,
+        FaceId::PrimitiveFace { primitive, .. } => {
+            doc.bodies.iter().find_map(|(key, body)| {
+                matches!(body.source, BodySource::Primitive(p) if p == *primitive).then_some(key)
+            })
+        }
     }
 }
 

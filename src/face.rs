@@ -227,6 +227,10 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             edge,
         } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
             .map(|(_, frame, _)| frame),
+        FaceId::PrimitiveFace { primitive, face } => {
+            let shape = doc.primitives.get(primitive)?;
+            crate::primitives::face_frame(doc, shape, face)
+        }
     }
 }
 
@@ -692,7 +696,7 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
-        FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } => {
+        FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::PrimitiveFace { .. } => {
             let poly = match face {
                 FaceId::RevolveCap {
                     revolution,
@@ -707,6 +711,10 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                     edge,
                 } => {
                     crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)?.0
+                }
+                FaceId::PrimitiveFace { primitive, face } => {
+                    let shape = doc.primitives.get(primitive)?;
+                    crate::primitives::face_polygon(doc, shape, face)?
                 }
                 _ => unreachable!(),
             };
@@ -765,6 +773,18 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         } => format!("Revolution {} side face {edge}", revolution.index()),
         FaceId::UnitFace { instance, .. } => {
             format!("Unit instance {} face", instance.index())
+        }
+        FaceId::PrimitiveFace { primitive, face } => {
+            let which = match face {
+                crate::model::PrimitiveFace::CuboidBottom => "bottom",
+                crate::model::PrimitiveFace::CuboidTop => "top",
+                crate::model::PrimitiveFace::CuboidSide { edge } => {
+                    return format!("Primitive {} side face {edge}", primitive.index());
+                }
+                crate::model::PrimitiveFace::CylinderBottom => "bottom cap",
+                crate::model::PrimitiveFace::CylinderTop => "top cap",
+            };
+            format!("Primitive {} {which} face", primitive.index())
         }
     }
 }
@@ -839,7 +859,8 @@ fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
-        | FaceId::UnitFace { .. } => return None,
+        | FaceId::UnitFace { .. }
+        | FaceId::PrimitiveFace { .. } => return None,
     };
     doc.sketches.get(sketch).map(|s| s.face.clone())
 }
@@ -1099,6 +1120,28 @@ pub fn pick_sketch_face(
         }
     }
 
+    // Flat faces of primitive shapes (#1103): a cuboid's six faces and a cylinder's two
+    // caps are sketchable, exactly like an extrusion's caps and side walls, so a shape
+    // placed by the Shape tool is indistinguishable from one extruded from a sketch.
+    for (pi, shape) in doc.primitives.iter().collect::<Vec<_>>().into_iter().rev() {
+        for face in crate::primitives::flat_faces(shape) {
+            let Some(poly) = crate::primitives::face_polygon(doc, shape, face) else {
+                continue;
+            };
+            // A degenerate/zero-sized primitive has no face polygon to hit.
+            let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) else {
+                continue;
+            };
+            let candidate = FaceId::PrimitiveFace { primitive: pi, face };
+            if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                consider_face_pick_sized(
+                    &mut best,
+                    FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
+                );
+            }
+        }
+    }
+
     for (i, plane) in doc.construction_planes.iter().collect::<Vec<_>>().into_iter().rev() {
         // A deleted plane is not there to be picked (#1051) — it is gone from the arena, so
         // this loop cannot reach it at all.
@@ -1229,6 +1272,17 @@ pub fn sketch_faces_near(
         let corners = crate::construction::plane_corners(plane);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
             push(FaceId::ConstructionPlane(i), c, dist);
+        }
+    }
+    // Primitive shape faces (#1103), mirroring `pick_sketch_face`.
+    for (pi, shape) in doc.primitives.iter() {
+        for face in crate::primitives::flat_faces(shape) {
+            let Some(poly) = crate::primitives::face_polygon(doc, shape, face) else {
+                continue;
+            };
+            if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                push(FaceId::PrimitiveFace { primitive: pi, face }, c, dist);
+            }
         }
     }
     out
@@ -1922,6 +1976,59 @@ mod tests {
         assert!(
             matches!(face, Some(FaceId::ExtrudeSide { extrusion, .. }) if extrusion == xkey(0)),
             "clicking a side wall should pick it, got {face:?}"
+        );
+    }
+
+    /// #1103: a cuboid drawn by the Shape tool (a primitive, no sketch behind it) has the
+    /// same sketchable analytic faces as an extruded box — its top cap and side walls can
+    /// be picked to sketch on, just like an extrusion's.
+    #[test]
+    fn pick_sketch_face_finds_primitive_cuboid_faces() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind};
+        let mut doc = Document::default();
+        // A 20x20x10 cuboid resting on the ground at the world origin: base at z=0,
+        // top at z=10, spanning x,y in [-10,10].
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = doc.primitives.insert(shape);
+        doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        // Top-down: the top cap (z=10) projects to [-10,10]² on screen.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let top = pick_sketch_face(
+            eframe::egui::pos2(0.0, 0.0),
+            &project,
+            &doc,
+            Vec3::new(0.0, 0.0, 100.0),
+        );
+        assert!(
+            matches!(top, Some(FaceId::PrimitiveFace { primitive, face })
+                if primitive == pi
+                    && matches!(face, crate::model::PrimitiveFace::CuboidTop)),
+            "clicking the top of a primitive cuboid should pick it, got {top:?}"
+        );
+        // A sketch on that face resolves a frame on the top cap's plane (z=10, normal +Z).
+        let frame = sketch_frame(&doc, top.unwrap()).expect("primitive top face has a frame");
+        assert!((frame.normal - Vec3::Z).length() < 1e-4, "top cap faces +Z");
+        assert!((frame.origin.z - 10.0).abs() < 1e-3, "top cap sits at z=10, got {}", frame.origin);
+        // The side wall: project to XZ so the y=-10 wall shows as a 20x10 rectangle.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.z));
+        let side = pick_sketch_face(
+            eframe::egui::pos2(0.0, 5.0),
+            &project,
+            &doc,
+            Vec3::new(0.0, -100.0, 0.0),
+        );
+        assert!(
+            matches!(side, Some(FaceId::PrimitiveFace { primitive, face: crate::model::PrimitiveFace::CuboidSide { .. } })
+                if primitive == pi),
+            "clicking a side wall should pick it, got {side:?}"
         );
     }
 

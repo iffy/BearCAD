@@ -5842,6 +5842,10 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
         FaceId::Circle(_)
         | FaceId::Polygon(_)
         | FaceId::ConstructionPlane(_) => None,
+        FaceId::PrimitiveFace { primitive, face } => {
+            let shape = doc.primitives.get(*primitive)?;
+            crate::primitives::face_polygon(doc, shape, *face)
+        }
     }
 }
 

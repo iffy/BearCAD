@@ -18690,7 +18690,8 @@ fn pick_extrude_face(
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
-        | FaceId::UnitFace { .. }) => {
+        | FaceId::UnitFace { .. }
+        | FaceId::PrimitiveFace { .. }) => {
             // A sketch drawn on this face may have ruled it into regions (#993) — lines across
             // a box's cap read as separate faces to anyone looking at them. Offer the one under
             // the cursor; with no such division there is nothing here but the face itself, and
@@ -20138,6 +20139,14 @@ fn draw_face_highlight(
         FaceId::UnitFace { instance, ref face } => {
             if let Some(poly) = units::unit_face_world_polygon(doc, instance, face) {
                 draw_polygon_face_highlight(painter, project, &poly, color);
+            }
+        }
+        // A primitive shape's flat face (#1103): its boundary polygon.
+        FaceId::PrimitiveFace { primitive, face } => {
+            if let Some(shape) = doc.primitives.get(primitive) {
+                if let Some(poly) = primitives::face_polygon(doc, shape, face) {
+                    draw_polygon_face_highlight(painter, project, &poly, color);
+                }
             }
         }
     }

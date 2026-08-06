@@ -806,6 +806,8 @@ pub fn face_element(face: FaceId) -> SceneElement {
         FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
             SceneElement::Revolution(revolution)
         }
+        // A sketch on a primitive shape's face depends on that primitive (#1103).
+        FaceId::PrimitiveFace { primitive, .. } => SceneElement::Shape(primitive),
     }
 }
 
