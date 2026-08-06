@@ -68,6 +68,17 @@ pub enum HostBodyEffect {
     MutateHost,
 }
 
+/// Whether this variant runs in a sketch (2D) or on solid/model geometry (3D).
+/// Tools with both modes (chamfer, fillet, mirror, select, …) contribute a row to each table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpSpace {
+    /// Sketch plane / drawing sheet geometry.
+    TwoD,
+    /// 3D solid modeling.
+    ThreeD,
+}
+
+
 // ── The shape every operation variant implements ────────────────────────────
 
 /// Compile-time contract for one operation **variant** (e.g. extrude-merge ≠ extrude-cut).
@@ -84,6 +95,8 @@ pub trait Operation: 'static {
     /// Host elements that become shadows on commit (subset of inputs).
     const SHADOWS: &'static [ElementType];
     const HOST_EFFECT: HostBodyEffect;
+    /// Sketch (2D) or solid (3D) table this variant belongs in.
+    const SPACE: OpSpace;
 }
 
 pub fn tool_label(tool: Tool) -> &'static str {
@@ -128,6 +141,7 @@ pub struct OpSig {
     pub outputs: &'static [ElementType],
     pub shadows: &'static [ElementType],
     pub host_effect: HostBodyEffect,
+    pub space: OpSpace,
 }
 
 impl OpSig {
@@ -139,6 +153,7 @@ impl OpSig {
             outputs: O::OUTPUTS,
             shadows: O::SHADOWS,
             host_effect: O::HOST_EFFECT,
+            space: O::SPACE,
         }
     }
 
@@ -163,6 +178,7 @@ impl Operation for ExtrudeNewBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 /// Extrude → one body holding every profile (`body = "join"`).
@@ -174,6 +190,7 @@ impl Operation for ExtrudeJoinProfiles {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 /// Extrude merge into a host body: shadows host, produces combined solid (#1106).
@@ -185,6 +202,7 @@ impl Operation for ExtrudeMerge {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 /// Extrude cut: mutates host in place (#35).
@@ -196,6 +214,7 @@ impl Operation for ExtrudeCut {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 /// Body-attachment effect for a live [`ExtrudeBodyMode`] — **only** source of truth
@@ -211,6 +230,18 @@ pub fn extrude_host_effect(mode: ExtrudeBodyMode) -> HostBodyEffect {
 
 // ── Mirror variants ─────────────────────────────────────────────────────────
 
+/// In-sketch mirror: reflect lines/circles across a sketch line (#528).
+pub struct MirrorSketch;
+impl Operation for MirrorSketch {
+    const TOOL: Tool = Tool::Mirror;
+    const VARIANT: &'static str = "sketch";
+    const INPUTS: &'static [ElementType] = &[ElementType::Line, ElementType::Circle];
+    const OUTPUTS: &'static [ElementType] = &[ElementType::Line, ElementType::Circle];
+    const SHADOWS: &'static [ElementType] = &[];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
+}
+
 pub struct MirrorNewBody;
 impl Operation for MirrorNewBody {
     const TOOL: Tool = Tool::Mirror;
@@ -219,6 +250,7 @@ impl Operation for MirrorNewBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct MirrorJoin;
@@ -229,6 +261,7 @@ impl Operation for MirrorJoin {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct MirrorCut;
@@ -239,6 +272,7 @@ impl Operation for MirrorCut {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub fn mirror_host_effect(mode: MirrorMode) -> HostBodyEffect {
@@ -251,14 +285,26 @@ pub fn mirror_host_effect(mode: MirrorMode) -> HostBodyEffect {
 
 // ── Other tools (one or more variant types each) ────────────────────────────
 
-pub struct Select;
-impl Operation for Select {
+pub struct Select2d;
+impl Operation for Select2d {
     const TOOL: Tool = Tool::Select;
-    const VARIANT: &'static str = "";
+    const VARIANT: &'static str = "sketch";
     const INPUTS: &'static [ElementType] = &[];
     const OUTPUTS: &'static [ElementType] = &[];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
+}
+
+pub struct Select3d;
+impl Operation for Select3d {
+    const TOOL: Tool = Tool::Select;
+    const VARIANT: &'static str = "model";
+    const INPUTS: &'static [ElementType] = &[];
+    const OUTPUTS: &'static [ElementType] = &[];
+    const SHADOWS: &'static [ElementType] = &[];
+    const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Rectangle;
@@ -269,6 +315,7 @@ impl Operation for Rectangle {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Line];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct Line;
@@ -279,6 +326,7 @@ impl Operation for Line {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Line];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct Circle;
@@ -289,6 +337,7 @@ impl Operation for Circle {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Circle];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct ConstructionPlane;
@@ -300,6 +349,7 @@ impl Operation for ConstructionPlane {
     const OUTPUTS: &'static [ElementType] = &[ElementType::ConstructionPlane];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Sketch;
@@ -310,6 +360,7 @@ impl Operation for Sketch {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Sketch];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Dimension;
@@ -321,6 +372,7 @@ impl Operation for Dimension {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Constraint];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct Constraint;
@@ -332,6 +384,7 @@ impl Operation for Constraint {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Constraint];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct ChamferSketch;
@@ -342,6 +395,7 @@ impl Operation for ChamferSketch {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Line];
     const SHADOWS: &'static [ElementType] = &[ElementType::Line];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct ChamferBodyEdges;
@@ -352,6 +406,7 @@ impl Operation for ChamferBodyEdges {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct FilletSketch;
@@ -362,6 +417,7 @@ impl Operation for FilletSketch {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Line];
     const SHADOWS: &'static [ElementType] = &[ElementType::Line];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct FilletBodyEdges;
@@ -372,6 +428,7 @@ impl Operation for FilletBodyEdges {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Offset;
@@ -383,6 +440,7 @@ impl Operation for Offset {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Line, ElementType::Circle];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct Project;
@@ -397,6 +455,7 @@ impl Operation for Project {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Line];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct LoftNewBody;
@@ -407,6 +466,7 @@ impl Operation for LoftNewBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct LoftAddToBody;
@@ -417,6 +477,7 @@ impl Operation for LoftAddToBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct LoftCutBody;
@@ -427,6 +488,7 @@ impl Operation for LoftCutBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct RevolveNewBody;
@@ -437,6 +499,7 @@ impl Operation for RevolveNewBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct RevolveAddToBody;
@@ -448,6 +511,7 @@ impl Operation for RevolveAddToBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct RevolveCutBody;
@@ -459,6 +523,7 @@ impl Operation for RevolveCutBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Shape;
@@ -469,6 +534,7 @@ impl Operation for Shape {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Shape, ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct SweepNewBody;
@@ -479,6 +545,7 @@ impl Operation for SweepNewBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct SweepAddToBody;
@@ -490,6 +557,7 @@ impl Operation for SweepAddToBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct SweepCutBody;
@@ -501,6 +569,7 @@ impl Operation for SweepCutBody {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::MutateHost;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct CombineUnion;
@@ -511,6 +580,7 @@ impl Operation for CombineUnion {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct CombineCut;
@@ -521,6 +591,7 @@ impl Operation for CombineCut {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct CombineIntersect;
@@ -531,6 +602,7 @@ impl Operation for CombineIntersect {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct CombineDifference;
@@ -541,6 +613,7 @@ impl Operation for CombineDifference {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Move;
@@ -556,6 +629,7 @@ impl Operation for Move {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Repeat;
@@ -571,6 +645,7 @@ impl Operation for Repeat {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Slice;
@@ -585,6 +660,7 @@ impl Operation for Slice {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Body];
     const SHADOWS: &'static [ElementType] = &[ElementType::Body];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::ShadowHostAndProduce;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Joint;
@@ -596,6 +672,7 @@ impl Operation for Joint {
     const OUTPUTS: &'static [ElementType] = &[ElementType::Joint];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::ThreeD;
 }
 
 pub struct Text;
@@ -606,6 +683,7 @@ impl Operation for Text {
     const OUTPUTS: &'static [ElementType] = &[ElementType::SketchText];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct DrawingAdd;
@@ -617,6 +695,7 @@ impl Operation for DrawingAdd {
     const OUTPUTS: &'static [ElementType] = &[ElementType::DrawingView];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 pub struct DrawingAlign;
@@ -627,6 +706,7 @@ impl Operation for DrawingAlign {
     const OUTPUTS: &'static [ElementType] = &[ElementType::DrawingView];
     const SHADOWS: &'static [ElementType] = &[];
     const HOST_EFFECT: HostBodyEffect = HostBodyEffect::None;
+    const SPACE: OpSpace = OpSpace::TwoD;
 }
 
 // ── Gather list for opsigs (explicit; adding a type without listing it is a miss) ─
@@ -636,7 +716,8 @@ impl Operation for DrawingAlign {
 /// New `impl Operation` types must be added here — the
 /// [`every_tool_has_an_operation`] test fails if a [`Tool`] is left out.
 pub static ALL_OPERATIONS: &[OpSig] = &[
-    sig::<Select>(),
+    sig::<Select2d>(),
+    sig::<Select3d>(),
     sig::<Rectangle>(),
     sig::<Line>(),
     sig::<Circle>(),
@@ -669,6 +750,7 @@ pub static ALL_OPERATIONS: &[OpSig] = &[
     sig::<CombineIntersect>(),
     sig::<CombineDifference>(),
     sig::<Move>(),
+    sig::<MirrorSketch>(),
     sig::<MirrorNewBody>(),
     sig::<MirrorJoin>(),
     sig::<MirrorCut>(),
@@ -701,13 +783,12 @@ fn host_effect_label(effect: HostBodyEffect) -> &'static str {
     }
 }
 
-/// Markdown table of all operation signatures.
-pub fn render_markdown() -> String {
+fn render_table_md(ops: &[&OpSig]) -> String {
     let mut out = String::from(
         "| Tool | Variant | Inputs | Outputs | Shadows | Host effect |\n\
          | --- | --- | --- | --- | --- | --- |\n",
     );
-    for sig in ALL_OPERATIONS {
+    for sig in ops {
         let variant = if sig.variant.is_empty() {
             "—"
         } else {
@@ -731,25 +812,31 @@ pub fn render_markdown() -> String {
     out
 }
 
-/// HTML document with a table of all operation signatures.
-pub fn render_html() -> String {
+fn ops_in_space(space: OpSpace) -> Vec<&'static OpSig> {
+    ALL_OPERATIONS
+        .iter()
+        .filter(|s| s.space == space)
+        .collect()
+}
+
+/// Markdown: one table for 2D (sketch) ops, one for 3D (solid) ops.
+pub fn render_markdown() -> String {
+    let mut out = String::from("# BearCAD operation signatures\n\n");
+    out.push_str("## 2D (sketch)\n\n");
+    out.push_str(&render_table_md(&ops_in_space(OpSpace::TwoD)));
+    out.push_str("\n## 3D (solid)\n\n");
+    out.push_str(&render_table_md(&ops_in_space(OpSpace::ThreeD)));
+    out
+}
+
+fn render_table_html(ops: &[&OpSig]) -> String {
     let mut out = String::from(
-        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <title>BearCAD operation signatures</title>\
-         <style>\
-         body{font-family:system-ui,sans-serif;margin:2rem;}\
-         table{border-collapse:collapse;width:100%;}\
-         th,td{border:1px solid #ccc;padding:0.4rem 0.6rem;text-align:left;}\
-         th{background:#f4f4f4;}\
-         tr:nth-child(even){background:#fafafa;}\
-         </style></head><body>\n\
-         <h1>BearCAD operation signatures</h1>\n\
-         <table>\n<thead><tr>\
+        "<table>\n<thead><tr>\
          <th>Tool</th><th>Variant</th><th>Inputs</th><th>Outputs</th>\
          <th>Shadows</th><th>Host effect</th>\
          </tr></thead>\n<tbody>\n",
     );
-    for sig in ALL_OPERATIONS {
+    for sig in ops {
         let variant = if sig.variant.is_empty() {
             "—"
         } else {
@@ -770,7 +857,29 @@ pub fn render_html() -> String {
             html_escape(host_effect_label(sig.host_effect)),
         ));
     }
-    out.push_str("</tbody>\n</table>\n</body></html>\n");
+    out.push_str("</tbody>\n</table>\n");
+    out
+}
+
+/// HTML document with separate 2D and 3D tables.
+pub fn render_html() -> String {
+    let mut out = String::from(
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <title>BearCAD operation signatures</title>\
+         <style>\
+         body{font-family:system-ui,sans-serif;margin:2rem;}\
+         table{border-collapse:collapse;width:100%;margin-bottom:2rem;}\
+         th,td{border:1px solid #ccc;padding:0.4rem 0.6rem;text-align:left;}\
+         th{background:#f4f4f4;}\
+         tr:nth-child(even){background:#fafafa;}\
+         </style></head><body>\n\
+         <h1>BearCAD operation signatures</h1>\n",
+    );
+    out.push_str("<h2>2D (sketch)</h2>\n");
+    out.push_str(&render_table_html(&ops_in_space(OpSpace::TwoD)));
+    out.push_str("<h2>3D (solid)</h2>\n");
+    out.push_str(&render_table_html(&ops_in_space(OpSpace::ThreeD)));
+    out.push_str("</body></html>\n");
     out
 }
 
@@ -787,7 +896,6 @@ pub fn run_cli(html: bool) {
     if html {
         print!("{}", render_html());
     } else {
-        println!("# BearCAD operation signatures\n");
         print!("{}", render_markdown());
     }
 }
@@ -856,9 +964,24 @@ mod tests {
     #[test]
     fn markdown_lists_extrude_merge_and_cut() {
         let md = render_markdown();
+        assert!(md.contains("## 2D (sketch)"));
+        assert!(md.contains("## 3D (solid)"));
         assert!(md.contains("merge into body"));
         assert!(md.contains("cut body"));
         assert!(md.contains("Extrude"));
+        // Dual-space tools show up in both tables.
+        assert!(md.find("Chamfer") != md.rfind("Chamfer"));
+    }
+
+    #[test]
+    fn two_d_and_three_d_partition_all_ops() {
+        let two = ops_in_space(OpSpace::TwoD);
+        let three = ops_in_space(OpSpace::ThreeD);
+        assert!(!two.is_empty());
+        assert!(!three.is_empty());
+        assert_eq!(two.len() + three.len(), ALL_OPERATIONS.len());
+        assert!(two.iter().all(|s| s.space == OpSpace::TwoD));
+        assert!(three.iter().all(|s| s.space == OpSpace::ThreeD));
     }
 
     #[test]
