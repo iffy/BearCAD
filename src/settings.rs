@@ -12,14 +12,13 @@ use std::path::PathBuf;
 
 /// How a selected or hovered body is highlighted in the 3D viewport (#1110).
 ///
-/// `Shading` is the original look: the body's fill is recoloured (blue for selected,
-/// gold for hovered). `Outlining` draws a screen-space outline around the body's
-/// flattened silhouette instead — blue for selected, yellow for hovered — leaving the
-/// body itself in its material colour.
+/// `Outlining` (the default) draws a screen-space outline around the body's flattened
+/// silhouette — blue for selected, yellow for hovered — leaving the body itself in its
+/// material colour. `Shading` is the older look: the body's fill is recoloured instead.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BodyHighlightMethod {
-    #[default]
     Shading,
+    #[default]
     Outlining,
 }
 
@@ -176,16 +175,19 @@ mod tests {
     }
 
     #[test]
-    fn body_highlight_method_defaults_to_shading() {
+    fn body_highlight_method_defaults_to_outlining() {
         // Older settings files predate the field; `#[serde(default)]` means they load as
-        // the default (Shading), and a brand-new AppSettings is Shading too.
+        // the default (Outlining), and a brand-new AppSettings is Outlining too.
         let path = temp_file("bearcad_settings_old_no_highlight.json");
         std::fs::write(&path, b"{\"library_directory\": null}").unwrap();
         assert_eq!(
             AppSettings::load_from(&path).body_highlight_method,
-            BodyHighlightMethod::Shading,
+            BodyHighlightMethod::Outlining,
         );
-        assert_eq!(AppSettings::default().body_highlight_method, BodyHighlightMethod::Shading);
+        assert_eq!(
+            AppSettings::default().body_highlight_method,
+            BodyHighlightMethod::Outlining,
+        );
         std::fs::remove_file(&path).unwrap();
     }
 }

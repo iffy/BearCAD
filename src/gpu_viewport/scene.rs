@@ -430,9 +430,9 @@ pub struct ViewportPalette {
     pub construction_plane_fill: Color32,
     pub construction_plane_opacity: f32,
     /// How selected/hovered bodies highlight (#1110): recolour the fill (`Shading`), or
-    /// draw a screen-space silhouette outline (`Outlining`). Lives on the palette — which
-    /// already carries the viewport's rendering config — so the scene builder reads it
-    /// without a separate input field, and tests get the default (`Shading`) for free
+    /// draw a screen-space silhouette outline (`Outlining`, the default). Lives on the
+    /// palette — which already carries the viewport's rendering config — so the scene
+    /// builder reads it without a separate input field, and tests get the default for free
     /// through [`ViewportPalette::default`].
     pub body_highlight_method: crate::settings::BodyHighlightMethod,
 }
@@ -7950,12 +7950,16 @@ mod tests {
         );
         let cam = state.cam.clone();
         let viewport = test_viewport();
+        // Force shading mode: this test is about fill recolouring, and outlining is the
+        // default highlight now.
+        let mut palette = ViewportPalette::default();
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
         let build = |tint: Vec<(crate::model::BodyKey, Color32)>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
                 viewport,
-                palette: ViewportPalette::default(),
+                palette,
                 sketch_session: None,
                 selection: &selected,
                 cut_highlight_bodies: Vec::new(),
@@ -8051,12 +8055,15 @@ mod tests {
         };
         let cam = state.cam.clone();
         let viewport = test_viewport();
+        // Force shading: outlining is the default, and this test is about fill recolour.
+        let mut palette = ViewportPalette::default();
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
         let build = |sel: &SceneSelection| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
                 viewport,
-                palette: ViewportPalette::default(),
+                palette,
                 sketch_session: None,
                 selection: sel,
                 cut_highlight_bodies: Vec::new(),
@@ -8126,13 +8133,12 @@ mod tests {
         };
         let cam = state.cam.clone();
         let viewport = test_viewport();
-        let mut palette = ViewportPalette::default();
-        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Outlining;
+        // Default is Outlining; leave it so this test covers the shipping path.
         let scene = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
             cam: &cam,
             viewport,
-            palette,
+            palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &selected,
             cut_highlight_bodies: Vec::new(),
