@@ -808,6 +808,12 @@ pub fn face_element(face: FaceId) -> SceneElement {
         }
         // A sketch on a primitive shape's face depends on that primitive (#1103).
         FaceId::PrimitiveFace { primitive, .. } => SceneElement::Shape(primitive),
+        // A sketch on a repeated body face depends on that instance (#1116).
+        FaceId::RepeatedFace { face, op, instance } => SceneElement::RepeatedFace {
+            face: *face,
+            op,
+            instance,
+        },
     }
 }
 

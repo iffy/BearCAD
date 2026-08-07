@@ -3810,6 +3810,7 @@ fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
         FaceId::RevolveCap { revolution, .. } => ("revolve_cap", revolution.index() as usize),
         FaceId::RevolveSide { revolution, .. } => ("revolve_side", revolution.index() as usize),
         FaceId::PrimitiveFace { primitive, .. } => ("primitive_face", primitive.index() as usize),
+        FaceId::RepeatedFace { op, instance, .. } => ("repeated_face", op.index() as usize + instance),
     }
 }
 
@@ -4105,6 +4106,11 @@ fn face_id_lua_ref(face: &FaceId, doc: Option<&crate::model::Document>) -> Strin
             "{{ kind = \"primitive_face\", primitive = {}, face = {:?} }}",
             primitive.index(),
             serde_json::to_string(face).unwrap_or_default()
+        ),
+        FaceId::RepeatedFace { face, op, instance } => format!(
+            "{{ kind = \"repeated_face\", repeat_op = {}, instance = {instance}, face = {:?} }}",
+            op.index(),
+            serde_json::to_string(face.as_ref()).unwrap_or_default()
         ),
     }
 }

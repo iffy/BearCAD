@@ -7468,6 +7468,14 @@ impl App {
             );
             return;
         }
+        // A bare body face — including a repeated instance's (#1116/#1117): same as Extrude's
+        // push/pull path. Build an implicit sketch on that face and revolve that profile.
+        if let Some(face_id) =
+            pick_extrude_body_face(pp, project, &self.state.doc, self.state.cam.eye())
+        {
+            self.state.apply(Action::RevolveBodyFace { face_id });
+            return;
+        }
         // 2) the axis, or — in Cut mode — the bodies. Both are ordinary element picks, so the
         // armed picker decides which (#970): Axis while there's a profile and no axis yet,
         // Cut bodies once both are settled.
@@ -18946,7 +18954,8 @@ fn pick_extrude_face(
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
         | FaceId::UnitFace { .. }
-        | FaceId::PrimitiveFace { .. }) => {
+        | FaceId::PrimitiveFace { .. }
+        | FaceId::RepeatedFace { .. }) => {
             // A sketch drawn on this face may have ruled it into regions (#993) — lines across
             // a box's cap read as separate faces to anyone looking at them. Offer the one under
             // the cursor; with no such division there is nothing here but the face itself, and
@@ -18973,7 +18982,8 @@ fn pick_extrude_body_face(
         face_id @ (FaceId::ExtrudeCap { .. }
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
-        | FaceId::RevolveSide { .. }) => Some(face_id),
+        | FaceId::RevolveSide { .. }
+        | FaceId::RepeatedFace { .. }) => Some(face_id),
         _ => None,
     }
 }
@@ -20402,6 +20412,12 @@ fn draw_face_highlight(
                 if let Some(poly) = primitives::face_polygon(doc, shape, face) {
                     draw_polygon_face_highlight(painter, project, &poly, color);
                 }
+            }
+        }
+        // A repeated body face (#1116): its placed boundary polygon.
+        FaceId::RepeatedFace { .. } => {
+            if let Some(poly) = extrude::face_boundary_loop_world(doc, &face) {
+                draw_polygon_face_highlight(painter, project, &poly, color);
             }
         }
     }
@@ -24991,6 +25007,13 @@ impl App {
                     pick_extrude_face(pp, &project, doc, cam.eye(), &cam, viewport, &vp)
                 })
                 .and_then(|f| extrude_face_hover_highlight(doc, f))
+                .or_else(|| {
+                    // Bare body face (incl. a repeated instance's, #1116/#1117) — same as the
+                    // click path's `pick_extrude_body_face` fallback.
+                    let pp = pointer_screen?;
+                    let face_id = pick_extrude_body_face(pp, &project, doc, cam.eye())?;
+                    Some(gpu_viewport::ViewportHoverHighlight::SketchFace(face_id))
+                })
                 .or_else(|| {
                     // Axis / path pick (#615): with no profile face under the cursor, glow the
                     // sketch line or — for Revolve — the global origin axis a click would set as

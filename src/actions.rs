@@ -2187,6 +2187,10 @@ pub enum Action {
     /// sketch mirroring `face_id`'s exact boundary and starts a fresh single-face extrusion
     /// from it (a body face is never grouped with other faces into one multi-face extrusion).
     ExtrudeBodyFace { face_id: FaceId },
+    /// Revolve a bare 3D body face (#1116/#1117): builds an implicit sketch on `face_id`
+    /// (including a repeated instance's face) and adds that profile to the in-progress
+    /// revolve — same as Extrude's body-face push/pull, for the revolve profile set.
+    RevolveBodyFace { face_id: FaceId },
     /// Scripted push/pull of a bare body face committed in one step (#130): builds the
     /// implicit sketch mirroring `face_id`, then creates the extrusion with `distance`,
     /// optional snap `target`, and body attachment — the declarative equivalent of clicking
@@ -5472,8 +5476,14 @@ fn create_implicit_extrude_sketch(
     doc: &mut Document,
     face_id: FaceId,
 ) -> Result<ExtrudeFace, String> {
+    // A repeated instance's face (#1116): the source analytic face is what the boundary
+    // projects from; the sketch host is the RepeatedFace so it sits on the copy.
+    let boundary_face = match &face_id {
+        FaceId::RepeatedFace { face, .. } => face.as_ref().clone(),
+        other => other.clone(),
+    };
     if !matches!(
-        face_id,
+        boundary_face,
         FaceId::ExtrudeCap { .. }
             | FaceId::ExtrudeSide { .. }
             | FaceId::RevolveCap { .. }
@@ -5490,7 +5500,7 @@ fn create_implicit_extrude_sketch(
         revolution,
         ref profile,
         edge,
-    } = face_id
+    } = boundary_face
     {
         if let Some((r_in, r_out)) =
             crate::extrude::revolve_side_annulus(doc, revolution, profile, edge as usize)
@@ -5514,7 +5524,9 @@ fn create_implicit_extrude_sketch(
         }
     }
     // Real (non-construction) geometry: this is the profile the body-face push/pull extrudes.
-    add_face_boundary_to_sketch(doc, sketch, &face_id, false)
+    // For RepeatedFace hosts the boundary still comes from the source analytic face; the
+    // sketch's host frame (RepeatedFace) places it on the copy (#1116).
+    add_face_boundary_to_sketch(doc, sketch, &boundary_face, false)
 }
 
 /// Add a body face's own boundary into `sketch` as sketch geometry — a real circle for a circular
@@ -10208,6 +10220,43 @@ impl AppState {
                         });
                     }
                 }
+                ActionResult::Ok
+            }
+            Action::RevolveBodyFace { face_id } => {
+                // Implicit sketch on the body face (including a repeated copy, #1116), then
+                // feed that profile into the in-progress revolve — same path Extrude uses.
+                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
+                    Ok(face) => face,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
+                    return ActionResult::Err("Face not found".to_string());
+                };
+                let cr = self
+                    .creating_revolve
+                    .get_or_insert_with(CreatingRevolve::default);
+                if cr.sketch.is_some() && cr.sketch != Some(sketch) {
+                    self.status = "Revolve faces must share one sketch".to_string();
+                    return ActionResult::Err(self.status.clone());
+                }
+                cr.sketch = Some(sketch);
+                if let Some(pos) = cr.faces.iter().position(|f| *f == face) {
+                    cr.faces.remove(pos);
+                } else {
+                    cr.faces.push(face);
+                }
+                self.status = format!(
+                    "Revolve: {} face(s){}",
+                    cr.faces.len(),
+                    if cr.axis.is_none() {
+                        " — click an axis line"
+                    } else {
+                        ""
+                    }
+                );
                 ActionResult::Ok
             }
             Action::ExtrudeBodyFace { face_id } => {

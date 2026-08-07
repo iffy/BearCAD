@@ -115,6 +115,19 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
                 normal: m.transform_vector3(inner.normal).normalize_or_zero(),
             })
         }
+        // A repeated body's face (#1116): the source face's frame placed by the instance
+        // transform — same rule as a unit face.
+        FaceId::RepeatedFace { face, op, instance } => {
+            let rep = doc.repeat_ops.get(op)?;
+            let m = crate::extrude::repeat_instance_transform(doc, rep, instance)?;
+            let inner = sketch_frame(doc, *face)?;
+            Some(SketchFrame {
+                origin: m.transform_point3(inner.origin),
+                u_axis: m.transform_vector3(inner.u_axis).normalize_or_zero(),
+                v_axis: m.transform_vector3(inner.v_axis).normalize_or_zero(),
+                normal: m.transform_vector3(inner.normal).normalize_or_zero(),
+            })
+        }
         FaceId::Circle(i) => {
             let circle = doc.circles.get(i)?;
             let face = doc.sketch_face(circle.sketch)?;
@@ -696,6 +709,28 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
+        // A repeated face (#1116): frame the placed boundary polygon, like a unit face.
+        FaceId::RepeatedFace { .. } => {
+            let poly = crate::extrude::face_boundary_loop_world(doc, &face)?;
+            let mut zoom: Option<SketchZoomBounds> = None;
+            for p in &poly {
+                let (u, v) = world_to_local(&frame, *p);
+                extend_sketch_bounds(&mut zoom, u, v, u, v);
+            }
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
+                zoom = Some(match zoom {
+                    Some(z) => SketchZoomBounds::union(z, children),
+                    None => children,
+                });
+            }
+            let zoom = zoom?;
+            let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
+            Some(SketchCameraTarget {
+                target,
+                face_normal,
+                zoom: Some(zoom),
+            })
+        }
         FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::PrimitiveFace { .. } => {
             let poly = match face {
                 FaceId::RevolveCap {
@@ -773,6 +808,9 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         } => format!("Revolution {} side face {edge}", revolution.index()),
         FaceId::UnitFace { instance, .. } => {
             format!("Unit instance {} face", instance.index())
+        }
+        FaceId::RepeatedFace { instance, .. } => {
+            format!("Repeated instance {instance} face")
         }
         FaceId::PrimitiveFace { primitive, face } => {
             let which = match face {
@@ -860,7 +898,8 @@ fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
         | FaceId::UnitFace { .. }
-        | FaceId::PrimitiveFace { .. } => return None,
+        | FaceId::PrimitiveFace { .. }
+        | FaceId::RepeatedFace { .. } => return None,
     };
     doc.sketches.get(sketch).map(|s| s.face.clone())
 }
@@ -1138,6 +1177,103 @@ pub fn pick_sketch_face(
                     &mut best,
                     FacePick { face: candidate, dist, depth: depth(c), area: f32::INFINITY },
                 );
+            }
+        }
+    }
+
+    // Faces of repeated body instances (#1116): each copy's cap/side walls, placed by the
+    // instance transform. Without this, only the original body's faces pick as analytic
+    // ExtrudeCap/Side, and a revolve/extrude/sketch on a copy could never take its faces.
+    for (op_index, op) in doc.repeat_ops.iter().collect::<Vec<_>>().into_iter().rev() {
+        let Some(offsets) = crate::extrude::repeat_offsets(doc, op) else {
+            continue;
+        };
+        for &body in &op.targets {
+            let extrusions = doc
+                .bodies
+                .get(body)
+                .map(|b| b.source.extrusion_indices().to_vec())
+                .unwrap_or_default();
+            for ei in extrusions {
+                let Some(ext) = doc.extrusions.get(ei) else {
+                    continue;
+                };
+                for profile in &ext.faces {
+                    for (i, &_offset) in offsets.iter().enumerate() {
+                        let instance = i + 1;
+                        let Some(m) =
+                            crate::extrude::repeat_instance_transform(doc, op, instance)
+                        else {
+                            continue;
+                        };
+                        for top in [true, false] {
+                            if let Some(poly) =
+                                crate::extrude::cap_polygon_world(doc, ei, profile, top)
+                            {
+                                let pts: Vec<Vec3> =
+                                    poly.iter().map(|&p| m.transform_point3(p)).collect();
+                                if let Some((dist, c)) =
+                                    polygon_face_pick_distance(screen, project, &pts)
+                                {
+                                    let source = FaceId::ExtrudeCap {
+                                        extrusion: ei,
+                                        profile: profile.clone(),
+                                        top,
+                                    };
+                                    let candidate = FaceId::RepeatedFace {
+                                        face: Box::new(source),
+                                        op: op_index,
+                                        instance,
+                                    };
+                                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                                        consider_face_pick_sized(
+                                            &mut best,
+                                            FacePick {
+                                                face: candidate,
+                                                dist,
+                                                depth: depth(c),
+                                                area: f32::INFINITY,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        for edge in 0..crate::extrude::side_face_count(profile) {
+                            if let Some(quad) =
+                                crate::extrude::side_quad_world(doc, ei, profile, edge)
+                            {
+                                let pts: Vec<Vec3> =
+                                    quad.iter().map(|&p| m.transform_point3(p)).collect();
+                                if let Some((dist, c)) =
+                                    polygon_face_pick_distance(screen, project, &pts)
+                                {
+                                    let source = FaceId::ExtrudeSide {
+                                        extrusion: ei,
+                                        profile: profile.clone(),
+                                        edge: edge as u8,
+                                    };
+                                    let candidate = FaceId::RepeatedFace {
+                                        face: Box::new(source),
+                                        op: op_index,
+                                        instance,
+                                    };
+                                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                                        consider_face_pick_sized(
+                                            &mut best,
+                                            FacePick {
+                                                face: candidate,
+                                                dist,
+                                                depth: depth(c),
+                                                area: f32::INFINITY,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

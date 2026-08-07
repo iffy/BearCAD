@@ -60,6 +60,18 @@ pub enum FaceId {
         primitive: PrimitiveKey,
         face: PrimitiveFace,
     },
+    /// A face of a **repeated** body instance (#1116): the source analytic face
+    /// (typically an [`ExtrudeCap`](FaceId::ExtrudeCap)/[`ExtrudeSide`](FaceId::ExtrudeSide)
+    /// of the input extrusion) placed by that instance's repeat offset. A repeated body
+    /// is the same kind of body as any other — its faces are sketchable and
+    /// extrude/revolve-able just like the original's.
+    RepeatedFace {
+        face: Box<FaceId>,
+        #[serde(rename = "repeat_op")]
+        op: RepeatOpKey,
+        #[serde(default)]
+        instance: usize,
+    },
 }
 
 /// Which flat face of a primitive shape a [`FaceId::PrimitiveFace`] names (#1103).
@@ -118,7 +130,8 @@ impl FaceId {
             | FaceId::RevolveCap { .. }
             | FaceId::RevolveSide { .. }
             | FaceId::UnitFace { .. }
-            | FaceId::PrimitiveFace { .. } => None,
+            | FaceId::PrimitiveFace { .. }
+            | FaceId::RepeatedFace { .. } => None,
         }
     }
 
@@ -129,6 +142,7 @@ impl FaceId {
             FaceId::RevolveCap { revolution, .. } | FaceId::RevolveSide { revolution, .. } => {
                 Some(*revolution)
             }
+            FaceId::RepeatedFace { face, .. } => face.revolution_key(),
             _ => None,
         }
     }
@@ -1722,6 +1736,13 @@ pub fn body_index_for_face(doc: &Document, face: &FaceId) -> Option<BodyKey> {
         FaceId::UnitFace { .. } | FaceId::ConstructionPlane(_) | FaceId::Circle(_)
         | FaceId::Polygon(_) => None,
         FaceId::PrimitiveFace { primitive, .. } => body_index_for_primitive(doc, *primitive),
+        // A repeated face lives on the repeat output body for that instance (#1116).
+        FaceId::RepeatedFace { op, instance, .. } => {
+            let rep = doc.repeat_ops.get(*op)?;
+            // outputs[0] is instance 1, etc. (instance 0 is the source target body).
+            let idx = instance.checked_sub(1)?;
+            rep.outputs.get(idx).copied()
+        }
     }
 }
 

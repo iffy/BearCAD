@@ -3020,7 +3020,7 @@ impl<'a> SceneMesh<'a> {
                 }
             }
             FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. }
-            | FaceId::PrimitiveFace { .. } => {
+            | FaceId::PrimitiveFace { .. } | FaceId::RepeatedFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -3042,6 +3042,9 @@ impl<'a> SceneMesh<'a> {
                         doc.primitives
                             .get(primitive)
                             .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
+                    }
+                    FaceId::RepeatedFace { .. } => {
+                        crate::extrude::face_boundary_loop_world(doc, &face)
                     }
                     _ => None,
                 };
@@ -3259,7 +3262,7 @@ impl<'a> SceneMesh<'a> {
                 }
             }
             FaceId::RevolveCap { .. } | FaceId::RevolveSide { .. } | FaceId::UnitFace { .. }
-            | FaceId::PrimitiveFace { .. } => {
+            | FaceId::PrimitiveFace { .. } | FaceId::RepeatedFace { .. } => {
                 let poly = match face {
                     FaceId::RevolveCap {
                         revolution,
@@ -3281,6 +3284,9 @@ impl<'a> SceneMesh<'a> {
                         doc.primitives
                             .get(primitive)
                             .and_then(|shape| crate::primitives::face_polygon(doc, shape, face))
+                    }
+                    FaceId::RepeatedFace { .. } => {
+                        crate::extrude::face_boundary_loop_world(doc, &face)
                     }
                     _ => None,
                 };

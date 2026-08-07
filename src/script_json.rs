@@ -2106,6 +2106,7 @@ fn face_kind_name(face: &FaceId) -> &'static str {
         FaceId::RevolveSide { .. } => "revolve_side",
         FaceId::UnitFace { .. } => "unit_face",
         FaceId::PrimitiveFace { .. } => "primitive_face",
+        FaceId::RepeatedFace { .. } => "repeated_face",
     }
 }
 

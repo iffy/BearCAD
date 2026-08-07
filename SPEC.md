@@ -1272,7 +1272,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   One multi-select body picker; the original stays as instance 0; each
   further instance of each target is an output body (`BodySource::Repeated { op, target,
   instance }`) nested under an editable **repeat operation element**
-  (`Document::repeat_ops`, `ShapeKind::RepeatOperation`). The context pane exposes three
+  (`Document::repeat_ops`, `ShapeKind::RepeatOperation`). **One kind of body (#1116):** a
+  repeated output is sketchable and extrude/revolve-able on its own faces just like the
+  original — its flat faces pick as `FaceId::RepeatedFace` (source analytic face placed by
+  the instance transform), not a second-class mesh-only surface. The context pane exposes three
   interlinked variables — **count**, **gap**, and **distance** (#257): the user edits any two
   and the third is **computed** and shown read-only in its field (the least-recently-edited one
   is the computed one; `RepeatMode::from_repeat_ui`). Two **picture toggles** (clickable SVGs of

@@ -5857,6 +5857,13 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
         FaceId::UnitFace { instance, face } => {
             crate::units::unit_face_world_polygon(doc, *instance, face)
         }
+        // Repeated instance face (#1116): source loop placed by the instance transform.
+        FaceId::RepeatedFace { face, op, instance } => {
+            let poly = face_boundary_loop_world(doc, face)?;
+            let rep = doc.repeat_ops.get(*op)?;
+            let m = repeat_instance_transform(doc, rep, *instance)?;
+            Some(poly.into_iter().map(|p| m.transform_point3(p)).collect())
+        }
         FaceId::ExtrudeCap {
             extrusion,
             profile,
