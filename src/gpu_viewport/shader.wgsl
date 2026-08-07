@@ -285,7 +285,7 @@ fn fs_blit(input: BlitVertexOutput) -> @location(0) vec4f {
 //
 // Selected/hovered body triangles are drawn flat into an offscreen mask (R = selected,
 // G = hovered). This fullscreen pass dilates that mask in screen space and strokes a
-// 3px-wide silhouette band offset 3px outside the body — blue for selected, yellow for
+// 9px-wide silhouette band offset 5px outside the body — blue for selected, yellow for
 // hovered — so the highlight reads as an outline on the flattened camera-plane view
 // rather than a fill recolour.
 //
@@ -319,11 +319,11 @@ fn mask_max_in_radius(uv: vec2f, radius_px: f32) -> vec2f {
 
 @fragment
 fn fs_outline(input: BlitVertexOutput) -> @location(0) vec4f {
-    // Outer edge of the outline sits 6px outside the silhouette (3px offset + 3px width);
-    // the inner edge sits 3px outside, so the band itself is 3px thick with a 3px gap
+    // Outer edge of the outline sits 14px outside the silhouette (5px offset + 9px width);
+    // the inner edge sits 5px outside, so the band itself is 9px thick with a 5px gap
     // from the body.
-    let outer = mask_max_in_radius(input.uv, 6.0);
-    let inner = mask_max_in_radius(input.uv, 3.0);
+    let outer = mask_max_in_radius(input.uv, 14.0);
+    let inner = mask_max_in_radius(input.uv, 5.0);
     let band = clamp(outer - inner, vec2f(0.0), vec2f(1.0));
 
     // BODY_SILHOUETTE_COLOR / PICK_HOVER yellow — keep them matching the app's existing
