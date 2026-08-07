@@ -29,9 +29,12 @@ fn short_appkit_summary() -> Option<String> {
     let windows = app.windows();
     let total = windows.count();
     let visible = windows.iter().filter(|w| w.isVisible()).count();
-    let occluded = windows
-        .iter()
-        .any(|w| !w.occlusionState().contains(NSWindowOcclusionState::Visible));
+    // Only count *visible* windows as occluded: an invisible helper window always reports
+    // non-Visible occlusion, and including it made the settle trace say "occluded true"
+    // even when the main viewport was clear (#1112).
+    let occluded = windows.iter().any(|w| {
+        w.isVisible() && !w.occlusionState().contains(NSWindowOcclusionState::Visible)
+    });
     let policy = match app.activationPolicy() {
         NSApplicationActivationPolicy::Regular => "regular",
         NSApplicationActivationPolicy::Accessory => "accessory",
@@ -179,7 +182,7 @@ pub fn appkit_window_state() -> Option<String> {
     None
 }
 
-/// Bring the app to the front at launch (#1032).
+/// Bring the app to the front at launch (#1032 / #1112).
 ///
 /// An unbundled binary — which is what `cargo run` and every scripted run produce — does not
 /// activate itself on macOS. The window is created and mapped, but stays behind whatever was
@@ -189,10 +192,23 @@ pub fn appkit_window_state() -> Option<String> {
 ///
 /// This is also why scripted screenshots intermittently failed with "the window never
 /// painted" — same occlusion, same suppressed updates.
+///
+/// Strategy (each step helps a different failure mode observed in the field):
+/// 1. Force activation policy to **Regular** — unbundled binaries start Prohibited/Accessory
+///    and cannot become frontmost at all (#1082).
+/// 2. Ask to activate (cooperative on macOS 14+; may be refused when the launching terminal
+///    keeps focus — that is fine, occlusion is the real enemy).
+/// 3. For every **visible** window: deminiaturize, order front regardless of app activity,
+///    make key, and briefly bump the window level to floating then back to normal. The level
+///    bump is what has cleared stubborn occlusion when the window was maximised behind a
+///    full-screen IDE/terminal that kept focus (#1112).
 #[cfg(target_os = "macos")]
 pub fn activate_app() -> bool {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    use objc2_app_kit::{
+        NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
+        NSFloatingWindowLevel, NSNormalWindowLevel, NSRunningApplication, NSWindowOcclusionState,
+    };
 
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
@@ -211,30 +227,43 @@ pub fn activate_app() -> bool {
         log_policy_change(app.activationPolicy());
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     }
+    // Cooperative activation (#1112). On macOS 14+ this defers to the frontmost app and
+    // may no-op when `cargo run` keeps the terminal focused — that is expected. Occlusion
+    // is cleared by the window-ordering steps below, not by activation.
     app.activate();
-    // Activation is **cooperative** on macOS 14+: it defers to whatever app is currently
-    // active, and `ignoringOtherApps` is documented as having no effect there — so a launch
-    // from a terminal that keeps focus cannot be made active at all. That is the system's
-    // call and not ours to override.
-    //
-    // Ordering the *window* front is a different request, and one the window server does
-    // honour: the window comes out from behind whatever was covering it even while the app
-    // stays inactive. That is what matters here, because it is **occlusion** — not focus —
-    // that makes the window server stop handing out drawable updates and leaves the surface
-    // showing its uninitialised contents (#1032/#1082).
+    let _ = NSRunningApplication::currentApplication()
+        .activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+
+    // Ordering the *window* front is a different request from activation, and one the
+    // window server does honour even while the app stays inactive. Occlusion — not focus —
+    // is what makes the window server stop handing out drawable updates and leaves the
+    // surface showing its uninitialised contents (#1032/#1082/#1112).
     //
     // Order every visible window to the front, not just the first one (#1091). Once there
     // are multiple windows (e.g. a popped-out drawing, #276), `app.windows()` may return
     // them in creation order with the main window first — but we order every visible one
-    // anyway so the main viewport window is never missed. `orderFrontRegardless` alone
-    // does not make the window the key window, so call `makeKeyAndOrderFront` as well —
-    // even though macOS 14+ makes activation cooperative, making the window key *and*
-    // ordering it front is a stronger signal to the window server than ordering alone.
-    // Skip invisible windows (e.g. a closed drawing popout) — making them visible would
-    // pop them onto the screen unexpectedly.
+    // anyway so the main viewport window is never missed. Skip invisible windows (e.g. a
+    // closed drawing popout) — making them visible would pop them onto the screen.
     let windows = app.windows();
     for w in windows.iter() {
-        if w.isVisible() {
+        if !w.isVisible() {
+            continue;
+        }
+        // A minimised window is "visible" to AppKit but not on screen; deminiaturize first.
+        if w.isMiniaturized() {
+            w.deminiaturize(None);
+        }
+        w.orderFrontRegardless();
+        w.makeKeyAndOrderFront(None);
+        w.makeKeyWindow();
+        // Level bump: orderFrontRegardless alone has been observed to leave a maximised
+        // window fully occluded behind a full-screen IDE/terminal after `cargo run`
+        // (#1112). Raising to floating forces a re-composite, then restoring normal keeps
+        // the window in the regular layer so it doesn't float over other apps forever.
+        if !w.occlusionState().contains(NSWindowOcclusionState::Visible) {
+            w.setLevel(NSFloatingWindowLevel);
+            w.orderFrontRegardless();
+            w.setLevel(NSNormalWindowLevel);
             w.orderFrontRegardless();
             w.makeKeyAndOrderFront(None);
         }
