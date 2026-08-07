@@ -96,8 +96,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Shared lighting for `fs_main` and the translucent plane-fill path (`fs_plane_fill`).
-fn shade_fragment(input: VertexOutput) -> vec4f {
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // 2D chrome, lines, fills, text, gizmos: the colour is already final.
     if (input.mode < 0.5) {
         return input.color;
@@ -143,44 +143,6 @@ fn shade_fragment(input: VertexOutput) -> vec4f {
         + vec3f(REALISTIC_SPECULAR * specular);
     let lit = linear_to_srgb(tonemap(shaded));
     return vec4f(lit * alpha, alpha);
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    return shade_fragment(input);
-}
-
-// ---- Translucent plane fills (#1113) ----
-//
-// Construction-plane (and other translucent) fills are drawn *after* opaque bodies with a
-// strict depth test. When a plane is coplanar with a body face, floating-point depth noise
-// makes the two alternate who wins — stippled z-fighting. Geometric (world-space) depth
-// biases fix that but move the plane so bodies look like they poke through it (#1088).
-//
-// Instead: leave vertex positions alone and write a fragment depth a tiny step farther
-// than the interpolated one. Screen position is unchanged; only the depth test breaks
-// coplanar ties in favour of the opaque surface that already wrote the buffer. The
-// epsilon is in NDC units (~1e-4), orders of magnitude below the old GPU bias that
-// mis-placed planes by millimetres.
-
-struct PlaneFragOutput {
-    @location(0) color: vec4f,
-    @builtin(frag_depth) depth: f32,
-}
-
-// NDC depth nudge for coplanar translucent fills. Large enough to beat 24-bit depth
-// precision at typical zoom, small enough that a plane still loses only when it was
-// already effectively coplanar with the surface behind it.
-const PLANE_COPLANAR_DEPTH_EPS: f32 = 1.0e-4;
-
-@fragment
-fn fs_plane_fill(input: VertexOutput) -> PlaneFragOutput {
-    var out: PlaneFragOutput;
-    out.color = shade_fragment(input);
-    // `position.z` is the fragment's depth in [0, 1] (clear = 1, near = 0). Push slightly
-    // toward 1 so an opaque body at the same surface wins `Less`.
-    out.depth = min(input.clip_position.z + PLANE_COPLANAR_DEPTH_EPS, 1.0);
-    return out;
 }
 
 // ---- Origin axes (#1072) ----

@@ -5356,7 +5356,7 @@ mod tests {
         // Every entry point the renderer names must exist.
         let entries: Vec<&str> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
         for name in [
-            "vs_main", "fs_main", "fs_plane_fill", "vs_axis", "vs_grid", "fs_grid",
+            "vs_main", "fs_main", "vs_axis", "vs_grid", "fs_grid",
             "vs_blit", "fs_blit", "fs_outline", "vs_text", "fs_text", "fs_image",
         ] {
             assert!(entries.contains(&name), "shader.wgsl has no `{name}`: {entries:?}");

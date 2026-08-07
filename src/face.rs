@@ -1181,97 +1181,78 @@ pub fn pick_sketch_face(
         }
     }
 
-    // Faces of repeated body instances (#1116): each copy's cap/side walls, placed by the
-    // instance transform. Without this, only the original body's faces pick as analytic
-    // ExtrudeCap/Side, and a revolve/extrude/sketch on a copy could never take its faces.
+    // Faces of repeated body instances (#1116/#1119): each copy's flat faces, placed by the
+    // instance transform — extrusion caps/sides **and** Shape-tool primitive faces, so a
+    // repeated cuboid is pickable for sketch/extrude/revolve just like the original.
     for (op_index, op) in doc.repeat_ops.iter().collect::<Vec<_>>().into_iter().rev() {
         let Some(offsets) = crate::extrude::repeat_offsets(doc, op) else {
             continue;
         };
         for &body in &op.targets {
-            let extrusions = doc
-                .bodies
-                .get(body)
-                .map(|b| b.source.extrusion_indices().to_vec())
-                .unwrap_or_default();
-            for ei in extrusions {
+            let Some(body_rec) = doc.bodies.get(body) else {
+                continue;
+            };
+            // Source analytic faces of this target body (extrusion- or primitive-backed).
+            let mut source_faces: Vec<FaceId> = Vec::new();
+            for &ei in body_rec.source.extrusion_indices() {
                 let Some(ext) = doc.extrusions.get(ei) else {
                     continue;
                 };
                 for profile in &ext.faces {
-                    for (i, &_offset) in offsets.iter().enumerate() {
-                        let instance = i + 1;
-                        let Some(m) =
-                            crate::extrude::repeat_instance_transform(doc, op, instance)
-                        else {
-                            continue;
-                        };
-                        for top in [true, false] {
-                            if let Some(poly) =
-                                crate::extrude::cap_polygon_world(doc, ei, profile, top)
-                            {
-                                let pts: Vec<Vec3> =
-                                    poly.iter().map(|&p| m.transform_point3(p)).collect();
-                                if let Some((dist, c)) =
-                                    polygon_face_pick_distance(screen, project, &pts)
-                                {
-                                    let source = FaceId::ExtrudeCap {
-                                        extrusion: ei,
-                                        profile: profile.clone(),
-                                        top,
-                                    };
-                                    let candidate = FaceId::RepeatedFace {
-                                        face: Box::new(source),
-                                        op: op_index,
-                                        instance,
-                                    };
-                                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
-                                        consider_face_pick_sized(
-                                            &mut best,
-                                            FacePick {
-                                                face: candidate,
-                                                dist,
-                                                depth: depth(c),
-                                                area: f32::INFINITY,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        for edge in 0..crate::extrude::side_face_count(profile) {
-                            if let Some(quad) =
-                                crate::extrude::side_quad_world(doc, ei, profile, edge)
-                            {
-                                let pts: Vec<Vec3> =
-                                    quad.iter().map(|&p| m.transform_point3(p)).collect();
-                                if let Some((dist, c)) =
-                                    polygon_face_pick_distance(screen, project, &pts)
-                                {
-                                    let source = FaceId::ExtrudeSide {
-                                        extrusion: ei,
-                                        profile: profile.clone(),
-                                        edge: edge as u8,
-                                    };
-                                    let candidate = FaceId::RepeatedFace {
-                                        face: Box::new(source),
-                                        op: op_index,
-                                        instance,
-                                    };
-                                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
-                                        consider_face_pick_sized(
-                                            &mut best,
-                                            FacePick {
-                                                face: candidate,
-                                                dist,
-                                                depth: depth(c),
-                                                area: f32::INFINITY,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                    for top in [true, false] {
+                        source_faces.push(FaceId::ExtrudeCap {
+                            extrusion: ei,
+                            profile: profile.clone(),
+                            top,
+                        });
+                    }
+                    for edge in 0..crate::extrude::side_face_count(profile) {
+                        source_faces.push(FaceId::ExtrudeSide {
+                            extrusion: ei,
+                            profile: profile.clone(),
+                            edge: edge as u8,
+                        });
+                    }
+                }
+            }
+            if let crate::model::BodySource::Primitive(pi) = body_rec.source {
+                if let Some(shape) = doc.primitives.get(pi) {
+                    for face in crate::primitives::flat_faces(shape) {
+                        source_faces.push(FaceId::PrimitiveFace {
+                            primitive: pi,
+                            face,
+                        });
+                    }
+                }
+            }
+            for (i, &_offset) in offsets.iter().enumerate() {
+                let instance = i + 1;
+                let Some(m) = crate::extrude::repeat_instance_transform(doc, op, instance) else {
+                    continue;
+                };
+                for source in &source_faces {
+                    let Some(poly) = crate::extrude::face_boundary_loop_world(doc, source) else {
+                        continue;
+                    };
+                    let pts: Vec<Vec3> = poly.iter().map(|&p| m.transform_point3(p)).collect();
+                    let Some((dist, c)) = polygon_face_pick_distance(screen, project, &pts) else {
+                        continue;
+                    };
+                    let candidate = FaceId::RepeatedFace {
+                        face: Box::new(source.clone()),
+                        op: op_index,
+                        instance,
+                    };
+                    if !sketch_shadows(&shadowed_hosts, &candidate, dist) {
+                        consider_face_pick_sized(
+                            &mut best,
+                            FacePick {
+                                face: candidate,
+                                dist,
+                                depth: depth(c),
+                                area: f32::INFINITY,
+                            },
+                        );
                     }
                 }
             }
@@ -2165,6 +2146,78 @@ mod tests {
             matches!(side, Some(FaceId::PrimitiveFace { primitive, face: crate::model::PrimitiveFace::CuboidSide { .. } })
                 if primitive == pi),
             "clicking a side wall should pick it, got {side:?}"
+        );
+    }
+
+    /// #1119: a Shape-tool cuboid that has been linearly repeated exposes each copy's
+    /// flat faces as `RepeatedFace` so revolve/extrude can take them, not just the original.
+    #[test]
+    fn pick_sketch_face_finds_repeated_primitive_cuboid_faces() {
+        use crate::model::{
+            Body, BodySource, Primitive, PrimitiveKind, RepeatMode, RepeatOperation, RevolveAxis,
+        };
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = doc.primitives.insert(shape);
+        let body = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        // Count=2, gap=40 along +X: instance 1 steps by extent+gap. Cuboid width 20 → step 60;
+        // top face centre lands near x=60 (original top is at origin).
+        let op = doc.repeat_ops.insert(RepeatOperation {
+            targets: vec![body],
+            plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis: RevolveAxis::X,
+            path_circle: None,
+            around_axis: false,
+            flip: false,
+            mode: RepeatMode::CountGap,
+            count: "2".to_string(),
+            spacing: "40".to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+        });
+        let offsets = crate::extrude::repeat_offsets(&doc, doc.repeat_ops.get(op).unwrap())
+            .expect("repeat offsets");
+        assert!(!offsets.is_empty(), "expected at least one copy offset");
+        let copy_x = offsets[0];
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let hit = pick_sketch_face(
+            eframe::egui::pos2(copy_x, 0.0),
+            &project,
+            &doc,
+            Vec3::new(copy_x, 0.0, 100.0),
+        );
+        assert!(
+            matches!(
+                &hit,
+                Some(FaceId::RepeatedFace {
+                    face,
+                    op: hit_op,
+                    instance: 1,
+                }) if *hit_op == op
+                    && matches!(
+                        face.as_ref(),
+                        FaceId::PrimitiveFace {
+                            face: crate::model::PrimitiveFace::CuboidTop,
+                            ..
+                        }
+                    )
+            ),
+            "clicking a repeated cuboid's top should pick RepeatedFace, got {hit:?}"
         );
     }
 

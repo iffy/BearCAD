@@ -506,9 +506,7 @@ impl ViewportGpuResources {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    // `fs_plane_fill` writes a tiny farther frag-depth so coplanar body faces
-                    // win the depth test without moving the plane in world space (#1113).
-                    entry_point: Some("fs_plane_fill"),
+                    entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: target_format,
                         blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -524,9 +522,8 @@ impl ViewportGpuResources {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: VIEWPORT_DEPTH_FORMAT,
                     depth_write_enabled: Some(false),
-                    // No pipeline / world-space bias (#1088): those mis-place the plane so a
-                    // body on it looks like it pokes through. Coplanar z-fighting against
-                    // body faces is broken in the fragment shader via `frag_depth` (#1113).
+                    // No bias of any kind (#1088/#1121): world-space lifts and GPU/frag-depth
+                    // nudges both make a coplanar plane read as cutting through bodies.
                     depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),

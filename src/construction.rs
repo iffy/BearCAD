@@ -2875,15 +2875,50 @@ pub fn nearest_body_vertex_where(
     best
 }
 
-/// Quantized keys of every mesh vertex that lies on a feature edge (crease or boundary).
-/// Tessellation seams on smooth surfaces are not features, so their vertices are absent.
+/// Quantized keys of every **sharp corner** on a mesh's feature edges (#1118/#1120).
+///
+/// A vertex on a feature edge is only a corner when it is not a smooth link in a curve
+/// chain: free ends, T-junctions, 3+ edges meeting, or a degree-2 vertex where the chain
+/// turns more than ~30°. Points along a tessellated circle or cut rim (degree 2, nearly
+/// collinear) are not corners — the rim is selected as an edge, not a fan of vertices.
 fn mesh_feature_vertex_keys(
     solid: &crate::extrude::SolidMesh,
 ) -> std::collections::HashSet<(i64, i64, i64)> {
-    let mut keys = std::collections::HashSet::new();
+    use crate::gpu_viewport::quantize_vertex;
+    // Match [`crate::gpu_viewport::CURVE_CHAIN_COS_THRESHOLD`]: cos(30°). Two outward
+    // directions with dot ≤ −that are nearly opposite → smooth continuation through the
+    // vertex; a larger (less negative) dot is a real corner.
+    const SMOOTH_DOT: f32 = -0.866_025; // -cos(30°)
+
+    let mut adj: std::collections::HashMap<(i64, i64, i64), Vec<Vec3>> =
+        std::collections::HashMap::new();
     for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(solid) {
-        keys.insert(crate::gpu_viewport::quantize_vertex(a));
-        keys.insert(crate::gpu_viewport::quantize_vertex(b));
+        let (qa, qb) = (quantize_vertex(a), quantize_vertex(b));
+        if qa == qb {
+            continue;
+        }
+        adj.entry(qa).or_default().push((b - a).normalize_or_zero());
+        adj.entry(qb).or_default().push((a - b).normalize_or_zero());
+    }
+    let mut keys = std::collections::HashSet::new();
+    for (v, dirs) in adj {
+        match dirs.as_slice() {
+            [] => {}
+            [_] => {
+                // Free end of a feature edge — a corner.
+                keys.insert(v);
+            }
+            [d0, d1] => {
+                // Degree 2: keep only if the chain turns sharply (not a smooth rim facet).
+                if d0.dot(*d1) > SMOOTH_DOT {
+                    keys.insert(v);
+                }
+            }
+            _ => {
+                // 3+ feature edges meet — a real corner (e.g. where a cut meets a flat face).
+                keys.insert(v);
+            }
+        }
     }
     keys
 }
@@ -4094,6 +4129,113 @@ mod tests {
         let doc = doc_with_imported_triangle_body();
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         assert!(nearest_body_vertex(Pos2::new(50.0, 50.0), &project, &doc).is_none());
+    }
+
+    /// #1120: tessellated cut-rim points (smooth degree-2 chain) are not pickable vertices;
+    /// only sharp corners (free ends, T-junctions, hard turns) are.
+    #[test]
+    fn nearest_body_vertex_skips_smooth_rim_tessellation_points() {
+        // Regular 24-gon disc: every rim edge is a mesh boundary (feature), but each rim
+        // vertex is a smooth link (turn 15°) — no pickable corners on the rim.
+        let n = 24usize;
+        let r = 10.0_f32;
+        let mut rim = Vec::with_capacity(n);
+        for i in 0..n {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            rim.push(Vec3::new(r * a.cos(), r * a.sin(), 0.0));
+        }
+        let center = Vec3::ZERO;
+        let mut triangles = Vec::with_capacity(n);
+        for i in 0..n {
+            triangles.push([center, rim[i], rim[(i + 1) % n]]);
+        }
+        let mut doc = Document::default();
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles,
+            source_name: "disc".to_string(),
+            step_bytes: None,
+        });
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Cursor on a rim vertex: must not offer a body vertex (select the rim edge instead).
+        let rim0 = rim[0];
+        assert!(
+            nearest_body_vertex(Pos2::new(rim0.x, rim0.y), &project, &doc).is_none(),
+            "smooth rim tessellation points must not be pickable vertices"
+        );
+        // Same for a vertex halfway around the circle.
+        let mid = rim[n / 2];
+        assert!(
+            nearest_body_vertex(Pos2::new(mid.x, mid.y), &project, &doc).is_none(),
+            "opposite rim point also not a corner"
+        );
+    }
+
+    /// #1120: a hard corner on a feature-edge chain remains pickable.
+    #[test]
+    fn nearest_body_vertex_keeps_hard_corners_on_feature_edges() {
+        // L-shaped polyline extruded to a thin prism so the outer/inner 90° corners are
+        // creases (3+ feature edges) — those stay pickable.
+        let c = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+        // Bottom L (z=0) and top L (z=1); side walls close the prism.
+        let bottom = [
+            c(0.0, 0.0, 0.0),
+            c(10.0, 0.0, 0.0),
+            c(10.0, 4.0, 0.0),
+            c(4.0, 4.0, 0.0),
+            c(4.0, 10.0, 0.0),
+            c(0.0, 10.0, 0.0),
+        ];
+        let top: Vec<Vec3> = bottom.iter().map(|p| *p + Vec3::Z).collect();
+        let mut triangles = Vec::new();
+        // Cap fans (not coplanar diagonals as features — only the outer rim is boundary).
+        for i in 1..bottom.len() - 1 {
+            triangles.push([bottom[0], bottom[i], bottom[i + 1]]);
+            triangles.push([top[0], top[i + 1], top[i]]);
+        }
+        for i in 0..bottom.len() {
+            let j = (i + 1) % bottom.len();
+            triangles.push([bottom[i], bottom[j], top[j]]);
+            triangles.push([bottom[i], top[j], top[i]]);
+        }
+        let mut doc = Document::default();
+        let mesh = doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles,
+            source_name: "L".to_string(),
+            step_bytes: None,
+        });
+        doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Outer corner at (10, 0) — three creases meet.
+        let hit = nearest_body_vertex(Pos2::new(10.0, 0.0), &project, &doc);
+        assert!(
+            matches!(
+                hit,
+                Some((PickTargetKind::BodyVertex { position, .. }, _))
+                    if (position.truncate() - glam::Vec2::new(10.0, 0.0)).length() < 0.5
+            ),
+            "hard corner (10,0) must be pickable, got {hit:?}"
+        );
+        // Inner re-entrant corner at (4, 4).
+        let hit = nearest_body_vertex(Pos2::new(4.0, 4.0), &project, &doc);
+        assert!(
+            matches!(
+                hit,
+                Some((PickTargetKind::BodyVertex { position, .. }, _))
+                    if (position.truncate() - glam::Vec2::new(4.0, 4.0)).length() < 0.5
+            ),
+            "inner corner (4,4) must be pickable, got {hit:?}"
+        );
     }
 
     /// #155: with an occlusion context, a line hidden behind a visible body is not pickable;

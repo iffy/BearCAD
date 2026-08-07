@@ -5488,6 +5488,7 @@ fn create_implicit_extrude_sketch(
             | FaceId::ExtrudeSide { .. }
             | FaceId::RevolveCap { .. }
             | FaceId::RevolveSide { .. }
+            | FaceId::PrimitiveFace { .. }
     ) {
         return Err("Not a body face".to_string());
     }
@@ -5647,6 +5648,8 @@ fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<crate::mo
         FaceId::PrimitiveFace { primitive, .. } => {
             crate::model::body_index_for_primitive(doc, primitive)
         }
+        // A sketch on a repeated copy's face (#1116) merges into that copy.
+        FaceId::RepeatedFace { .. } => crate::model::body_index_for_face(doc, &face),
         _ => return None,
     }
 }
@@ -23732,6 +23735,73 @@ mod tests {
             face_id: FaceId::ConstructionPlane(pkey(0)),
         });
         assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
+    }
+
+    /// #1119: a Shape-tool cuboid face can be revolved / extruded like any extrusion face —
+    /// `RevolveBodyFace` builds an implicit sketch on `PrimitiveFace`.
+    #[test]
+    fn revolve_body_face_accepts_a_primitive_cuboid_face() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidTop,
+        };
+        let sketches_before = state.doc.sketches.len();
+        let result = state.apply(Action::RevolveBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.sketches.len(),
+            sketches_before + 1,
+            "implicit sketch on the primitive face"
+        );
+        let cr = state
+            .creating_revolve
+            .as_ref()
+            .expect("revolve should be in progress");
+        assert_eq!(cr.faces.len(), 1);
+        assert!(matches!(cr.faces[0], ExtrudeFace::Polygon(_)));
+    }
+
+    /// #1119: Extrude on a primitive face also starts (same implicit-sketch path as revolve).
+    #[test]
+    fn extrude_body_face_accepts_a_primitive_cuboid_face() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveFace, PrimitiveKind};
+        let mut state = AppState::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "20".to_string();
+        shape.depth = "20".to_string();
+        shape.height = "10".to_string();
+        let pi = state.doc.primitives.insert(shape);
+        state.doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let face_id = FaceId::PrimitiveFace {
+            primitive: pi,
+            face: PrimitiveFace::CuboidSide { edge: 0 },
+        };
+        let result = state.apply(Action::ExtrudeBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let ce = state
+            .creating_extrusion
+            .as_ref()
+            .expect("extrusion should be in progress");
+        assert_eq!(ce.faces.len(), 1);
+        assert!(matches!(ce.faces[0], ExtrudeFace::Polygon(_)));
     }
 
     /// #140: pressing Y with a body edge selected projects it into the open sketch as an

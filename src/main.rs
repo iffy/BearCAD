@@ -18983,6 +18983,7 @@ fn pick_extrude_body_face(
         | FaceId::ExtrudeSide { .. }
         | FaceId::RevolveCap { .. }
         | FaceId::RevolveSide { .. }
+        | FaceId::PrimitiveFace { .. }
         | FaceId::RepeatedFace { .. }) => Some(face_id),
         _ => None,
     }
