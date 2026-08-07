@@ -1462,6 +1462,24 @@ pub struct DimensionDeriveView {
 /// The selection element picker to show for `tool`, if any — the unified control every
 /// selection-driven tool uses. Both variants mirror the live `selection`; they differ only in
 /// which kinds they accept and their placeholder, demonstrating the per-instance configuration.
+/// After a tool switch (#1115): drop selection elements the new tool's focused picker
+/// won't take. Tools that use the Selection picker keep only what that picker accepts;
+/// tools with dedicated pickers only (Revolve, Extrude, Move, …) clear the selection —
+/// their handoff already captured what they need, and a leftover body highlight would
+/// read as still-selected under a tool that cannot select bodies.
+pub fn prune_selection_for_tool(
+    doc: &Document,
+    tool: Tool,
+    open_sketch: Option<crate::model::SketchId>,
+    selection: &mut SceneSelection,
+) {
+    if let Some(picker) = selection_picker_for(doc, tool, open_sketch, selection) {
+        selection.retain(|element| picker.accepts(doc, element));
+    } else {
+        selection.clear();
+    }
+}
+
 fn selection_picker_for(
     doc: &Document,
     tool: Tool,

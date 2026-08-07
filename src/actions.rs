@@ -7809,6 +7809,15 @@ impl AppState {
                     self.placing_dimension = None;
                 }
                 self.tool = tool;
+                // Drop selection elements the new tool's pickers won't take (#1115): e.g.
+                // a body selected under Select is not a Revolve profile, so it clears.
+                // Handoff above already seeded tool-specific sets from the old selection.
+                crate::context::prune_selection_for_tool(
+                    &self.doc,
+                    self.tool,
+                    self.sketch_session.map(|s| s.sketch),
+                    &mut self.scene_selection,
+                );
                 self.status = match tool {
                     Tool::Select => {
                         "Select tool — Delete/Backspace removes selection".to_string()
@@ -24088,6 +24097,64 @@ mod tests {
             plane: None,
         });
         assert!(matches!(result, ActionResult::Err(_)));
+    }
+
+    /// #1115: switching to a tool that doesn't take the current selection's kinds drops
+    /// those elements — a body selected under Select is cleared when Revolve arms (Revolve
+    /// picks profiles/axes, not bodies).
+    #[test]
+    fn set_tool_clears_selection_the_new_tool_cannot_take() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::Body(bkey(0)),
+            additive: false,
+        });
+        assert!(
+            state
+                .scene_selection
+                .is_selected(crate::hierarchy::SceneElement::Body(bkey(0))),
+            "precondition: body selected"
+        );
+        state.apply(Action::SetTool(Tool::Revolve));
+        assert_eq!(state.tool, Tool::Revolve);
+        assert!(
+            state.scene_selection.is_empty(),
+            "Revolve has no Selection picker — leftover body selection must clear, got {:?}",
+            state.scene_selection.ordered()
+        );
+    }
+
+    /// #1115: tools that *do* use the Selection picker keep what they accept (and only that).
+    #[test]
+    fn set_tool_keeps_selection_the_new_tool_accepts() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::Line(lines[0]),
+            additive: false,
+        });
+        // Dimension in a sketch accepts lines.
+        state.apply(Action::SetTool(Tool::Dimension));
+        assert!(
+            state
+                .scene_selection
+                .is_selected(crate::hierarchy::SceneElement::Line(lines[0])),
+            "Dimension keeps a selected line"
+        );
     }
 
     /// #1114: Zoom to Fit unions in-progress operation previews (e.g. a Mirror ghost) so the
