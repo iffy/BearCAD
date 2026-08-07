@@ -3969,7 +3969,9 @@ fn triangle_on_plane(tri: &[Vec3; 3], origin: Vec3, normal: Vec3) -> bool {
 /// tolerance) compare equal, letting [`solid_mesh_unique_edges`] dedupe the edge shared by
 /// two adjacent triangles even though `SolidMesh` stores triangles as raw positions rather
 /// than an indexed vertex buffer.
-fn quantize_vertex(v: Vec3) -> (i64, i64, i64) {
+/// Quantize a world point for mesh-edge/vertex identity (0.001 world-unit bins).
+/// Shared with body-vertex picking so "feature corner" agrees with feature edges (#1118).
+pub fn quantize_vertex(v: Vec3) -> (i64, i64, i64) {
     const SCALE: f32 = 1000.0; // 0.001 world-unit precision.
     (
         (v.x * SCALE).round() as i64,

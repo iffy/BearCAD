@@ -2802,7 +2802,9 @@ fn nearest_body_edge(
 }
 
 /// Nearest solid-mesh vertex (#144) of any 3D body within the point pick radius, for 3D
-/// hover/selection — so any corner of any body (extrusion-sourced or imported) can be picked.
+/// hover/selection — so any **feature corner** of any body can be picked. Tessellation
+/// vertices on smooth surfaces (a sphere's mesh, a cylinder wall) are not features and are
+/// not offered (#1101/#1118).
 pub fn nearest_body_vertex(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -2835,11 +2837,25 @@ pub fn nearest_body_vertex_where(
         }) {
             continue;
         }
+        // A pure sphere primitive has no feature corners at all (#1101).
+        if crate::primitives::body_is_sphere(doc, bi) {
+            continue;
+        }
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
             continue;
         };
+        // Only vertices that sit on a **feature edge** (crease or boundary) are corners
+        // (#1118): a cut sphere's tessellation fans out hundreds of surface points that
+        // are not real features — only the cut rim's corners are.
+        let feature_verts = mesh_feature_vertex_keys(&solid);
+        if feature_verts.is_empty() {
+            continue;
+        }
         for tri in &solid.triangles {
             for &p in tri {
+                if !feature_verts.contains(&crate::gpu_viewport::quantize_vertex(p)) {
+                    continue;
+                }
                 let Some(sp) = project(p) else {
                     continue;
                 };
@@ -2857,6 +2873,19 @@ pub fn nearest_body_vertex_where(
         }
     }
     best
+}
+
+/// Quantized keys of every mesh vertex that lies on a feature edge (crease or boundary).
+/// Tessellation seams on smooth surfaces are not features, so their vertices are absent.
+fn mesh_feature_vertex_keys(
+    solid: &crate::extrude::SolidMesh,
+) -> std::collections::HashSet<(i64, i64, i64)> {
+    let mut keys = std::collections::HashSet::new();
+    for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(solid) {
+        keys.insert(crate::gpu_viewport::quantize_vertex(a));
+        keys.insert(crate::gpu_viewport::quantize_vertex(b));
+    }
+    keys
 }
 
 /// One selectable thing found in the crowd under the cursor, for the Selection Exploder (#551).
@@ -2993,18 +3022,22 @@ pub fn collect_pick_candidates(
                 push_edge(&mut raw, PickTargetKind::BodyEdge { body: bi, a: ca, b: cb }, a, b);
             }
         }
+        // Feature corners only (#1101/#1118): a sphere's (or cut-sphere's) tessellation
+        // vertices are not real features — only crease/boundary endpoints are.
+        if crate::primitives::body_is_sphere(doc, bi) {
+            continue;
+        }
+        let feature_verts = mesh_feature_vertex_keys(&solid);
         for tri in &solid.triangles {
             for &p in tri {
+                if !feature_verts.contains(&crate::gpu_viewport::quantize_vertex(p)) {
+                    continue;
+                }
                 let Some(sp) = project(p) else { continue };
                 let dist = (screen - sp).length();
                 if dist <= point_r {
                     let kind = PickTargetKind::BodyVertex { body: bi, position: p };
-                    if pickable(&kind)
-                        // A sphere primitive's tessellation vertices are not real features
-                        // (#1101): only the whole sphere is selectable, so the crowd offers
-                        // its face/body, not a fan of every vertex on its surface.
-                        && !crate::primitives::body_is_sphere(doc, bi)
-                    {
+                    if pickable(&kind) {
                         raw.push((kind, p, dist));
                     }
                 }
