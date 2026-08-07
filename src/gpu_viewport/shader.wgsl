@@ -5,9 +5,11 @@ struct Uniforms {
     // xyz: camera eye in world space, for the view-dependent terms. w: unused.
     eye: vec4f,
     // Ground grid (#1073): x fine step, y coarse step (world mm), z how far the fine level
-    // has faded in with zoom (0..1), w unused.
+    // has faded in with zoom (0..1), w fade-start distance (world mm from the eye's ground
+    // projection — past this the lattice softens, #1123).
     grid_steps: vec4f,
-    // Line widths in **pixels**: x fine, y coarse, z the x=0/y=0 axis lines, w unused.
+    // Line widths in **pixels**: x fine, y coarse, z the x=0/y=0 axis lines; w fade-end
+    // distance (world mm) where the lattice is fully transparent (#1123).
     grid_widths: vec4f,
     grid_fine_color: vec4f,
     grid_coarse_color: vec4f,
@@ -244,8 +246,23 @@ fn fs_grid(input: GridVertexOutput) -> @location(0) vec4f {
     var a = fine * uniforms.grid_fine_color.a;
     rgb = mix(rgb, uniforms.grid_coarse_color.rgb, coarse);
     a = mix(a, uniforms.grid_coarse_color.a, coarse);
+    // Origin axes stay fully opaque (orientation never softens away); only the lattice fades.
+    let axis_a = axis * uniforms.grid_axis_color.a;
     rgb = mix(rgb, uniforms.grid_axis_color.rgb, axis);
-    a = mix(a, uniforms.grid_axis_color.a, axis);
+    a = mix(a, axis_a, axis);
+
+    // Distance fade (#1123): as the lattice recedes from the eye's ground projection it
+    // softens out instead of popping at a hard footprint edge when the camera orbits.
+    // fade_start / fade_end are world mm (grid_steps.w / grid_widths.w). Origin axes skip
+    // this ramp so the triad always reads.
+    let fade_start = uniforms.grid_steps.w;
+    let fade_end = uniforms.grid_widths.w;
+    if (fade_end > fade_start && axis < 0.01) {
+        let eye_ground = uniforms.eye.xy;
+        let horiz = length(input.world_xy - eye_ground);
+        let dist_fade = 1.0 - smoothstep(fade_start, fade_end, horiz);
+        a *= dist_fade;
+    }
 
     if (a <= 0.0) {
         discard;

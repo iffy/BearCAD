@@ -342,6 +342,11 @@ pub struct ViewportGrid {
     /// How far the fine level has faded in with zoom, 0..1 — a continuous ramp, so a
     /// subdivision never pops into existence (#464).
     pub fine_fade: f32,
+    /// Horizontal distance from the eye's ground projection (world mm) where the lattice
+    /// starts softening (#1123). Past [`fade_end_mm`] it is fully transparent.
+    pub fade_start_mm: f32,
+    /// Horizontal distance where the lattice has fully faded (#1123).
+    pub fade_end_mm: f32,
     /// Line widths in **pixels**, which is the whole point: constant on screen at any
     /// distance and any grazing angle.
     pub fine_width_px: f32,
@@ -2303,7 +2308,12 @@ impl<'a> SceneMesh<'a> {
         // the hits that remain so a horizon view gets a deep-but-finite grid.
         let eye = cam.eye();
         let anchor = glam::Vec2::new(cam.target.x, cam.target.y);
-        let reach = ((eye - cam.target).length() * 8.0).max(GRID_EXTENT);
+        // Reach past the distance-fade end so the hard footprint edge sits outside the
+        // soft ramp (#1123) — orbiting no longer snaps lattice sections on and off.
+        let cam_dist = (eye - cam.target).length().max(1.0);
+        let fade_start_mm = (cam_dist * 2.5).max(GRID_EXTENT * 0.5);
+        let fade_end_mm = (cam_dist * 7.0).max(GRID_EXTENT * 2.0);
+        let reach = fade_end_mm.max(GRID_EXTENT);
         let mut lo = anchor;
         let mut hi = anchor;
         for sy in 0..3 {
@@ -2319,6 +2329,10 @@ impl<'a> SceneMesh<'a> {
                 }
             }
         }
+        // Always cover at least a disc of radius `reach` around the target so horizon
+        // views (few ground hits) still have a full soft-faded lattice, not a thin wedge.
+        lo = lo.min(anchor - glam::Vec2::splat(reach));
+        hi = hi.max(anchor + glam::Vec2::splat(reach));
         lo -= glam::Vec2::splat(coarse_step);
         hi += glam::Vec2::splat(coarse_step);
         // Solid ground (#159): one filled plane in the grid's grey (darkened so bodies and
@@ -2359,6 +2373,8 @@ impl<'a> SceneMesh<'a> {
                 fine_step,
                 coarse_step,
                 fine_fade: fade,
+                fade_start_mm,
+                fade_end_mm,
                 fine_width_px: 1.0,
                 coarse_width_px: 1.0,
                 axis_width_px: 1.0,
@@ -6489,6 +6505,26 @@ mod tests {
         assert!(
             with_gizmo.indices.len() > base.indices.len(),
             "extrude gizmo should add triangles to the viewport scene"
+        );
+    }
+
+    /// #1123: the ground lattice carries a soft distance fade so orbiting never snaps
+    /// distant grid sections on/off at a hard footprint edge.
+    #[test]
+    fn ground_grid_sets_a_distance_fade_ramp() {
+        use crate::actions::AppState;
+        let state = AppState::default();
+        let scene = build_scene_for_doc(&state);
+        let grid = scene.grid.expect("default scene has a ground grid");
+        assert!(
+            grid.fade_end_mm > grid.fade_start_mm,
+            "fade end must be past fade start, got {}..{}",
+            grid.fade_start_mm,
+            grid.fade_end_mm
+        );
+        assert!(
+            grid.fade_start_mm > 0.0 && grid.fade_end_mm.is_finite(),
+            "fade distances must be positive finite"
         );
     }
 

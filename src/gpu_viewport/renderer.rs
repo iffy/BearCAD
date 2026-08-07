@@ -25,9 +25,9 @@ struct GpuUniforms {
     /// Camera eye in world space (xyz), for the view-dependent lighting terms in
     /// `fs_main`; `w` is padding.
     eye: [f32; 4],
-    /// Ground grid (#1073): fine step, coarse step, fine-level fade, padding.
+    /// Ground grid (#1073): fine step, coarse step, fine-level fade, distance-fade start.
     grid_steps: [f32; 4],
-    /// Grid line widths in pixels: fine, coarse, origin axes, padding.
+    /// Grid line widths in pixels: fine, coarse, origin axes; w = distance-fade end (#1123).
     grid_widths: [f32; 4],
     grid_fine_color: [f32; 4],
     grid_coarse_color: [f32; 4],
@@ -1267,11 +1267,16 @@ impl ViewportGpuResources {
                 },
                 eye: [scene.eye.x, scene.eye.y, scene.eye.z, 0.0],
                 grid_steps: match &scene.grid {
-                    Some(g) => [g.fine_step, g.coarse_step, g.fine_fade, 0.0],
+                    Some(g) => [g.fine_step, g.coarse_step, g.fine_fade, g.fade_start_mm],
                     None => GpuUniforms::NO_GRID.0,
                 },
                 grid_widths: match &scene.grid {
-                    Some(g) => [g.fine_width_px, g.coarse_width_px, g.axis_width_px, 0.0],
+                    Some(g) => [
+                        g.fine_width_px,
+                        g.coarse_width_px,
+                        g.axis_width_px,
+                        g.fade_end_mm,
+                    ],
                     None => GpuUniforms::NO_GRID.1,
                 },
                 grid_fine_color: scene.grid.map(|g| g.fine_color).unwrap_or_default(),
