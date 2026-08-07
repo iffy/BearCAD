@@ -200,6 +200,10 @@ pub const GROUND_SHADOW_FILL: Color32 = Color32::from_rgba_premultiplied(0, 0, 0
 pub const GROUND_SHADOW_DEPTH_BIAS: f32 = 0.04;
 /// On-screen width of the origin X/Y/Z axes, in pixels (#1072).
 pub const ORIGIN_AXIS_WIDTH_PX: f32 = 2.0;
+/// Hover thickness for a world origin axis (#1124) — same as [`push_segment_hover`].
+pub const ORIGIN_AXIS_HOVER_WIDTH_PX: f32 = 4.0;
+/// Selected thickness: **2×** the hover thickness, and drawn through bodies (#1124).
+pub const ORIGIN_AXIS_SELECTED_WIDTH_PX: f32 = ORIGIN_AXIS_HOVER_WIDTH_PX * 2.0;
 /// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
 pub const STROKE_DEPTH_BIAS: f32 = 0.10;
 /// Lift construction-plane hover fills above the plane surface (avoids z-fighting).
@@ -2850,6 +2854,24 @@ impl<'a> SceneMesh<'a> {
                 SceneElement::Extrusion(index) => {
                     self.push_sub_body_recolor(doc, index, BODY_SILHOUETTE_COLOR, cam, viewport, view_proj);
                 }
+                // Selected world origin axis (#1124): 2× hover thickness, depth-test
+                // disabled so it bleeds through every body (same always-on-top path as
+                // selected body edges). Normal axes stay behind bodies; selected ones don't.
+                SceneElement::GlobalAxis(axis) => {
+                    let (a, b) = global_axis_segment(axis);
+                    let restore = self.index_layer;
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                    self.push_line_segment(
+                        a,
+                        b,
+                        color,
+                        ORIGIN_AXIS_SELECTED_WIDTH_PX,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                    self.set_index_layer(restore);
+                }
                 _ => {}
             }
         }
@@ -3799,7 +3821,16 @@ impl<'a> SceneMesh<'a> {
             PickTargetKind::GlobalAxis(axis) => {
                 let (a, b) = global_axis_segment(*axis);
                 let axis_color = axis.color().gamma_multiply(1.25);
-                self.push_segment_hover(a, b, axis_color, cam, viewport, view_proj, project);
+                // Hover width only — selection uses a thicker bleed-through stroke (#1124).
+                self.push_line_segment(
+                    a,
+                    b,
+                    axis_color,
+                    ORIGIN_AXIS_HOVER_WIDTH_PX,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
             }
             // A plane reaches the crowd both as itself and as an analytic face over the same
             // surface, and the dedupe keeps whichever is nearer — so the two must draw the
@@ -6652,6 +6683,33 @@ mod tests {
             assert!(quad[0].normal[3] > 0.0 && quad[1].normal[3] < 0.0);
             assert!(quad[2].normal[3] > 0.0 && quad[3].normal[3] < 0.0);
         }
+    }
+
+    /// #1124: selecting a world origin axis draws a stroke 2× the hover thickness into the
+    /// depth-test-disabled wireframe layer so it bleeds through bodies.
+    #[test]
+    fn selected_origin_axis_is_thicker_and_bleeds_through() {
+        use crate::construction::GlobalAxis;
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        crate::selection::click_scene_selection(
+            &mut state.scene_selection,
+            SceneElement::GlobalAxis(GlobalAxis::Z),
+            false,
+        );
+        let base = build_scene_for_doc(&AppState::default());
+        let selected = build_scene_for_doc(&state);
+        assert!(
+            selected.wireframe_indices.len() > base.wireframe_indices.len(),
+            "selected origin axis must add always-on-top wireframe geometry, base={} selected={}",
+            base.wireframe_indices.len(),
+            selected.wireframe_indices.len()
+        );
+        assert_eq!(
+            ORIGIN_AXIS_SELECTED_WIDTH_PX,
+            ORIGIN_AXIS_HOVER_WIDTH_PX * 2.0,
+            "selected must be exactly 2× hover"
+        );
     }
 
     /// #1073: the ground modes each ask for the right thing — a shader grid, a solid fill
