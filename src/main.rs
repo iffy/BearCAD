@@ -304,8 +304,9 @@ fn tick_launch_maximize(
 /// Vertical wheel travel this frame, unsmoothed.
 ///
 /// egui 0.35 dropped `InputState::raw_scroll_delta`, so re-derive it from the frame's
-/// wheel events the way egui used to. Zoom and tool-cycling want the discrete notch,
-/// not `smooth_scroll_delta`'s multi-frame tail.
+/// wheel events the way egui used to. Tool-cycling wants the discrete notch, not
+/// `smooth_scroll_delta`'s multi-frame tail. Camera zoom uses [`smooth_scroll_y`] instead
+/// so trackpad kinetic scrolling and mouse-wheel notches glide like pan/orbit (#1122).
 fn raw_scroll_y(ctx: &egui::Context) -> f32 {
     let (horizontal, vertical) = ctx.options(|o| {
         (
@@ -345,6 +346,15 @@ fn raw_scroll_y(ctx: &egui::Context) -> f32 {
             })
             .sum()
     })
+}
+
+/// Vertical wheel travel this frame, smoothed by egui over a few frames (#1122).
+///
+/// Camera zoom uses this so a mouse-wheel notch glides (instead of jumping the full
+/// distance in one heavy frame) and trackpad kinetic scrolling keeps moving between
+/// event frames — matching how pan/orbit feel continuous while the pointer is down.
+fn smooth_scroll_y(ctx: &egui::Context) -> f32 {
+    ctx.input(|i| i.smooth_scroll_delta.y)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -16207,10 +16217,15 @@ fn suppress_viewport_pick_hover(
     plane_gizmo_drag_active: bool,
     bezier_handle_drag_active: bool,
 ) -> bool {
+    // Camera navigation skips hover pick work: secondary/middle drag for orbit/pan, and
+    // active scroll/zoom for the wheel (#1122). Without this, every zoom frame still ran
+    // the full body-face/vertex pick while pan/orbit did not — so zoom felt laggy against
+    // butter-smooth orbit.
     ui.input(|i| i.pointer.secondary_down())
         || response.dragged_by(egui::PointerButton::Secondary)
         || ui.input(|i| i.pointer.middle_down())
         || response.dragged_by(egui::PointerButton::Middle)
+        || ui.input(|i| i.is_scrolling())
         || vertex_drag_active
         || line_drag_active
         || dim_label_drag_active
@@ -22799,7 +22814,7 @@ impl App {
         // loupes instead: scrolling up magnifies further into the crowd (bigger loupes, wider fan),
         // scrolling down backs out. Clamped so the fan stays usable.
         if exploder_on && response.hovered() {
-            let scroll = raw_scroll_y(ui.ctx());
+            let scroll = smooth_scroll_y(ui.ctx());
             if scroll != 0.0 {
                 if let Some(ex) = self.exploder.as_mut() {
                     // Cap the zoom where the fan just fills the viewport — scrolling past that does
@@ -22809,8 +22824,11 @@ impl App {
                 }
             }
         }
+        // Camera zoom uses egui's smoothed scroll (#1122): mouse-wheel notches glide over a
+        // few frames, trackpad kinetic scrolling continues between event frames, and we keep
+        // painting while `is_scrolling` so the glide doesn't stall waiting for a new event.
         if response.hovered() && !camera_frozen {
-            let scroll = raw_scroll_y(ui.ctx());
+            let scroll = smooth_scroll_y(ui.ctx());
             if scroll != 0.0 {
                 let focal = response.hover_pos().unwrap_or(viewport.center());
                 // In a sketch, zoom about the sketch plane under the cursor so isometric
@@ -22870,6 +22888,9 @@ impl App {
                 if let Some(log) = &self.state.command_log {
                     log.borrow_mut().note_zoom(scroll);
                 }
+            }
+            if ui.input(|i| i.is_scrolling()) {
+                ui.ctx().request_repaint();
             }
         }
         // Touch navigation (#754): **two fingers** pan and pinch-zoom, **three fingers**
