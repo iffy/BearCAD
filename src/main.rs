@@ -212,6 +212,12 @@ fn window_pos_override() -> Option<[f32; 2]> {
 /// viewport underpaint (#1032) makes a blank start look like the app rather than the OS chrome.
 const LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// One-shot flags for logging the settle window's start and end (#1108). Atomics rather
+/// than `OnceLock` because they're flipped with `swap` and the return value is the whole
+/// decision.
+static SETTLE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETTLE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Whether the launch should still be asking for frames: the countdown is running, or the
 /// settle window hasn't closed. Pure, because it is the whole decision and the rest is egui.
 fn launch_still_settling(frames_remaining: u8, since_launch: std::time::Duration) -> bool {
@@ -223,7 +229,29 @@ fn tick_launch_maximize(
     since_launch: std::time::Duration,
     ctx: &egui::Context,
 ) {
-    if !launch_still_settling(*frames_remaining, since_launch) {
+    // The settle begins and ends are said once each (#1108), so the trace frames the window
+    // of repeated activation without needing to read every line to find the boundaries.
+    if launch_still_settling(*frames_remaining, since_launch) {
+        if !SETTLE_STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            diag::log(format!(
+                "launch: settle begins — keeping the window front for {:.1}s (frames_remaining={})",
+                LAUNCH_SETTLE.as_secs_f32(),
+                *frames_remaining,
+            ));
+        }
+    } else {
+        if !SETTLE_ENDED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            // Sample the final AppKit state alongside the boundary so the trace's last
+            // settle line is itself a verdict: a settle that ends with "app active false,
+            // occluded true" is the whole grey-window story in one line, and the watchdog
+            // at 8s no longer has to be the only place that says it (#1108).
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::window_probe::log_state_if_changed();
+            diag::log(format!(
+                "launch: settle ends after {:.1}s — done asking the window server for frames",
+                since_launch.as_secs_f32(),
+            ));
+        }
         return;
     }
     // Keep painting through the settle window even after the countdown is done.
@@ -235,8 +263,16 @@ fn tick_launch_maximize(
     // app, and the window server honours that regardless of focus. Repeated calls keep
     // the window front through the maximize and any surface reconfigure (#1032).
     #[cfg(not(target_arch = "wasm32"))]
-    if crate::window_probe::activate_app() {
-        diag::log("launch: asked the window server to bring us to the front");
+    {
+        // Log the AppKit state only when it changes (#1108): a per-frame "asked the
+        // window server" line drowned the trace in a thousand identical entries and hid
+        // the transitions that are the whole reason the settle exists. The first sample
+        // and every change are written; "still occluded, still inactive" is not.
+        crate::window_probe::log_state_if_changed();
+        let activated = crate::window_probe::activate_app();
+        // Say once when activation starts succeeding (or failing) so the trace shows the
+        // boundary without a line per frame.
+        crate::window_probe::log_activation_outcome(activated);
     }
     if *frames_remaining == 0 {
         ctx.request_repaint();
@@ -550,6 +586,26 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
             "off"
         }
     ));
+    // How the binary was launched is the other half of a grey-window report (#1108): an
+    // unbundled `cargo run` binary starts with an activation policy that cannot become
+    // frontmost, which is exactly what `activate_app` corrects — and a bundled `.app`
+    // launch does not. Saying which it is here names the case without reading the path.
+    if let Ok(exe) = std::env::current_exe() {
+        let bundled = exe
+            .to_string_lossy()
+            .contains(".app/Contents/MacOS/");
+        diag::info(format!(
+            "launch: binary {} — {}",
+            if bundled { "bundled (.app)" } else { "unbundled" },
+            exe.display(),
+        ));
+    }
+    if let Ok(val) = std::env::var("BEARCAD_WINDOW") {
+        diag::info(format!("launch: BEARCAD_WINDOW={val}"));
+    }
+    if let Ok(val) = std::env::var("BEARCAD_LOG") {
+        diag::info(format!("launch: BEARCAD_LOG={val}"));
+    }
     // A window that never paints looks exactly like a window that painted nothing (#978).
     diag::watch_first_frame();
     let script_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4136,6 +4192,7 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         {
             state.library_directory = settings.library_directory.clone();
+            state.body_highlight_method = settings.body_highlight_method;
         }
         if let Some(path) = document_path {
             match state.apply(Action::Open { path }) {
@@ -4224,6 +4281,8 @@ impl App {
                 let ok = gpu_viewport::install(cc);
                 if !ok {
                     diag::warn("the GPU viewport failed to install — the 3D view will be empty");
+                } else {
+                    diag::info("gpu viewport installed");
                 }
                 ok
             },
@@ -4330,84 +4389,104 @@ impl App {
         }
     }
 
-    /// The Settings window (#720): app-level preferences, saved on change. Controls and
+    /// The Settings pane (#720): app-level preferences, saved on change. Controls and
     /// values only — what each row means lives in help mode (#672), like the Context pane.
+    ///
+    /// Originally a floating `egui::Window`; now a docked side panel (#1111) built with
+    /// [`show_pane_shell`] like the other panes — on the phone/compact layout it falls back
+    /// to the floating window every pane uses there.
     #[cfg(not(target_arch = "wasm32"))]
-    fn show_settings_window(&mut self, ctx: &egui::Context) {
+    fn show_settings_window(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if !self.state.settings_open {
             return;
         }
-        // Help notes (#672) for this window's rows: a self-contained collect-and-draw
-        // cycle that finishes before the Context pane starts its own for the frame.
+        // Scripts can change the live body-highlight method without touching the settings
+        // file (#1110); show what the viewport is actually using so the combo matches.
+        self.settings.body_highlight_method = self.state.body_highlight_method;
+        // Help notes (#672) for this pane's rows: a self-contained collect-and-draw cycle.
         if self.state.help_mode {
             context::begin_help_notes(ctx, None);
         }
-        let mut open = true;
         let mut changed = false;
-        let response = egui::Window::new("Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(380.0)
-            // Toward the right, like the panes — so help-mode notes (#672), which fan
-            // out to the left, have room on screen.
-            .default_pos(egui::pos2(
-                (ctx.content_rect().right() - 440.0).max(0.0),
-                60.0,
-            ))
-            .show(ctx, |ui| {
-                context::labeled_row(ui, "Library directory", |ui| {
-                    if ui.button("Choose…").clicked() {
-                        let mut dialog = rfd::FileDialog::new();
-                        if let Some(dir) = &self.settings.library_directory {
-                            dialog = dialog.set_directory(dir);
-                        }
-                        if let Some(dir) = dialog.pick_folder() {
-                            self.settings.library_directory = Some(dir);
+        let kept = show_pane_shell(ui, "settings", "Settings", true, 380.0, None, |ui| {
+            context::labeled_row(ui, "Library directory", |ui| {
+                if ui.button("Choose…").clicked() {
+                    let mut dialog = rfd::FileDialog::new();
+                    if let Some(dir) = &self.settings.library_directory {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(dir) = dialog.pick_folder() {
+                        self.settings.library_directory = Some(dir);
+                        changed = true;
+                    }
+                }
+                match self.settings.library_directory.clone() {
+                    Some(dir) => {
+                        if ui.button("✕").on_hover_text("Clear").clicked() {
+                            self.settings.library_directory = None;
                             changed = true;
                         }
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(dir.to_string_lossy())
+                                    .monospace()
+                                    .size(11.0),
+                            )
+                            .truncate(),
+                        );
                     }
-                    match self.settings.library_directory.clone() {
-                        Some(dir) => {
-                            if ui.button("✕").on_hover_text("Clear").clicked() {
-                                self.settings.library_directory = None;
-                                changed = true;
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(dir.to_string_lossy())
-                                        .monospace()
-                                        .size(11.0),
-                                )
-                                .truncate(),
-                            );
-                        }
-                        None => {
-                            ui.label(egui::RichText::new("—").weak());
-                        }
+                    None => {
+                        ui.label(egui::RichText::new("—").weak());
                     }
-                });
+                }
             });
+            // How selected/hovered bodies highlight (#1110): recolour the fill, or draw a
+            // screen-space silhouette outline.
+            context::labeled_row(ui, "Body highlight", |ui| {
+                let current = self.settings.body_highlight_method;
+                let combo = egui::ComboBox::from_id_salt("body_highlight_combo").selected_text(
+                    match current {
+                        settings::BodyHighlightMethod::Shading => "Solid-body shading",
+                        settings::BodyHighlightMethod::Outlining => "Outlining",
+                    },
+                );
+                let resp = combo.show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.settings.body_highlight_method,
+                        settings::BodyHighlightMethod::Shading,
+                        "Solid-body shading",
+                    );
+                    ui.selectable_value(
+                        &mut self.settings.body_highlight_method,
+                        settings::BodyHighlightMethod::Outlining,
+                        "Outlining",
+                    );
+                });
+                resp.response.on_hover_text(
+                    "Outlining draws a screen-space outline around the body's silhouette \
+                     (blue when selected, yellow when hovered) instead of recolouring it.",
+                );
+                if self.settings.body_highlight_method != current {
+                    changed = true;
+                }
+            });
+        });
+        if self.state.help_mode {
+            context::end_help_notes(ctx);
+        }
         if changed {
-            // Keep the action layer's mirror in step (#721) before persisting.
+            // Keep the action layer's mirrors in step (#721/#1110) before persisting.
             self.state.library_directory = self.settings.library_directory.clone();
+            self.state.body_highlight_method = self.settings.body_highlight_method;
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
             }
         }
-        let mut shot_rect = response.as_ref().map(|r| r.response.rect);
-        if self.state.help_mode {
-            if let Some(resp) = &response {
-                if let Some(notes) = context::draw_help_notes(ctx, resp.response.rect) {
-                    shot_rect = Some(resp.response.rect.union(notes));
-                }
-            }
-            context::end_help_notes(ctx);
+        // `show_pane_shell` returns false only in the compact (floating-window) layout,
+        // when the pane's close button is clicked; docked panels close via the menu/Cmd+,
+        if !kept {
+            self.state.settings_open = false;
         }
-        // Registered as a capture region (#737) so docs screenshots can frame the
-        // window (help notes included): `bearcad.ui.screenshot(path, "settings")`.
-        remember_pane_rect(ctx, "settings", shot_rect);
-        self.state.settings_open = open;
     }
 
     /// Keep the McMaster-Carr catalog window in step with the app (#1022).
@@ -12171,10 +12250,6 @@ impl eframe::App for App {
             }
         }
 
-        // Settings window (#720): app-level preferences, saved on change.
-        #[cfg(not(target_arch = "wasm32"))]
-        self.show_settings_window(ctx);
-
         // McMaster-Carr catalog window (#1022): a window of its own, in a second process,
         // whose caught CAD downloads land here.
         #[cfg(not(target_arch = "wasm32"))]
@@ -12298,6 +12373,15 @@ impl eframe::App for App {
                 });
             });
         });
+
+        // Settings pane (#720/#1111): a docked right-side panel rather than a floating
+        // window. Drawn after the bottom status bar (so that bar still spans the full
+        // window width) and before the other panes — the first right panel allocated this
+        // frame, so it docks to the far right edge; Parameters and Context stack in to its
+        // left. On the phone/compact layout `show_pane_shell` falls back to the floating
+        // window every pane uses there.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.show_settings_window(ui, ctx);
 
         if self.state.panes.is_visible(Pane::Hierarchy) {
             // On a Model/Drawing workbench switch, reset the element filter to that workbench's
@@ -15619,9 +15703,9 @@ fn show_pane_shell(
 /// The rect a captured pane shot should cover: the pane, plus its help-mode notes where it
 /// has any. Only the Context pane carries notes (#672); every other pane returns its own rect.
 fn with_help_notes(ctx: &egui::Context, id: &'static str, rect: egui::Rect) -> egui::Rect {
-    // The Context pane (#672) and the Parameters pane (#727) carry help notes; every
-    // other pane returns its own rect.
-    if id != "context" && id != "parameters" {
+    // The Context pane (#672), the Parameters pane (#727), and the Settings pane (#1111)
+    // carry help notes; every other pane returns its own rect.
+    if id != "context" && id != "parameters" && id != "settings" {
         return rect;
     }
     match context::draw_help_notes(ctx, rect) {
@@ -17510,6 +17594,7 @@ fn build_viewport_scene_input<'a>(
             dim_edge_highlight: col::DIM_EDGE_HIGHLIGHT,
             construction_plane_fill: construction::PLANE_FILL_RGBA,
             construction_plane_opacity: gpu_viewport::DEFAULT_CONSTRUCTION_PLANE_OPACITY,
+            body_highlight_method: crate::settings::BodyHighlightMethod::default(),
         },
         sketch_session,
         selection,
@@ -25873,6 +25958,9 @@ impl App {
             sketch_ghost_lines,
             edit_preview_meshes,
         );
+        // Body-highlight method (#1110): mirrored from app settings into the palette so the
+        // scene builder can pick shading vs. outlining without reaching into `App`.
+        scene_input.palette.body_highlight_method = self.state.body_highlight_method;
         // The rotation sphere rides the ghost-solid slot (#920) — nothing else uses it
         // while the Move tool is up.
         if let Some(sphere) = move_surface_solid {

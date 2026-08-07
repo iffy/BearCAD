@@ -97,6 +97,14 @@ pub struct ViewportGpuResources {
     /// Texture + bind group per tracing image, keyed by the scene's content id (#170).
     image_textures: Mutex<std::collections::HashMap<u64, wgpu::BindGroup>>,
     blit_pipeline: wgpu::RenderPipeline,
+    /// Body-highlight outline mask pass (#1110): draws selected/hovered body triangles
+    /// flat (unlit, no depth) into an offscreen R/G mask.
+    mask_pipeline: wgpu::RenderPipeline,
+    /// Fullscreen pass that dilates the outline mask and strokes the silhouette band
+    /// onto the resolved scene colour (#1110).
+    outline_pipeline: wgpu::RenderPipeline,
+    /// Bind-group layout shared by the blit and outline pipelines (texture + sampler).
+    blit_bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     text_texture_bind_group_layout: wgpu::BindGroupLayout,
@@ -109,7 +117,12 @@ pub struct ViewportGpuResources {
     msaa_color_view: Option<wgpu::TextureView>,
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
+    /// Offscreen R/G mask of selected/hovered body silhouettes (#1110).
+    mask_texture: Option<wgpu::Texture>,
+    mask_view: Option<wgpu::TextureView>,
     blit_bind_group: Option<wgpu::BindGroup>,
+    /// Bind group pointing the outline pipeline at the current mask texture (#1110).
+    outline_bind_group: Option<wgpu::BindGroup>,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     text_vertex_buffer: wgpu::Buffer,
@@ -724,6 +737,85 @@ impl ViewportGpuResources {
             cache: None,
         });
 
+        // Outline mask (#1110): selected/hovered body triangles, unlit, into an R/G
+        // offscreen target. No depth — the silhouette is the flattened camera-plane
+        // projection of the whole body, not its front faces alone.
+        let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_outline_mask_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    // Rgba8Unorm so a later fullscreen pass can sample R/G as the
+                    // selected/hovered channels without an sRGB decode.
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Max,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Max,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Outline stroke (#1110): dilate the mask and paint the silhouette band over the
+        // resolved scene colour. Same bind-group layout as blit (texture + sampler);
+        // at draw time the bind group points at the mask, not the scene.
+        let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_outline_pipeline"),
+            layout: Some(&blit_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_blit"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_outline"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Ground-grid pipeline (#1073). Alpha-blended and depth-tested but not
         // depth-writing: the transparent gaps between lines must not occlude geometry
         // under the ground plane.
@@ -892,6 +984,9 @@ impl ViewportGpuResources {
             image_pipeline,
             image_textures: Mutex::new(std::collections::HashMap::new()),
             blit_pipeline,
+            mask_pipeline,
+            outline_pipeline,
+            blit_bind_group_layout,
             uniform_buffer,
             uniform_bind_group,
             text_texture_bind_group_layout,
@@ -903,7 +998,10 @@ impl ViewportGpuResources {
             msaa_color_view: None,
             depth_texture: None,
             depth_view: None,
+            mask_texture: None,
+            mask_view: None,
             blit_bind_group: None,
+            outline_bind_group: None,
             vertex_buffer,
             index_buffer,
             text_vertex_buffer,
@@ -1005,31 +1103,24 @@ impl ViewportGpuResources {
         });
         let depth_view = depth_texture.create_view(&Default::default());
 
-        let blit_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bearcad_viewport_blit_layout_runtime"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+        // Outline mask (#1110): single-sample R/G target matching the viewport size.
+        // TEXTURE_BINDING so the outline pass can sample it; RENDER_ATTACHMENT so the
+        // mask pass can write selected/hovered body triangles into it.
+        let mask_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bearcad_viewport_outline_mask"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
+        let mask_view = mask_texture.create_view(&Default::default());
 
         let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bearcad_viewport_blit_bind_group"),
-            layout: &blit_bind_group_layout,
+            layout: &self.blit_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -1042,13 +1133,33 @@ impl ViewportGpuResources {
             ],
         });
 
+        let outline_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bearcad_viewport_outline_bind_group"),
+            layout: &self.blit_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&mask_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    // Same filtering sampler as blit: the dilate samples land on texel
+                    // centres (integer pixel offsets), so linear equals nearest there.
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+
         self.color_texture = Some(color_texture);
         self.color_view = Some(color_view);
         self.msaa_color_texture = msaa_color_texture;
         self.msaa_color_view = msaa_color_view;
         self.depth_texture = Some(depth_texture);
         self.depth_view = Some(depth_view);
+        self.mask_texture = Some(mask_texture);
+        self.mask_view = Some(mask_view);
         self.blit_bind_group = Some(blit_bind_group);
+        self.outline_bind_group = Some(outline_bind_group);
     }
 
     fn ensure_text_buffer_capacity(
@@ -1129,13 +1240,17 @@ impl ViewportGpuResources {
         // need to stay visible "through" bodies), so it shares the final draw call below
         // rather than getting a dedicated pipeline and boundary.
         let wireframe_index_count = scene.wireframe_indices.len();
-        let total_index_count = base_index_count
+        // Outline mask indices (#1110) ride at the end of the combined index buffer and are
+        // drawn in a separate pass into the offscreen R/G mask — never the main colour target.
+        let mask_index_count = scene.mask_indices.len();
+        let scene_index_count = base_index_count
             + shadow_index_count
             + sketch_fill_index_count
             + plane_fill_index_count
             + overlay_index_count
             + gizmo_index_count
             + wireframe_index_count;
+        let total_index_count = scene_index_count + mask_index_count;
         let index_bytes = (total_index_count * std::mem::size_of::<u32>()) as u64;
         let text_vertex_bytes =
             (scene.text_vertices.len() * std::mem::size_of::<GpuTextVertex>()) as u64;
@@ -1183,6 +1298,7 @@ impl ViewportGpuResources {
             combined_indices.extend_from_slice(&scene.overlay_indices);
             combined_indices.extend_from_slice(&scene.gizmo_indices);
             combined_indices.extend_from_slice(&scene.wireframe_indices);
+            combined_indices.extend_from_slice(&scene.mask_indices);
             queue.write_buffer(
                 &self.index_buffer,
                 0,
@@ -1398,7 +1514,7 @@ impl ViewportGpuResources {
                 pass.set_index_buffer(self.axis_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..scene.axis_indices.len() as u32, 0, 0..1);
             }
-            if total_index_count > 0 {
+            if scene_index_count > 0 {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(
@@ -1410,7 +1526,7 @@ impl ViewportGpuResources {
                 let sketch_fill_end = shadow_end + sketch_fill_index_count as u32;
                 let plane_end = sketch_fill_end + plane_fill_index_count as u32;
                 let overlay_end = plane_end + overlay_index_count as u32;
-                let total_end = total_index_count as u32;
+                let scene_end = scene_index_count as u32;
                 if base_end > 0 {
                     pass.set_pipeline(&self.scene_pipeline);
                     pass.draw_indexed(0..base_end, 0, 0..1);
@@ -1457,12 +1573,12 @@ impl ViewportGpuResources {
                     pass.set_pipeline(&self.overlay_pipeline);
                     pass.draw_indexed(plane_end..overlay_end, 0, 0..1);
                 }
-                if total_end > overlay_end {
+                if scene_end > overlay_end {
                     // Gizmos, then the body edge-wireframe overlay (#33): both use the
                     // depth-test-disabled pipeline so they show through bodies (#36), so
                     // they share this one draw call over their combined index range.
                     pass.set_pipeline(&self.gizmo_pipeline);
-                    pass.draw_indexed(overlay_end..total_end, 0, 0..1);
+                    pass.draw_indexed(overlay_end..scene_end, 0, 0..1);
                 }
             }
             if !scene.text_indices.is_empty() {
@@ -1479,6 +1595,71 @@ impl ViewportGpuResources {
                 }
             }
         }
+
+        // Body-highlight outline (#1110): when the scene built a mask of selected/hovered
+        // body silhouettes, paint it into the offscreen R/G target and stroke the dilated
+        // band over the resolved scene colour. Two extra passes — only when outlining is
+        // live, so shading mode pays nothing.
+        if mask_index_count > 0 {
+            if let (Some(mask_view), Some(color_view), Some(outline_bind_group)) = (
+                self.mask_view.as_ref(),
+                self.color_view.as_ref(),
+                self.outline_bind_group.as_ref(),
+            ) {
+                {
+                    let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("bearcad_viewport_outline_mask_pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: mask_view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    mask_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    mask_pass.set_pipeline(&self.mask_pipeline);
+                    mask_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    mask_pass.set_index_buffer(
+                        self.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    let mask_start = scene_index_count as u32;
+                    let mask_end = total_index_count as u32;
+                    mask_pass.draw_indexed(mask_start..mask_end, 0, 0..1);
+                }
+                {
+                    // Load the resolved scene colour and alpha-blend the outline band on top.
+                    let mut outline_pass =
+                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("bearcad_viewport_outline_pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: color_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                    outline_pass.set_pipeline(&self.outline_pipeline);
+                    outline_pass.set_bind_group(0, outline_bind_group, &[]);
+                    outline_pass.draw(0..3, 0..1);
+                }
+            }
+        }
+
         queue.submit(std::iter::once(encoder.finish()));
     }
 }

@@ -298,6 +298,12 @@ pub struct ViewportScene {
     /// Body edge-wireframe overlay (#33). Drawn depth-test-disabled, same as gizmos, so
     /// edges stay visible "through" a solid body in solid+wireframe shading mode.
     pub wireframe_indices: Vec<u32>,
+    /// The selection/hover outline mask (#1110): the triangles of selected and hovered
+    /// bodies, drawn flat into an offscreen mask (R = selected, G = hovered). A later
+    /// fullscreen pass dilates the mask in screen space and strokes the silhouette band
+    /// — blue for selected, yellow for hovered — so the highlight is an outline rather
+    /// than a fill recolour. Only populated when body-highlight is set to Outlining.
+    pub mask_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
     /// Tracing images (#170): textured world-space quads, drawn after the opaque scene
@@ -423,6 +429,12 @@ pub struct ViewportPalette {
     pub dim_edge_highlight: Color32,
     pub construction_plane_fill: Color32,
     pub construction_plane_opacity: f32,
+    /// How selected/hovered bodies highlight (#1110): recolour the fill (`Shading`), or
+    /// draw a screen-space silhouette outline (`Outlining`). Lives on the palette — which
+    /// already carries the viewport's rendering config — so the scene builder reads it
+    /// without a separate input field, and tests get the default (`Shading`) for free
+    /// through [`ViewportPalette::default`].
+    pub body_highlight_method: crate::settings::BodyHighlightMethod,
 }
 
 impl Default for ViewportPalette {
@@ -442,6 +454,7 @@ impl Default for ViewportPalette {
             dim_edge_highlight: Color32::from_rgb(255, 205, 88),
             construction_plane_fill: PLANE_FILL_RGBA,
             construction_plane_opacity: DEFAULT_CONSTRUCTION_PLANE_OPACITY,
+            body_highlight_method: crate::settings::BodyHighlightMethod::default(),
         }
     }
 }
@@ -1016,6 +1029,12 @@ impl ViewportScene {
             let selected = input.selection.is_selected(SceneElement::Body(bi))
                 || unit_instance
                     .is_some_and(|i| input.selection.is_selected(SceneElement::UnitInstance(i)));
+            // #1110: in Outlining mode the body itself keeps its material colour — the
+            // selection/hover signal is a screen-space silhouette outline drawn from a
+            // separate mask pass, not a fill recolour. (`tint` still wins for fill: it's an
+            // explicit override, e.g. the joint-mobile green, not a highlight.)
+            let outlining = input.palette.body_highlight_method
+                == crate::settings::BodyHighlightMethod::Outlining;
             let tint = input
                 .tinted_bodies
                 .iter()
@@ -1023,9 +1042,9 @@ impl ViewportScene {
                 .map(|(_, c)| *c);
             let fill = if let Some(tint) = tint {
                 tint
-            } else if selected {
+            } else if selected && !outlining {
                 SOLID_FILL_SELECTED
-            } else if hovered {
+            } else if hovered && !outlining {
                 SOLID_FILL_HOVERED
             } else if unit_instance.is_some() {
                 UNIT_SOLID_FILL
@@ -1034,13 +1053,30 @@ impl ViewportScene {
                 // default look.
                 body_material_fill(input.doc, body)
             };
-            let line_color = if selected {
+            let line_color = if selected && !outlining {
                 BODY_SILHOUETTE_COLOR
-            } else if hovered {
+            } else if hovered && !outlining {
                 SOLID_FILL_HOVERED
             } else {
                 WIREFRAME_LINE_COLOR
             };
+            // #1110: feed the outline mask with this body's flattened (depth-free) triangles
+            // — R for selected, G for hovered (selected wins when both). The mask pass
+            // renders them unlit into an offscreen texture a later fullscreen pass dilates
+            // into the silhouette band, so the highlight is an outline rather than a fill.
+            if outlining && (selected || hovered) {
+                let mask_color = if selected {
+                    Color32::from_rgb(255, 0, 0)
+                } else {
+                    Color32::from_rgb(0, 255, 0)
+                };
+                let restore = mesh.index_layer;
+                mesh.set_index_layer(MeshIndexLayer::Mask);
+                for tri in &solid.triangles {
+                    mesh.push_triangle(tri[0], tri[1], tri[2], mask_color);
+                }
+                mesh.set_index_layer(restore);
+            }
             // Sketch mode dims every body (#433): the bright face shading otherwise
             // fights the sketch lines and dimension labels drawn over it.
             let fill = if input.sketch_session.is_some() {
@@ -1822,6 +1858,9 @@ enum MeshIndexLayer {
     Gizmo,
     /// Body edge-wireframe overlay, drawn depth-test-disabled like [`Self::Gizmo`] (#33).
     Wireframe,
+    /// Selection/hover outline mask (#1110): selected/hovered bodies' triangles, drawn
+    /// flat (unlit) into the offscreen mask texture, never the main color target.
+    Mask,
 }
 
 pub(crate) struct SceneMesh<'a> {
@@ -1851,6 +1890,7 @@ impl<'a> SceneMesh<'a> {
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
             MeshIndexLayer::Gizmo => &mut self.scene.gizmo_indices,
             MeshIndexLayer::Wireframe => &mut self.scene.wireframe_indices,
+            MeshIndexLayer::Mask => &mut self.scene.mask_indices,
         }
     }
 
@@ -8063,6 +8103,91 @@ mod tests {
         let with_selection = build(&selected);
         assert!(!has_selected_hue(&base), "unselected body must keep the neutral fill");
         assert!(has_selected_hue(&with_selection), "selected body must use the saturated blue");
+    }
+
+    /// #1110: Outlining mode keeps the body's material fill and puts its triangles into
+    /// `mask_indices` (R channel) so the GPU outline pass can stroke the silhouette.
+    #[test]
+    fn outlining_mode_feeds_mask_without_recolouring_fill() {
+        let state = state_with_one_body();
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selected,
+            crate::hierarchy::SceneElement::Body(bkey(0)),
+            false,
+        );
+        let has_selected_hue = |scene: &ViewportScene| {
+            scene.vertices.iter().any(|v| {
+                let [r, g, b, _] = v.color;
+                b > 0.05
+                    && (r / b - 112.0 / 224.0).abs() < 0.02
+                    && (g / b - 152.0 / 224.0).abs() < 0.02
+            })
+        };
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let mut palette = ViewportPalette::default();
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Outlining;
+        let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette,
+            sketch_session: None,
+            selection: &selected,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            preview_cut_body: None,
+            preview_replacement: PreviewReplacement::default(),
+            highlighted_bezier_handles: Vec::new(),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: None,
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        assert!(
+            !has_selected_hue(&scene),
+            "outlining must not recolour the body fill"
+        );
+        assert!(
+            !scene.mask_indices.is_empty(),
+            "selected body must contribute triangles to the outline mask"
+        );
+        // Mask vertices are pure red (selected channel): R=1, G=0.
+        let mask_has_selected = scene.mask_indices.iter().any(|&i| {
+            let v = &scene.vertices[i as usize];
+            v.color[0] > 0.9 && v.color[1] < 0.1
+        });
+        assert!(mask_has_selected, "mask triangles must use the selected (R) channel");
     }
 
     /// #213: a body in a destructive picker's `cut_highlight_bodies` fills the red cut hue,

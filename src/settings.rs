@@ -10,6 +10,37 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// How a selected or hovered body is highlighted in the 3D viewport (#1110).
+///
+/// `Shading` is the original look: the body's fill is recoloured (blue for selected,
+/// gold for hovered). `Outlining` draws a screen-space outline around the body's
+/// flattened silhouette instead — blue for selected, yellow for hovered — leaving the
+/// body itself in its material colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BodyHighlightMethod {
+    #[default]
+    Shading,
+    Outlining,
+}
+
+impl BodyHighlightMethod {
+    /// Stable name used in instruction scripts.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            BodyHighlightMethod::Shading => "shading",
+            BodyHighlightMethod::Outlining => "outlining",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "shading" | "shade" | "fill" | "solid" => Some(BodyHighlightMethod::Shading),
+            "outlining" | "outline" => Some(BodyHighlightMethod::Outlining),
+            _ => None,
+        }
+    }
+}
+
 /// Every persisted setting. Keep each field `#[serde(default)]` so older settings files
 /// keep loading as more land here.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +48,10 @@ pub struct AppSettings {
     /// The library directory (#720): where `Library(...)` import sources resolve.
     #[serde(default)]
     pub library_directory: Option<PathBuf>,
+    /// How selected/hovered bodies highlight (#1110): recolour the fill, or draw an
+    /// outline around the silhouette.
+    #[serde(default)]
+    pub body_highlight_method: BodyHighlightMethod,
 }
 
 /// Where the settings file lives: the platform config directory + `BearCAD/settings.json`.
@@ -80,6 +115,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let settings = AppSettings {
             library_directory: Some(PathBuf::from("/some/library")),
+            body_highlight_method: BodyHighlightMethod::Outlining,
         };
         settings.save_to(&path).unwrap();
         assert_eq!(AppSettings::load_from(&path), settings);
@@ -114,5 +150,42 @@ mod tests {
         // Whatever the platform, the file is namespaced under a BearCAD directory.
         let path = settings_path().expect("a config path on dev machines");
         assert!(path.ends_with("BearCAD/settings.json"), "{path:?}");
+    }
+
+    #[test]
+    fn body_highlight_method_round_trips_through_serde() {
+        for method in [BodyHighlightMethod::Shading, BodyHighlightMethod::Outlining] {
+            let json = serde_json::to_string(&method).unwrap();
+            assert_eq!(serde_json::from_str::<BodyHighlightMethod>(&json).unwrap(), method);
+        }
+    }
+
+    #[test]
+    fn body_highlight_method_script_name_round_trips() {
+        for method in [BodyHighlightMethod::Shading, BodyHighlightMethod::Outlining] {
+            assert_eq!(
+                BodyHighlightMethod::from_name(method.script_name()),
+                Some(method),
+                "{:?} should round-trip through its script name",
+                method,
+            );
+        }
+        assert_eq!(BodyHighlightMethod::from_name("Shading"), Some(BodyHighlightMethod::Shading));
+        assert_eq!(BodyHighlightMethod::from_name("OUTLINE"), Some(BodyHighlightMethod::Outlining));
+        assert_eq!(BodyHighlightMethod::from_name("nope"), None);
+    }
+
+    #[test]
+    fn body_highlight_method_defaults_to_shading() {
+        // Older settings files predate the field; `#[serde(default)]` means they load as
+        // the default (Shading), and a brand-new AppSettings is Shading too.
+        let path = temp_file("bearcad_settings_old_no_highlight.json");
+        std::fs::write(&path, b"{\"library_directory\": null}").unwrap();
+        assert_eq!(
+            AppSettings::load_from(&path).body_highlight_method,
+            BodyHighlightMethod::Shading,
+        );
+        assert_eq!(AppSettings::default().body_highlight_method, BodyHighlightMethod::Shading);
+        std::fs::remove_file(&path).unwrap();
     }
 }

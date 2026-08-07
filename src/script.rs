@@ -774,6 +774,9 @@ pub enum Instruction {
     AddUnitInstance { unit: usize, name: Option<String> },
     /// Show/hide/toggle the Settings window (#737).
     SetSettingsWindow { open: Option<bool> },
+    /// Pick how selected/hovered bodies highlight (#1110): "shading" (recolour the fill)
+    /// or "outlining" (a screen-space silhouette outline).
+    SetBodyHighlightMethod { method: crate::settings::BodyHighlightMethod },
     /// Open/close the McMaster-Carr catalog window (#1022).
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
     DeleteParameter { index: usize },
@@ -1765,6 +1768,9 @@ impl Instruction {
                     None => "toggle",
                 };
                 format!("bearcad.ui.settings({verb:?})")
+            }
+            Instruction::SetBodyHighlightMethod { method } => {
+                format!("bearcad.ui.body_highlight({:?})", method.script_name())
             }
             Instruction::SetMcMasterWindow { open, part } => {
                 let verb = match open {
@@ -2836,6 +2842,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::SetSettingsWindow { open } => Some(Instruction::SetSettingsWindow { open: *open }),
+        Action::SetBodyHighlightMethod(method) => {
+            Some(Instruction::SetBodyHighlightMethod { method: *method })
+        }
         Action::SetMcMasterWindow { open, part } => Some(Instruction::SetMcMasterWindow {
             open: *open,
             part: part.clone(),
@@ -6631,6 +6640,10 @@ impl ScriptRunner {
             }
             Instruction::SetSettingsWindow { open } => {
                 state.apply(Action::SetSettingsWindow { open });
+                StepResult::Continue
+            }
+            Instruction::SetBodyHighlightMethod { method } => {
+                state.apply(Action::SetBodyHighlightMethod(method));
                 StepResult::Continue
             }
             Instruction::DeleteParameter { index } => {

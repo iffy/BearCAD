@@ -2323,6 +2323,11 @@ pub struct ElementFilter {
     /// instance as one opaque row; turning this on lets its contents into the graph. The
     /// List view ignores it — there the instance row expands instead.
     pub unit_contents: bool,
+    /// **Shadow bodies** — bodies consumed (shadowed) by an operation (#1109). Off by
+    /// default: a shadow body is a kept-for-editing input, not a live result, so the pane
+    /// hides it unless the user turns this on. Bodies are always leaves in the hierarchy
+    /// tree, so hiding one never strands a child.
+    pub shadow_bodies: bool,
 }
 
 impl Default for ElementFilter {
@@ -2337,6 +2342,7 @@ impl Default for ElementFilter {
             drawings: true,
             drawing_components: false,
             unit_contents: false,
+            shadow_bodies: false,
         }
     }
 }
@@ -2356,16 +2362,18 @@ impl ElementFilter {
             drawings: true,
             drawing_components: true,
             unit_contents: false,
+            shadow_bodies: false,
         }
     }
 
     /// The toggles in display order: `(label, &mut enabled)` pairs the filter UI iterates.
-    pub fn rows(&mut self) -> [(&'static str, &mut bool); 9] {
+    pub fn rows(&mut self) -> [(&'static str, &mut bool); 10] {
         [
             ("Planes", &mut self.planes),
             ("Sketches", &mut self.sketches),
             ("Sketch geometry", &mut self.sketch_geometry),
             ("Bodies", &mut self.bodies),
+            ("Shadow bodies", &mut self.shadow_bodies),
             ("Operations", &mut self.operations),
             ("Images", &mut self.images),
             ("Drawings", &mut self.drawings),
@@ -2426,6 +2434,23 @@ pub fn prune_unit_children(tree: &mut Vec<HierarchyEntry>) {
     tree.retain(|e| !matches!(e.node, HierarchyNode::UnitChild { .. }));
     for entry in tree {
         prune_unit_children(&mut entry.children);
+    }
+}
+
+/// Drop every [`HierarchyNode::Body`] whose body is a shadow (#1109) — a consumed input
+/// kept for editing, not a live result. Bodies are always leaves in the hierarchy tree
+/// (`build_hierarchy` gives them no children), so dropping one never strands a child. The
+/// prune is recursive so a shadow nested under any node (a Shape, an operation, a unit
+/// instance's read-only contents) is removed wherever it sits.
+pub fn prune_shadow_bodies(tree: &mut Vec<HierarchyEntry>, doc: &Document) {
+    tree.retain(|e| {
+        !matches!(
+            e.node,
+            HierarchyNode::Body(bi) if doc.bodies.get(bi).is_some_and(|b| b.shadow)
+        )
+    });
+    for entry in tree {
+        prune_shadow_bodies(&mut entry.children, doc);
     }
 }
 
@@ -3952,6 +3977,13 @@ pub fn show_pane(
         // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
+            let tree = if filter.shadow_bodies {
+                tree
+            } else {
+                let mut t = tree;
+                prune_shadow_bodies(&mut t, doc);
+                t
+            };
             let mut rows = component_list_rows(&tree, doc, collapsed_components);
             // A collapsed unit instance is one row (#723): its read-only contents only
             // appear while the row's triangle has expanded it.
@@ -4068,6 +4100,9 @@ pub fn show_pane(
             if !filter.unit_contents {
                 prune_unit_children(&mut tree);
             }
+            if !filter.shadow_bodies {
+                prune_shadow_bodies(&mut tree, doc);
+            }
             show_graph_view(
                 ui,
                 doc,
@@ -4122,17 +4157,19 @@ pub fn show_pane(
                         sketches,
                         sketch_geometry,
                         bodies,
+                        shadow_bodies,
                         operations,
                         images,
                         drawings,
                         drawing_components,
                         unit_contents,
                     } = filter;
-                    let groups: [(&str, &[I], &mut bool); 9] = [
+                    let groups: [(&str, &[I], &mut bool); 10] = [
                         ("Planes", &[I::Plane], planes),
                         ("Sketches", &[I::Sketch], sketches),
                         ("Sketch components", &[I::SketchComponents], sketch_geometry),
                         ("Bodies", &[I::Body], bodies),
+                        ("Shadow bodies", &[I::ShadowBody], shadow_bodies),
                         ("Operations", &[I::Extrude, I::Revolve, I::Combine], operations),
                         ("Images", &[I::Image], images),
                         ("Drawings", &[I::Drawing], drawings),
@@ -7655,6 +7692,132 @@ label_hidden: false,
         assert_eq!(
             scene_element_for_node(HierarchyNode::Revolution(rev_key)),
             Some(SceneElement::Revolution(rev_key))
+        );
+    }
+
+    /// #1109: shadow bodies are filtered out of the Elements pane by default. The default
+    /// filter carries the toggle (off), and `prune_shadow_bodies` drops shadow body rows
+    /// wherever they sit in the tree while leaving live bodies untouched.
+    #[test]
+    fn pane_filters_out_shadow_bodies_by_default() {
+        use crate::model::{Body, BodySource, Extrusion, ExtrudeFace, FaceId, Sketch};
+        let mut doc = Document::default();
+        // A sketch + extrusion so the bodies have a real producer to nest under.
+        let sketch = doc.sketches.insert(Sketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            name: None,
+            length_unit: None,
+            angle_unit: None,
+        });
+        doc.extrusions.insert(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(vec![])],
+            distance: 1.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            edge_treatments: Vec::new(),
+        });
+        let live = doc.bodies.insert(Body {
+            source: BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: false,
+        });
+        let shadow = doc.bodies.insert(Body {
+            source: BodySource::Extrusion(xkey(0)),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+
+        // The default filter has the toggle off — shadow bodies hidden.
+        let filter = ElementFilter::default();
+        assert!(!filter.shadow_bodies, "shadow bodies are off by default");
+
+        // The pane builds its tree as: filter_hierarchy(...) then prune_shadow_bodies(...).
+        let mut tree = filter_hierarchy(&build_hierarchy(&doc, None), &filter);
+        prune_shadow_bodies(&mut tree, &doc);
+        fn any_body(entries: &[HierarchyEntry], bi: crate::model::BodyKey) -> bool {
+            entries.iter().any(|e| {
+                e.node == HierarchyNode::Body(bi) || any_body(&e.children, bi)
+            })
+        }
+        assert!(any_body(&tree, live), "the live body stays in the pane");
+        assert!(
+            !any_body(&tree, shadow),
+            "the shadow body is filtered out by default"
+        );
+
+        // Opting in (the toggle) keeps the shadow body — the filter is reversible.
+        let filter = ElementFilter {
+            shadow_bodies: true,
+            ..ElementFilter::default()
+        };
+        let tree = filter_hierarchy(&build_hierarchy(&doc, None), &filter);
+        assert!(
+            any_body(&tree, shadow),
+            "turning the toggle on shows the shadow body"
+        );
+
+        // The unfiltered scripting list (`build_element_list`) still includes the shadow —
+        // the prune is a pane presentation concern, not a change to the document's element API.
+        let list = build_element_list(&doc, None);
+        assert!(
+            list.contains(&HierarchyNode::Body(shadow)),
+            "the unfiltered element list still reports shadow bodies"
+        );
+    }
+
+    /// #1109: `prune_shadow_bodies` drops shadow bodies nested under any parent (a Shape's
+    /// pure primitive body after a fuse-merge) while keeping the shape and its other children.
+    #[test]
+    fn prune_shadow_bodies_drops_nested_shadow_keeps_siblings() {
+        use crate::model::{Body, BodySource, Primitive, PrimitiveKind, Sketch, FaceId};
+        let mut doc = Document::default();
+        let mut shape = Primitive::new(PrimitiveKind::Cuboid);
+        shape.width = "1".to_string();
+        let pi = doc.primitives.insert(shape);
+        let shadow_bi = doc.bodies.insert(Body {
+            source: BodySource::Primitive(pi),
+            material: None,
+            name: None,
+            shadow: true,
+        });
+        // A face sketch nests under the shape alongside the shadow body.
+        let sketch = doc.sketches.insert(Sketch {
+            face: FaceId::PrimitiveFace {
+                primitive: pi,
+                face: crate::model::PrimitiveFace::CuboidTop,
+            },
+            name: None,
+            length_unit: None,
+            angle_unit: None,
+        });
+
+        let mut tree = build_hierarchy(&doc, None);
+        prune_shadow_bodies(&mut tree, &doc);
+        fn collect(entries: &[HierarchyEntry]) -> Vec<HierarchyNode> {
+            let mut out = Vec::new();
+            for e in entries {
+                out.push(e.node);
+                out.extend(collect(&e.children));
+            }
+            out
+        }
+        let nodes = collect(&tree);
+        assert!(
+            !nodes.contains(&HierarchyNode::Body(shadow_bi)),
+            "the nested shadow body is pruned"
+        );
+        assert!(
+            nodes.contains(&HierarchyNode::Shape(pi)),
+            "the shape itself stays"
+        );
+        assert!(
+            nodes.contains(&HierarchyNode::Sketch(sketch)),
+            "a sibling sketch under the shape is untouched"
         );
     }
 }

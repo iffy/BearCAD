@@ -281,6 +281,75 @@ fn fs_blit(input: BlitVertexOutput) -> @location(0) vec4f {
     return textureSample(scene_texture, scene_sampler, input.uv);
 }
 
+// ---- Body-highlight outline (#1110) ----
+//
+// Selected/hovered body triangles are drawn flat into an offscreen mask (R = selected,
+// G = hovered). This fullscreen pass dilates that mask in screen space and strokes a
+// 3px-wide silhouette band offset 3px outside the body — blue for selected, yellow for
+// hovered — so the highlight reads as an outline on the flattened camera-plane view
+// rather than a fill recolour.
+//
+// Reuses the blit pipeline's group-0 bindings (`scene_texture` / `scene_sampler`): the
+// outline pipeline has the same layout, and at draw time the bind group points at the
+// mask texture instead of the resolved scene.
+
+// Max of the mask's R/G channels inside a disc of `radius_px` around `uv`.
+fn mask_max_in_radius(uv: vec2f, radius_px: f32) -> vec2f {
+    let dims = vec2f(textureDimensions(scene_texture));
+    let texel = 1.0 / max(dims, vec2f(1.0));
+    var acc = vec2f(0.0);
+    let r = i32(ceil(radius_px));
+    for (var dy = -r; dy <= r; dy = dy + 1) {
+        for (var dx = -r; dx <= r; dx = dx + 1) {
+            let d = length(vec2f(f32(dx), f32(dy)));
+            if (d > radius_px + 0.5) {
+                continue;
+            }
+            let s = textureSampleLevel(
+                scene_texture,
+                scene_sampler,
+                uv + vec2f(f32(dx), f32(dy)) * texel,
+                0.0,
+            ).rg;
+            acc = max(acc, s);
+        }
+    }
+    return acc;
+}
+
+@fragment
+fn fs_outline(input: BlitVertexOutput) -> @location(0) vec4f {
+    // Outer edge of the outline sits 6px outside the silhouette (3px offset + 3px width);
+    // the inner edge sits 3px outside, so the band itself is 3px thick with a 3px gap
+    // from the body.
+    let outer = mask_max_in_radius(input.uv, 6.0);
+    let inner = mask_max_in_radius(input.uv, 3.0);
+    let band = clamp(outer - inner, vec2f(0.0), vec2f(1.0));
+
+    // BODY_SILHOUETTE_COLOR / PICK_HOVER yellow — keep them matching the app's existing
+    // selection/hover hues so the outline reads as the same highlight language as shading.
+    let sel_rgb = vec3f(95.0 / 255.0, 165.0 / 255.0, 245.0 / 255.0);
+    let hov_rgb = vec3f(255.0 / 255.0, 210.0 / 255.0, 90.0 / 255.0);
+
+    var rgb = vec3f(0.0);
+    var a = 0.0;
+    // Hover first, then selected on top when both channels are live (e.g. two bodies
+    // whose silhouettes cross).
+    if (band.g > 0.01) {
+        rgb = hov_rgb;
+        a = band.g;
+    }
+    if (band.r > 0.01) {
+        rgb = sel_rgb;
+        a = band.r;
+    }
+    if (a <= 0.0) {
+        discard;
+    }
+    // Premultiplied, matching every other pipeline's blend state.
+    return vec4f(rgb * a, a);
+}
+
 struct TextVertexInput {
     @location(0) position: vec3f,
     @location(1) uv: vec2f,

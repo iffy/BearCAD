@@ -7,6 +7,123 @@
 //! questions are ones only the window server can answer: is the window on screen at all, is
 //! it occluded, is it transparent, does its backing layer have a real size?
 
+use std::sync::Mutex;
+
+// `diag` is a sibling module; bring it in so the launch-settle trace lines below reach it
+// without a `crate::` prefix on every call.
+use crate::diag;
+
+/// A short one-line summary of what AppKit currently sees, for the launch-settle trace
+/// (#1108). This is sampled every frame during the settle and logged only on change, so the
+/// log shows a narrative of state transitions (active, occluded, visible) instead of one
+/// line per frame. `None` off macOS (or when called off the main thread).
+#[cfg(target_os = "macos")]
+fn short_appkit_summary() -> Option<String> {
+    use objc2_app_kit::{
+        NSApplication, NSApplicationActivationPolicy, NSWindowOcclusionState,
+    };
+    use objc2::MainThreadMarker;
+
+    let mtm = MainThreadMarker::new()?;
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+    let total = windows.count();
+    let visible = windows.iter().filter(|w| w.isVisible()).count();
+    let occluded = windows
+        .iter()
+        .any(|w| !w.occlusionState().contains(NSWindowOcclusionState::Visible));
+    let policy = match app.activationPolicy() {
+        NSApplicationActivationPolicy::Regular => "regular",
+        NSApplicationActivationPolicy::Accessory => "accessory",
+        NSApplicationActivationPolicy::Prohibited => "prohibited",
+        _ => "other",
+    };
+    Some(format!(
+        "app active {}, policy {}, {} window(s), {} visible, occluded {}",
+        app.isActive(),
+        policy,
+        total,
+        visible,
+        occluded,
+    ))
+}
+
+/// The last summary we logged, so [`log_state_if_changed`] only writes a line when something
+/// actually moves. A grey launch where the window stays occluded the whole settle would
+/// otherwise produce a thousand identical lines.
+#[cfg(target_os = "macos")]
+static LAST_LOGGED: Mutex<Option<String>> = Mutex::new(None);
+
+/// The last `activate_app()` outcome we logged, so [`log_activation_outcome`] writes a line
+/// only on the true↔false boundary (#1108). A settle that stays refused or stays granted
+/// gets one line, not one per frame.
+#[cfg(target_os = "macos")]
+static LAST_OUTCOME: Mutex<Option<bool>> = Mutex::new(None);
+
+/// Log a change in whether `activate_app` could reach the window server (#1108).
+///
+/// `activate_app` is called every frame during the settle; whether it succeeded is a single
+/// bool that flips at most a couple of times. Logging it on the change (and the first call)
+/// turns the trace's "asked the window server" spam into two meaningful lines: when asking
+/// started working, and when it stopped.
+#[cfg(target_os = "macos")]
+pub fn log_activation_outcome(activated: bool) {
+    if let Ok(mut slot) = LAST_OUTCOME.lock() {
+        if *slot == Some(activated) {
+            return;
+        }
+        diag::log(format!(
+            "launch: activate_app {} -> {}",
+            slot.map(|b| if b { "true" } else { "false" }).unwrap_or("(none)"),
+            activated,
+        ));
+        *slot = Some(activated);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn log_activation_outcome(_activated: bool) {}
+
+/// Log a change to the activation policy the first time `activate_app` corrects it (#1108).
+/// A binary run from the terminal starts with `Prohibited` (or `Accessory`), which cannot
+/// become frontmost — that is the root cause of the grey launch for unbundled runs, and a
+/// line that says "policy was X, set to regular" is what distinguishes that case from one
+/// where the policy was already correct and the window is still occluded for another reason.
+#[cfg(target_os = "macos")]
+fn log_policy_change(from: objc2_app_kit::NSApplicationActivationPolicy) {
+    use objc2_app_kit::NSApplicationActivationPolicy;
+    let name = match from {
+        NSApplicationActivationPolicy::Regular => "regular",
+        NSApplicationActivationPolicy::Accessory => "accessory",
+        NSApplicationActivationPolicy::Prohibited => "prohibited",
+        _ => "other",
+    };
+    diag::log(format!("launch: activation policy was {name}, set to regular"));
+}
+
+/// Log the AppKit state only when it differs from the last call (#1108).
+///
+/// During the launch settle this is called every frame; the interesting events are
+/// *transitions* (the app becoming active, the window losing occlusion), and a per-frame log
+/// of "still occluded, still inactive" hides them behind a wall of identical lines. This
+/// writes one line per change, plus the first sample, so the trace reads as a timeline.
+#[cfg(target_os = "macos")]
+pub fn log_state_if_changed() {
+    let Some(summary) = short_appkit_summary() else {
+        return;
+    };
+    if let Ok(mut slot) = LAST_LOGGED.lock() {
+        if slot.as_deref() == Some(summary.as_str()) {
+            return;
+        }
+        diag::log(format!("launch: AppKit — {summary}"));
+        *slot = Some(summary);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn log_state_if_changed() {}
+
 /// One line describing the app's window as AppKit sees it, or `None` off macOS (and when
 /// there is no window yet). Must be called from the main thread — AppKit is not thread-safe,
 /// which is why this is sampled on the UI thread and left for the watchdog rather than read
@@ -85,7 +202,13 @@ pub fn activate_app() -> bool {
     // AppKit gives it an activation policy that cannot become frontmost at all — and then
     // `activate()` is simply refused, which is why the window stayed occluded however many
     // times we asked. Setting the policy is what makes the request answerable.
+    //
+    // Log the policy change once (#1108): it is the one action `activate_app` takes that is
+    // not visible in the state summary, and a grey launch where the policy stayed
+    // "accessory" reads differently from one where it was corrected and the window still
+    // stayed occluded.
     if app.activationPolicy() != NSApplicationActivationPolicy::Regular {
+        log_policy_change(app.activationPolicy());
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     }
     app.activate();
