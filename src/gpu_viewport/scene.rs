@@ -7666,12 +7666,16 @@ mod tests {
         let state = state_with_one_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
+        // Shading mode: this test asserts fill recolour on hover (#455). Outlining is the
+        // default and uses a mask pass instead.
+        let mut palette = ViewportPalette::default();
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
         let build = |hover: Option<ViewportHoverHighlight>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
                 viewport,
-                palette: ViewportPalette::default(),
+                palette,
                 sketch_session: None,
                 selection: &state.scene_selection,
                 cut_highlight_bodies: Vec::new(),
@@ -7745,13 +7749,17 @@ mod tests {
         let state = state_with_one_body();
         let cam = state.cam.clone();
         let viewport = test_viewport();
+        // Shading mode: this test asserts fill recolour on hover (#985). Outlining is the
+        // default and uses a mask pass instead.
+        let mut palette = ViewportPalette::default();
+        palette.body_highlight_method = crate::settings::BodyHighlightMethod::Shading;
         let build = |hover: Option<ViewportHoverHighlight>,
                      extra: Vec<crate::construction::PickTargetKind>| {
             ViewportScene::build(&ViewportSceneInput {
                 doc: &state.doc,
                 cam: &cam,
                 viewport,
-                palette: ViewportPalette::default(),
+                palette,
                 sketch_session: None,
                 selection: &state.scene_selection,
                 cut_highlight_bodies: Vec::new(),
