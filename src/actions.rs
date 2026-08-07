@@ -5661,6 +5661,265 @@ fn rect_corner_index_at(x: f32, y: f32, w: f32, h: f32, u: f32, v: f32) -> u8 {
     best
 }
 
+/// Union two optional AABBs. Either side may be `None`.
+fn union_aabb(
+    a: Option<(Vec3, Vec3)>,
+    b: Option<(Vec3, Vec3)>,
+) -> Option<(Vec3, Vec3)> {
+    match (a, b) {
+        (Some((amin, amax)), Some((bmin, bmax))) => Some((amin.min(bmin), amax.max(bmax))),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// Transform an axis-aligned box by `m` and re-axis-align the result (8 corners).
+fn transform_aabb(m: glam::Mat4, min: Vec3, max: Vec3) -> (Vec3, Vec3) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+    ];
+    let mut tmin = m.transform_point3(corners[0]);
+    let mut tmax = tmin;
+    for c in &corners[1..] {
+        let p = m.transform_point3(*c);
+        tmin = tmin.min(p);
+        tmax = tmax.max(p);
+    }
+    (tmin, tmax)
+}
+
+/// World bounds of every live tool preview (#1114): mirror/repeat/move ghosts, extrude/
+/// revolve/loft/sweep/boolean previews — the same solids the viewport draws translucent
+/// before commit. Used by Zoom-to-fit so Z frames the whole preview, not only committed
+/// geometry.
+fn operation_preview_world_bounds(state: &AppState) -> Option<(Vec3, Vec3)> {
+    let doc = &state.doc;
+    let mut bounds: Option<(Vec3, Vec3)> = None;
+    let extend = |bounds: &mut Option<(Vec3, Vec3)>, min: Vec3, max: Vec3| {
+        *bounds = union_aabb(*bounds, Some((min, max)));
+    };
+    let extend_mesh = |bounds: &mut Option<(Vec3, Vec3)>, mesh: &crate::extrude::SolidMesh| {
+        if let Some((min, max)) = mesh.bounds() {
+            extend(bounds, min, max);
+        }
+    };
+    let extend_transformed_body =
+        |bounds: &mut Option<(Vec3, Vec3)>, bi: crate::model::BodyKey, m: glam::Mat4| {
+            if let Some((min, max)) =
+                crate::extrude::body_solid_mesh(doc, bi).and_then(|mesh| mesh.bounds())
+            {
+                let (tmin, tmax) = transform_aabb(m, min, max);
+                extend(bounds, tmin, tmax);
+            }
+        };
+
+    // Mirror-tool reflection ghosts (#603/#1114).
+    if let Some(cm) = state.creating_mirror.as_ref() {
+        if let Some(plane) = cm.plane.clone() {
+            if !cm.targets.is_empty() {
+                let probe = crate::model::MirrorOperation {
+                    plane,
+                    targets: cm.targets.clone(),
+                    mode: crate::model::MirrorMode::NewBody,
+                    outputs: Vec::new(),
+                    name: None,
+                };
+                if let Some(m) = crate::extrude::mirror_op_transform(doc, &probe) {
+                    for &bi in &cm.targets {
+                        extend_transformed_body(&mut bounds, bi, m);
+                    }
+                }
+            }
+        }
+    }
+
+    // Repeat-tool copy ghosts.
+    if let Some(c) = state.creating_repeat.as_ref() {
+        if !c.targets.is_empty() || !c.extrusion_targets.is_empty() {
+            if let Some(axis) = c.axis {
+                let probe = crate::model::RepeatOperation {
+                    targets: c.targets.clone(),
+                    plane_targets: c.plane_targets.clone(),
+                    extrusion_targets: c.extrusion_targets.clone(),
+                    sketch_targets: c.sketch_targets.clone(),
+                    sketch_plane_outputs: Vec::new(),
+                    sketch_outputs: Vec::new(),
+                    axis,
+                    path_circle: c.path_circle,
+                    around_axis: c.around_axis,
+                    flip: c.flip,
+                    mode: c.mode,
+                    count: c.count.clone(),
+                    spacing: c.spacing.clone(),
+                    length: c.length.clone(),
+                    length_target: c.length_target.clone(),
+                    outputs: Vec::new(),
+                    plane_outputs: Vec::new(),
+                    name: None,
+                };
+                if let Some(offsets) = crate::extrude::repeat_offsets(doc, &probe) {
+                    for &bi in &c.targets {
+                        for &off in &offsets {
+                            if let Some(m) =
+                                crate::extrude::repeat_offset_transform(doc, &probe, off)
+                            {
+                                extend_transformed_body(&mut bounds, bi, m);
+                            }
+                        }
+                    }
+                    for &ei in &c.extrusion_targets {
+                        if let Some(base) = doc
+                            .extrusions
+                            .get(ei)
+                            .and_then(|e| crate::extrude::extrusion_mesh(doc, e))
+                        {
+                            for &off in &offsets {
+                                if let Some(m) =
+                                    crate::extrude::repeat_offset_transform(doc, &probe, off)
+                                {
+                                    if let Some((min, max)) = base.bounds() {
+                                        let (tmin, tmax) = transform_aabb(m, min, max);
+                                        extend(&mut bounds, tmin, tmax);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Move-tool destination ghosts.
+    if let Some(cm) = state.creating_move.as_ref() {
+        if !cm.targets.is_empty() {
+            let probe = crate::model::MoveOperation {
+                targets: cm.targets.clone(),
+                translate_mode: cm.translate_mode,
+                start_point_a: cm.start_point_a,
+                end_point_a: cm.end_point_a,
+                start_point_b: cm.start_point_b,
+                end_point_b: cm.end_point_b,
+                start_point_c: cm.start_point_c,
+                end_point_c: cm.end_point_c,
+                plane_targets: Vec::new(),
+                image_targets: Vec::new(),
+                instance_targets: Vec::new(),
+                tx: cm.tx.clone(),
+                ty: cm.ty.clone(),
+                tz: cm.tz.clone(),
+                rx: cm.rx.clone(),
+                ry: cm.ry.clone(),
+                rz: cm.rz.clone(),
+                face_flip: cm.face_flip,
+                face_spin: cm.face_spin.clone(),
+                face_offset: cm.face_offset.clone(),
+                roll_angle: cm.roll_angle.clone(),
+                outputs: Vec::new(),
+                name: None,
+            };
+            if let Some(m) = crate::extrude::move_op_transform(doc, &probe)
+                .filter(|m| *m != glam::Mat4::IDENTITY)
+            {
+                for &bi in &cm.targets {
+                    extend_transformed_body(&mut bounds, bi, m);
+                }
+            }
+        }
+    }
+
+    // Extrude live preview.
+    if let Some(ce) = state.creating_extrusion.as_ref() {
+        if !ce.faces.is_empty() {
+            let probe = crate::model::Extrusion {
+                sketch: ce.sketch,
+                faces: ce.faces.clone(),
+                distance: ce.evaluated_distance(doc),
+                target: ce.target.clone(),
+                expression: String::new(),
+                symmetric: ce.symmetric,
+                name: None,
+                edge_treatments: Vec::new(),
+            };
+            if let Some(mesh) = crate::extrude::preview_extrusion_mesh(doc, &probe) {
+                extend_mesh(&mut bounds, &mesh);
+            }
+        }
+    }
+
+    // Revolve live preview.
+    if let Some(cr) = state.creating_revolve.as_ref() {
+        if let (Some(axis), Some(sketch)) = (cr.axis.clone(), cr.sketch) {
+            if !cr.faces.is_empty() {
+                let probe = crate::model::Revolution {
+                    sketch,
+                    faces: cr.faces.clone(),
+                    axis,
+                    angle_deg: cr.evaluated_angle_deg(doc),
+                    symmetric: cr.symmetric,
+                    mode: crate::model::RevolveMode::NewBody,
+                    name: None,
+                };
+                if let Some(mesh) = crate::extrude::revolve_mesh(doc, &probe) {
+                    extend_mesh(&mut bounds, &mesh);
+                }
+            }
+        }
+    }
+
+    // Loft live preview.
+    if let Some(cl) = state.creating_loft.as_ref() {
+        if cl.sections.len() >= 2 {
+            let loft = crate::model::Loft {
+                sections: crate::extrude::order_loft_sections(doc, cl.sections.clone()),
+                mode: crate::model::LoftMode::NewBody,
+                name: None,
+            };
+            if let Some(mesh) = crate::extrude::loft_mesh(doc, &loft) {
+                extend_mesh(&mut bounds, &mesh);
+            }
+        }
+    }
+
+    // Sweep live preview.
+    if let Some(cf) = state.creating_sweep.as_ref() {
+        if let Some(sketch) = cf.sketch {
+            if !cf.faces.is_empty() && !cf.path.is_empty() {
+                let probe = crate::model::Sweep {
+                    sketch,
+                    faces: cf.faces.clone(),
+                    path: cf.path.clone(),
+                    mode: crate::model::SweepMode::NewBody,
+                    name: None,
+                };
+                if let Some(mesh) = crate::extrude::sweep_mesh(doc, &probe) {
+                    extend_mesh(&mut bounds, &mesh);
+                }
+            }
+        }
+    }
+
+    // Combine (boolean) live result preview.
+    if let Some(cb) = state.creating_boolean.as_ref() {
+        if let Some(solids) =
+            crate::extrude::preview_boolean_meshes(doc, cb.kind, &cb.a, &cb.b)
+        {
+            for mesh in &solids {
+                extend_mesh(&mut bounds, mesh);
+            }
+        }
+    }
+
+    bounds
+}
+
 fn pane_status(pane: Pane, visible: bool) -> String {
     format!("{} {}", pane.label(), if visible { "shown" } else { "hidden" })
 }
@@ -8802,8 +9061,12 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::ZoomToFit => {
-                let bounds = crate::extrude::selection_world_bounds(&self.doc, &self.scene_selection)
+                // Selection if any, else the document — then always union in-progress
+                // operation previews (mirror ghosts, extrude previews, …) so Z fits the
+                // whole preview, not just committed geometry (#1114).
+                let base = crate::extrude::selection_world_bounds(&self.doc, &self.scene_selection)
                     .or_else(|| crate::extrude::document_world_bounds(&self.doc));
+                let bounds = union_aabb(base, operation_preview_world_bounds(self));
                 match bounds {
                     Some((min, max)) => {
                         self.cam.frame_bounds_instant(min, max, self.viewport_aspect);
@@ -23825,6 +24088,43 @@ mod tests {
             plane: None,
         });
         assert!(matches!(result, ActionResult::Err(_)));
+    }
+
+    /// #1114: Zoom to Fit unions in-progress operation previews (e.g. a Mirror ghost) so the
+    /// whole preview fits, not only committed bodies.
+    #[test]
+    fn zoom_to_fit_includes_mirror_preview() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        // Box is z in [0, 5]. Mirrored across the ground (z = 0) the ghost is z in [-5, 0];
+        // document alone centres near z = 2.5, with the ghost the union centres near z = 0.
+        state.creating_mirror = Some(CreatingMirror {
+            plane: Some(FaceId::ConstructionPlane(pkey(0))),
+            targets: vec![bkey(0)],
+            mode: crate::model::MirrorMode::NewBody,
+            editing: None,
+        });
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let target = state.cam.target;
+        assert!(
+            target.z.abs() < 0.75,
+            "zoom-to-fit should include the mirror ghost below the plane (centre ~z=0), got {target:?}"
+        );
+        // Also when the source body is selected — selection alone would miss the ghost.
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::Body(bkey(0)),
+            additive: false,
+        });
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            state.cam.target.z.abs() < 0.75,
+            "selection + mirror preview must still frame both halves, got {:?}",
+            state.cam.target
+        );
     }
 
     /// #164: Zoom to Fit frames the selection when one exists (camera target lands on the

@@ -6536,12 +6536,11 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::ZoomFit => {
-                if let Some((min, max)) = crate::extrude::document_world_bounds(&state.doc) {
-                    if let Some(vp) = viewport {
-                        state.viewport_aspect = (vp.width() / vp.height().max(1.0)).max(0.01);
-                    }
-                    state.cam.frame_bounds_instant(min, max, state.viewport_aspect);
+                if let Some(vp) = viewport {
+                    state.viewport_aspect = (vp.width() / vp.height().max(1.0)).max(0.01);
                 }
+                // Same path as the Z key / menu: includes in-progress operation previews (#1114).
+                state.apply(Action::ZoomToFit);
                 StepResult::Continue
             }
             Instruction::SetElementsView { mode } => {
