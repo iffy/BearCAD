@@ -48,7 +48,8 @@ bearcad.ui.wait(4)
 bearcad.ui.key("Enter")
 bearcad.ui.wait(14)
 
-local stats = bearcad.body_stats(0)
+-- Merge extrude shadows the host and writes a combined body (#1106); read the last one.
+local stats = bearcad.body_stats(bearcad.count("body") - 1)
 assert(math.abs(stats.volume - 29760) < 60,
   "extruding the middle band should add only that band (24000 + 5760); the whole cap would be "
     .. "38400 — got " .. string.format("%.0f", stats.volume))

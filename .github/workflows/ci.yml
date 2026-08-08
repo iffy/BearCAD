@@ -134,7 +134,9 @@ jobs:
           failed=0
           for script in "${tests[@]}"; do
             echo "::group::Running $script"
-            if xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 60; then
+            # 120s: body outline highlight (#1110) + llvmpipe makes multi-wait Face Snap
+            # scripts (hover midpoints, staged picks) exceed the old 60s budget.
+            if xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 120; then
               echo "OK $script"
             else
               echo "::error::FAILED $script (exit $?)"
