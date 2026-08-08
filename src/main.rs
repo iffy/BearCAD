@@ -486,6 +486,10 @@ use wasm_bindgen::JsCast;
 
 /// The `?open=<url>` query value, percent-decoded: a document URL the web app fetches
 /// and opens on load. `None` when absent or empty.
+///
+/// Paths that still carry the old GitHub Pages project prefix (`/BearCAD/…`, from when
+/// `baseUrl` was `/BearCAD/`) are rewritten to site-root paths so bookmarked and
+/// redirected docs links keep working after the move to `baseUrl: '/'` (#1125).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn open_url_from_query(query: &str) -> Option<String> {
     let raw = query
@@ -515,7 +519,22 @@ fn open_url_from_query(query: &str) -> Option<String> {
         }
         i += 1;
     }
-    String::from_utf8(out).ok().filter(|s| !s.trim().is_empty())
+    let url = String::from_utf8(out).ok().filter(|s| !s.trim().is_empty())?;
+    Some(rewrite_legacy_open_url(&url))
+}
+
+/// Drop a leading `/BearCAD` project-site prefix from a same-origin open URL.
+fn rewrite_legacy_open_url(url: &str) -> String {
+    const LEGACY: &str = "/BearCAD";
+    if let Some(rest) = url.strip_prefix(LEGACY) {
+        if rest.is_empty() {
+            return "/".to_string();
+        }
+        if rest.starts_with('/') {
+            return rest.to_string();
+        }
+    }
+    url.to_string()
 }
 
 /// Print the result of a CLI install/uninstall action and exit non-zero on failure.
@@ -678,12 +697,17 @@ mod cli_tests {
     use super::script;
 
     /// `?open=<url>` picks out and percent-decodes the document URL, alongside other
-    /// parameters; absent/empty values read as no request.
+    /// parameters; absent/empty values read as no request. The old `/BearCAD/` project
+    /// prefix is rewritten to a site-root path (#1125).
     #[test]
     fn open_url_from_query_decodes() {
         assert_eq!(
             super::open_url_from_query("?open=%2FBearCAD%2Fimg%2Fdoc.bearcad.json"),
-            Some("/BearCAD/img/doc.bearcad.json".to_string())
+            Some("/img/doc.bearcad.json".to_string())
+        );
+        assert_eq!(
+            super::open_url_from_query("?open=%2Fimg%2Fscreenshots%2Fextrude.bearcad.json"),
+            Some("/img/screenshots/extrude.bearcad.json".to_string())
         );
         assert_eq!(
             super::open_url_from_query("?tutorial=bracket&open=/a/b.json"),
@@ -696,6 +720,24 @@ mod cli_tests {
         assert_eq!(super::open_url_from_query("?open="), None);
         assert_eq!(super::open_url_from_query("?tutorial=bracket"), None);
         assert_eq!(super::open_url_from_query(""), None);
+    }
+
+    #[test]
+    fn rewrite_legacy_open_url_strips_project_prefix() {
+        assert_eq!(
+            super::rewrite_legacy_open_url("/BearCAD/img/screenshots/fillet.bearcad.json"),
+            "/img/screenshots/fillet.bearcad.json"
+        );
+        assert_eq!(super::rewrite_legacy_open_url("/BearCAD"), "/");
+        assert_eq!(
+            super::rewrite_legacy_open_url("/img/screenshots/x.bearcad.json"),
+            "/img/screenshots/x.bearcad.json"
+        );
+        assert_eq!(
+            super::rewrite_legacy_open_url("https://example.com/BearCAD/x.json"),
+            "https://example.com/BearCAD/x.json",
+            "absolute URLs are left alone — only a same-origin path prefix is legacy"
+        );
     }
 
     #[test]

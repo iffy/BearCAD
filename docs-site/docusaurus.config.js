@@ -45,7 +45,7 @@ const config = {
 
   // Set the production url of your site here. This is the standard
   // "https://<org>.github.io/<repo>/" shape for a GitHub Pages project site.
-  url: 'https://beardcad.com',
+  url: 'https://bearcad.com',
   // Set the /<baseUrl>/ pathname under which your site is served.
   baseUrl: '/',
 

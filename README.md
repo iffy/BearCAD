@@ -14,7 +14,7 @@ BREP kernel; sketch constraints solved by [SolveSpace](https://solvespace.com/)'
 
 ## Download
 
-Or skip the download: **[run BearCAD in your browser](https://www.iffycan.com/BearCAD/app/)**
+Or skip the download: **[run BearCAD in your browser](https://bearcad.com/app/)**
 (full geometry engine and constraint solver; documents save as downloads).
 
 | Platform | Download |

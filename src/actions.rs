@@ -4278,8 +4278,12 @@ impl AppState {
                 self.doc = doc;
                 self.sketch_session = None;
                 self.cam.set_view_up(None);
-                self.refresh_document_health();
                 self.path = None;
+                // Same baseline as `Action::Open`: leave `mesh_rev` non-zero so idle
+                // frames after a web `?open=` (or File ▸ Open on wasm) do not re-serialize
+                // the whole document for every mesh-cache probe (#1027 / #1125).
+                self.mark_saved();
+                self.refresh_document_health();
                 self.status = format!("Opened {name} ({n_lines} line(s))");
                 ActionResult::Ok
             }
@@ -19294,6 +19298,38 @@ mod tests {
         let mid = state.doc.mesh_rev;
         state.apply(Action::SetTool(Tool::Select));
         assert_eq!(state.doc.mesh_rev, mid, "a non-mutating action must not bump");
+    }
+
+    /// #1125: `open_document_bytes` (web `?open=` and File ▸ Open on wasm) must leave
+    /// `mesh_rev` non-zero so idle frames after open use an integer fingerprint, not a
+    /// full-document JSON serialize every `body_solid_mesh` call. Without that the browser
+    /// hangs — Firefox reports "page isn't responding" after clicking a docs screenshot.
+    #[test]
+    fn open_document_bytes_leaves_mesh_rev_nonzero() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 20.0, 10.0, [false; 4],
+        );
+        let bytes = crate::storage::to_json_bytes(&state.doc).expect("serialize");
+        assert!(
+            !bytes.is_empty(),
+            "fixture document must serialize to a non-empty JSON payload"
+        );
+
+        let mut opened = AppState::default();
+        assert_eq!(opened.doc.mesh_rev, 0, "fresh state starts at mesh_rev 0");
+        assert!(
+            matches!(opened.open_document_bytes(&bytes, "fixture.bearcad.json"), ActionResult::Ok),
+            "open_document_bytes should load the fixture: {}",
+            opened.status
+        );
+        assert!(
+            opened.doc.mesh_rev != 0,
+            "open_document_bytes must bump mesh_rev (was 0) so idle frames stay cheap (#1125)"
+        );
+        assert_eq!(opened.doc.lines.len(), 4, "fixture rectangle survived the round-trip");
+        assert!(!opened.dirty, "a freshly opened document is clean, like Action::Open");
     }
 
     #[test]

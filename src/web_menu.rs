@@ -113,7 +113,7 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
             ui.menu_button("Help", |ui| {
                 if ui.button("Documentation").clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(
-                        "https://www.iffycan.com/BearCAD/docs/intro",
+                        "https://bearcad.com/docs/intro",
                     ));
                     ui.close();
                 }
