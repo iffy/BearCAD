@@ -1431,8 +1431,11 @@ pub fn pick_body_face(
             continue;
         }
         let group_bounds = crate::extrude::body_face_group_bounds(doc, bi);
-        for (gi, triangles) in crate::extrude::body_face_groups(doc, bi).iter().cloned().enumerate()
-        {
+        // Walk groups by reference — a hole wall can be hundreds of triangles (#1141). Cloning
+        // every group every hover frame (including misses that fail the bounds test) was the
+        // dominant cost when the cursor sat over a body with circular cuts.
+        let groups = crate::extrude::body_face_groups(doc, bi);
+        for (gi, triangles) in groups.iter().enumerate() {
             if !group_bounds.get(gi).is_some_and(|b| {
                 crate::construction::screen_bounds_hit(screen, project, *b, 0.0)
             }) {
@@ -1453,8 +1456,9 @@ pub fn pick_body_face(
             let depth = (centroid - eye).length();
             if best.as_ref().is_none_or(|(_, d)| depth < *d) {
                 // A round wall is a cylinder, not a face (#1013): it has no one normal, so
-                // calling it flat gives it a nonsense plane.
-                let kind = match crate::extrude::fit_cylinder(&triangles) {
+                // calling it flat gives it a nonsense plane. Fit against the borrowed group
+                // (no clone); only a flat face pays for cloning its triangles into the pick.
+                let kind = match crate::extrude::fit_cylinder(triangles) {
                     Some(cylinder) => crate::construction::PickTargetKind::BodyCylinder {
                         body: bi,
                         cylinder: Box::new(cylinder),
@@ -1465,7 +1469,7 @@ pub fn pick_body_face(
                             .normalize_or_zero();
                         crate::construction::PickTargetKind::BodyFace {
                             body: bi,
-                            triangles,
+                            triangles: triangles.clone(),
                             normal,
                         }
                     }
@@ -1496,9 +1500,10 @@ pub fn body_faces_near(
         if body.shadow {
             continue;
         }
-        for triangles in crate::extrude::body_face_groups(doc, bi).iter().cloned() {
+        // By reference until a group is near enough to keep (#1141).
+        for triangles in crate::extrude::body_face_groups(doc, bi).iter() {
             let mut dist = f32::MAX;
-            for tri in &triangles {
+            for tri in triangles {
                 let (Some(a), Some(b), Some(c)) =
                     (project(tri[0]), project(tri[1]), project(tri[2]))
                 else {
@@ -1525,7 +1530,7 @@ pub fn body_faces_near(
             out.push((
                 crate::construction::PickTargetKind::BodyFace {
                     body: bi,
-                    triangles,
+                    triangles: triangles.clone(),
                     normal,
                 },
                 centroid,

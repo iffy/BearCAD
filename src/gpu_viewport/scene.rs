@@ -983,8 +983,10 @@ impl ViewportScene {
             // shading mode — visually distinct from every real body.
             if body.shadow {
                 mesh.push_solid_translucent(solid, SHADOW_BODY_FILL, SHADOW_BODY_OPACITY);
+                let edges = crate::extrude::body_feature_edges(input.doc, bi);
                 mesh.push_solid_wireframe(
                     solid,
+                    Some(edges.as_ref()),
                     WIREFRAME_LINE_COLOR,
                     input.cam,
                     input.viewport,
@@ -1115,8 +1117,13 @@ impl ViewportScene {
                     mesh.push_solid_translucent(solid, fill, TRANSPARENT_SOLID_OPACITY);
                 }
                 crate::camera::ShadingMode::Wireframe => {
+                    // Feature edges from the memoized body analysis (#845/#1141) — a body with
+                    // circular holes has hundreds of rim segments; recomputing them every frame
+                    // from the triangle soup was pure waste while the camera moved.
+                    let edges = crate::extrude::body_feature_edges(input.doc, bi);
                     mesh.push_solid_wireframe(
                         solid,
+                        Some(edges.as_ref()),
                         line_color,
                         input.cam,
                         input.viewport,
@@ -1125,8 +1132,10 @@ impl ViewportScene {
                 }
                 crate::camera::ShadingMode::SolidWireframe => {
                     mesh.push_solid(solid, normals, fill, input.cam, cap_plane);
+                    let edges = crate::extrude::body_feature_edges(input.doc, bi);
                     mesh.push_solid_wireframe(
                         solid,
+                        Some(edges.as_ref()),
                         line_color,
                         input.cam,
                         input.viewport,
@@ -1801,6 +1810,7 @@ impl ViewportScene {
                         mesh.set_index_layer(MeshIndexLayer::Wireframe);
                         mesh.push_solid_wireframe(
                             &m,
+                            None,
                             PARAMETER_HIGHLIGHT,
                             input.cam,
                             input.viewport,
@@ -2091,9 +2101,13 @@ impl<'a> SceneMesh<'a> {
     /// [`MeshIndexLayer::Wireframe`] layer (#33). Used for `ShadingMode::Wireframe` (in
     /// place of the fill) and `ShadingMode::SolidWireframe` (as an overlay on top of the
     /// fill) — see [`solid_mesh_unique_edges`] for how shared edges are deduplicated.
+    ///
+    /// `feature_edges`, when provided, is the precomputed crease/boundary set (from
+    /// [`crate::extrude::body_feature_edges`]); otherwise edges are derived from `solid`.
     fn push_solid_wireframe(
         &mut self,
         solid: &crate::extrude::SolidMesh,
+        feature_edges: Option<&[(Vec3, Vec3)]>,
         color: Color32,
         cam: &Camera,
         viewport: UiRect,
@@ -2101,7 +2115,15 @@ impl<'a> SceneMesh<'a> {
     ) {
         let prev = self.index_layer;
         self.set_index_layer(MeshIndexLayer::Wireframe);
-        for (a, b) in solid_mesh_unique_edges(solid) {
+        let owned;
+        let edges: &[(Vec3, Vec3)] = match feature_edges {
+            Some(e) => e,
+            None => {
+                owned = solid_mesh_unique_edges(solid);
+                owned.as_slice()
+            }
+        };
+        for &(a, b) in edges {
             self.push_line_segment(a, b, color, WIREFRAME_LINE_WIDTH_PX, cam, viewport, view_proj);
         }
         // Smooth-surface silhouettes (#158): a cylinder's sides are invisible without the
@@ -2898,7 +2920,7 @@ impl<'a> SceneMesh<'a> {
             return;
         };
         if matches!(cam.shading_mode(), crate::camera::ShadingMode::Wireframe) {
-            self.push_solid_wireframe(&mesh, color, cam, viewport, view_proj);
+            self.push_solid_wireframe(&mesh, None, color, cam, viewport, view_proj);
         } else {
             // The Overlay layer's toward-camera bias keeps this from z-fighting the body.
             let restore = self.index_layer;
@@ -3751,8 +3773,10 @@ impl<'a> SceneMesh<'a> {
                 for body in crate::hierarchy::produced_bodies(doc, &element) {
                     if let Some(solid) = crate::extrude::body_solid_mesh(doc, body) {
                         if matches!(cam.shading_mode(), crate::camera::ShadingMode::Wireframe) {
+                            let edges = crate::extrude::body_feature_edges(doc, body);
                             self.push_solid_wireframe(
                                 &solid,
+                                Some(edges.as_ref()),
                                 DERIVED_OUTPUT_HIGHLIGHT,
                                 cam,
                                 viewport,
@@ -3770,7 +3794,7 @@ impl<'a> SceneMesh<'a> {
             // A selected/hovered unit instance outlines its placed meshes (#723).
             SceneElement::UnitInstance(index) => {
                 for solid in crate::units::placed_instance_meshes(doc, index) {
-                    self.push_solid_wireframe(&solid, color, cam, viewport, view_proj);
+                    self.push_solid_wireframe(&solid, None, color, cam, viewport, view_proj);
                 }
             }
             // A hovered body recolors in the main pass (#455); a hovered extrusion
@@ -9347,5 +9371,136 @@ mod cut_preview_tests {
             red_tinted(&cut),
             red_tinted(&plain)
         );
+    }
+}
+
+
+/// #1141: a body with circular hole cuts must not thrash feature-edge extraction while
+/// the camera orbits in wireframe / solid+wireframe. The feature-edge cache is what keeps
+/// those modes interactive on holey parts.
+#[cfg(test)]
+mod issue_1141_hole_orbit {
+    use super::*;
+    use crate::actions::AppState;
+    use crate::hierarchy::ElementVisibility;
+    use crate::selection::SceneSelection;
+
+    fn load_report_doc() -> AppState {
+        let bytes = include_bytes!("../../tests/fixtures/issue_1141.json");
+        let mut state = AppState::default();
+        state.doc = crate::storage::from_json_bytes(bytes).expect("load report doc");
+        state.doc.bump_mesh_rev();
+        state
+    }
+
+    fn hole_body(doc: &crate::model::Document) -> crate::model::BodyKey {
+        doc.bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(i, _)| i)
+            .expect("non-shadow body")
+    }
+
+    #[test]
+    fn holey_body_meshes_with_feature_edges_and_cylinders() {
+        let state = load_report_doc();
+        let bi = hole_body(&state.doc);
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("mesh");
+        assert!(
+            mesh.triangles.len() > 100,
+            "expected a meshed body with holes, got {} tris",
+            mesh.triangles.len()
+        );
+        let edges = crate::extrude::body_feature_edges(&state.doc, bi);
+        // A rectangular bar with two circular holes has many rim segments.
+        assert!(
+            edges.len() > 50,
+            "expected dense circular feature edges, got {}",
+            edges.len()
+        );
+        let cyls = crate::extrude::body_cylinders(&state.doc, bi);
+        assert_eq!(cyls.len(), 2, "two hole walls");
+    }
+
+    #[test]
+    fn feature_edge_cache_is_stable_across_repeated_reads() {
+        let state = load_report_doc();
+        let bi = hole_body(&state.doc);
+        let a = crate::extrude::body_feature_edges(&state.doc, bi);
+        let b = crate::extrude::body_feature_edges(&state.doc, bi);
+        assert_eq!(a.len(), b.len());
+        assert!(std::rc::Rc::ptr_eq(&a, &b), "second read must hit the cache");
+    }
+
+    #[test]
+    fn solid_wireframe_scene_builds_for_holey_body_while_orbiting() {
+        let mut state = load_report_doc();
+        let bi = hole_body(&state.doc);
+        // Warm caches once.
+        let _ = crate::extrude::body_solid_mesh(&state.doc, bi);
+        let _ = crate::extrude::body_feature_edges(&state.doc, bi);
+        let _ = crate::extrude::body_smooth_normals(&state.doc, bi);
+
+        let build = |state: &AppState| {
+            let mut cam = state.cam.clone();
+            cam.set_shading_mode(crate::camera::ShadingMode::SolidWireframe);
+            let viewport = UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+            let selection = SceneSelection::default();
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                sketch_session: None,
+                element_visibility: &ElementVisibility::default(),
+                selection: &selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                editing_extrusion: None,
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                plane_preview: None,
+                active_sketch_face: None,
+                palette: ViewportPalette::default(),
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: Color32::WHITE,
+                document_health: &crate::document_health::DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        for _ in 0..30 {
+            state.cam.orbit(egui::vec2(4.0, 2.0));
+            let scene = build(&state);
+            assert!(
+                !scene.wireframe_indices.is_empty(),
+                "solid+wireframe must draw feature edges for the hole rims"
+            );
+            assert!(!scene.vertices.is_empty());
+        }
     }
 }

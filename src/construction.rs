@@ -1943,10 +1943,11 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
 
 /// Every feature edge of a body's solid mesh (#902), in world space — what a whole-body
 /// hover/loupe draws. Empty when the body doesn't mesh.
+///
+/// Uses the memoized analysis cache (#845/#1141): circular hole rims facet into hundreds of
+/// segments, and recomputing them for every loupe/hover frame was measurable on holey parts.
 pub fn body_feature_edges(doc: &Document, body: crate::model::BodyKey) -> Vec<(Vec3, Vec3)> {
-    crate::extrude::body_solid_mesh(doc, body)
-        .map(|solid| crate::gpu_viewport::solid_mesh_unique_edges(&solid))
-        .unwrap_or_default()
+    crate::extrude::body_feature_edges(doc, body).as_ref().clone()
 }
 
 /// World boundary loop of an analytic sketchable face (#625), for the exploder's highlights
@@ -2789,10 +2790,11 @@ fn nearest_body_edge(
         // Segments of one smooth chain all carry the chain's canonical segment as their
         // pick identity (#626), so clicking any facet of a curved rim selects the whole
         // curve; the hovered segment itself still provides the axis anchor geometry.
+        // Walk by reference (#1141): a circular rim is ~50–100 segments, and cloning each
+        // chain every hover frame stacked up on bodies with several holes.
         for chain in crate::extrude::body_edge_chains(doc, bi).iter() {
-            let chain = chain.clone();
-            let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
-            for (a, b) in chain {
+            let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(chain);
+            for &(a, b) in chain {
                 consider(PickTargetKind::BodyEdge { body: bi, a: ca, b: cb }, a, b);
             }
         }
