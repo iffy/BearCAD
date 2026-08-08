@@ -5607,6 +5607,36 @@ impl App {
             self.request_close_active_tab();
         }
 
+        // Cmd/Ctrl+1…9 — switch to the Nth tab (#1130). Works even while a text field is
+        // focused, same as Cmd/Ctrl+T/W. No-op when fewer tabs than N exist.
+        const TAB_NUMBER_KEYS: [(egui::Key, usize); 9] = [
+            (egui::Key::Num1, 1),
+            (egui::Key::Num2, 2),
+            (egui::Key::Num3, 3),
+            (egui::Key::Num4, 4),
+            (egui::Key::Num5, 5),
+            (egui::Key::Num6, 6),
+            (egui::Key::Num7, 7),
+            (egui::Key::Num8, 8),
+            (egui::Key::Num9, 9),
+        ];
+        for (key, number) in TAB_NUMBER_KEYS {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, key)) {
+                self.switch_main_tab_by_number(number);
+            }
+        }
+
+        // Cmd/Ctrl+Alt+←/→ — previous/next tab, wrapping (#1131). On macOS Alt is Option.
+        // Checked after the digit bindings; matches_logically already requires Alt when
+        // the pattern sets it, so bare Cmd/Ctrl+arrows do not fire this.
+        let tab_adjacent_mods = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+        if ctx.input_mut(|i| i.consume_key(tab_adjacent_mods, egui::Key::ArrowLeft)) {
+            self.switch_main_tab_adjacent(-1);
+        }
+        if ctx.input_mut(|i| i.consume_key(tab_adjacent_mods, egui::Key::ArrowRight)) {
+            self.switch_main_tab_adjacent(1);
+        }
+
         // ⌘` cycles to the McMaster catalog helper when it is open (#1023). The system
         // shortcut only cycles windows of one process; the catalog is another process, so
         // we hand it focus ourselves. The helper sends focus back the same way.
@@ -11829,6 +11859,26 @@ impl App {
         win.active = index;
         std::mem::swap(&mut self.state, &mut win.tabs[index].state);
         self.clear_interaction_transients();
+    }
+
+    /// Cmd/Ctrl+`number` (#1130): activate the Nth main-window tab (1-based).
+    fn switch_main_tab_by_number(&mut self, number: usize) {
+        let n = self.workspace.main().tabs.len();
+        let Some(index) = tabs::tab_index_for_number(number, n) else {
+            return;
+        };
+        self.sync_active_document_siblings();
+        self.switch_main_tab(index);
+    }
+
+    /// Cmd/Ctrl+Alt+←/→ (#1131): move to the previous/next tab, wrapping.
+    fn switch_main_tab_adjacent(&mut self, delta: isize) {
+        let win = self.workspace.main();
+        let Some(index) = tabs::adjacent_tab_index(win.active, win.tabs.len(), delta) else {
+            return;
+        };
+        self.sync_active_document_siblings();
+        self.switch_main_tab(index);
     }
 
     /// Drop drag/hover UI that must not carry across tabs or windows.

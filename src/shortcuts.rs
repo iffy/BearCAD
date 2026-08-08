@@ -206,6 +206,12 @@ pub struct ShortcutSection {
 pub fn all_shortcuts() -> Vec<ShortcutSection> {
     use crate::actions::Tool;
     let cmd = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+    // #1131: previous/next tab — Command+Option on macOS, Ctrl+Alt elsewhere.
+    let (prev_tab_keys, next_tab_keys) = if cfg!(target_os = "macos") {
+        (format!("{cmd}⌥←"), format!("{cmd}⌥→"))
+    } else {
+        (format!("{cmd}Alt+Left"), format!("{cmd}Alt+Right"))
+    };
     let mut sections = Vec::new();
 
     sections.push(ShortcutSection {
@@ -218,6 +224,10 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
             (format!("{cmd}Z"), "Undo".to_string()),
             (format!("{cmd}T"), "New tab".to_string()),
             (format!("{cmd}W"), "Close tab".to_string()),
+            // #1130: switch to the Nth tab (1-based); no-op when that tab does not exist.
+            (format!("{cmd}1–9"), "Switch to tab 1–9".to_string()),
+            (prev_tab_keys, "Previous tab".to_string()),
+            (next_tab_keys, "Next tab".to_string()),
             // macOS: cycle focus with the McMaster catalog helper when it is open (#1023).
             // Listed for all platforms; the binding only does work on macOS with a live helper.
             (format!("{cmd}`"), "Focus McMaster-Carr catalog (when open)".to_string()),
@@ -370,6 +380,29 @@ mod shortcut_list_tests {
         assert_eq!(
             constraints.entries.len(),
             crate::geometric_constraints::GeometricConstraintType::ALL.len()
+        );
+    }
+
+    /// #1130 / #1131: tab-navigation bindings appear under Everywhere.
+    #[test]
+    fn shortcut_list_covers_tab_navigation() {
+        let sections = all_shortcuts();
+        let everywhere = sections
+            .iter()
+            .find(|s| s.title == "Everywhere")
+            .expect("Everywhere section");
+        let labels: Vec<&str> = everywhere.entries.iter().map(|(_, d)| d.as_str()).collect();
+        assert!(
+            labels.iter().any(|d| d.contains("Switch to tab")),
+            "Cmd/Ctrl+1–9 tab switch missing: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|d| d.contains("Previous tab")),
+            "previous-tab binding missing: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|d| d.contains("Next tab")),
+            "next-tab binding missing: {labels:?}"
         );
     }
 }

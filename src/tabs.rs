@@ -391,6 +391,32 @@ impl Workspace {
     }
 }
 
+/// Map a 1-based keyboard ordinal (`1`–`9`) to a 0-based tab index when that tab exists.
+/// Used by Cmd/Ctrl+1…9 (#1130).
+pub fn tab_index_for_number(number: usize, tab_count: usize) -> Option<usize> {
+    if (1..=9).contains(&number) && number <= tab_count {
+        Some(number - 1)
+    } else {
+        None
+    }
+}
+
+/// Next tab index after moving `delta` steps from `active`, wrapping in `0..tab_count`.
+/// Returns `None` when there is nothing to switch to (`tab_count < 2`).
+/// Used by Cmd/Ctrl+Alt+←/→ (#1131).
+pub fn adjacent_tab_index(active: usize, tab_count: usize, delta: isize) -> Option<usize> {
+    if tab_count < 2 {
+        return None;
+    }
+    let n = tab_count as isize;
+    let next = (active as isize + delta).rem_euclid(n) as usize;
+    if next == active {
+        None
+    } else {
+        Some(next)
+    }
+}
+
 /// Document-owned fields shared by every tab of the same [`DocumentId`].
 struct DocumentCore {
     doc: Document,
@@ -595,5 +621,29 @@ mod tests {
         assert_eq!(ws.close_tab(mid), Some(CloseOutcome::Closed));
         assert_eq!(ws.main().tabs.len(), 2);
         assert!(ws.main().active < 2);
+    }
+
+    /// #1130: Cmd/Ctrl+N maps to the Nth tab (1-based); out of range / 0 is a no-op.
+    #[test]
+    fn tab_index_for_number_maps_one_based_ordinals() {
+        assert_eq!(tab_index_for_number(1, 3), Some(0));
+        assert_eq!(tab_index_for_number(2, 3), Some(1));
+        assert_eq!(tab_index_for_number(3, 3), Some(2));
+        assert_eq!(tab_index_for_number(4, 3), None);
+        assert_eq!(tab_index_for_number(0, 3), None);
+        assert_eq!(tab_index_for_number(9, 9), Some(8));
+        assert_eq!(tab_index_for_number(10, 20), None); // only 1–9 are bound
+        assert_eq!(tab_index_for_number(1, 0), None);
+    }
+
+    /// #1131: adjacent navigation wraps; a single tab does nothing.
+    #[test]
+    fn adjacent_tab_index_wraps() {
+        assert_eq!(adjacent_tab_index(0, 1, 1), None);
+        assert_eq!(adjacent_tab_index(0, 3, 1), Some(1));
+        assert_eq!(adjacent_tab_index(2, 3, 1), Some(0));
+        assert_eq!(adjacent_tab_index(0, 3, -1), Some(2));
+        assert_eq!(adjacent_tab_index(1, 3, -1), Some(0));
+        assert_eq!(adjacent_tab_index(1, 3, 0), None);
     }
 }

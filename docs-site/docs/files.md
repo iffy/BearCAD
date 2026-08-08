@@ -21,12 +21,13 @@ way back to the last saved state). Quitting with unsaved changes asks whether to
 
 ## Tabs
 
-**⌘/Ctrl+T** opens a new tab (blank document). **⌘/Ctrl+W** closes the active tab. Closing
-the last view of a dirty document asks to save first; closing the last tab of the last
-window opens a blank document instead of quitting. Drag tabs to reorder; right-click a tab
-for **Duplicate Tab (same document)** (independent camera/tool, shared document) or
-**Move to New Window**. On macOS the tab strip sits in the titlebar next to the traffic
-lights.
+**⌘/Ctrl+T** opens a new tab (blank document). **⌘/Ctrl+W** closes the active tab.
+**⌘/Ctrl+1–9** switches to that tab; **⌘⌥←/→** (Ctrl+Alt+Left/Right) moves to the
+previous/next tab, wrapping. Closing the last view of a dirty document asks to save first;
+closing the last tab of the last window opens a blank document instead of quitting. Drag
+tabs to reorder; right-click a tab for **Duplicate Tab (same document)** (independent
+camera/tool, shared document) or **Move to New Window**. On macOS the tab strip sits in
+the titlebar next to the traffic lights.
 
 ## Import
 
