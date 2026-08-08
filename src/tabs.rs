@@ -153,25 +153,68 @@ impl Workspace {
         None
     }
 
-    /// Title shown on a tab (and the window title when that tab is active): file stem or
-    /// "Untitled", with a leading `*` when dirty.
+    /// Title shown on a tab (and the window title when that tab is active).
+    ///
+    /// Basename without the `.bearcad` / `.bearcad.json` extension (or "Untitled"), a leading
+    /// `*` when dirty, and — when the tab is in a sketch or drawing workbench — the open
+    /// sketch/drawing's name: `{basename} {view_name}`. Main modeling view shows only the
+    /// basename (the view portion is blank) (#1137).
     pub fn tab_title(state: &AppState) -> String {
-        let name = state
-            .path
-            .as_deref()
-            .and_then(|p| {
-                std::path::Path::new(p)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| "Untitled".to_string());
+        let basename = document_basename(state.path.as_deref());
+        let name = match view_name_suffix(state) {
+            Some(view) => format!("{basename} {view}"),
+            None => basename,
+        };
         if state.dirty {
             format!("*{name}")
         } else {
             name
         }
     }
+}
 
+/// File basename for a tab title: drop `.bearcad` / `.bearcad.json` so tabs read "bracket",
+/// not "bracket.bearcad" (#1137).
+fn document_basename(path: Option<&str>) -> String {
+    let Some(path) = path else {
+        return "Untitled".to_string();
+    };
+    let file_name = std::path::Path::new(path)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Untitled".to_string());
+    if let Some(stem) = file_name.strip_suffix(".bearcad.json") {
+        stem.to_string()
+    } else if let Some(stem) = file_name.strip_suffix(".bearcad") {
+        stem.to_string()
+    } else {
+        std::path::Path::new(&file_name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or(file_name)
+    }
+}
+
+/// Name of the open sketch or drawing workbench for the tab title, if any (#1137).
+fn view_name_suffix(state: &AppState) -> Option<String> {
+    // Drawing workbench and sketch session are mutually exclusive in normal use; prefer the
+    // drawing when set so leaving a sketch before opening a sheet doesn't leave a stale name.
+    if let Some(di) = state.editing_drawing {
+        return Some(crate::names::node_label(
+            &state.doc,
+            crate::hierarchy::HierarchyNode::Drawing(di),
+        ));
+    }
+    if let Some(session) = state.sketch_session {
+        return Some(crate::names::node_label(
+            &state.doc,
+            crate::hierarchy::HierarchyNode::Sketch(session.sketch),
+        ));
+    }
+    None
+}
+
+impl Workspace {
     /// How many tabs (across all windows) currently show `document_id`.
     pub fn document_view_count(&self, document_id: DocumentId) -> usize {
         self.windows
@@ -605,9 +648,59 @@ mod tests {
         state.dirty = true;
         assert_eq!(Workspace::tab_title(&state), "*Untitled");
         state.path = Some("/tmp/bracket.bearcad".into());
-        assert_eq!(Workspace::tab_title(&state), "*bracket.bearcad");
+        // Modeling view: basename only, no `.bearcad` (#1137).
+        assert_eq!(Workspace::tab_title(&state), "*bracket");
         state.dirty = false;
-        assert_eq!(Workspace::tab_title(&state), "bracket.bearcad");
+        assert_eq!(Workspace::tab_title(&state), "bracket");
+    }
+
+    /// #1137: tab titles drop `.bearcad` / `.bearcad.json` and show the open view name.
+    #[test]
+    fn tab_title_strips_extension_and_shows_view() {
+        let mut state = AppState::default();
+        state.path = Some("/tmp/bracket.bearcad".into());
+        assert_eq!(Workspace::tab_title(&state), "bracket");
+
+        // JSON save path strips both suffixes.
+        state.path = Some("/tmp/bracket.bearcad.json".into());
+        assert_eq!(Workspace::tab_title(&state), "bracket");
+
+        // Open a sketch: "{basename} {sketch_name}".
+        let plane = state.doc.ground_plane().expect("default doc has ground plane");
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(plane),
+            viewport: None,
+        });
+        state.path = Some("/tmp/bracket.bearcad".into());
+        state.dirty = false;
+        assert_eq!(Workspace::tab_title(&state), "bracket Sketch 0");
+
+        // Custom sketch name.
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.sketches.get_mut(sketch).unwrap().name = Some("Front".into());
+        assert_eq!(Workspace::tab_title(&state), "bracket Front");
+
+        // Dirty star prefixes the whole title.
+        state.dirty = true;
+        assert_eq!(Workspace::tab_title(&state), "*bracket Front");
+
+        // Leave sketch, open a drawing: "{basename} {drawing_name}".
+        state.sketch_session = None;
+        state.apply(Action::CreateDrawing { name: None });
+        state.dirty = false; // title assertions ignore dirty for this branch
+        assert_eq!(Workspace::tab_title(&state), "bracket Drawing 0");
+        let drawing = state.editing_drawing.unwrap();
+        state.apply(Action::RenameDrawing {
+            drawing,
+            name: "Sheet A".into(),
+        });
+        state.dirty = false;
+        assert_eq!(Workspace::tab_title(&state), "bracket Sheet A");
+
+        // Back to modeling: basename only (view portion blank).
+        state.apply(Action::EditDrawing { drawing: None });
+        state.dirty = false;
+        assert_eq!(Workspace::tab_title(&state), "bracket");
     }
 
     #[test]
