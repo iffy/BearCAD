@@ -17266,15 +17266,16 @@ fn suppress_viewport_pick_hover(
     plane_gizmo_drag_active: bool,
     bezier_handle_drag_active: bool,
 ) -> bool {
-    // Camera navigation skips hover pick work: secondary/middle drag for orbit/pan, and
-    // active scroll/zoom for the wheel (#1122). Without this, every zoom frame still ran
-    // the full body-face/vertex pick while pan/orbit did not — so zoom felt laggy against
-    // butter-smooth orbit.
+    // Camera navigation skips hover pick work: secondary/middle drag for orbit/pan,
+    // active scroll/zoom for the wheel (#1122), and multi-touch pan/orbit/pinch (#1141).
+    // Without this, every navigation frame still ran the full body-face/vertex pick —
+    // expensive on bodies with finely tessellated curved holes — so orbit/pan felt laggy.
     ui.input(|i| i.pointer.secondary_down())
         || response.dragged_by(egui::PointerButton::Secondary)
         || ui.input(|i| i.pointer.middle_down())
         || response.dragged_by(egui::PointerButton::Middle)
         || ui.input(|i| i.is_scrolling())
+        || ui.input(|i| i.multi_touch().is_some())
         || vertex_drag_active
         || line_drag_active
         || dim_label_drag_active
