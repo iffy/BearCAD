@@ -12226,9 +12226,10 @@ impl App {
 
                 // Baseline under the strip: continuous grey line that gaps under the selected
                 // tab so the active filing tab reads as attached to the chrome beneath (#1134).
+                // Colour matches the active tab outline (#1138).
                 // Drawn inside the panel so the clip rect includes the strip.
                 let y = bar.bottom() - 0.5;
-                let sep = egui::Stroke::new(1.0, egui::Color32::from_gray(55));
+                let sep = egui::Stroke::new(1.0, TAB_BASELINE);
                 let painter = ui.painter();
                 if let Some(sel) = selected_tab_rect {
                     let gap_l = sel.left();
@@ -16469,6 +16470,39 @@ const TAB_TOP_RADIUS: f32 = 4.0;
 const TAB_ICON_SIZE: f32 = 16.0;
 /// Hit target for tab close / new-tab — larger than the glyph for easier clicking (#1132).
 const TAB_ICON_HIT: f32 = 22.0;
+/// Strip baseline and active-tab outline — same colour so the open bottom joins the line (#1138).
+const TAB_BASELINE: egui::Color32 = egui::Color32::from_gray(55);
+/// Inactive filing-tab outline — fainter than the active tab / baseline (#1138).
+const TAB_INACTIVE_BORDER: egui::Color32 = egui::Color32::from_gray(40);
+/// How much [`theme::FOCUS_ACCENT`] is mixed into panel fill at the top of the selected tab (#1138).
+const TAB_SELECTED_TOP_BLUE_MIX: f32 = 0.28;
+
+/// Fill a convex filing-tab path with a top→bottom colour gradient (vertex-coloured mesh) (#1138).
+fn paint_filing_tab_vertical_gradient(
+    painter: &egui::Painter,
+    path: &[egui::Pos2],
+    top: egui::Color32,
+    bottom: egui::Color32,
+) {
+    if path.len() < 3 {
+        return;
+    }
+    let top_y = path.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let bottom_y = path.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+    let h = (bottom_y - top_y).max(1.0);
+    let mut mesh = egui::epaint::Mesh::default();
+    mesh.reserve_vertices(path.len());
+    mesh.reserve_triangles(path.len().saturating_sub(2));
+    for p in path {
+        let t = ((p.y - top_y) / h).clamp(0.0, 1.0);
+        mesh.colored_vertex(*p, top.lerp_to_gamma(bottom, t));
+    }
+    // Fan from vertex 0 — valid while the path is convex (filing-tab trapezoid).
+    for i in 1..path.len() as u32 - 1 {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
 
 /// Open filing-tab outline (bottom-left → left side → rounded top → right side → bottom-right).
 /// No bottom edge — the strip baseline (or the gap under the active tab) closes the shape (#1134).
@@ -16518,7 +16552,8 @@ fn filing_tab_open_path(rect: egui::Rect, slant: f32, radius: f32) -> Vec<egui::
 }
 
 /// One document tab: filing-tab trapezoid with rounded top corners, label, and close (SVG).
-/// Selected tabs use blue top/left/right borders (no blue fill); unfocused use grey borders.
+/// Selected tabs: faint blue→panel vertical gradient fill; outline matches the strip baseline.
+/// Unfocused tabs: solid fill and a fainter outline (#1134, #1138).
 /// Close is always shown when `show_close` is true (#1134).
 ///
 /// Returns `(tab_response, close_clicked)`.
@@ -16550,26 +16585,30 @@ fn document_tab_chip(
     );
     let path = filing_tab_open_path(shape_rect, TAB_SLANT, TAB_TOP_RADIUS);
 
-    // Fill: panel colour so the selected tab merges with the chrome below — never a full
-    // blue selection fill (#1134). Hover lifts unfocused tabs slightly.
-    let fill = if selected {
-        ui.visuals().panel_fill
-    } else if response.hovered() {
-        ui.visuals().widgets.hovered.weak_bg_fill
+    // Fill: selected gets a faint blue-at-top → panel-at-bottom gradient (#1138); unfocused
+    // stay solid (hover lifts slightly). Never a full blue selection fill.
+    let panel = ui.visuals().panel_fill;
+    if selected {
+        let top = panel.lerp_to_gamma(theme::FOCUS_ACCENT, TAB_SELECTED_TOP_BLUE_MIX);
+        paint_filing_tab_vertical_gradient(ui.painter(), &path, top, panel);
     } else {
-        egui::Color32::from_gray(26)
-    };
-    ui.painter().add(egui::Shape::convex_polygon(
-        path.clone(),
-        fill,
-        egui::Stroke::NONE,
-    ));
+        let fill = if response.hovered() {
+            ui.visuals().widgets.hovered.weak_bg_fill
+        } else {
+            egui::Color32::from_gray(26)
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            path.clone(),
+            fill,
+            egui::Stroke::NONE,
+        ));
+    }
 
-    // Borders: blue top/left/right when selected; grey/white trapezoid otherwise (#1134).
+    // Borders: active matches the baseline under the strip; inactive is fainter (#1138).
     let border = if selected {
-        egui::Stroke::new(1.5, theme::FOCUS_ACCENT)
+        egui::Stroke::new(1.0, TAB_BASELINE)
     } else {
-        egui::Stroke::new(1.0, egui::Color32::from_gray(110))
+        egui::Stroke::new(1.0, TAB_INACTIVE_BORDER)
     };
     ui.painter().add(egui::Shape::line(path, border));
 
