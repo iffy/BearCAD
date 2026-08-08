@@ -69,8 +69,9 @@ bearcad.ui.new_tab{ same = true }       -- same document, fresh view
 bearcad.ui.tab(1)                       -- activate tab (0-based); bare call returns active index
 bearcad.ui.close_tab()                  -- active tab; or close_tab(i)
 bearcad.ui.reorder_tab(from, to)
-bearcad.ui.detach_tab()                 -- move tab to its own window
+bearcad.ui.detach_tab()                 -- move tab to its own full application window
 local n = bearcad.ui.tab_count()
+local w = bearcad.ui.window_count()     -- OS windows (main + detached)
 local tabs = bearcad.ui.tabs()          -- { { title=, dirty=, active= }, ... } (1-based)
 ```
 

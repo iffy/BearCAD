@@ -3925,6 +3925,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     api.set(
+        "window_count",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            // Secondary windows are full application windows (#1133); count includes main.
+            unsafe { Ok(tick.state().script_window_count) }
+        })?,
+    )?;
+    api.set(
         "tabs",
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -6119,7 +6127,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "body_highlight",
             "mcmaster",
-            "new_tab", "close_tab", "tab", "tab_count", "tabs", "reorder_tab", "detach_tab",
+            "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "picker_focus", "angle_snap",
@@ -6973,7 +6981,7 @@ mod tests {
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "palette", "wait",
                                     "new_tab", "close_tab", "tab", "tabs", "tab_count",
-                                    "reorder_tab", "detach_tab" }) do
+                                    "window_count", "reorder_tab", "detach_tab" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
                 assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
             end

@@ -3532,6 +3532,8 @@ pub struct AppState {
     pub script_tab_titles: Vec<String>,
     pub script_tab_dirty: Vec<bool>,
     pub script_active_tab: usize,
+    /// OS window count for scripts (`bearcad.ui.window_count`), refreshed with the tab snapshot.
+    pub script_window_count: usize,
 }
 
 impl Default for AppState {
@@ -3641,6 +3643,7 @@ impl Default for AppState {
             script_tab_titles: vec!["Untitled".into()],
             script_tab_dirty: vec![false],
             script_active_tab: 0,
+            script_window_count: 1,
         }
     }
 }

@@ -12241,498 +12241,15 @@ impl App {
     }
 
     /// Detached tab windows: each is an immediate viewport with its own tab strip + content.
-    fn render_detached_windows(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.sync_active_document_siblings();
-
-        let detached: Vec<(usize, u64, String)> = self
-            .workspace
-            .windows
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| w.id != tabs::WindowId::MAIN)
-            .map(|(wi, w)| {
-                let title = {
-                    let t = &w.tabs[w.active];
-                    format!("{} — BearCAD", tabs::Workspace::tab_title(&t.state))
-                };
-                (wi, w.viewport_key, title)
-            })
-            .collect();
-
-        let mut tabs_to_close: Vec<tabs::TabId> = Vec::new();
-
-        for (wi, viewport_key, title) in detached {
-            if wi >= self.workspace.windows.len() {
-                continue;
-            }
-            let builder = egui::ViewportBuilder::default()
-                .with_title(title)
-                .with_inner_size([960.0, 640.0]);
-            let vp_id = egui::ViewportId::from_hash_of(("detached_tab", viewport_key));
-            let mut close_requested = false;
-            ctx.show_viewport_immediate(vp_id, builder, |vui, _class| {
-                theme::apply(vui.ctx());
-                let active = self.workspace.windows[wi].active;
-                std::mem::swap(
-                    &mut self.state,
-                    &mut self.workspace.windows[wi].tabs[active].state,
-                );
-                egui::Panel::top("detached_tabs")
-                    .exact_size(28.0)
-                    .show(vui, |ui| {
-                        ui.horizontal(|ui| {
-                            let n = self.workspace.windows[wi].tabs.len();
-                            for i in 0..n {
-                                let label = if i == self.workspace.windows[wi].active {
-                                    tabs::Workspace::tab_title(&self.state)
-                                } else {
-                                    tabs::Workspace::tab_title(
-                                        &self.workspace.windows[wi].tabs[i].state,
-                                    )
-                                };
-                                let selected = i == self.workspace.windows[wi].active;
-                                if ui.selectable_label(selected, label).clicked() && !selected {
-                                    let old = self.workspace.windows[wi].active;
-                                    std::mem::swap(
-                                        &mut self.state,
-                                        &mut self.workspace.windows[wi].tabs[old].state,
-                                    );
-                                    self.workspace.windows[wi].active = i;
-                                    std::mem::swap(
-                                        &mut self.state,
-                                        &mut self.workspace.windows[wi].tabs[i].state,
-                                    );
-                                }
-                            }
-                        });
-                    });
-                let render_state = frame.wgpu_render_state();
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE)
-                    .show(vui, |ui| {
-                        match self.state.editing_drawing {
-                            Some(di) if self.state.doc.drawings.get(di).is_some() => {
-                                self.draw_drawing_pane(ui, di);
-                            }
-                            _ => {
-                                self.state.editing_drawing = None;
-                                let pickers = Vec::new();
-                                self.draw_viewport(ui, render_state, &pickers);
-                            }
-                        }
-                    });
-                let active = self.workspace.windows[wi].active;
-                std::mem::swap(
-                    &mut self.state,
-                    &mut self.workspace.windows[wi].tabs[active].state,
-                );
-                if vui.input(|i| i.viewport().close_requested()) {
-                    close_requested = true;
-                }
-            });
-            if close_requested {
-                for t in &self.workspace.windows[wi].tabs {
-                    tabs_to_close.push(t.id);
-                }
-            }
-        }
-        for id in tabs_to_close {
-            self.request_close_tab(id);
-        }
-    }
-
-    /// Push the window title to the OS only when it changes (#522), so the `*` appears and
-    /// disappears with the dirty flag without re-sending the same title every frame.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn sync_window_title(&mut self, ctx: &egui::Context) {
-        let title = self.window_title();
-        if self.last_window_title.as_deref() != Some(title.as_str()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.last_window_title = Some(title);
-        }
-    }
-
-    /// Whether quitting with unsaved changes should prompt (#522). Explicit env overrides win
-    /// (`BEARCAD_NO_QUIT_PROMPT` off, `BEARCAD_QUIT_PROMPT` on); otherwise script-driven and
-    /// auto-exit runs (tests, `--exit`, screenshots) never block on a modal, and debug builds
-    /// (`cargo run`) skip it so development quits aren't nagged. Release builds prompt.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn quit_prompt_enabled(&self) -> bool {
-        if std::env::var_os("BEARCAD_NO_QUIT_PROMPT").is_some() {
-            return false;
-        }
-        if std::env::var_os("BEARCAD_QUIT_PROMPT").is_some() {
-            return true;
-        }
-        if self.script.is_some() || self.exit_after_startup || self.exit_on_script_complete {
-            return false;
-        }
-        !cfg!(debug_assertions)
-    }
-
-    /// True if any tab across all windows has unsaved changes (for window close).
-    fn any_document_dirty(&self) -> bool {
-        if self.state.dirty {
-            return true;
-        }
-        for win in &self.workspace.windows {
-            for (i, tab) in win.tabs.iter().enumerate() {
-                // Main active slot is a placeholder — live dirty is in self.state.
-                if win.id == tabs::WindowId::MAIN && i == win.active {
-                    continue;
-                }
-                if tab.state.dirty {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Intercept a close request when the document has unsaved changes (#522): cancel the
-    /// close and open the Save / Don't Save / Cancel prompt, which then drives the actual
-    /// exit. When the prompt is disabled, or the document is clean, the close passes through.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn handle_quit_prompt(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if self.allow_close || !self.any_document_dirty() || !self.quit_prompt_enabled() {
-                // Let the close proceed.
-                return;
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.showing_quit_prompt = true;
-        }
-
-        if !self.showing_quit_prompt {
-            return;
-        }
-        let mut save = false;
-        let mut discard = false;
-        let mut cancel = false;
-        egui::Modal::new(egui::Id::new("quit_save_prompt")).show(ctx, |ui| {
-            ui.set_width(320.0);
-            ui.heading("Unsaved changes");
-            ui.add_space(6.0);
-            ui.label("This document has changes that haven't been saved. Save before closing?");
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    save = true;
-                }
-                if ui.button("Don't Save").clicked() {
-                    discard = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
-            });
-        });
-        if save {
-            self.showing_quit_prompt = false;
-            self.save();
-            // Save only covers the active tab; if other tabs are still dirty, keep prompting
-            // is not implemented — Discard is the multi-tab escape. Active must be clean.
-            if !self.state.dirty {
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        } else if discard {
-            self.showing_quit_prompt = false;
-            self.allow_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if cancel {
-            self.showing_quit_prompt = false;
-        }
-    }
-
-    fn tick_exit_after_startup(&mut self, ctx: &egui::Context) {
-        if !self.exit_after_startup || self.exit_after_startup_sent {
-            return;
-        }
-        if self.launch_maximize_frames_remaining > 0 {
-            return;
-        }
-        self.exit_after_startup_sent = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-
-    fn tick_script(&mut self, ctx: &egui::Context) {
-        if self.script.as_ref().is_some_and(|r| !r.done) {
-            self.state.command_log = None;
-        } else if self.state.command_log.is_none() {
-            self.state.command_log = Some(std::cell::RefCell::new(
-                command_log::CommandLog::new_recording(self.show_commands),
-            ));
-        }
-        self.refresh_script_tab_snapshot();
-        let needs_repaint = if let Some(runner) = &mut self.script {
-            if runner.done {
-                if let Some(err) = &runner.error {
-                    self.state.status = format!("Script error: {err}");
-                } else if !runner.should_quit {
-                    let complete_status = if runner.is_repl() { "REPL ended" } else { "Script complete" };
-                    self.state.status = complete_status.to_string();
-                }
-                let action = script_finished_close_action(
-                    runner.error.is_some(),
-                    runner.should_quit,
-                    self.exit_on_script_complete,
-                );
-                if action.fail_process {
-                    self.script_failed.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-                if action.close {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                false
-            } else {
-                let repaint = runner.tick(
-                    &mut self.state,
-                    &mut self.synthetic,
-                    self.last_viewport,
-                    ctx,
-                );
-                if let Some(err) = &runner.error {
-                    self.state.status = format!("Script error: {err}");
-                }
-                repaint
-            }
-        } else {
-            false
-        };
-
-        // Workspace ops queued by the script (tabs, document rebind).
-        if let Some(runner) = &mut self.script {
-            let rebind = std::mem::take(&mut runner.rebind_active_document);
-            let ops = std::mem::take(&mut runner.pending_tab_ops);
-            if rebind {
-                self.rebind_active_document();
-            }
-            for op in ops {
-                self.apply_script_tab_op(op);
-            }
-            self.refresh_script_tab_snapshot();
-        }
-
-        if needs_repaint || self.script.as_ref().is_some_and(|r| r.is_waiting()) {
-            ctx.request_repaint();
-        }
-    }
-
-    fn refresh_script_tab_snapshot(&mut self) {
-        let active = self.workspace.main().active;
-        let n = self.workspace.main().tabs.len();
-        let mut titles = Vec::with_capacity(n);
-        let mut dirty = Vec::with_capacity(n);
-        for i in 0..n {
-            titles.push(self.main_tab_title(i));
-            let is_dirty = if i == active {
-                self.state.dirty
-            } else {
-                self.workspace.main().tabs[i].state.dirty
-            };
-            dirty.push(is_dirty);
-        }
-        self.state.script_tab_titles = titles;
-        self.state.script_tab_dirty = dirty;
-        self.state.script_active_tab = active;
-    }
-
-    fn apply_script_tab_op(&mut self, op: script::TabOp) {
-        match op {
-            script::TabOp::NewBlank => self.new_blank_tab(),
-            script::TabOp::NewSameDocument => self.new_same_document_tab(),
-            script::TabOp::Close { index } => {
-                let tab_id = match index {
-                    Some(i) => self.workspace.main().tabs.get(i).map(|t| t.id),
-                    None => Some(self.main_active_tab_id()),
-                };
-                if let Some(id) = tab_id {
-                    self.request_close_tab(id);
-                }
-            }
-            script::TabOp::Select { index } => {
-                self.sync_active_document_siblings();
-                self.switch_main_tab(index);
-            }
-            script::TabOp::Reorder { from, to } => self.reorder_main_tab(from, to),
-            script::TabOp::Detach { index } => {
-                let tab_id = match index {
-                    Some(i) => self.workspace.main().tabs.get(i).map(|t| t.id),
-                    None => Some(self.main_active_tab_id()),
-                };
-                if let Some(id) = tab_id {
-                    self.detach_tab_to_window(id);
-                }
-            }
-        }
-    }
-}
-
-impl eframe::App for App {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        // Scripted input (bearcad.ui.click/drag/key…) feeds egui as raw events, one
-        // queued batch per frame — indistinguishable from OS input to every handler.
-        if let Some(batch) = self.synthetic.take_raw_frame() {
-            // A scripted click that carries Shift has to show up in `RawInput::modifiers`
-            // too (#835) — that, not the event's own field, is what `ui.input(|i|
-            // i.modifiers)` reads, and it's how tools tell a plain click from a Shift+click.
-            if let Some(modifiers) = batch.iter().find_map(|e| match e {
-                egui::Event::PointerButton { modifiers, .. }
-                | egui::Event::Key { modifiers, .. }
-                    if !modifiers.is_none() =>
-                {
-                    Some(*modifiers)
-                }
-                _ => None,
-            }) {
-                raw_input.modifiers = modifiers;
-            }
-            raw_input.events.extend(batch);
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // egui 0.35 hands the app a `Ui` instead of a `Context`; panels nest inside it.
-        // One line per early frame (#978): a run that traces frames but shows nothing is a
-        // painting fault; a run that traces none never got asked to paint at all.
-        {
-            let size = ui.max_rect().size();
-            diag::frame((size.x, size.y), self.gpu_viewport);
-            // What the window believes about itself, left where the watchdog can find it
-            // (#1032). A grey window whose own inner rect is zero, or which the platform
-            // reports as minimized or on a monitor that isn't there, says so only here.
-            ui.ctx().input(|i| {
-                let vp = &i.viewport();
-                diag::note_window_state(format!(
-                    "inner {:?}, outer {:?}, scale {:.2}, monitor {:?}, \
-                     focused {}, minimized {:?}, maximized {:?}",
-                    vp.inner_rect.map(|r| r.size()),
-                    vp.outer_rect.map(|r| r.size()),
-                    i.pixels_per_point,
-                    vp.monitor_size,
-                    i.focused,
-                    vp.minimized,
-                    vp.maximized,
-                ));
-            });
-            // What the window server says, which is the only side of this egui cannot see
-            // (#1032). Sampled here because AppKit is main-thread only and the watchdog is
-            // not; throttled because a grey window stays grey — one sample a second is
-            // plenty, and the answer is only ever read on failure.
-            #[cfg(not(target_arch = "wasm32"))]
-            if diag::frames_drawn() % 120 == 0 {
-                if let Some(state) = window_probe::appkit_window_state() {
-                    diag::note_platform_window_state(state);
-                }
-            }
-        }
-        // Everything below still works off the context, so clone it out once.
-        let ctx = &ui.ctx().clone();
-        // Finish a background combine/cut when the kernel is done (#1031).
-        if self.state.boolean_job.is_some() {
-            if self.state.poll_boolean_job() {
-                ctx.request_repaint();
-            } else {
-                // Keep painting so the progress spinner turns and we poll again.
-                ctx.request_repaint();
-            }
-        }
-        // Tutorial anchors are re-recorded as this frame's UI renders.
-        self.state.tutorial_anchor_rects.clear();
-        touch::detect(ctx);
-        // Input-debug harness: keep this window frontmost so synthetic system mouse
-        // events land here and nowhere else.
-        if std::env::var("BEARCAD_DEBUG_INPUT").is_ok() && !self.debug_focus_requested {
-            self.debug_focus_requested = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
-        // Which keyboard should a touch device get? A focused *value* field takes the
-        // app keypad (OS keyboard suppressed); anything else keeps the OS keyboard.
-        let value_field_focus = touch::value_field_focused() && touch::active();
-        touch::set_value_field_focused(false);
-        self.keypad_serves_focus = value_field_focus;
-        #[cfg(target_arch = "wasm32")]
-        self.sync_mobile_keyboard(value_field_focus);
-        // The first time the compact (phone) layout engages, start with the panes
-        // closed — three floating windows over a 390-px viewport is all window.
-        if touch::compact(ctx) && !self.compact_layout_initialized {
-            self.compact_layout_initialized = true;
-            for pane in [Pane::Hierarchy, Pane::Context, Pane::Parameters] {
-                self.state.apply(Action::SetPaneVisible { pane, visible: false });
-            }
-        }
-        tick_launch_maximize(
-            &mut self.launch_maximize_frames_remaining,
-            self.launched_at.elapsed(),
-            ctx,
-        );
-        theme::apply(ctx);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.sync_window_title(ctx);
-            self.handle_quit_prompt(ctx);
-        }
-
-        let dt = ctx.input(|i| i.stable_dt);
-        self.tick_auto_zoom();
-        let transition_active = self.state.cam.tick_transition(dt);
-        if transition_active {
-            ctx.request_repaint();
-        } else if let Some(log) = &self.state.command_log {
-            log.borrow_mut()
-                .on_transition_complete(&self.state.cam);
-        }
-
-        self.process_screenshots(ctx);
-        self.tick_script(ctx);
-        // Drop a stale rollback marker (#524) once its element is gone (deleted, or a
-        // new/opened document), so it doesn't linger over unrelated geometry.
-        if let Some(marker) = self.rollback_marker.clone() {
-            if !document_lifecycle::element_alive(&self.state.doc, marker.element) {
-                self.rollback_marker = None;
-            }
-        }
-        self.tick_tutorial();
-        self.tick_touch_extras(ctx);
-        self.show_touch_keypad(ctx);
-        self.tick_exit_after_startup(ctx);
-        // Synthetic script input now arrives through `raw_input_hook` (below), so it
-        // builds real egui pointer state instead of being appended mid-frame (#302).
-
-        self.tick_fps_mode(ctx, dt);
-        self.handle_keyboard_shortcuts(ctx);
-
-        // Aligned-view tool base (#365): on entering the tool, seed its base from a lone selected
-        // projection (so you needn't re-pick it); leaving the tool clears it.
-        if self.state.tool == Tool::DrawingAlign {
-            if self.prev_tool != Tool::DrawingAlign {
-                self.drawing_align_parent = match self.state.selected_drawing_view() {
-                    Some((d, v)) if Some(d) == self.state.editing_drawing => Some(v),
-                    _ => None,
-                };
-            }
-        } else {
-            self.drawing_align_parent = None;
-        }
-        self.prev_tool = self.state.tool;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        self.handle_native_menu(ctx);
-        self.tick_unit_sync(ctx);
-        #[cfg(target_arch = "wasm32")]
-        {
-            let panes = self.state.panes.clone();
-            if let Some(command) = web_menu::bar(ui, |pane| panes.is_visible(pane)) {
-                self.handle_menu_command(ctx, command);
-            }
-            self.drain_web_io(ctx);
-        }
-
-        self.handle_tab_close_prompt(ctx);
-        self.draw_main_tab_bar(ui);
-        self.render_detached_windows(ctx, frame);
-
+    /// Toolbar, panes, status bar, and central viewport/drawing for the window whose
+    /// active tab is currently in [`Self::state`]. Shared by the main window and every
+    /// detached window so each is a full application window (#1133).
+    fn render_window_chrome(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        frame: &mut eframe::Frame,
+    ) {
         egui::Panel::top("toolbar")
             .frame(theme::panel_frame())
             .show(ui, |ui| {
@@ -12949,7 +12466,6 @@ impl eframe::App for App {
             });
         });
 
-        self.show_json_dialog(ctx);
 
         if self.state.command_palette.open {
             let commands = commands_for_state(&self.state);
@@ -12970,61 +12486,6 @@ impl eframe::App for App {
                 self.dispatch_palette_outcome(chosen);
             }
         }
-
-        // McMaster-Carr catalog window (#1022): a window of its own, in a second process,
-        // whose caught CAD downloads land here.
-        #[cfg(not(target_arch = "wasm32"))]
-        self.sync_mcmaster_window(ctx);
-
-        // Keyboard Shortcuts window (#434): a closable, scrollable list of every binding,
-        // grouped by where it applies, rendered from shortcuts::all_shortcuts().
-        if self.shortcuts_open {
-            let mut open = true;
-            egui::Window::new("Keyboard shortcuts")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(430.0)
-                .default_height(520.0)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for section in shortcuts::all_shortcuts() {
-                            ui.add_space(6.0);
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(section.title).strong().size(14.0),
-                                );
-                                if let Some(scope) = section.scope {
-                                    ui.label(
-                                        egui::RichText::new(format!("— {scope}"))
-                                            .color(egui::Color32::from_gray(140))
-                                            .size(11.0),
-                                    );
-                                }
-                            });
-                            ui.separator();
-                            egui::Grid::new(("shortcut_section", section.title))
-                                .num_columns(2)
-                                .spacing([18.0, 3.0])
-                                .min_col_width(110.0)
-                                .show(ui, |ui| {
-                                    for (keys, what) in &section.entries {
-                                        ui.label(
-                                            egui::RichText::new(keys)
-                                                .monospace()
-                                                .color(egui::Color32::from_gray(220)),
-                                        );
-                                        ui.label(what);
-                                        ui.end_row();
-                                    }
-                                });
-                            ui.add_space(4.0);
-                        }
-                    });
-                });
-            self.shortcuts_open = open;
-        }
-
         egui::Panel::bottom("status")
             .frame(theme::panel_frame())
             .show(ui, |ui| {
@@ -15976,6 +15437,613 @@ impl eframe::App for App {
                     }
                 }
             });
+    }
+
+    /// Detached tab windows: each is a full application window (#1133) with the same
+    /// toolbar, panes, status bar, and viewport as the main window.
+    fn render_detached_windows(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.sync_active_document_siblings();
+
+        let detached: Vec<(usize, u64, String)> = self
+            .workspace
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.id != tabs::WindowId::MAIN)
+            .map(|(wi, w)| {
+                let title = {
+                    let t = &w.tabs[w.active];
+                    format!("{} — BearCAD", tabs::Workspace::tab_title(&t.state))
+                };
+                (wi, w.viewport_key, title)
+            })
+            .collect();
+
+        let mut tabs_to_close: Vec<tabs::TabId> = Vec::new();
+
+        for (wi, viewport_key, title) in detached {
+            if wi >= self.workspace.windows.len() {
+                continue;
+            }
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size([960.0, 640.0])
+                .with_icon(app_icon::load_for_viewport());
+            // Match main-window chrome so the tab strip can sit in the titlebar.
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .with_fullsize_content_view(true)
+                    .with_titlebar_shown(false)
+                    .with_title_shown(false);
+            }
+            let vp_id = egui::ViewportId::from_hash_of(("detached_tab", viewport_key));
+            let mut close_requested = false;
+            ctx.show_viewport_immediate(vp_id, builder, |vui, _class| {
+                theme::apply(vui.ctx());
+                let active = self.workspace.windows[wi].active;
+                std::mem::swap(
+                    &mut self.state,
+                    &mut self.workspace.windows[wi].tabs[active].state,
+                );
+                // Tab strip for this host window (mirrors the main strip).
+                egui::Panel::top("tab_bar")
+                    .exact_size(28.0)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(vui.visuals().panel_fill)
+                            .inner_margin(egui::Margin::symmetric(4, 2)),
+                    )
+                    .show(vui, |ui| {
+                        ui.horizontal(|ui| {
+                            #[cfg(target_os = "macos")]
+                            {
+                                ui.add_space(72.0);
+                            }
+                            let n = self.workspace.windows[wi].tabs.len();
+                            for i in 0..n {
+                                let label = if i == self.workspace.windows[wi].active {
+                                    tabs::Workspace::tab_title(&self.state)
+                                } else {
+                                    tabs::Workspace::tab_title(
+                                        &self.workspace.windows[wi].tabs[i].state,
+                                    )
+                                };
+                                let selected = i == self.workspace.windows[wi].active;
+                                if ui.selectable_label(selected, label).clicked() && !selected {
+                                    let old = self.workspace.windows[wi].active;
+                                    std::mem::swap(
+                                        &mut self.state,
+                                        &mut self.workspace.windows[wi].tabs[old].state,
+                                    );
+                                    self.workspace.windows[wi].active = i;
+                                    std::mem::swap(
+                                        &mut self.state,
+                                        &mut self.workspace.windows[wi].tabs[i].state,
+                                    );
+                                    self.clear_interaction_transients();
+                                }
+                            }
+                            if ui
+                                .add(egui::Button::new("+").frame(false))
+                                .on_hover_text("New tab")
+                                .clicked()
+                            {
+                                let active = self.workspace.windows[wi].active;
+                                std::mem::swap(
+                                    &mut self.state,
+                                    &mut self.workspace.windows[wi].tabs[active].state,
+                                );
+                                let win_id = self.workspace.windows[wi].id;
+                                let _ = self.workspace.open_blank_tab(win_id);
+                                let active = self.workspace.windows[wi].active;
+                                std::mem::swap(
+                                    &mut self.state,
+                                    &mut self.workspace.windows[wi].tabs[active].state,
+                                );
+                                self.clear_interaction_transients();
+                            }
+                        });
+                    });
+                if detached_window_is_full_application() {
+                    let vctx = vui.ctx().clone();
+                    self.render_window_chrome(vui, &vctx, frame);
+                } else {
+                    // Legacy viewport-only path (kept behind the design toggle).
+                    let render_state = frame.wgpu_render_state();
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(vui, |ui| {
+                            match self.state.editing_drawing {
+                                Some(di) if self.state.doc.drawings.get(di).is_some() => {
+                                    self.draw_drawing_pane(ui, di);
+                                }
+                                _ => {
+                                    self.state.editing_drawing = None;
+                                    let pickers = Vec::new();
+                                    self.draw_viewport(ui, render_state, &pickers);
+                                }
+                            }
+                        });
+                }
+                let active = self.workspace.windows[wi].active;
+                std::mem::swap(
+                    &mut self.state,
+                    &mut self.workspace.windows[wi].tabs[active].state,
+                );
+                if vui.input(|i| i.viewport().close_requested()) {
+                    close_requested = true;
+                }
+            });
+            if close_requested {
+                for t in &self.workspace.windows[wi].tabs {
+                    tabs_to_close.push(t.id);
+                }
+            }
+        }
+        for id in tabs_to_close {
+            self.request_close_tab(id);
+        }
+    }
+
+
+    /// Push the window title to the OS only when it changes (#522), so the `*` appears and
+    /// disappears with the dirty flag without re-sending the same title every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let title = self.window_title();
+        if self.last_window_title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_window_title = Some(title);
+        }
+    }
+
+    /// Whether quitting with unsaved changes should prompt (#522). Explicit env overrides win
+    /// (`BEARCAD_NO_QUIT_PROMPT` off, `BEARCAD_QUIT_PROMPT` on); otherwise script-driven and
+    /// auto-exit runs (tests, `--exit`, screenshots) never block on a modal, and debug builds
+    /// (`cargo run`) skip it so development quits aren't nagged. Release builds prompt.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn quit_prompt_enabled(&self) -> bool {
+        if std::env::var_os("BEARCAD_NO_QUIT_PROMPT").is_some() {
+            return false;
+        }
+        if std::env::var_os("BEARCAD_QUIT_PROMPT").is_some() {
+            return true;
+        }
+        if self.script.is_some() || self.exit_after_startup || self.exit_on_script_complete {
+            return false;
+        }
+        !cfg!(debug_assertions)
+    }
+
+    /// True if any tab across all windows has unsaved changes (for window close).
+    fn any_document_dirty(&self) -> bool {
+        if self.state.dirty {
+            return true;
+        }
+        for win in &self.workspace.windows {
+            for (i, tab) in win.tabs.iter().enumerate() {
+                // Main active slot is a placeholder — live dirty is in self.state.
+                if win.id == tabs::WindowId::MAIN && i == win.active {
+                    continue;
+                }
+                if tab.state.dirty {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Intercept a close request when the document has unsaved changes (#522): cancel the
+    /// close and open the Save / Don't Save / Cancel prompt, which then drives the actual
+    /// exit. When the prompt is disabled, or the document is clean, the close passes through.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn handle_quit_prompt(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.allow_close || !self.any_document_dirty() || !self.quit_prompt_enabled() {
+                // Let the close proceed.
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.showing_quit_prompt = true;
+        }
+
+        if !self.showing_quit_prompt {
+            return;
+        }
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("quit_save_prompt")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.heading("Unsaved changes");
+            ui.add_space(6.0);
+            ui.label("This document has changes that haven't been saved. Save before closing?");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Don't Save").clicked() {
+                    discard = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if save {
+            self.showing_quit_prompt = false;
+            self.save();
+            // Save only covers the active tab; if other tabs are still dirty, keep prompting
+            // is not implemented — Discard is the multi-tab escape. Active must be clean.
+            if !self.state.dirty {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if discard {
+            self.showing_quit_prompt = false;
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if cancel {
+            self.showing_quit_prompt = false;
+        }
+    }
+
+    fn tick_exit_after_startup(&mut self, ctx: &egui::Context) {
+        if !self.exit_after_startup || self.exit_after_startup_sent {
+            return;
+        }
+        if self.launch_maximize_frames_remaining > 0 {
+            return;
+        }
+        self.exit_after_startup_sent = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn tick_script(&mut self, ctx: &egui::Context) {
+        if self.script.as_ref().is_some_and(|r| !r.done) {
+            self.state.command_log = None;
+        } else if self.state.command_log.is_none() {
+            self.state.command_log = Some(std::cell::RefCell::new(
+                command_log::CommandLog::new_recording(self.show_commands),
+            ));
+        }
+        self.refresh_script_tab_snapshot();
+        let needs_repaint = if let Some(runner) = &mut self.script {
+            if runner.done {
+                if let Some(err) = &runner.error {
+                    self.state.status = format!("Script error: {err}");
+                } else if !runner.should_quit {
+                    let complete_status = if runner.is_repl() { "REPL ended" } else { "Script complete" };
+                    self.state.status = complete_status.to_string();
+                }
+                let action = script_finished_close_action(
+                    runner.error.is_some(),
+                    runner.should_quit,
+                    self.exit_on_script_complete,
+                );
+                if action.fail_process {
+                    self.script_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if action.close {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                false
+            } else {
+                let repaint = runner.tick(
+                    &mut self.state,
+                    &mut self.synthetic,
+                    self.last_viewport,
+                    ctx,
+                );
+                if let Some(err) = &runner.error {
+                    self.state.status = format!("Script error: {err}");
+                }
+                repaint
+            }
+        } else {
+            false
+        };
+
+        // Workspace ops queued by the script (tabs, document rebind).
+        if let Some(runner) = &mut self.script {
+            let rebind = std::mem::take(&mut runner.rebind_active_document);
+            let ops = std::mem::take(&mut runner.pending_tab_ops);
+            if rebind {
+                self.rebind_active_document();
+            }
+            for op in ops {
+                self.apply_script_tab_op(op);
+            }
+            self.refresh_script_tab_snapshot();
+        }
+
+        if needs_repaint || self.script.as_ref().is_some_and(|r| r.is_waiting()) {
+            ctx.request_repaint();
+        }
+    }
+
+    fn refresh_script_tab_snapshot(&mut self) {
+        let active = self.workspace.main().active;
+        let n = self.workspace.main().tabs.len();
+        let mut titles = Vec::with_capacity(n);
+        let mut dirty = Vec::with_capacity(n);
+        for i in 0..n {
+            titles.push(self.main_tab_title(i));
+            let is_dirty = if i == active {
+                self.state.dirty
+            } else {
+                self.workspace.main().tabs[i].state.dirty
+            };
+            dirty.push(is_dirty);
+        }
+        self.state.script_tab_titles = titles;
+        self.state.script_tab_dirty = dirty;
+        self.state.script_active_tab = active;
+        self.state.script_window_count = self.workspace.windows.len();
+    }
+
+    fn apply_script_tab_op(&mut self, op: script::TabOp) {
+        match op {
+            script::TabOp::NewBlank => self.new_blank_tab(),
+            script::TabOp::NewSameDocument => self.new_same_document_tab(),
+            script::TabOp::Close { index } => {
+                let tab_id = match index {
+                    Some(i) => self.workspace.main().tabs.get(i).map(|t| t.id),
+                    None => Some(self.main_active_tab_id()),
+                };
+                if let Some(id) = tab_id {
+                    self.request_close_tab(id);
+                }
+            }
+            script::TabOp::Select { index } => {
+                self.sync_active_document_siblings();
+                self.switch_main_tab(index);
+            }
+            script::TabOp::Reorder { from, to } => self.reorder_main_tab(from, to),
+            script::TabOp::Detach { index } => {
+                let tab_id = match index {
+                    Some(i) => self.workspace.main().tabs.get(i).map(|t| t.id),
+                    None => Some(self.main_active_tab_id()),
+                };
+                if let Some(id) = tab_id {
+                    self.detach_tab_to_window(id);
+                }
+            }
+        }
+    }
+}
+
+/// Detached (secondary) OS windows host the same application chrome as the main window:
+/// toolbar, docked panes, status bar, and central viewport (#1133).
+fn detached_window_is_full_application() -> bool {
+    true
+}
+
+impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // Scripted input (bearcad.ui.click/drag/key…) feeds egui as raw events, one
+        // queued batch per frame — indistinguishable from OS input to every handler.
+        if let Some(batch) = self.synthetic.take_raw_frame() {
+            // A scripted click that carries Shift has to show up in `RawInput::modifiers`
+            // too (#835) — that, not the event's own field, is what `ui.input(|i|
+            // i.modifiers)` reads, and it's how tools tell a plain click from a Shift+click.
+            if let Some(modifiers) = batch.iter().find_map(|e| match e {
+                egui::Event::PointerButton { modifiers, .. }
+                | egui::Event::Key { modifiers, .. }
+                    if !modifiers.is_none() =>
+                {
+                    Some(*modifiers)
+                }
+                _ => None,
+            }) {
+                raw_input.modifiers = modifiers;
+            }
+            raw_input.events.extend(batch);
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // egui 0.35 hands the app a `Ui` instead of a `Context`; panels nest inside it.
+        // One line per early frame (#978): a run that traces frames but shows nothing is a
+        // painting fault; a run that traces none never got asked to paint at all.
+        {
+            let size = ui.max_rect().size();
+            diag::frame((size.x, size.y), self.gpu_viewport);
+            // What the window believes about itself, left where the watchdog can find it
+            // (#1032). A grey window whose own inner rect is zero, or which the platform
+            // reports as minimized or on a monitor that isn't there, says so only here.
+            ui.ctx().input(|i| {
+                let vp = &i.viewport();
+                diag::note_window_state(format!(
+                    "inner {:?}, outer {:?}, scale {:.2}, monitor {:?}, \
+                     focused {}, minimized {:?}, maximized {:?}",
+                    vp.inner_rect.map(|r| r.size()),
+                    vp.outer_rect.map(|r| r.size()),
+                    i.pixels_per_point,
+                    vp.monitor_size,
+                    i.focused,
+                    vp.minimized,
+                    vp.maximized,
+                ));
+            });
+            // What the window server says, which is the only side of this egui cannot see
+            // (#1032). Sampled here because AppKit is main-thread only and the watchdog is
+            // not; throttled because a grey window stays grey — one sample a second is
+            // plenty, and the answer is only ever read on failure.
+            #[cfg(not(target_arch = "wasm32"))]
+            if diag::frames_drawn() % 120 == 0 {
+                if let Some(state) = window_probe::appkit_window_state() {
+                    diag::note_platform_window_state(state);
+                }
+            }
+        }
+        // Everything below still works off the context, so clone it out once.
+        let ctx = &ui.ctx().clone();
+        // Finish a background combine/cut when the kernel is done (#1031).
+        if self.state.boolean_job.is_some() {
+            if self.state.poll_boolean_job() {
+                ctx.request_repaint();
+            } else {
+                // Keep painting so the progress spinner turns and we poll again.
+                ctx.request_repaint();
+            }
+        }
+        // Tutorial anchors are re-recorded as this frame's UI renders.
+        self.state.tutorial_anchor_rects.clear();
+        touch::detect(ctx);
+        // Input-debug harness: keep this window frontmost so synthetic system mouse
+        // events land here and nowhere else.
+        if std::env::var("BEARCAD_DEBUG_INPUT").is_ok() && !self.debug_focus_requested {
+            self.debug_focus_requested = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        // Which keyboard should a touch device get? A focused *value* field takes the
+        // app keypad (OS keyboard suppressed); anything else keeps the OS keyboard.
+        let value_field_focus = touch::value_field_focused() && touch::active();
+        touch::set_value_field_focused(false);
+        self.keypad_serves_focus = value_field_focus;
+        #[cfg(target_arch = "wasm32")]
+        self.sync_mobile_keyboard(value_field_focus);
+        // The first time the compact (phone) layout engages, start with the panes
+        // closed — three floating windows over a 390-px viewport is all window.
+        if touch::compact(ctx) && !self.compact_layout_initialized {
+            self.compact_layout_initialized = true;
+            for pane in [Pane::Hierarchy, Pane::Context, Pane::Parameters] {
+                self.state.apply(Action::SetPaneVisible { pane, visible: false });
+            }
+        }
+        tick_launch_maximize(
+            &mut self.launch_maximize_frames_remaining,
+            self.launched_at.elapsed(),
+            ctx,
+        );
+        theme::apply(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.sync_window_title(ctx);
+            self.handle_quit_prompt(ctx);
+        }
+
+        let dt = ctx.input(|i| i.stable_dt);
+        self.tick_auto_zoom();
+        let transition_active = self.state.cam.tick_transition(dt);
+        if transition_active {
+            ctx.request_repaint();
+        } else if let Some(log) = &self.state.command_log {
+            log.borrow_mut()
+                .on_transition_complete(&self.state.cam);
+        }
+
+        self.process_screenshots(ctx);
+        self.tick_script(ctx);
+        // Drop a stale rollback marker (#524) once its element is gone (deleted, or a
+        // new/opened document), so it doesn't linger over unrelated geometry.
+        if let Some(marker) = self.rollback_marker.clone() {
+            if !document_lifecycle::element_alive(&self.state.doc, marker.element) {
+                self.rollback_marker = None;
+            }
+        }
+        self.tick_tutorial();
+        self.tick_touch_extras(ctx);
+        self.show_touch_keypad(ctx);
+        self.tick_exit_after_startup(ctx);
+        // Synthetic script input now arrives through `raw_input_hook` (below), so it
+        // builds real egui pointer state instead of being appended mid-frame (#302).
+
+        self.tick_fps_mode(ctx, dt);
+        self.handle_keyboard_shortcuts(ctx);
+
+        // Aligned-view tool base (#365): on entering the tool, seed its base from a lone selected
+        // projection (so you needn't re-pick it); leaving the tool clears it.
+        if self.state.tool == Tool::DrawingAlign {
+            if self.prev_tool != Tool::DrawingAlign {
+                self.drawing_align_parent = match self.state.selected_drawing_view() {
+                    Some((d, v)) if Some(d) == self.state.editing_drawing => Some(v),
+                    _ => None,
+                };
+            }
+        } else {
+            self.drawing_align_parent = None;
+        }
+        self.prev_tool = self.state.tool;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        self.handle_native_menu(ctx);
+        self.tick_unit_sync(ctx);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let panes = self.state.panes.clone();
+            if let Some(command) = web_menu::bar(ui, |pane| panes.is_visible(pane)) {
+                self.handle_menu_command(ctx, command);
+            }
+            self.drain_web_io(ctx);
+        }
+
+        self.handle_tab_close_prompt(ctx);
+        self.draw_main_tab_bar(ui);
+        self.render_detached_windows(ctx, frame);
+
+        self.render_window_chrome(ui, ctx, frame);
+
+        self.show_json_dialog(ctx);
+
+        // McMaster-Carr catalog window (#1022): a window of its own, in a second process,
+        // whose caught CAD downloads land here.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_mcmaster_window(ctx);
+
+        // Keyboard Shortcuts window (#434): a closable, scrollable list of every binding,
+        // grouped by where it applies, rendered from shortcuts::all_shortcuts().
+        if self.shortcuts_open {
+            let mut open = true;
+            egui::Window::new("Keyboard shortcuts")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(430.0)
+                .default_height(520.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for section in shortcuts::all_shortcuts() {
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(section.title).strong().size(14.0),
+                                );
+                                if let Some(scope) = section.scope {
+                                    ui.label(
+                                        egui::RichText::new(format!("— {scope}"))
+                                            .color(egui::Color32::from_gray(140))
+                                            .size(11.0),
+                                    );
+                                }
+                            });
+                            ui.separator();
+                            egui::Grid::new(("shortcut_section", section.title))
+                                .num_columns(2)
+                                .spacing([18.0, 3.0])
+                                .min_col_width(110.0)
+                                .show(ui, |ui| {
+                                    for (keys, what) in &section.entries {
+                                        ui.label(
+                                            egui::RichText::new(keys)
+                                                .monospace()
+                                                .color(egui::Color32::from_gray(220)),
+                                        );
+                                        ui.label(what);
+                                        ui.end_row();
+                                    }
+                                });
+                            ui.add_space(4.0);
+                        }
+                    });
+                });
+            self.shortcuts_open = open;
+        }
+
 
         // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
         // view. Uses an *immediate* viewport so the render closure can borrow `self`.
@@ -32132,6 +32200,16 @@ mod tests {
         let e = cr.end_point(&frame, &doc);
         assert!((e.x - 8.0).abs() < 1e-4);
         assert!((e.y - 9.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn secondary_windows_are_full_application_chrome() {
+        // #1133: detaching a tab must open a full app window (toolbar/panes/status), not a
+        // viewport-only host. The render path gates on this helper.
+        assert!(
+            super::detached_window_is_full_application(),
+            "detached windows must use full application chrome"
+        );
     }
 
     #[test]
