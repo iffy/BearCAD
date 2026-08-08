@@ -15519,18 +15519,16 @@ impl App {
             if wi >= self.workspace.windows.len() {
                 continue;
             }
-            let mut builder = egui::ViewportBuilder::default()
+            let builder = egui::ViewportBuilder::default()
                 .with_title(title)
                 .with_inner_size([960.0, 640.0])
                 .with_icon(app_icon::load_for_viewport());
             // Match main-window chrome so the tab strip can sit in the titlebar.
             #[cfg(target_os = "macos")]
-            {
-                builder = builder
-                    .with_fullsize_content_view(true)
-                    .with_titlebar_shown(false)
-                    .with_title_shown(false);
-            }
+            let builder = builder
+                .with_fullsize_content_view(true)
+                .with_titlebar_shown(false)
+                .with_title_shown(false);
             let vp_id = egui::ViewportId::from_hash_of(("detached_tab", viewport_key));
             let mut close_requested = false;
             ctx.show_viewport_immediate(vp_id, builder, |vui, _class| {
