@@ -5,11 +5,11 @@ title: Quickstart
 
 # Quickstart: an angle bracket
 
-Don't have BearCAD yet? [Run it in your browser](/app/)
+Don't have BearCAD yet? [Run it in your browser](pathname:///app/)
 or [download it here](https://github.com/iffy/BearCAD/releases/latest).
 
 Prefer being shown? **Bear** can walk you through this very bracket inside the app:
-**[start the tutorial](/app/?tutorial=bracket)**, or press
+**[start the tutorial](pathname:///app/?tutorial=bracket)**, or press
 **Tutorial** in the status bar.
 
 A 120-degree angle bracket: rounded bend, rounded corners, two countersunk screw holes.

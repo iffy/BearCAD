@@ -64,7 +64,7 @@ Other flags:
 - `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout. **Help → Export
   Session Commands…** does the same into a replayable `.lua` file.
 - `--tutorial <name>` — start a tutorial on launch. The browser app takes it as a URL
-  parameter: [`?tutorial=bracket`](/app/?tutorial=bracket).
+  parameter: [`?tutorial=bracket`](pathname:///app/?tutorial=bracket).
 
 ## Interactive REPL
 
