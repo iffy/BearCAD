@@ -78,7 +78,9 @@ mod release_artifacts;
 #[cfg(not(target_arch = "wasm32"))]
 mod updater;
 mod script;
-#[cfg(not(target_arch = "wasm32"))]
+// Always compiled: `BodyHighlightMethod` (and friends) are used by the action layer,
+// viewport, and script path on every target. Persistence (`AppSettings::load`/`save`) is
+// still only wired up on native; on wasm the module just supplies the types.
 mod settings;
 // The JSON command dispatcher (todoer #179) is the web build's scripting hook: on wasm it
 // backs `web_lua`'s bearcad_call dispatch; on native it's exercised by its own tests.
