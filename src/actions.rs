@@ -1084,14 +1084,15 @@ impl CreatingSketchRepeat {
     }
 }
 
-/// In-progress slice operation (Slice tool): the picked target bodies (A), planar cutters
-/// (B), the extend-to-infinity toggle, and which picker the next click lands on.
+/// In-progress slice operation (Slice tool): the picked target bodies (A), cutters (B —
+/// planar faces/planes and/or sketch lines, #1126), the extend-to-infinity toggle, and
+/// which picker the next click lands on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingSlice {
     pub targets: Vec<crate::model::BodyKey>,
-    pub cutters: Vec<FaceId>,
+    pub cutters: Vec<crate::model::SliceCutter>,
     /// Which picker the next viewport click adds to: `false` = a target body, `true` = a
-    /// cutter face/plane.
+    /// cutter face/plane or line.
     pub picking_cutter: bool,
     pub extend_infinite: bool,
     /// `Some(op)` while re-editing a committed operation.
@@ -2716,7 +2717,7 @@ pub enum Action {
     /// Scripted/replayed slice with an explicit payload (also what `CommitSlice` lowers to).
     CreateSliceOperation {
         targets: Vec<crate::model::BodyKey>,
-        cutters: Vec<FaceId>,
+        cutters: Vec<crate::model::SliceCutter>,
         extend_infinite: bool,
     },
     /// Re-point an existing slice operation at new targets / cutters / extend flag. Fragment
@@ -2724,7 +2725,7 @@ pub enum Action {
     EditSliceOperation {
         op: crate::model::SliceOpKey,
         targets: Vec<crate::model::BodyKey>,
-        cutters: Vec<FaceId>,
+        cutters: Vec<crate::model::SliceCutter>,
         extend_infinite: bool,
     },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
@@ -6498,14 +6499,14 @@ pub(crate) fn commit_inline_parameter_defs<'a>(
 fn validate_slice_inputs(
     doc: &Document,
     targets: &[crate::model::BodyKey],
-    cutters: &[FaceId],
+    cutters: &[crate::model::SliceCutter],
     editing: Option<crate::model::SliceOpKey>,
 ) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Pick at least one body to slice".to_string());
     }
     if cutters.is_empty() {
-        return Err("Pick at least one cutting plane or face".to_string());
+        return Err("Pick at least one cutting plane, face, or line".to_string());
     }
     let editing_inputs: Vec<crate::model::BodyKey> = editing
         .and_then(|e| doc.slice_ops.get(e))
@@ -6527,11 +6528,26 @@ fn validate_slice_inputs(
             return Err(format!("Body {bi:?} is picked twice"));
         }
     }
-    // Cutters must be planar faces the kernel can build a plane from (construction planes
-    // or planar body faces).
+    // Planar cutters need a sketchable frame; line cutters need a live, non-shadow sketch line
+    // whose sketch frame is known (#1126).
     for cutter in cutters {
-        if crate::face::sketch_frame(doc, cutter.clone()).is_none() {
-            return Err("A cutter is not a valid planar face".to_string());
+        match cutter {
+            crate::model::SliceCutter::Face(face) => {
+                if crate::face::sketch_frame(doc, face.clone()).is_none() {
+                    return Err("A cutter is not a valid planar face".to_string());
+                }
+            }
+            crate::model::SliceCutter::Line { line } => {
+                let Some(l) = doc.lines.get(*line) else {
+                    return Err(format!("Cutter line {line:?} not found"));
+                };
+                if l.shadow {
+                    return Err("A cutter line is already consumed by another operation".to_string());
+                }
+                if crate::face::sketch_geometry_frame(doc, l.sketch).is_none() {
+                    return Err("A cutter line has no sketch plane".to_string());
+                }
+            }
         }
     }
     Ok(())
@@ -16055,13 +16071,20 @@ pub fn apply_pick(
     use crate::hierarchy::SceneElement;
     match (target, element) {
         (P::SliceCutters, element) => {
-            let Some(face) = element.as_face_id() else { return false };
+            // Planes/faces or sketch lines (laser-style path cutters, #1126).
+            let cutter = if let Some(face) = element.as_face_id() {
+                crate::model::SliceCutter::Face(face)
+            } else if let SceneElement::Line(li) = element {
+                crate::model::SliceCutter::Line { line: *li }
+            } else {
+                return false;
+            };
             let Some(cs) = state.creating_slice.as_mut() else { return false };
-            match cs.cutters.iter().position(|f| *f == face) {
+            match cs.cutters.iter().position(|c| *c == cutter) {
                 Some(i) => {
                     cs.cutters.remove(i);
                 }
-                None => cs.cutters.push(face),
+                None => cs.cutters.push(cutter),
             }
             true
         }
@@ -23234,8 +23257,8 @@ mod tests {
         assert_eq!(state.doc.move_ops.values().nth(0).unwrap().tx, "dx", "the stored offset should be the bare name");
     }
 
-    /// Adds an XY-parallel construction plane at `z` and returns its `FaceId`.
-    fn add_offset_xy_plane(state: &mut AppState, z: f32) -> FaceId {
+    /// Adds an XY-parallel construction plane at `z` and returns it as a planar slice cutter.
+    fn add_offset_xy_plane(state: &mut AppState, z: f32) -> crate::model::SliceCutter {
         let plane = plane_from_definition(
             &definition_from_reference(
                 &PlaneReference::Face {
@@ -23249,7 +23272,9 @@ mod tests {
             ConstructionPlaneParent::Root,
         );
         state.doc.construction_planes.insert(plane);
-        FaceId::ConstructionPlane(state.doc.construction_planes.keys().last().unwrap())
+        crate::model::SliceCutter::Face(FaceId::ConstructionPlane(
+            state.doc.construction_planes.keys().last().unwrap(),
+        ))
     }
 
     /// Slice: a plane through the middle of a box splits it into two fragment bodies, the
@@ -23349,6 +23374,170 @@ mod tests {
             extend_infinite: true,
         });
         assert!(matches!(shadowed, ActionResult::Err(_)));
+    }
+
+    /// #1126: a sketch line on the top face of a box laser-cuts through the body, splitting
+    /// it into two fragments just like a mid-plane cutter would.
+    #[test]
+    fn slice_with_a_line_on_a_face_splits_like_a_laser() {
+        let mut state = box_extrusion_state();
+        // Top cap of the 10×10×5 box (z = 5). Sketch a midline from x=0..10 at y=5.
+        let top = FaceId::ExtrudeCap {
+            extrusion: xkey(0),
+            profile: ExtrudeFace::Polygon(
+                state
+                    .doc
+                    .lines
+                    .keys()
+                    .take(4)
+                    .collect::<Vec<_>>(),
+            ),
+            top: true,
+        };
+        // Recover the actual profile lines from the extrusion (order matters for FaceId equality
+        // elsewhere, but sketch_frame only needs a valid ExtrudeCap).
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => top,
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        let line = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 5.0, 10.0, 5.0,
+        ));
+        let bodies_before = state.doc.bodies.len();
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![crate::model::SliceCutter::Line { line }],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let op = &state.doc.slice_ops.values().nth(0).unwrap();
+        assert_eq!(op.outputs.len(), 2, "a midline laser cut yields two fragments");
+        assert!(state.doc.bodies[bkey(0)].shadow);
+        assert_eq!(state.doc.bodies.len(), bodies_before + 2);
+        for &out in &op.outputs {
+            let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("fragment mesh");
+            let vol = crate::extrude::mesh_signed_volume(&mesh).abs();
+            assert!(
+                (vol - 250.0).abs() < 5.0,
+                "each half of a 10×10×5 box should be ~250, got {vol}"
+            );
+        }
+    }
+
+    /// #1126: several disjoint lines each cut — two crossing midlines quarter the box.
+    #[test]
+    fn slice_with_multiple_lines_cuts_along_each() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        let a = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 5.0, 10.0, 5.0,
+        ));
+        let b = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 5.0, 0.0, 5.0, 10.0,
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![
+                crate::model::SliceCutter::Line { line: a },
+                crate::model::SliceCutter::Line { line: b },
+            ],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.slice_ops.values().nth(0).unwrap().outputs.len(),
+            4,
+            "two crossing midlines quarter the box"
+        );
+    }
+
+    /// #1126: a short line still severs the body when extend is on (endpoints expand).
+    #[test]
+    fn slice_line_extends_past_endpoints_to_sever() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        // Only spans the middle third of the face — without endpoint expansion this would not
+        // fully separate the solid.
+        let line = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 3.0, 5.0, 7.0, 5.0,
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![crate::model::SliceCutter::Line { line }],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.slice_ops.values().nth(0).unwrap().outputs.len(),
+            2,
+            "expanded short line still severs the box"
+        );
+    }
+
+    /// #1126: a curved (bezier) line on a face laser-cuts as a ruled surface through the body.
+    #[test]
+    fn slice_with_a_curved_line_on_a_face_splits() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        let mut curved = crate::model::Line::from_local_endpoints(sketch, 0.0, 2.0, 10.0, 8.0);
+        // Bulge toward the centre so the path is clearly non-straight.
+        curved.bezier = Some([(3.0, 8.0), (7.0, 2.0)]);
+        let line = state.doc.lines.insert(curved);
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![crate::model::SliceCutter::Line { line }],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let n = state.doc.slice_ops.values().nth(0).unwrap().outputs.len();
+        assert!(n >= 2, "curved laser cut should produce at least two fragments, got {n}");
+        for &out in &state.doc.slice_ops.values().nth(0).unwrap().outputs {
+            assert!(
+                crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
+                "fragment {out:?} should have a kernel mesh"
+            );
+        }
     }
 
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two

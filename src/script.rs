@@ -547,17 +547,17 @@ pub enum Instruction {
         length: String,
         length_target: Option<crate::model::ExtrudeTarget>,
     },
-    /// Slice bodies with planar cutters (Slice tool).
+    /// Slice bodies with planar and/or line cutters (Slice tool, #1126).
     CreateSliceOp {
         targets: Vec<usize>,
-        cutters: Vec<FaceId>,
+        cutters: Vec<crate::model::SliceCutter>,
         extend_infinite: bool,
     },
     /// Re-point an existing slice operation.
     EditSliceOp {
         op: usize,
         targets: Vec<usize>,
-        cutters: Vec<FaceId>,
+        cutters: Vec<crate::model::SliceCutter>,
         extend_infinite: bool,
     },
     SetElementVisible {
@@ -3516,7 +3516,7 @@ fn slice_op_lua(
     op: Option<usize>,
     doc: Option<&crate::model::Document>,
     targets: &[usize],
-    cutters: &[FaceId],
+    cutters: &[crate::model::SliceCutter],
     extend_infinite: bool,
 ) -> String {
     let mut parts = Vec::new();
@@ -3529,12 +3529,33 @@ fn slice_op_lua(
     ));
     parts.push(format!(
         "cutters = {{{}}}",
-        cutters.iter().map(|f| face_id_lua_ref(f, doc)).collect::<Vec<_>>().join(", ")
+        cutters
+            .iter()
+            .map(|c| slice_cutter_lua_ref(c, doc))
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
     if extend_infinite {
         parts.push("extend = true".to_string());
     }
     format!("{call}{{ {} }}", parts.join(", "))
+}
+
+/// Script table for one slice cutter: a face-spec, or `{ kind = "line", index = i }` (#1126).
+fn slice_cutter_lua_ref(
+    cutter: &crate::model::SliceCutter,
+    doc: Option<&crate::model::Document>,
+) -> String {
+    match cutter {
+        crate::model::SliceCutter::Face(face) => face_id_lua_ref(face, doc),
+        crate::model::SliceCutter::Line { line } => {
+            let index = ordinal_or_slot(
+                doc.map(|d| d.lines.keys().position(|k| k == *line)),
+                line.index(),
+            );
+            format!("{{ kind = \"line\", index = {index} }}")
+        }
+    }
 }
 
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments

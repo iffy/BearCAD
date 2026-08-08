@@ -1494,9 +1494,9 @@ impl ExploderState {
 /// that takes both representations (the Select tool's accept-everything picker) gets the mesh
 /// one, exactly as before.
 ///
-/// Everything else falls out of the picker's own filter: a Slice cutters fan offers planes and
-/// flat faces, an Extrude fan offers profiles and not the corner's edges under them, and a
-/// constraint badge appears only where a picker actually takes constraints.
+/// Everything else falls out of the picker's own filter: a Slice cutters fan offers planes,
+/// flat faces, and sketch lines (#1126), an Extrude fan offers profiles and not the corner's
+/// edges under them, and a constraint badge appears only where a picker actually takes constraints.
 fn exploder_keep_for_picker(
     doc: &model::Document,
     picker: &crate::element_picker::ElementPicker,
@@ -10302,7 +10302,7 @@ impl App {
             return;
         };
         // Which of the two sets the click feeds is the picker's business, not the tool's
-        // (#970): Targets takes whole bodies, Cutters takes planes and flat faces.
+        // (#970/#1126): Targets takes whole bodies, Cutters takes planes, flat faces, and lines.
         if !self.click_into_focused_picker(tool_pickers, pp, project, pick_occlusion) {
             return;
         }
@@ -30418,9 +30418,9 @@ mod tests {
 
     #[test]
     fn a_destructive_pickers_faces_read_red_through_the_element_channel() {
-        // #961: Slice's cutters are planes and faces. A solid takes a fill, but a face has
-        // none to recolour, so those go down the coloured-element path instead of being
-        // folded into the blue selection — which is what they used to do.
+        // #961: Slice's cutters include planes and faces (and lines, #1126). A solid takes a
+        // fill, but a face has none to recolour, so those go down the coloured-element path
+        // instead of being folded into the blue selection — which is what they used to do.
         use crate::context::{PickerTarget, ToolPickerView};
         use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
         let doc = model::Document::default();

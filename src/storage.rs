@@ -2123,7 +2123,9 @@ mod tests {
         });
         doc.slice_ops.insert(crate::model::SliceOperation {
             targets: vec![bkey(0)],
-            cutters: vec![crate::model::FaceId::ConstructionPlane(pkey(3))],
+            cutters: vec![crate::model::SliceCutter::Face(
+                crate::model::FaceId::ConstructionPlane(pkey(3)),
+            )],
             extend_infinite: true,
             outputs: vec![bkey(1), bkey(2)],
             name: Some("Halved".to_string()),

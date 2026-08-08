@@ -1044,11 +1044,18 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((input, HierarchyNode::Joint(ji)));
         }
     }
-    // A slice's cutters feed it (#449): construction planes have a node; body faces don't.
+    // A slice's cutters feed it (#449/#1126): construction planes and sketch lines have nodes;
+    // body faces don't.
     for (oi, op) in doc.slice_ops.iter() {
         for cutter in &op.cutters {
-            if let FaceId::ConstructionPlane(pi) = cutter {
-                edges.push((HierarchyNode::ConstructionPlane(*pi), HierarchyNode::SliceOp(oi)));
+            match cutter {
+                crate::model::SliceCutter::Face(FaceId::ConstructionPlane(pi)) => {
+                    edges.push((HierarchyNode::ConstructionPlane(*pi), HierarchyNode::SliceOp(oi)));
+                }
+                crate::model::SliceCutter::Line { line } => {
+                    edges.push((HierarchyNode::Line(*line), HierarchyNode::SliceOp(oi)));
+                }
+                crate::model::SliceCutter::Face(_) => {}
             }
         }
     }

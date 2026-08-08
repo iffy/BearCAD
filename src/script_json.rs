@@ -1723,24 +1723,46 @@ fn repeat_op_args(
     ))
 }
 
-/// `slice`/`edit_slice` shared arguments: target bodies, the planar cutters (face-spec
-/// objects), and the extend-to-infinity flag (default true).
+/// `slice`/`edit_slice` shared arguments: target bodies, the cutters (face-spec objects
+/// or `{ kind = "line", index = i }` laser paths, #1126), and the extend-to-infinity flag
+/// (default true).
 fn slice_op_args(
     doc: &crate::model::Document,
     o: &Map<String, Value>,
-) -> Result<(Vec<usize>, Vec<FaceId>, bool), String> {
+) -> Result<(Vec<usize>, Vec<crate::model::SliceCutter>, bool), String> {
     let targets = usize_list(o, "bodies")?;
     let mut cutters = Vec::new();
     match o.get("cutters") {
         None | Some(Value::Null) => {}
         Some(Value::Array(list)) => {
             for t in list {
-                cutters.push(face_id_from_json(doc, t)?);
+                cutters.push(slice_cutter_from_json(doc, t)?);
             }
         }
-        Some(_) => return Err("slice `cutters` must be a list of face specs".into()),
+        Some(_) => {
+            return Err("slice `cutters` must be a list of face specs or line cutters".into())
+        }
     }
     Ok((targets, cutters, opt_bool(o, "extend")?.unwrap_or(true)))
+}
+
+/// One slice cutter from JSON: a line laser path (`kind = "line"`) or a planar face-spec.
+fn slice_cutter_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<crate::model::SliceCutter, String> {
+    let t = v.as_object().ok_or("cutter must be an object")?;
+    let kind = t
+        .get("kind")
+        .or_else(|| t.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if kind.eq_ignore_ascii_case("line") {
+        let index = req_usize(t, "index", "line cutter")?;
+        let line = line_key_from_ordinal(doc, index)?;
+        return Ok(crate::model::SliceCutter::Line { line });
+    }
+    Ok(crate::model::SliceCutter::Face(face_id_from_json(doc, v)?))
 }
 
 /// `mirror_bodies`/`edit_mirror` shared arguments (#523): the mirror plane (a face spec) and
@@ -3595,7 +3617,9 @@ mod tests {
             ),
             Ok(Instruction::CreateSliceOp {
                 targets: vec![0],
-                cutters: vec![FaceId::ConstructionPlane(pkey(1))],
+                cutters: vec![crate::model::SliceCutter::Face(FaceId::ConstructionPlane(
+                    pkey(1)
+                ))],
                 extend_infinite: true,
             })
         );
@@ -3610,12 +3634,25 @@ mod tests {
             Ok(Instruction::EditSliceOp {
                 op: 0,
                 targets: vec![1],
-                cutters: vec![FaceId::ExtrudeCap {
+                cutters: vec![crate::model::SliceCutter::Face(FaceId::ExtrudeCap {
                     extrusion: xkey(0),
                     profile: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
                     top: false,
-                }],
+                })],
                 extend_infinite: false,
+            })
+        );
+        // #1126: a sketch line as a laser-style path cutter.
+        assert_eq!(
+            instruction_from_json(
+                &doc,
+                "slice",
+                &json!({ "bodies": [0], "cutters": [{ "kind": "line", "index": 2 }] })
+            ),
+            Ok(Instruction::CreateSliceOp {
+                targets: vec![0],
+                cutters: vec![crate::model::SliceCutter::Line { line: lkey(2) }],
+                extend_infinite: true,
             })
         );
     }

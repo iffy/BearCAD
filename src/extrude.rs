@@ -2215,7 +2215,7 @@ fn occt_repeated_output_shape(
 /// covering the target; otherwise it's the cutter face's own boundary (a planar body face),
 /// so the cut only reaches material within that footprint. Construction planes have no
 /// finite boundary and always cut as infinite planes.
-fn occt_slice_halfspace(
+fn occt_slice_face_halfspace(
     doc: &Document,
     cutter: &FaceId,
     extend_infinite: bool,
@@ -2252,6 +2252,130 @@ fn occt_slice_halfspace(
         }
     };
     crate::kernel::Shape::prism(&profile, n * reach)
+}
+
+/// Laser-style half-space for a sketch line cutter (#1126): extrude the path through the
+/// body along the sketch normal. One side of the path (the "left" of the directed polyline
+/// in the face plane) becomes the solid Common keeps; Cut takes the other side.
+///
+/// With `extend_infinite` the path expands past its endpoints along the end tangents so a
+/// short line still severs a larger body (and a tapered solid whose back face is bigger
+/// than the front still splits cleanly).
+fn occt_slice_line_halfspace(
+    doc: &Document,
+    line_key: crate::model::LineKey,
+    extend_infinite: bool,
+    target: crate::model::BodyKey,
+) -> Option<crate::kernel::Shape> {
+    let line = doc.lines.get(line_key)?;
+    let frame = sketch_geometry_frame(doc, line.sketch)?;
+    let n = frame.normal.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return None;
+    }
+    let (min, max) = body_solid_mesh_uncached(doc, target)?.bounds()?;
+    let reach = (max - min).length().max(1.0) * 4.0;
+
+    // World polyline of the cutter path (straight lines are just two points).
+    let mut path = crate::face::line_world_polyline(doc, line)?;
+    if path.len() < 2 {
+        return None;
+    }
+    // Drop consecutive duplicates so tangents stay well-defined.
+    path.dedup_by(|a, b| (*a - *b).length_squared() < 1e-12);
+    if path.len() < 2 {
+        return None;
+    }
+
+    if extend_infinite {
+        // Push both ends out along their end tangents so the cut clears the body.
+        let d0 = (path[1] - path[0]).normalize_or_zero();
+        let dn = (*path.last().unwrap() - path[path.len() - 2]).normalize_or_zero();
+        if d0 != Vec3::ZERO {
+            path[0] -= d0 * reach;
+        }
+        if dn != Vec3::ZERO {
+            let last = path.len() - 1;
+            path[last] += dn * reach;
+        }
+    }
+
+    // Straight line → a true plane half-space (same quality as a plane cutter).
+    let dir = (*path.last().unwrap() - path[0]).normalize_or_zero();
+    let straight = path.len() == 2
+        || path.iter().all(|p| {
+            let to = *p - path[0];
+            to.length_squared() < 1e-12 || to.normalize_or_zero().cross(dir).length() < 1e-4
+        });
+    if straight && dir != Vec3::ZERO {
+        let plane_n = dir.cross(n).normalize_or_zero();
+        if plane_n == Vec3::ZERO {
+            return None;
+        }
+        // Orthonormal in-plane axes: dir along the line, plane_n × dir? Use dir and n.
+        // Profile lives in the cutting plane (normal = plane_n).
+        let u = dir;
+        let v = n;
+        let centroid = (min + max) * 0.5;
+        let mid = (path[0] + *path.last().unwrap()) * 0.5;
+        let center = mid - plane_n * (mid - centroid).dot(plane_n);
+        // When not extending, keep the slab only as long as the (unextended) path span —
+        // but we already optionally extended `path`. Finite: half-length = half path length.
+        let half_u = if extend_infinite {
+            reach
+        } else {
+            (*path.last().unwrap() - path[0]).length() * 0.5 + 1e-3
+        };
+        let half_v = reach;
+        let profile = vec![
+            center - u * half_u - v * half_v,
+            center + u * half_u - v * half_v,
+            center + u * half_u + v * half_v,
+            center - u * half_u + v * half_v,
+        ];
+        return crate::kernel::Shape::prism(&profile, plane_n * reach);
+    }
+
+    // Curved path: closed strip on the left of the polyline, extruded through the body
+    // along ±n so the cut surface is the ruled extrusion of the path.
+    let mut left: Vec<Vec3> = Vec::with_capacity(path.len());
+    for i in 0..path.len() {
+        let tangent = if i + 1 < path.len() {
+            (path[i + 1] - path[i]).normalize_or_zero()
+        } else {
+            (path[i] - path[i - 1]).normalize_or_zero()
+        };
+        let left_dir = n.cross(tangent).normalize_or_zero();
+        if left_dir == Vec3::ZERO {
+            return None;
+        }
+        left.push(path[i] + left_dir * reach);
+    }
+    let mut profile: Vec<Vec3> = path.iter().map(|p| *p - n * reach).collect();
+    for p in left.iter().rev() {
+        profile.push(*p - n * reach);
+    }
+    if profile.len() < 3 {
+        return None;
+    }
+    crate::kernel::Shape::prism(&profile, n * (2.0 * reach))
+}
+
+/// Dispatch a slice cutter to its half-space solid (#181 planar / #1126 laser line).
+fn occt_slice_halfspace(
+    doc: &Document,
+    cutter: &crate::model::SliceCutter,
+    extend_infinite: bool,
+    target: crate::model::BodyKey,
+) -> Option<crate::kernel::Shape> {
+    match cutter {
+        crate::model::SliceCutter::Face(face) => {
+            occt_slice_face_halfspace(doc, face, extend_infinite, target)
+        }
+        crate::model::SliceCutter::Line { line } => {
+            occt_slice_line_halfspace(doc, *line, extend_infinite, target)
+        }
+    }
 }
 
 /// The ordered fragments one slice target splits into: start from the input body's solid(s)

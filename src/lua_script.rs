@@ -1637,20 +1637,35 @@ fn parse_sketch_repeat_op_args(
 }
 
 /// Parses `bearcad.slice{}`/`bearcad.edit_slice{}` arguments: the target body list, the
-/// planar cutters (face-spec tables), and the extend-to-infinity flag.
+/// cutters (face-spec tables or `{ kind = "line", index = i }` laser paths, #1126), and
+/// the extend-to-infinity flag.
 fn parse_slice_op_args(
     lua: &Lua,
     opts: &Table,
-) -> mlua::Result<(Vec<usize>, Vec<FaceId>, bool)> {
+) -> mlua::Result<(Vec<usize>, Vec<crate::model::SliceCutter>, bool)> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
-    let mut cutters: Vec<FaceId> = Vec::new();
+    let mut cutters: Vec<crate::model::SliceCutter> = Vec::new();
     if let Some(list) = opts.get::<Option<Vec<Table>>>("cutters")? {
         for table in list {
-            cutters.push(parse_face_id_table(lua, table)?);
+            cutters.push(parse_slice_cutter_table(lua, table)?);
         }
     }
     let extend_infinite: bool = opts.get::<Option<bool>>("extend")?.unwrap_or(true);
     Ok((targets, cutters, extend_infinite))
+}
+
+/// One slice cutter table: `{ kind = "line", index = i }` or a planar face-spec.
+fn parse_slice_cutter_table(lua: &Lua, table: Table) -> mlua::Result<crate::model::SliceCutter> {
+    let kind: Option<String> = table.get("kind").or_else(|_| table.get("type")).ok();
+    if kind
+        .as_deref()
+        .is_some_and(|k| k.eq_ignore_ascii_case("line"))
+    {
+        let index: usize = table.get("index")?;
+        let line = line_key_from_ordinal(lua, index)?;
+        return Ok(crate::model::SliceCutter::Line { line });
+    }
+    Ok(crate::model::SliceCutter::Face(parse_face_id_table(lua, table)?))
 }
 
 /// Parse a `bearcad.mirror_sketch`/`edit_sketch_mirror` table into
@@ -10104,6 +10119,32 @@ mod tests {
         assert_eq!(op.name.as_deref(), Some("Halved"));
         assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow, "the sliced input becomes a shadow body");
+    }
+
+    /// #1126: a sketch line on a body face is a laser-style path cutter.
+    #[test]
+    fn lua_slice_with_a_line_cutter_halves_a_box() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 5 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                                  profile = "polygon", profile_lines = {0,1,2,3}, top = true }
+            bearcad.line{ x = 0, y = 5, x1 = 10, y1 = 5 }
+            bearcad.exit_sketch()
+            bearcad.slice{ bodies = {0}, cutters = {{ kind = "line", index = 4 }}, name = "Laser" }
+        "#,
+        );
+        assert_eq!(state.doc.slice_ops.len(), 1, "{}", state.status);
+        let op = &state.doc.slice_ops.values().nth(0).unwrap();
+        assert_eq!(op.name.as_deref(), Some("Laser"));
+        assert_eq!(op.outputs.len(), 2, "a midline laser cut yields two fragments");
+        assert!(matches!(
+            op.cutters.as_slice(),
+            [crate::model::SliceCutter::Line { .. }]
+        ));
+        assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
     }
 
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two

@@ -711,15 +711,17 @@ pub enum RepeatEdit {
     Commit,
 }
 
-/// What the Slice tool's context section shows: the picked target bodies, the planar
-/// cutters, which picker the next viewport click lands on, and the extend-to-infinity flag.
+/// What the Slice tool's context section shows: the picked target bodies, the cutters
+/// (planes/faces and/or sketch lines, #1126), which picker the next viewport click lands
+/// on, and the extend-to-infinity flag.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SliceControl {
-    /// The bodies being sliced, and the planar faces/planes doing the slicing (#955). The
-    /// pane renders both through real [`ElementPicker`]s, so they carry their own filters,
-    /// focus, and — for the cutters, which are consumed — the red highlight.
+    /// The bodies being sliced, and the cutters doing the slicing (#955/#1126): planar
+    /// faces/planes and sketch lines. The pane renders both through real [`ElementPicker`]s,
+    /// so they carry their own filters, focus, and — for the cutters, which are consumed —
+    /// the red highlight.
     pub targets: Vec<crate::model::BodyKey>,
-    pub cutters: Vec<crate::model::FaceId>,
+    pub cutters: Vec<crate::model::SliceCutter>,
     /// `true` while the cutter picker is active (the next viewport click adds a cutter).
     pub picking_cutter: bool,
     pub extend_infinite: bool,
@@ -1334,7 +1336,8 @@ pub enum PickerTarget {
     SketchSliceCutters,
     /// The Slice tool's target bodies (`CreatingSlice::targets`, #955).
     SliceTargets,
-    /// The Slice tool's cutter faces/planes (`CreatingSlice::cutters`, #955). Consumed
+    /// The Slice tool's cutters (`CreatingSlice::cutters`, #955/#1126): faces/planes and
+    /// sketch lines. Consumed
     /// destructively, so they carry the red highlight override.
     SliceCutters,
     /// The Mirror tool's mirror plane (`CreatingMirror::plane`, #566): a plane or flat face.
@@ -1598,6 +1601,14 @@ fn selection_picker_for(
     // rest); `set_picked` preserves order so the popup rows line up with `picked()`.
     picker.set_picked(doc, selection.ordered());
     Some(picker)
+}
+
+/// Scene element identity for a 3D slice cutter (#1126): a plane/face, or a sketch line.
+fn slice_cutter_scene_element(c: &crate::model::SliceCutter) -> Option<SceneElement> {
+    match c {
+        crate::model::SliceCutter::Face(face) => Some(SceneElement::from_face_id(face.clone())),
+        crate::model::SliceCutter::Line { line } => Some(SceneElement::Line(*line)),
+    }
 }
 
 /// Build a Body-filtered tool picker (#213) from a tool's picked body-index set. `selected_color`
@@ -2442,8 +2453,9 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         });
     }
     if let Some(sl) = input.slice_op.as_ref() {
-        // Slice's two pickers (#955): the bodies it splits, and the planes/flat faces doing the
-        // splitting. Exactly one is focused — whichever the next viewport click feeds.
+        // Slice's two pickers (#955/#1126): the bodies it splits, and the planes/flat faces
+        // *or sketch lines* doing the splitting. Exactly one is focused — whichever the next
+        // viewport click feeds.
         tool_pickers.push(body_tool_picker(
             input.doc,
             "Targets",
@@ -2453,16 +2465,20 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
             !sl.picking_cutter,
         ));
         // The cutters are consumed by the operation, so they take the red override — the
-        // example SPEC has always cited for it (#213/#961).
+        // example SPEC has always cited for it (#213/#961). Lines are laser-style path cutters.
         let mut cutters = ElementPicker::new(
-            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Profile]),
+            ElementFilter::kinds(&[
+                ElementKind::Plane,
+                ElementKind::Profile,
+                ElementKind::Line,
+            ]),
             PickLimit::Infinite,
         )
         .with_selected_color(crate::theme::CUT_ACCENT);
         cutters.set_focused(sl.picking_cutter);
         cutters.set_picked(
             input.doc,
-            sl.cutters.iter().cloned().map(SceneElement::from_face_id),
+            sl.cutters.iter().filter_map(slice_cutter_scene_element),
         );
         tool_pickers.push(ToolPickerView {
             heading: "Cutters",
@@ -3989,12 +4005,13 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "The bodies to cut apart. Click one to add it, click it again to drop it.",
         ),
         (Some(Tool::Slice), "Cutters") => Some(
-            "What does the cutting — construction planes or flat body faces; in a \
-             sketch, the lines that split the shapes.",
+            "What does the cutting — construction planes, flat body faces, or sketch \
+             lines that laser-cut through the body; in a sketch, the lines that split \
+             the shapes.",
         ),
         (Some(Tool::Slice), "Infinite cut") => Some(
-            "Whether each cutter extends without bound, or only cuts as far as the \
-             face itself reaches.",
+            "Whether each plane extends without bound and each line expands past its \
+             endpoints, or only cuts as far as the face (or line span) itself reaches.",
         ),
         (Some(Tool::Slice), "Targets") => Some(
             "The sketch lines and circles to split. Click one to add it, click it \
@@ -8794,7 +8811,9 @@ mod tests {
                     open_sketch: in_sketch.then_some(skey(0)),
                     slice_op: (tool == Tool::Slice).then_some(SliceControl {
                         targets: vec![bkey(1)],
-                        cutters: vec![crate::model::FaceId::ConstructionPlane(pkey(0))],
+                        cutters: vec![crate::model::SliceCutter::Face(
+                            crate::model::FaceId::ConstructionPlane(pkey(0)),
+                        )],
                         picking_cutter: false,
                         extend_infinite: true,
                         editing: false,
@@ -9016,7 +9035,9 @@ mod tests {
             tool: Tool::Slice,
             slice_op: Some(SliceControl {
                 targets: vec![bkey(1)],
-                cutters: vec![crate::model::FaceId::ConstructionPlane(pkey(0))],
+                cutters: vec![crate::model::SliceCutter::Face(
+                    crate::model::FaceId::ConstructionPlane(pkey(0)),
+                )],
                 picking_cutter: true,
                 extend_infinite: true,
                 editing: false,
@@ -9044,6 +9065,11 @@ mod tests {
         assert!(
             !cutters.picker.accepts(&doc, &SceneElement::Body(bkey(0))),
             "a whole body is not a cutter"
+        );
+        // #1126: sketch lines are laser-style path cutters.
+        assert!(
+            cutters.picker.accepts(&doc, &SceneElement::Line(lkey(0))),
+            "a sketch line is a valid cutter"
         );
         assert_eq!(
             cutters.picker.selected_color(crate::theme::FOCUS_ACCENT),

@@ -3207,21 +3207,44 @@ pub struct RepeatPlaneInstance {
     pub instance: usize,
 }
 
-/// A slice operation (Slice tool, #181): cuts whole bodies with one or more planar
-/// cutters (construction planes or planar body faces), splitting each target into the
-/// fragments that fall on either side. Each input body becomes a **shadow** body; every
-/// fragment is a fresh [`Body`] with a [`BodySource::Sliced`] source, and the operation
-/// itself is an editable pane element — fragments depend on the operation, the operation
-/// depends on every target and cutter.
+/// One cutter of a 3D [`SliceOperation`] (#181, #1126): a planar face/plane, or a sketch
+/// line that laser-cuts through the body along the line's path.
+///
+/// Stored untagged so existing documents keep bare [`FaceId`] cutter JSON; a line cutter
+/// is the object `{"line": <key>}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SliceCutter {
+    /// Laser path: a sketch line (straight or curved) on a face. The cut extrudes the path
+    /// through the body along the sketch normal. With [`SliceOperation::extend_infinite`]
+    /// the path expands past its endpoints so a partial line still severs the solid.
+    Line { line: LineKey },
+    /// Planar cutter: construction plane or planar body face (#181).
+    Face(FaceId),
+}
+
+impl From<FaceId> for SliceCutter {
+    fn from(face: FaceId) -> Self {
+        Self::Face(face)
+    }
+}
+
+/// A slice operation (Slice tool, #181/#1126): cuts whole bodies with planar cutters
+/// (construction planes or planar body faces) and/or sketch lines used as laser-style
+/// path cutters, splitting each target into the fragments that fall on either side. Each
+/// input body becomes a **shadow** body; every fragment is a fresh [`Body`] with a
+/// [`BodySource::Sliced`] source, and the operation itself is an editable pane element —
+/// fragments depend on the operation, the operation depends on every target and cutter.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SliceOperation {
     /// Input bodies (the A side); each is sliced independently.
     pub targets: Vec<BodyKey>,
-    /// Planar cutters (the B side): construction planes and/or planar body faces.
+    /// Cutters (the B side): planar faces/planes and/or sketch lines (#1126).
     #[serde(default)]
-    pub cutters: Vec<FaceId>,
-    /// When set, each cutter divides the whole target (its plane extends infinitely).
-    /// When clear, a cutter only separates material within its own face footprint.
+    pub cutters: Vec<SliceCutter>,
+    /// When set, each planar cutter divides the whole target (its plane extends infinitely)
+    /// and each line cutter expands past its endpoints. When clear, a face carves only its
+    /// own footprint and a line only severs material within its span.
     #[serde(default)]
     pub extend_infinite: bool,
     /// Output bodies: target-major, then piece (all fragments of target 0, then

@@ -7,8 +7,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/slice.svg")} width="30" /> Slice
 
-Slice cuts whole bodies apart with flat cutters — halving a part, or splitting a model
-into printable pieces.
+Slice cuts whole bodies apart — with flat planes/faces, or with sketch lines that laser-cut
+through a body along their path.
 
 <a
   href={useBaseUrl("/app/") + "?open=" + encodeURIComponent(useBaseUrl("/img/screenshots/slice.bearcad.json"))}
@@ -22,15 +22,18 @@ into printable pieces.
 ## How to use it
 
 1. Pick the **Slice** tool and click one or more bodies (the **Bodies** picker).
-2. Click the **Cutters** picker, then click the planes or planar faces to cut with: any
-   construction plane, or a flat face of a body.
+2. Click the **Cutters** picker, then pick:
+   - a construction plane or flat body face, or
+   - a sketch line (straight or curved) on a face — cuts through the body like a laser
+     following that path. Multiple lines each cut.
 3. Press **Enter**.
 
 Each target is cut independently. Each cutter divides whatever pieces the previous cuts
-produced — two crossing planes through a block give four fragments.
+produced — two crossing planes (or lines) through a block give four fragments.
 
-**Infinite cut** (on by default) treats every cutter as an endless plane.
-Off, a finite face carves only its own footprint. A construction plane is always infinite.
+**Infinite cut** (on by default) extends every plane endlessly and expands every line past
+its endpoints so a short path still severs the solid. Off, a finite face carves only its
+own footprint and a line only cuts within its span. Construction planes are always infinite.
 
 ## What you get
 
@@ -48,6 +51,7 @@ it whole.
 
 ```lua
 bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 1 }} }
+bearcad.slice{ bodies = {0}, cutters = {{ kind = "line", index = 4 }} }
 bearcad.slice{ bodies = {0, 1},
                cutters = {{ kind = "construction_plane", index = 1 }},
                extend = false, name = "Split" }
@@ -55,7 +59,8 @@ bearcad.edit_slice{ index = 0, bodies = {0},
                     cutters = {{ kind = "construction_plane", index = 2 }} }
 ```
 
-A cutter is a face-spec table, the same shape `bearcad.begin_sketch` accepts.
+A planar cutter is a face-spec table (same shape `bearcad.begin_sketch` accepts). A line
+cutter is `{ kind = "line", index = i }`.
 
 ## Slicing sketch geometry in 2D
 
