@@ -8,8 +8,13 @@ import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import Heading from '@theme/Heading';
 import styles from './index.module.css';
 
-// GitHub releases page — matches the download links in the repo README.
-const RELEASES_URL = 'https://github.com/iffy/BearCAD/releases/latest';
+// Latest-release asset URLs — same names as src/release_artifacts.rs and the repo README.
+const RELEASES_BASE = 'https://github.com/iffy/BearCAD/releases/latest/download';
+const DOWNLOADS = [
+  {label: 'Download macOS', href: `${RELEASES_BASE}/bearcad.dmg`},
+  {label: 'Download Windows', href: `${RELEASES_BASE}/bearcad.exe`},
+  {label: 'Download Linux', href: `${RELEASES_BASE}/bearcad-linux-x86_64.tar.gz`},
+];
 // The hosted web build (wasm), deployed alongside the docs by CI.
 const WEB_APP_PATH = 'pathname:///app/';
 
@@ -35,11 +40,14 @@ function HomepageHeader() {
             href={WEB_APP_PATH}>
             ▶&nbsp;&nbsp;Run in your browser
           </Link>
-          <Link
-            className="button button--outline button--secondary button--lg"
-            href={RELEASES_URL}>
-            Download
-          </Link>
+          {DOWNLOADS.map(({label, href}) => (
+            <Link
+              key={label}
+              className="button button--outline button--secondary button--lg"
+              href={href}>
+              {label}
+            </Link>
+          ))}
           <Link
             className="button button--outline button--secondary button--lg"
             to="/docs/intro">
