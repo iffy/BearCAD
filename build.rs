@@ -1,6 +1,6 @@
 fn main() {
     // Bake the build identity in (About dialog, update check): `git describe` names
-    // release builds by their tag (v0.1.0-build.N); the short SHA identifies any build.
+    // release builds by their tag (v0.1.0-build.YYMMDD-###); the short SHA identifies any build.
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)

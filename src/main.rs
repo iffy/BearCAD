@@ -16651,7 +16651,7 @@ fn remember_pane_rect(ctx: &egui::Context, id: &'static str, rect: Option<egui::
 }
 
 /// The build's full identity (About, web and native alike): the release tag when this
-/// binary was built from an exactly-tagged checkout (`v0.1.0-build.N`), otherwise the
+/// binary was built from an exactly-tagged checkout (`v0.1.0-build.YYMMDD-###`), otherwise the
 /// crate version plus the git commit it was built from.
 pub fn full_version() -> String {
     let describe = env!("BEARCAD_GIT_DESCRIBE");

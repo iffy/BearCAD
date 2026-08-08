@@ -5099,16 +5099,17 @@ document is millimeters, so the player is person-scale: eye height
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).
 
 ### 11.x Auto-update (#427)
-- **Build identity (#460):** `build.rs` bakes `git describe --tags` and the short SHA
-  into the binary. `full_version()` reports the release tag verbatim when built from an
-  exactly-tagged checkout (`v0.1.0-build.N`), else `v0.1.0 (<sha>)`; the About dialog
-  (native menu metadata and the in-app Help → About status line, web included) shows it.
-  The update check compares the latest release tag against the baked describe — so a
-  release build knows its own build number and never offers itself as an update.
-  A **dev build** (debug assertions, or a describe carrying commits past the tag —
-  `updater::is_dev_build`) is treated as **ahead of every release**: it holds unreleased
-  work, so the check never reports an update and no badge appears, however far the
-  published build number has marched on (#764).
+- **Build identity (#460, #1129):** `build.rs` bakes `git describe --tags` and the short
+  SHA into the binary. `full_version()` reports the release tag verbatim when built from
+  an exactly-tagged checkout (`v0.1.0-build.YYMMDD-###`), else `v0.1.0 (<sha>)`; the About
+  dialog (native menu metadata and the in-app Help → About status line, web included)
+  shows it. Release build numbers are date-style `YYMMDD-###` (UTC day + per-day sequence;
+  `scripts/next-build-number.sh`). The update check compares the latest release tag against
+  the baked describe — so a release build knows its own build number and never offers
+  itself as an update. A **dev build** (debug assertions, or a describe carrying commits
+  past the tag — `updater::is_dev_build`) is treated as **ahead of every release**: it
+  holds unreleased work, so the check never reports an update and no badge appears,
+  however far the published build number has marched on (#764).
 
 Native builds check GitHub's latest release once at startup in a background thread
 (`updater::spawn_check`, system `curl` against the releases API — no TLS dependency; the

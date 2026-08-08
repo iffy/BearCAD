@@ -54,6 +54,70 @@ mod tests {
         );
     }
 
+    /// #1129: release build numbers are YYMMDD-### (per UTC day), not GITHUB_RUN_NUMBER.
+    #[test]
+    fn next_build_number_is_yymmdd_sequence_per_day() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/next-build-number.sh");
+        let run = |date: &str, tags: &str| {
+            let out = std::process::Command::new("bash")
+                .args([script, "--date", date])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    if let Some(mut stdin) = child.stdin.take() {
+                        stdin.write_all(tags.as_bytes())?;
+                    }
+                    child.wait_with_output()
+                })
+                .expect("run next-build-number.sh");
+            assert!(
+                out.status.success(),
+                "script failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout)
+                .expect("utf8")
+                .trim()
+                .to_string()
+        };
+
+        assert_eq!(run("260812", ""), "260812-001");
+        assert_eq!(
+            run(
+                "260812",
+                "v0.1.0-build.260812-001\nv0.1.0-build.260812-002\nv0.1.0-build.260811-009\n"
+            ),
+            "260812-003"
+        );
+        // Legacy GITHUB_RUN_NUMBER tags must not be mistaken for today's sequence.
+        assert_eq!(run("260812", "v0.1.0-build.628\nv0.1.0-build.591\n"), "260812-001");
+        // Zero-padding: sequence 10 → next is 011.
+        assert_eq!(
+            run("260808", "v0.1.0-build.260808-009\nv0.1.0-build.260808-010\n"),
+            "260808-011"
+        );
+    }
+
+    #[test]
+    fn ci_uses_date_style_build_numbers() {
+        let workflow = include_str!("../.github/workflows/ci.yml");
+        assert!(
+            workflow.contains("next-build-number.sh"),
+            "CI should compute build numbers via next-build-number.sh"
+        );
+        assert!(
+            !workflow.contains("github.run_number"),
+            "CI should not use GITHUB_RUN_NUMBER as the release build number"
+        );
+        assert!(
+            !workflow.contains("GITHUB_RUN_NUMBER"),
+            "CI should not use GITHUB_RUN_NUMBER as the release build number"
+        );
+    }
+
     #[test]
     fn readme_links_to_github_repo() {
         let readme = include_str!("../README.md");

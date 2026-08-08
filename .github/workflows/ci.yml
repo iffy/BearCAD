@@ -195,9 +195,40 @@ jobs:
       - name: cargo test (occt)
         run: cargo test
 
+  # Shared release identity for this workflow run (#1129): one YYMMDD-### build
+  # number so every matrix platform bakes the same tag the publish step will create.
+  release-id:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.id.outputs.version }}
+      build_number: ${{ steps.id.outputs.build_number }}
+      tag: ${{ steps.id.outputs.tag }}
+      release_name: ${{ steps.id.outputs.release_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Compute release identity
+        id: id
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          version="$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)"
+          build_number="$(bash scripts/next-build-number.sh --from-github)"
+          tag="v${version}-build.${build_number}"
+          {
+            echo "version=${version}"
+            echo "build_number=${build_number}"
+            echo "tag=${tag}"
+            echo "release_name=v${version} build ${build_number}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release identity: ${tag}"
+
   build-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [occt, windows-occt]
+    needs: [occt, windows-occt, release-id]
     strategy:
       fail-fast: false
       matrix:
@@ -283,13 +314,13 @@ jobs:
           git submodule update --init --depth 1 third_party/OCCT
           ${{ matrix.occt_build }}
 
-      # Bake the exact release tag into the binary (todoer #466): the `release` job tags
-      # v{version}-build.{run_number} *after* this build, and the shallow checkout has no
-      # tags for `git describe` — without this the shipped binary only knows its crate
-      # version and the update badge offers the very build being run.
+      # Bake the exact release tag into the binary (todoer #466, #1129): the `release`
+      # job tags v{version}-build.YYMMDD-### *after* this build, and the shallow checkout
+      # has no tags for `git describe` — without this the shipped binary only knows its
+      # crate version and the update badge offers the very build being run.
       - name: Bake release identity
         shell: bash
-        run: echo "BEARCAD_RELEASE_TAG=v$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)-build.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+        run: echo "BEARCAD_RELEASE_TAG=${{ needs.release-id.outputs.tag }}" >> "$GITHUB_ENV"
 
       # Every platform builds the default feature set (kernel included).
       - name: cargo build --release
@@ -316,15 +347,11 @@ jobs:
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: build-release
+    needs: [build-release, release-id]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Read package version
-        id: version
-        run: echo "version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Download release artifacts
         uses: actions/download-artifact@v5
@@ -335,8 +362,9 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
-          name: v${{ steps.version.outputs.version }} build ${{ github.run_number }}
+          # Build number is YYMMDD-### (per UTC day); see scripts/next-build-number.sh (#1129).
+          tag_name: ${{ needs.release-id.outputs.tag }}
+          name: ${{ needs.release-id.outputs.release_name }}
           draft: true
           prerelease: false
           generate_release_notes: true
