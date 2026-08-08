@@ -12083,11 +12083,7 @@ impl App {
     /// Tab strip for the main window: titles, dirty star, reorder, close, context menu.
     fn draw_main_tab_bar(&mut self, ui: &mut egui::Ui) {
         let tab_count = self.workspace.main().tabs.len();
-        // Always show the strip once there is more than one tab, or always so Cmd+T is discoverable.
-        let show = true;
-        if !show {
-            return;
-        }
+        // Always show the strip so Cmd+T is discoverable.
         let mut switch_to: Option<usize> = None;
         let mut close_id: Option<tabs::TabId> = None;
         let mut detach_id: Option<tabs::TabId> = None;
@@ -12095,14 +12091,22 @@ impl App {
         let mut reorder: Option<(usize, usize)> = None;
         let mut new_tab = false;
 
+        // Full-height strip, no top margin: selected highlight meets the top of the chrome
+        // so it reads as connected (#1132).
         egui::Panel::top("tab_bar")
-            .exact_size(28.0)
+            .exact_size(TAB_BAR_HEIGHT)
             .frame(
                 egui::Frame::NONE
                     .fill(ui.visuals().panel_fill)
-                    .inner_margin(egui::Margin::symmetric(4, 2)),
+                    .inner_margin(egui::Margin {
+                        left: 4,
+                        right: 4,
+                        top: 0,
+                        bottom: 0,
+                    }),
             )
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 ui.horizontal(|ui| {
                     // macOS traffic-light clearance when content is under the titlebar.
                     #[cfg(target_os = "macos")]
@@ -12114,8 +12118,11 @@ impl App {
                         let title = self.main_tab_title(i);
                         let tab_id = self.workspace.main().tabs[i].id;
                         let selected = i == active;
-                        let response = ui.selectable_label(selected, title);
-                        if response.clicked() {
+                        let (response, close_clicked) =
+                            document_tab_chip(ui, &title, selected, selected);
+                        if close_clicked {
+                            close_id = Some(tab_id);
+                        } else if response.clicked() {
                             switch_to = Some(i);
                         }
                         // Drag to reorder: start drag on press, drop on another tab.
@@ -12155,21 +12162,8 @@ impl App {
                                 ui.close();
                             }
                         });
-                        // Small close affordance on the active tab.
-                        if selected {
-                            let close = ui
-                                .add(egui::Button::new("×").frame(false))
-                                .on_hover_text("Close tab");
-                            if close.clicked() {
-                                close_id = Some(tab_id);
-                            }
-                        }
                     }
-                    if ui
-                        .add(egui::Button::new("+").frame(false))
-                        .on_hover_text("New tab")
-                        .clicked()
-                    {
+                    if tab_bar_icon_button(ui, icons::IconId::Plus, "New tab").clicked() {
                         new_tab = true;
                     }
                 });
@@ -16292,6 +16286,126 @@ const GRID_EXTENT: f32 = gpu_viewport::GRID_EXTENT;
 const GRID_STEP: f32 = gpu_viewport::GRID_STEP;
 /// Workbench toolbar icon size: 50% larger than pane icons (#461).
 const TOOLBAR_ICON_SIZE: f32 = icons::ICON_DISPLAY_SIZE * 1.5;
+
+/// Document tab strip height (#1132): full-height chips so the selected highlight
+/// meets the top of the chrome.
+const TAB_BAR_HEIGHT: f32 = 28.0;
+/// SVG glyph size inside a tab close / new-tab control (#1132).
+const TAB_ICON_SIZE: f32 = 16.0;
+/// Hit target for tab close / new-tab — larger than the glyph for easier clicking (#1132).
+const TAB_ICON_HIT: f32 = 22.0;
+
+/// One document tab: label + optional close (SVG) painted as a single full-height chip
+/// so the selected highlight connects to the top of the tab strip (#1132).
+///
+/// Returns `(tab_response, close_clicked)`.
+fn document_tab_chip(
+    ui: &mut egui::Ui,
+    title: &str,
+    selected: bool,
+    show_close: bool,
+) -> (egui::Response, bool) {
+    let pad_x = 10.0;
+    let gap = 2.0;
+    let text_color = if selected {
+        ui.visuals().selection.stroke.color
+    } else {
+        ui.visuals().text_color()
+    };
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(title.to_owned(), font_id, text_color);
+    let height = ui.available_height().max(TAB_BAR_HEIGHT);
+    let close_w = if show_close { gap + TAB_ICON_HIT } else { 0.0 };
+    let width = pad_x + galley.size().x + close_w + pad_x;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
+
+    if selected {
+        // Top corners square so the fill meets the strip's top edge (connected look).
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: 4,
+                se: 4,
+            },
+            ui.visuals().selection.bg_fill,
+        );
+    } else if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(4),
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+
+    let text_pos = egui::pos2(
+        rect.min.x + pad_x,
+        rect.center().y - galley.size().y * 0.5,
+    );
+    ui.painter().galley(text_pos, galley, text_color);
+
+    let mut close_clicked = false;
+    if show_close {
+        let close_center = egui::pos2(
+            rect.max.x - pad_x - TAB_ICON_HIT * 0.5,
+            rect.center().y,
+        );
+        let close_rect =
+            egui::Rect::from_center_size(close_center, egui::vec2(TAB_ICON_HIT, TAB_ICON_HIT));
+        let close_resp = ui.interact(close_rect, response.id.with("close"), egui::Sense::click());
+        let tint = if close_resp.hovered() {
+            egui::Color32::from_rgb(255, 210, 90)
+        } else {
+            egui::Color32::from_gray(200)
+        };
+        let icon_rect =
+            egui::Rect::from_center_size(close_center, egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE));
+        icons::paint_icon(
+            ui.painter(),
+            ui.ctx(),
+            icons::IconId::Close,
+            icon_rect,
+            tint,
+        );
+        if close_resp.clicked() {
+            close_clicked = true;
+        }
+        let _ = close_resp.on_hover_text("Close tab");
+    }
+
+    (response, close_clicked)
+}
+
+/// Frameless SVG icon button used for the tab strip's "+" control (#1132).
+fn tab_bar_icon_button(
+    ui: &mut egui::Ui,
+    id: icons::IconId,
+    tooltip: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let height = ui.available_height().max(TAB_BAR_HEIGHT);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(TAB_ICON_HIT + 4.0, height), egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(4),
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let tint = if response.hovered() {
+        egui::Color32::from_rgb(255, 210, 90)
+    } else {
+        egui::Color32::from_gray(200)
+    };
+    let icon_rect =
+        egui::Rect::from_center_size(rect.center(), egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE));
+    icons::paint_icon(ui.painter(), ui.ctx(), id, icon_rect, tint);
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+}
 
 /// Width of the sketch-mode viewport border (#74).
 const SKETCH_MODE_BORDER_WIDTH: f32 = 3.0;
