@@ -12140,9 +12140,9 @@ impl App {
         let mut duplicate_same = false;
         let mut reorder: Option<(usize, usize)> = None;
         let mut new_tab = false;
+        let mut selected_tab_rect: Option<egui::Rect> = None;
 
-        // Full-height strip, no top margin: selected highlight meets the top of the chrome
-        // so it reads as connected (#1132).
+        // Filing-tab strip: trapezoid chips with a baseline that breaks under the active tab (#1134).
         egui::Panel::top("tab_bar")
             .exact_size(TAB_BAR_HEIGHT)
             .frame(
@@ -12156,6 +12156,8 @@ impl App {
                     }),
             )
             .show(ui, |ui| {
+                // Full strip rect before layout (for the baseline spanning the window width).
+                let bar = ui.max_rect();
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.horizontal(|ui| {
                     // macOS traffic-light clearance when content is under the titlebar.
@@ -12168,8 +12170,12 @@ impl App {
                         let title = self.main_tab_title(i);
                         let tab_id = self.workspace.main().tabs[i].id;
                         let selected = i == active;
+                        // Close (X) always visible, including on unfocused tabs (#1134).
                         let (response, close_clicked) =
-                            document_tab_chip(ui, &title, selected, selected);
+                            document_tab_chip(ui, &title, selected, true);
+                        if selected {
+                            selected_tab_rect = Some(response.rect);
+                        }
                         if close_clicked {
                             close_id = Some(tab_id);
                         } else if response.clicked() {
@@ -12217,7 +12223,38 @@ impl App {
                         new_tab = true;
                     }
                 });
+
+                // Baseline under the strip: continuous grey line that gaps under the selected
+                // tab so the active filing tab reads as attached to the chrome beneath (#1134).
+                // Drawn inside the panel so the clip rect includes the strip.
+                let y = bar.bottom() - 0.5;
+                let sep = egui::Stroke::new(1.0, egui::Color32::from_gray(55));
+                let painter = ui.painter();
+                if let Some(sel) = selected_tab_rect {
+                    let gap_l = sel.left();
+                    let gap_r = sel.right();
+                    if gap_l > bar.left() + 0.5 {
+                        painter.line_segment(
+                            [egui::pos2(bar.left(), y), egui::pos2(gap_l, y)],
+                            sep,
+                        );
+                    }
+                    if gap_r < bar.right() - 0.5 {
+                        painter.line_segment(
+                            [egui::pos2(gap_r, y), egui::pos2(bar.right(), y)],
+                            sep,
+                        );
+                    }
+                } else {
+                    painter.hline(bar.x_range(), y, sep);
+                }
             });
+
+        // Toolbar paints a full top stroke; cover it under the selected tab so the break holds.
+        ui.ctx().memory_mut(|m| {
+            m.data
+                .insert_temp(egui::Id::new("main_tab_sep_gap"), selected_tab_rect);
+        });
 
         if let Some(i) = switch_to {
             self.sync_active_document_siblings();
@@ -12250,7 +12287,7 @@ impl App {
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        egui::Panel::top("toolbar")
+        let toolbar_resp = egui::Panel::top("toolbar")
             .frame(theme::panel_frame())
             .show(ui, |ui| {
             // On phone-width screens the toolbar overflows: scroll it sideways (the
@@ -12465,7 +12502,24 @@ impl App {
             });
             });
         });
-
+        // Erase the toolbar's top stroke under the selected filing tab so the baseline
+        // break from the tab strip makes the active tab look continuous with this chrome (#1134).
+        // Use a foreground layer painter — the central ui's clip rect excludes the toolbar.
+        if let Some(Some(sel)) = ui.ctx().memory(|m| {
+            m.data
+                .get_temp::<Option<egui::Rect>>(egui::Id::new("main_tab_sep_gap"))
+        }) {
+            let top = toolbar_resp.response.rect.top();
+            let cover = egui::Rect::from_min_max(
+                egui::pos2(sel.left(), top - 1.0),
+                egui::pos2(sel.right(), top + 2.0),
+            );
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("main_tab_sep_cover"),
+            ));
+            painter.rect_filled(cover, 0.0, ui.visuals().panel_fill);
+        }
 
         if self.state.command_palette.open {
             let commands = commands_for_state(&self.state);
@@ -16405,16 +16459,69 @@ const GRID_STEP: f32 = gpu_viewport::GRID_STEP;
 /// Workbench toolbar icon size: 50% larger than pane icons (#461).
 const TOOLBAR_ICON_SIZE: f32 = icons::ICON_DISPLAY_SIZE * 1.5;
 
-/// Document tab strip height (#1132): full-height chips so the selected highlight
-/// meets the top of the chrome.
-const TAB_BAR_HEIGHT: f32 = 28.0;
+/// Document tab strip height (#1134): room for top-padded filing tabs with rounded tops.
+const TAB_BAR_HEIGHT: f32 = 30.0;
+/// Inset from the strip's top so rounded filing-tab tops are visible (#1134).
+const TAB_TOP_PAD: f32 = 4.0;
+/// Horizontal inset of each top corner vs the bottom — slight trapezoid / filing-tab slant (#1134).
+const TAB_SLANT: f32 = 5.0;
+/// Rounded radius on the two top corners of a filing tab (#1134).
+const TAB_TOP_RADIUS: f32 = 4.0;
 /// SVG glyph size inside a tab close / new-tab control (#1132).
 const TAB_ICON_SIZE: f32 = 16.0;
 /// Hit target for tab close / new-tab — larger than the glyph for easier clicking (#1132).
 const TAB_ICON_HIT: f32 = 22.0;
 
-/// One document tab: label + optional close (SVG) painted as a single full-height chip
-/// so the selected highlight connects to the top of the tab strip (#1132).
+/// Open filing-tab outline (bottom-left → left side → rounded top → right side → bottom-right).
+/// No bottom edge — the strip baseline (or the gap under the active tab) closes the shape (#1134).
+fn filing_tab_open_path(rect: egui::Rect, slant: f32, radius: f32) -> Vec<egui::Pos2> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let left = rect.left();
+    let right = rect.right();
+    let top = rect.top();
+    let bottom = rect.bottom();
+    let width = (right - left).max(0.0);
+    let slant = slant.min(width * 0.25).max(0.0);
+    let r = radius
+        .min((width - 2.0 * slant).max(0.0) * 0.45)
+        .min((bottom - top).max(0.0) * 0.45)
+        .max(0.0);
+    let top_l = left + slant;
+    let top_r = right - slant;
+
+    let mut pts = Vec::with_capacity(20);
+    // Left leg: bottom-left → into the top-left arc.
+    pts.push(egui::pos2(left, bottom));
+    if r < 0.5 {
+        pts.push(egui::pos2(top_l, top));
+        pts.push(egui::pos2(top_r, top));
+        pts.push(egui::pos2(right, bottom));
+        return pts;
+    }
+    // Screen coords: y down. Angle 0 = +x, PI/2 = +y (down), PI = -x, 3PI/2 = -y (up).
+    let tl_c = egui::pos2(top_l + r, top + r);
+    let tr_c = egui::pos2(top_r - r, top + r);
+    let steps = 4;
+    // Top-left arc: left (PI) → up (3PI/2).
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let a = PI + FRAC_PI_2 * t;
+        pts.push(egui::pos2(tl_c.x + r * a.cos(), tl_c.y + r * a.sin()));
+    }
+    // Top-right arc: up (3PI/2) → right (2PI).
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let a = 1.5 * PI + FRAC_PI_2 * t;
+        pts.push(egui::pos2(tr_c.x + r * a.cos(), tr_c.y + r * a.sin()));
+    }
+    // Right leg down to bottom-right.
+    pts.push(egui::pos2(right, bottom));
+    pts
+}
+
+/// One document tab: filing-tab trapezoid with rounded top corners, label, and close (SVG).
+/// Selected tabs use blue top/left/right borders (no blue fill); unfocused use grey borders.
+/// Close is always shown when `show_close` is true (#1134).
 ///
 /// Returns `(tab_response, close_clicked)`.
 fn document_tab_chip(
@@ -16426,7 +16533,7 @@ fn document_tab_chip(
     let pad_x = 10.0;
     let gap = 2.0;
     let text_color = if selected {
-        ui.visuals().selection.stroke.color
+        egui::Color32::WHITE
     } else {
         ui.visuals().text_color()
     };
@@ -16438,29 +16545,41 @@ fn document_tab_chip(
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
 
-    if selected {
-        // Top corners square so the fill meets the strip's top edge (connected look).
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius {
-                nw: 0,
-                ne: 0,
-                sw: 4,
-                se: 4,
-            },
-            ui.visuals().selection.bg_fill,
-        );
-    } else if response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(4),
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
+    // Drawn shape sits below a small top pad so rounded tops read as filing tabs.
+    let shape_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + TAB_TOP_PAD),
+        egui::pos2(rect.right(), rect.bottom()),
+    );
+    let path = filing_tab_open_path(shape_rect, TAB_SLANT, TAB_TOP_RADIUS);
 
+    // Fill: panel colour so the selected tab merges with the chrome below — never a full
+    // blue selection fill (#1134). Hover lifts unfocused tabs slightly.
+    let fill = if selected {
+        ui.visuals().panel_fill
+    } else if response.hovered() {
+        ui.visuals().widgets.hovered.weak_bg_fill
+    } else {
+        egui::Color32::from_gray(26)
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        path.clone(),
+        fill,
+        egui::Stroke::NONE,
+    ));
+
+    // Borders: blue top/left/right when selected; grey/white trapezoid otherwise (#1134).
+    let border = if selected {
+        egui::Stroke::new(1.5, theme::FOCUS_ACCENT)
+    } else {
+        egui::Stroke::new(1.0, egui::Color32::from_gray(110))
+    };
+    ui.painter().add(egui::Shape::line(path, border));
+
+    // Vertically centre label/close in the drawn tab (below top pad).
+    let content_cy = shape_rect.center().y;
     let text_pos = egui::pos2(
         rect.min.x + pad_x,
-        rect.center().y - galley.size().y * 0.5,
+        content_cy - galley.size().y * 0.5,
     );
     ui.painter().galley(text_pos, galley, text_color);
 
@@ -16468,15 +16587,17 @@ fn document_tab_chip(
     if show_close {
         let close_center = egui::pos2(
             rect.max.x - pad_x - TAB_ICON_HIT * 0.5,
-            rect.center().y,
+            content_cy,
         );
         let close_rect =
             egui::Rect::from_center_size(close_center, egui::vec2(TAB_ICON_HIT, TAB_ICON_HIT));
         let close_resp = ui.interact(close_rect, response.id.with("close"), egui::Sense::click());
         let tint = if close_resp.hovered() {
             egui::Color32::from_rgb(255, 210, 90)
+        } else if selected {
+            egui::Color32::from_gray(210)
         } else {
-            egui::Color32::from_gray(200)
+            egui::Color32::from_gray(170)
         };
         let icon_rect =
             egui::Rect::from_center_size(close_center, egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE));
