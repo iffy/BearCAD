@@ -51,7 +51,7 @@ function HomepageHeader() {
             </Link>
           ))}
           <Link
-            className="button button--outline button--secondary button--lg"
+            className={clsx('button button--lg', styles.downloadButton)}
             to="/docs/intro">
             Read the docs
           </Link>
