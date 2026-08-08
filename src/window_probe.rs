@@ -7,10 +7,14 @@
 //! questions are ones only the window server can answer: is the window on screen at all, is
 //! it occluded, is it transparent, does its backing layer have a real size?
 
+// Used only by the macOS launch-settle path; gate so Linux (`-D warnings`) does not
+// treat them as unused imports.
+#[cfg(target_os = "macos")]
 use std::sync::Mutex;
 
 // `diag` is a sibling module; bring it in so the launch-settle trace lines below reach it
 // without a `crate::` prefix on every call.
+#[cfg(target_os = "macos")]
 use crate::diag;
 
 /// A short one-line summary of what AppKit currently sees, for the launch-settle trace
