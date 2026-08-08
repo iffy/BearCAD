@@ -61,6 +61,19 @@ bearcad.ui.palette("run", "view top")   -- run a command palette entry by name
 bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree" | "graph"
 ```
 
+## Tabs
+
+```lua
+bearcad.ui.new_tab()                    -- blank document tab
+bearcad.ui.new_tab{ same = true }       -- same document, fresh view
+bearcad.ui.tab(1)                       -- activate tab (0-based); bare call returns active index
+bearcad.ui.close_tab()                  -- active tab; or close_tab(i)
+bearcad.ui.reorder_tab(from, to)
+bearcad.ui.detach_tab()                 -- move tab to its own window
+local n = bearcad.ui.tab_count()
+local tabs = bearcad.ui.tabs()          -- { { title=, dirty=, active= }, ... } (1-based)
+```
+
 ## Dragging constrained geometry
 
 ```lua

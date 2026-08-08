@@ -8,6 +8,8 @@ use crate::actions::Pane;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     NewDocument,
+    /// Open a blank document in a new tab (File → New Tab / Cmd+T).
+    NewTab,
     Open,
     Save,
     SaveAs,
@@ -57,6 +59,8 @@ impl MenuCommand {
     pub fn to_action(self) -> Option<Action> {
         match self {
             MenuCommand::NewDocument => Some(Action::NewDocument),
+            // Handled in the app frame (workspace-level).
+            MenuCommand::NewTab => None,
             MenuCommand::Open | MenuCommand::Save | MenuCommand::SaveAs => None,
             // Needs a file-save dialog, handled in the app frame loop.
             MenuCommand::ExportStl

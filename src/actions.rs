@@ -3527,6 +3527,11 @@ pub struct AppState {
     /// `extension_anchors` — never persisted; lives here (not on `App`) so scripts can
     /// drive it via `bearcad.ui.elements_view` (#108).
     pub hierarchy_view_mode: crate::hierarchy::HierarchyViewMode,
+    /// Main-window tab strip snapshot for scripts (`bearcad.ui.tabs` / `tab_count`), refreshed
+    /// by `App` each frame before the script tick. Ephemeral; not persisted.
+    pub script_tab_titles: Vec<String>,
+    pub script_tab_dirty: Vec<bool>,
+    pub script_active_tab: usize,
 }
 
 impl Default for AppState {
@@ -3633,6 +3638,9 @@ impl Default for AppState {
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
             hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
+            script_tab_titles: vec!["Untitled".into()],
+            script_tab_dirty: vec![false],
+            script_active_tab: 0,
         }
     }
 }

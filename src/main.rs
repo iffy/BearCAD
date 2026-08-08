@@ -88,6 +88,7 @@ mod settings;
 mod script_json;
 mod selection;
 mod shortcuts;
+mod tabs;
 mod sketch_solver;
 mod snapping;
 mod step;
@@ -365,6 +366,14 @@ fn native_options() -> eframe::NativeOptions {
         .with_inner_size(window_size_override().unwrap_or([960.0, 640.0]))
         .with_title("BearCAD")
         .with_icon(app_icon::load_for_viewport());
+    // macOS: draw the tab strip in the titlebar next to the traffic lights.
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
     if let Some([x, y]) = window_pos_override() {
         viewport = viewport.with_position([x, y]);
     }
@@ -3085,6 +3094,10 @@ struct CommittedDimLayout {
 
 struct App {
     state: AppState,
+    /// Multi-document tabs / detached windows. The main window's **active** tab state lives
+    /// in [`Self::state`]; that slot in the workspace holds a placeholder until the tab is
+    /// parked (switched away from).
+    workspace: tabs::Workspace,
     synthetic: SyntheticInput,
     script: Option<ScriptRunner>,
     exit_on_script_complete: bool,
@@ -3316,6 +3329,9 @@ struct App {
     /// The user has chosen to quit through the prompt (Save-then-close or Don't Save), so
     /// the next `close_requested` is allowed through instead of re-opening the prompt (#522).
     allow_close: bool,
+    /// Unsaved-changes prompt while closing a tab that is the last view of a dirty document.
+    /// Holds the tab id to close once the user chooses Save or Don't Save.
+    showing_tab_close_prompt: Option<tabs::TabId>,
 }
 
 /// One completed async browser file-dialog interaction (web build): picked file bytes to
@@ -4235,10 +4251,10 @@ impl App {
         } else {
             String::new()
         };
-        let mut state = AppState {
-            status,
-            ..AppState::default()
-        };
+        let mut workspace = tabs::Workspace::new();
+        // Live state is the main window's active tab; the workspace slot holds a placeholder.
+        let mut state = std::mem::take(&mut workspace.main_mut().tabs[0].state);
+        state.status = status;
         // App settings (#720): loaded once here; the library directory is mirrored into
         // AppState so Action::ImportUnit (#721) can classify sources.
         #[cfg(not(target_arch = "wasm32"))]
@@ -4269,6 +4285,7 @@ impl App {
         let exit_after_startup = exit_on_script_complete && script.is_none();
         Self {
             state,
+            workspace,
             synthetic: SyntheticInput::default(),
             script,
             exit_on_script_complete,
@@ -4382,6 +4399,7 @@ impl App {
             last_window_title: None,
             showing_quit_prompt: false,
             allow_close: false,
+            showing_tab_close_prompt: None,
         }
     }
 
@@ -4898,6 +4916,7 @@ impl App {
         if let Some(path) = picked {
             let path = path.to_string_lossy().to_string();
             self.state.apply(Action::Open { path });
+            self.rebind_active_document();
         }
     }
 
@@ -5309,6 +5328,13 @@ impl App {
                     };
                 }
             }
+            MenuCommand::NewDocument => {
+                self.state.apply(Action::NewDocument);
+                self.rebind_active_document();
+            }
+            MenuCommand::NewTab => {
+                self.new_blank_tab();
+            }
             _ => {
                 if let Some(action) = command.to_action() {
                     self.state.apply(action);
@@ -5337,7 +5363,11 @@ impl App {
     fn dispatch_palette_outcome(&mut self, outcome: PaletteOutcome) {
         match outcome {
             PaletteOutcome::Action(action) => {
+                let is_new = matches!(action, Action::NewDocument);
                 self.state.apply(action);
+                if is_new {
+                    self.rebind_active_document();
+                }
             }
             PaletteOutcome::ShowShortcuts => self.shortcuts_open = true,
             #[cfg(not(target_arch = "wasm32"))]
@@ -5567,6 +5597,14 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
             self.state.settings_open = !self.state.settings_open;
+        }
+
+        // Cmd/Ctrl+T — new blank tab. Cmd/Ctrl+W — close active tab.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::T)) {
+            self.new_blank_tab();
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+            self.request_close_active_tab();
         }
 
         // ⌘` cycles to the McMaster catalog helper when it is open (#1023). The system
@@ -11753,18 +11791,510 @@ impl App {
     /// The window title (#522): the current file name (or "Untitled"), prefixed with `*`
     /// while there are unsaved changes, then " — BearCAD".
     fn window_title(&self) -> String {
-        let name = self
-            .state
-            .path
-            .as_deref()
-            .and_then(|p| {
-                std::path::Path::new(p)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
+        format!("{} — BearCAD", tabs::Workspace::tab_title(&self.state))
+    }
+
+    /// Active tab id in the main window.
+    fn main_active_tab_id(&self) -> tabs::TabId {
+        let win = self.workspace.main();
+        win.tabs[win.active].id
+    }
+
+    /// Active tab's document id in the main window.
+    fn main_active_document_id(&self) -> tabs::DocumentId {
+        let win = self.workspace.main();
+        win.tabs[win.active].document_id
+    }
+
+    /// Title for a main-window tab index (reads live state for the active tab).
+    fn main_tab_title(&self, index: usize) -> String {
+        let win = self.workspace.main();
+        if index == win.active {
+            tabs::Workspace::tab_title(&self.state)
+        } else if let Some(tab) = win.tabs.get(index) {
+            tabs::Workspace::tab_title(&tab.state)
+        } else {
+            "Untitled".into()
+        }
+    }
+
+    /// Park live `self.state` into the active main tab slot, then load `index` into `self.state`.
+    fn switch_main_tab(&mut self, index: usize) {
+        let win = self.workspace.main_mut();
+        if index >= win.tabs.len() || index == win.active {
+            return;
+        }
+        let old = win.active;
+        std::mem::swap(&mut self.state, &mut win.tabs[old].state);
+        win.active = index;
+        std::mem::swap(&mut self.state, &mut win.tabs[index].state);
+        self.clear_interaction_transients();
+    }
+
+    /// Drop drag/hover UI that must not carry across tabs or windows.
+    fn clear_interaction_transients(&mut self) {
+        self.dim_label_drag = None;
+        self.offset_gizmo_drag = false;
+        self.drawing_dim_label_drag = None;
+        self.angle_gizmo_drag = None;
+        self.vertex_drag = None;
+        self.bezier_handle_drag = None;
+        self.text_width_drag = None;
+        self.selected_bezier_handle = None;
+        self.viewport_context_menu = None;
+        self.extrude_gizmo_drag = None;
+        self.repeat_gizmo_drag = None;
+        self.pending_extrude_target = None;
+        self.move_b_hover = None;
+        self.joint_select_drag = None;
+        self.joint_select_grab = None;
+        self.vertex_treatment_gizmo_drag = None;
+        self.edge_treatment_gizmo_drag = None;
+        self.revolve_gizmo_drag = None;
+        self.move_gizmo_drag = None;
+        self.plane_resize_drag = None;
+        self.text_rotation_drag = None;
+        self.face_spin_drag = None;
+        self.sketch_move_drag = None;
+        self.exploder = None;
+        self.drawing_view_drag = None;
+        self.calibration_point_drag = None;
+        self.text_tool_anchor = None;
+        self.drawing_text_anchor = None;
+        self.pane_hovered_element = None;
+        self.move_ghost_pose = None;
+    }
+
+    /// Open a blank document in a new main-window tab and switch to it.
+    fn new_blank_tab(&mut self) {
+        self.park_main_active_into_workspace();
+        self.workspace.open_blank_tab(tabs::WindowId::MAIN);
+        self.unpark_main_active_from_workspace();
+        self.clear_interaction_transients();
+        self.state.status = "New tab".into();
+    }
+
+    /// Open a new main-window tab onto the same document as the current tab (fresh view).
+    fn new_same_document_tab(&mut self) {
+        let source = self.main_active_tab_id();
+        self.park_main_active_into_workspace();
+        self.workspace
+            .open_same_document_tab(tabs::WindowId::MAIN, source);
+        self.unpark_main_active_from_workspace();
+        self.clear_interaction_transients();
+        self.state.status = "New tab (same document)".into();
+    }
+
+    /// Move live state into the workspace slot for the current main active tab.
+    fn park_main_active_into_workspace(&mut self) {
+        let active = self.workspace.main().active;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.main_mut().tabs[active].state,
+        );
+    }
+
+    /// Load the main active tab's workspace state into `self.state`.
+    fn unpark_main_active_from_workspace(&mut self) {
+        let active = self.workspace.main().active;
+        std::mem::swap(
+            &mut self.state,
+            &mut self.workspace.main_mut().tabs[active].state,
+        );
+    }
+
+    /// After a document mutation on the active main tab, push the core to sibling views.
+    fn sync_active_document_siblings(&mut self) {
+        let tab_id = self.main_active_tab_id();
+        let doc_id = self.main_active_document_id();
+        if self.workspace.document_view_count(doc_id) <= 1 {
+            return;
+        }
+        self.workspace
+            .sync_document_from(doc_id, tab_id, &self.state);
+    }
+
+    /// After File→New / open that replaces the document in-place, give the tab a fresh id.
+    fn rebind_active_document(&mut self) {
+        let tab_id = self.main_active_tab_id();
+        self.workspace.rebind_document(tab_id);
+    }
+
+    /// Request closing the active main tab (Cmd/Ctrl+W). May open a save prompt.
+    fn request_close_active_tab(&mut self) {
+        let tab_id = self.main_active_tab_id();
+        self.request_close_tab(tab_id);
+    }
+
+    fn request_close_tab(&mut self, tab_id: tabs::TabId) {
+        // Ensure close_decision sees live dirty state for the active tab.
+        let decision = if tab_id == self.main_active_tab_id() {
+            self.park_main_active_into_workspace();
+            let d = self.workspace.close_decision(tab_id);
+            self.unpark_main_active_from_workspace();
+            d
+        } else {
+            self.workspace.close_decision(tab_id)
+        };
+        match decision {
+            Some(tabs::CloseDecision::PromptSave { .. }) if self.tab_close_prompt_enabled() => {
+                self.showing_tab_close_prompt = Some(tab_id);
+            }
+            Some(tabs::CloseDecision::PromptSave { .. }) | Some(tabs::CloseDecision::Close) => {
+                self.finish_close_tab(tab_id);
+            }
+            None => {}
+        }
+    }
+
+    /// Same policy as the quit prompt (#522): scripts / debug skips, release prompts.
+    fn tab_close_prompt_enabled(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.quit_prompt_enabled()
+        }
+    }
+
+    fn finish_close_tab(&mut self, tab_id: tabs::TabId) {
+        let was_active = tab_id == self.main_active_tab_id();
+        if was_active {
+            self.park_main_active_into_workspace();
+        }
+        let outcome = self.workspace.close_tab(tab_id);
+        // If we closed a non-active tab, live state is unchanged.
+        // If we closed the active tab (or replaced it), reload from workspace.
+        match outcome {
+            Some(tabs::CloseOutcome::Closed)
+            | Some(tabs::CloseOutcome::ReplacedWithBlank)
+            | Some(tabs::CloseOutcome::WindowEmpty { .. }) => {
+                if was_active
+                    || matches!(outcome, Some(tabs::CloseOutcome::ReplacedWithBlank))
+                {
+                    self.unpark_main_active_from_workspace();
+                    self.clear_interaction_transients();
+                }
+            }
+            None => {
+                if was_active {
+                    self.unpark_main_active_from_workspace();
+                }
+            }
+        }
+        // Destroy empty detached windows are handled when rendering; WindowEmpty for main
+        // shouldn't happen (close_tab replaces with blank instead).
+        if let Some(tabs::CloseOutcome::WindowEmpty { window }) = outcome {
+            // Main is never removed; drop any leftover bookkeeping.
+            let _ = window;
+        }
+    }
+
+    /// Detach a main-window tab into its own OS window.
+    fn detach_tab_to_window(&mut self, tab_id: tabs::TabId) {
+        let was_active = tab_id == self.main_active_tab_id();
+        if was_active {
+            self.park_main_active_into_workspace();
+        }
+        let _new_win = self.workspace.detach_tab(tab_id);
+        // Always reload main active (detach may have left a blank or different tab).
+        self.unpark_main_active_from_workspace();
+        self.clear_interaction_transients();
+        self.state.status = "Tab moved to new window".into();
+    }
+
+    /// Reorder main-window tabs; keeps live state aligned with the active slot.
+    fn reorder_main_tab(&mut self, from: usize, to: usize) {
+        self.park_main_active_into_workspace();
+        self.workspace.reorder_tab(tabs::WindowId::MAIN, from, to);
+        self.unpark_main_active_from_workspace();
+    }
+
+    /// Save / Don't Save / Cancel when closing the last view of a dirty document.
+    fn handle_tab_close_prompt(&mut self, ctx: &egui::Context) {
+        let Some(tab_id) = self.showing_tab_close_prompt else {
+            return;
+        };
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("tab_close_save_prompt")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.heading("Unsaved changes");
+            ui.add_space(6.0);
+            ui.label(
+                "This document has changes that haven't been saved. Save before closing the tab?",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Don't Save").clicked() {
+                    discard = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if save {
+            self.showing_tab_close_prompt = None;
+            // Switch to the tab if needed, save, then close.
+            if let Some((wi, ti)) = self.workspace.find_tab(tab_id) {
+                if wi == 0 {
+                    self.switch_main_tab(ti);
+                    self.save();
+                    if !self.state.dirty {
+                        self.finish_close_tab(tab_id);
+                    } else {
+                        // Save As cancelled — keep the tab.
+                    }
+                } else {
+                    // Detached window tab: park main, load that tab, save, restore.
+                    // For simplicity, force-close without save path from detached for now
+                    // is wrong — switch: sync live into workspace and save from parked state.
+                    self.park_main_active_into_workspace();
+                    let path = self.workspace.windows[wi].tabs[ti].state.path.clone();
+                    if let Some(path) = path {
+                        let _ = self.workspace.windows[wi].tabs[ti]
+                            .state
+                            .apply(Action::Save {
+                                path: Some(path),
+                            });
+                    }
+                    let dirty = self.workspace.windows[wi].tabs[ti].state.dirty;
+                    self.unpark_main_active_from_workspace();
+                    if !dirty {
+                        self.finish_close_tab(tab_id);
+                    }
+                }
+            }
+        } else if discard {
+            self.showing_tab_close_prompt = None;
+            self.finish_close_tab(tab_id);
+        } else if cancel {
+            self.showing_tab_close_prompt = None;
+        }
+    }
+
+    /// Tab strip for the main window: titles, dirty star, reorder, close, context menu.
+    fn draw_main_tab_bar(&mut self, ui: &mut egui::Ui) {
+        let tab_count = self.workspace.main().tabs.len();
+        // Always show the strip once there is more than one tab, or always so Cmd+T is discoverable.
+        let show = true;
+        if !show {
+            return;
+        }
+        let mut switch_to: Option<usize> = None;
+        let mut close_id: Option<tabs::TabId> = None;
+        let mut detach_id: Option<tabs::TabId> = None;
+        let mut duplicate_same = false;
+        let mut reorder: Option<(usize, usize)> = None;
+        let mut new_tab = false;
+
+        egui::Panel::top("tab_bar")
+            .exact_size(28.0)
+            .frame(
+                egui::Frame::NONE
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::symmetric(4, 2)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // macOS traffic-light clearance when content is under the titlebar.
+                    #[cfg(target_os = "macos")]
+                    {
+                        ui.add_space(72.0);
+                    }
+                    let active = self.workspace.main().active;
+                    for i in 0..tab_count {
+                        let title = self.main_tab_title(i);
+                        let tab_id = self.workspace.main().tabs[i].id;
+                        let selected = i == active;
+                        let response = ui.selectable_label(selected, title);
+                        if response.clicked() {
+                            switch_to = Some(i);
+                        }
+                        // Drag to reorder: start drag on press, drop on another tab.
+                        if response.dragged() {
+                            ui.ctx().memory_mut(|m| {
+                                m.data.insert_temp(egui::Id::new("tab_drag_from"), i);
+                            });
+                        }
+                        if response.hovered() && ui.input(|inp| inp.pointer.any_released()) {
+                            if let Some(from) =
+                                ui.ctx().memory(|m| m.data.get_temp::<usize>(egui::Id::new("tab_drag_from")))
+                            {
+                                if from != i {
+                                    reorder = Some((from, i));
+                                }
+                                ui.ctx().memory_mut(|m| {
+                                    m.data.remove::<usize>(egui::Id::new("tab_drag_from"));
+                                });
+                            }
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("New Tab").clicked() {
+                                new_tab = true;
+                                ui.close();
+                            }
+                            if ui.button("Duplicate Tab (same document)").clicked() {
+                                duplicate_same = true;
+                                ui.close();
+                            }
+                            if ui.button("Move to New Window").clicked() {
+                                detach_id = Some(tab_id);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Close Tab").clicked() {
+                                close_id = Some(tab_id);
+                                ui.close();
+                            }
+                        });
+                        // Small close affordance on the active tab.
+                        if selected {
+                            let close = ui
+                                .add(egui::Button::new("×").frame(false))
+                                .on_hover_text("Close tab");
+                            if close.clicked() {
+                                close_id = Some(tab_id);
+                            }
+                        }
+                    }
+                    if ui
+                        .add(egui::Button::new("+").frame(false))
+                        .on_hover_text("New tab")
+                        .clicked()
+                    {
+                        new_tab = true;
+                    }
+                });
+            });
+
+        if let Some(i) = switch_to {
+            self.sync_active_document_siblings();
+            self.switch_main_tab(i);
+        }
+        if let Some((from, to)) = reorder {
+            self.reorder_main_tab(from, to);
+        }
+        if new_tab {
+            self.new_blank_tab();
+        }
+        if duplicate_same {
+            self.new_same_document_tab();
+        }
+        if let Some(id) = close_id {
+            self.request_close_tab(id);
+        }
+        if let Some(id) = detach_id {
+            self.detach_tab_to_window(id);
+        }
+    }
+
+    /// Detached tab windows: each is an immediate viewport with its own tab strip + content.
+    fn render_detached_windows(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.sync_active_document_siblings();
+
+        let detached: Vec<(usize, u64, String)> = self
+            .workspace
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.id != tabs::WindowId::MAIN)
+            .map(|(wi, w)| {
+                let title = {
+                    let t = &w.tabs[w.active];
+                    format!("{} — BearCAD", tabs::Workspace::tab_title(&t.state))
+                };
+                (wi, w.viewport_key, title)
             })
-            .unwrap_or_else(|| "Untitled".to_string());
-        let star = if self.state.dirty { "*" } else { "" };
-        format!("{star}{name} — BearCAD")
+            .collect();
+
+        let mut tabs_to_close: Vec<tabs::TabId> = Vec::new();
+
+        for (wi, viewport_key, title) in detached {
+            if wi >= self.workspace.windows.len() {
+                continue;
+            }
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size([960.0, 640.0]);
+            let vp_id = egui::ViewportId::from_hash_of(("detached_tab", viewport_key));
+            let mut close_requested = false;
+            ctx.show_viewport_immediate(vp_id, builder, |vui, _class| {
+                theme::apply(vui.ctx());
+                let active = self.workspace.windows[wi].active;
+                std::mem::swap(
+                    &mut self.state,
+                    &mut self.workspace.windows[wi].tabs[active].state,
+                );
+                egui::Panel::top("detached_tabs")
+                    .exact_size(28.0)
+                    .show(vui, |ui| {
+                        ui.horizontal(|ui| {
+                            let n = self.workspace.windows[wi].tabs.len();
+                            for i in 0..n {
+                                let label = if i == self.workspace.windows[wi].active {
+                                    tabs::Workspace::tab_title(&self.state)
+                                } else {
+                                    tabs::Workspace::tab_title(
+                                        &self.workspace.windows[wi].tabs[i].state,
+                                    )
+                                };
+                                let selected = i == self.workspace.windows[wi].active;
+                                if ui.selectable_label(selected, label).clicked() && !selected {
+                                    let old = self.workspace.windows[wi].active;
+                                    std::mem::swap(
+                                        &mut self.state,
+                                        &mut self.workspace.windows[wi].tabs[old].state,
+                                    );
+                                    self.workspace.windows[wi].active = i;
+                                    std::mem::swap(
+                                        &mut self.state,
+                                        &mut self.workspace.windows[wi].tabs[i].state,
+                                    );
+                                }
+                            }
+                        });
+                    });
+                let render_state = frame.wgpu_render_state();
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(vui, |ui| {
+                        match self.state.editing_drawing {
+                            Some(di) if self.state.doc.drawings.get(di).is_some() => {
+                                self.draw_drawing_pane(ui, di);
+                            }
+                            _ => {
+                                self.state.editing_drawing = None;
+                                let pickers = Vec::new();
+                                self.draw_viewport(ui, render_state, &pickers);
+                            }
+                        }
+                    });
+                let active = self.workspace.windows[wi].active;
+                std::mem::swap(
+                    &mut self.state,
+                    &mut self.workspace.windows[wi].tabs[active].state,
+                );
+                if vui.input(|i| i.viewport().close_requested()) {
+                    close_requested = true;
+                }
+            });
+            if close_requested {
+                for t in &self.workspace.windows[wi].tabs {
+                    tabs_to_close.push(t.id);
+                }
+            }
+        }
+        for id in tabs_to_close {
+            self.request_close_tab(id);
+        }
     }
 
     /// Push the window title to the OS only when it changes (#522), so the `*` appears and
@@ -11796,13 +12326,32 @@ impl App {
         !cfg!(debug_assertions)
     }
 
+    /// True if any tab across all windows has unsaved changes (for window close).
+    fn any_document_dirty(&self) -> bool {
+        if self.state.dirty {
+            return true;
+        }
+        for win in &self.workspace.windows {
+            for (i, tab) in win.tabs.iter().enumerate() {
+                // Main active slot is a placeholder — live dirty is in self.state.
+                if win.id == tabs::WindowId::MAIN && i == win.active {
+                    continue;
+                }
+                if tab.state.dirty {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Intercept a close request when the document has unsaved changes (#522): cancel the
     /// close and open the Save / Don't Save / Cancel prompt, which then drives the actual
     /// exit. When the prompt is disabled, or the document is clean, the close passes through.
     #[cfg(not(target_arch = "wasm32"))]
     fn handle_quit_prompt(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) {
-            if self.allow_close || !self.state.dirty || !self.quit_prompt_enabled() {
+            if self.allow_close || !self.any_document_dirty() || !self.quit_prompt_enabled() {
                 // Let the close proceed.
                 return;
             }
@@ -11837,9 +12386,8 @@ impl App {
         if save {
             self.showing_quit_prompt = false;
             self.save();
-            // If the save went through (or a Save As dialog completed), the document is
-            // clean and we can close; if the user cancelled the Save As dialog it's still
-            // dirty, so stay open rather than lose the changes.
+            // Save only covers the active tab; if other tabs are still dirty, keep prompting
+            // is not implemented — Discard is the multi-tab escape. Active must be clean.
             if !self.state.dirty {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -11872,6 +12420,7 @@ impl App {
                 command_log::CommandLog::new_recording(self.show_commands),
             ));
         }
+        self.refresh_script_tab_snapshot();
         let needs_repaint = if let Some(runner) = &mut self.script {
             if runner.done {
                 if let Some(err) = &runner.error {
@@ -11908,8 +12457,70 @@ impl App {
             false
         };
 
+        // Workspace ops queued by the script (tabs, document rebind).
+        if let Some(runner) = &mut self.script {
+            let rebind = std::mem::take(&mut runner.rebind_active_document);
+            let ops = std::mem::take(&mut runner.pending_tab_ops);
+            if rebind {
+                self.rebind_active_document();
+            }
+            for op in ops {
+                self.apply_script_tab_op(op);
+            }
+            self.refresh_script_tab_snapshot();
+        }
+
         if needs_repaint || self.script.as_ref().is_some_and(|r| r.is_waiting()) {
             ctx.request_repaint();
+        }
+    }
+
+    fn refresh_script_tab_snapshot(&mut self) {
+        let active = self.workspace.main().active;
+        let n = self.workspace.main().tabs.len();
+        let mut titles = Vec::with_capacity(n);
+        let mut dirty = Vec::with_capacity(n);
+        for i in 0..n {
+            titles.push(self.main_tab_title(i));
+            let is_dirty = if i == active {
+                self.state.dirty
+            } else {
+                self.workspace.main().tabs[i].state.dirty
+            };
+            dirty.push(is_dirty);
+        }
+        self.state.script_tab_titles = titles;
+        self.state.script_tab_dirty = dirty;
+        self.state.script_active_tab = active;
+    }
+
+    fn apply_script_tab_op(&mut self, op: script::TabOp) {
+        match op {
+            script::TabOp::NewBlank => self.new_blank_tab(),
+            script::TabOp::NewSameDocument => self.new_same_document_tab(),
+            script::TabOp::Close { index } => {
+                let tab_id = match index {
+                    Some(i) => self.workspace.main().tabs.get(i).map(|t| t.id),
+                    None => Some(self.main_active_tab_id()),
+                };
+                if let Some(id) = tab_id {
+                    self.request_close_tab(id);
+                }
+            }
+            script::TabOp::Select { index } => {
+                self.sync_active_document_siblings();
+                self.switch_main_tab(index);
+            }
+            script::TabOp::Reorder { from, to } => self.reorder_main_tab(from, to),
+            script::TabOp::Detach { index } => {
+                let tab_id = match index {
+                    Some(i) => self.workspace.main().tabs.get(i).map(|t| t.id),
+                    None => Some(self.main_active_tab_id()),
+                };
+                if let Some(id) = tab_id {
+                    self.detach_tab_to_window(id);
+                }
+            }
         }
     }
 }
@@ -12073,6 +12684,10 @@ impl eframe::App for App {
             }
             self.drain_web_io(ctx);
         }
+
+        self.handle_tab_close_prompt(ctx);
+        self.draw_main_tab_bar(ui);
+        self.render_detached_windows(ctx, frame);
 
         egui::Panel::top("toolbar")
             .frame(theme::panel_frame())

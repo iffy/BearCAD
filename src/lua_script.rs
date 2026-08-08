@@ -3868,6 +3868,84 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Document tabs: new / close / select / reorder / detach, plus a read-only strip snapshot.
+    api.set(
+        "new_tab",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let same = opts
+                .as_ref()
+                .and_then(|t| t.get::<bool>("same").ok())
+                .unwrap_or(false);
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            if same {
+                unsafe { tick.exec(Instruction::NewTabSameDocument) }
+            } else {
+                unsafe { tick.exec(Instruction::NewTab) }
+            }
+        })?,
+    )?;
+    api.set(
+        "close_tab",
+        lua.create_function(|lua, index: Option<usize>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::CloseTab { index }) }
+        })?,
+    )?;
+    api.set(
+        "tab",
+        lua.create_function(|lua, index: Option<usize>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                if let Some(index) = index {
+                    tick.exec(Instruction::SelectTab { index })?;
+                }
+                Ok(tick.state().script_active_tab)
+            }
+        })?,
+    )?;
+    api.set(
+        "reorder_tab",
+        lua.create_function(|lua, (from, to): (usize, usize)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ReorderTab { from, to }) }
+        })?,
+    )?;
+    api.set(
+        "detach_tab",
+        lua.create_function(|lua, index: Option<usize>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::DetachTab { index }) }
+        })?,
+    )?;
+    api.set(
+        "tab_count",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { Ok(tick.state().script_tab_titles.len()) }
+        })?,
+    )?;
+    api.set(
+        "tabs",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                let state = tick.state();
+                let table = lua.create_table()?;
+                for (i, title) in state.script_tab_titles.iter().enumerate() {
+                    let row = lua.create_table()?;
+                    row.set("title", title.as_str())?;
+                    row.set(
+                        "dirty",
+                        state.script_tab_dirty.get(i).copied().unwrap_or(false),
+                    )?;
+                    row.set("active", i == state.script_active_tab)?;
+                    table.set(i + 1, row)?; // 1-based Lua array
+                }
+                Ok(table)
+            }
+        })?,
+    )?;
+
     // #1110: pick how selected/hovered bodies highlight — recolour the fill ("shading") or
     // draw a screen-space silhouette outline ("outlining"). With no argument, returns the
     // current method's script name without changing it.
@@ -6041,6 +6119,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "focus_name", "focus_dim", "pane", "palette", "settings",
             "body_highlight",
             "mcmaster",
+            "new_tab", "close_tab", "tab", "tab_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom", "animate_joints", "snapping", "picker_focus", "angle_snap",
@@ -6807,6 +6886,84 @@ mod tests {
         assert!(runner.error.is_some(), "unknown shading mode should error");
     }
 
+    /// Tab script API queues workspace ops on the runner (App applies them each frame).
+    #[test]
+    fn lua_tab_ops_queue_on_runner() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            bearcad.ui.new_tab()
+            bearcad.ui.new_tab{ same = true }
+            bearcad.ui.tab(0)
+            bearcad.ui.close_tab(1)
+            bearcad.ui.reorder_tab(0, 1)
+            bearcad.ui.detach_tab()
+            assert(bearcad.ui.tab_count() == 1)
+            local tabs = bearcad.ui.tabs()
+            assert(#tabs == 1)
+            assert(tabs[1].title == "Untitled")
+            "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+        use crate::script::TabOp;
+        assert!(
+            runner
+                .pending_tab_ops
+                .iter()
+                .any(|op| matches!(op, TabOp::NewBlank)),
+            "new_tab should queue NewBlank: {:?}",
+            runner.pending_tab_ops
+        );
+        assert!(
+            runner
+                .pending_tab_ops
+                .iter()
+                .any(|op| matches!(op, TabOp::NewSameDocument)),
+            "same-document new_tab should queue: {:?}",
+            runner.pending_tab_ops
+        );
+        assert!(
+            runner
+                .pending_tab_ops
+                .iter()
+                .any(|op| matches!(op, TabOp::Select { index: 0 })),
+            "tab(0) should queue Select: {:?}",
+            runner.pending_tab_ops
+        );
+        assert!(
+            runner
+                .pending_tab_ops
+                .iter()
+                .any(|op| matches!(op, TabOp::Close { index: Some(1) })),
+            "close_tab(1) should queue: {:?}",
+            runner.pending_tab_ops
+        );
+        assert!(
+            runner
+                .pending_tab_ops
+                .iter()
+                .any(|op| matches!(op, TabOp::Reorder { from: 0, to: 1 })),
+            "reorder_tab should queue: {:?}",
+            runner.pending_tab_ops
+        );
+        assert!(
+            runner
+                .pending_tab_ops
+                .iter()
+                .any(|op| matches!(op, TabOp::Detach { index: None })),
+            "detach_tab should queue: {:?}",
+            runner.pending_tab_ops
+        );
+    }
+
     /// #46: GUI/UI manipulation lives under `bearcad.ui.*`; modeling stays top-level.
     #[test]
     fn lua_ui_functions_live_under_ui_namespace() {
@@ -6814,7 +6971,9 @@ mod tests {
             r#"
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
-                                    "key", "type", "pane", "palette", "wait" }) do
+                                    "key", "type", "pane", "palette", "wait",
+                                    "new_tab", "close_tab", "tab", "tabs", "tab_count",
+                                    "reorder_tab", "detach_tab" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
                 assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
             end

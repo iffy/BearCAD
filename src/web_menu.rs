@@ -21,6 +21,10 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                     picked = Some(MenuCommand::NewDocument);
                     ui.close();
                 }
+                if ui.button("New Tab").clicked() {
+                    picked = Some(MenuCommand::NewTab);
+                    ui.close();
+                }
                 if ui.button("Open…").clicked() {
                     picked = Some(MenuCommand::Open);
                     ui.close();

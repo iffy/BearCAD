@@ -779,6 +779,18 @@ pub enum Instruction {
     SetBodyHighlightMethod { method: crate::settings::BodyHighlightMethod },
     /// Open/close the McMaster-Carr catalog window (#1022).
     SetMcMasterWindow { open: Option<bool>, part: Option<String> },
+    /// Open a new blank document tab (`bearcad.ui.new_tab()`).
+    NewTab,
+    /// Open a new tab on the same document as the current one (`bearcad.ui.new_tab{ same = true }`).
+    NewTabSameDocument,
+    /// Close a tab by index, or the active tab when `None` (`bearcad.ui.close_tab([i])`).
+    CloseTab { index: Option<usize> },
+    /// Activate a main-window tab by index (`bearcad.ui.tab(i)`).
+    SelectTab { index: usize },
+    /// Reorder main-window tabs (`bearcad.ui.reorder_tab(from, to)`).
+    ReorderTab { from: usize, to: usize },
+    /// Detach a tab into its own window (`bearcad.ui.detach_tab([i])`).
+    DetachTab { index: Option<usize> },
     DeleteParameter { index: usize },
     DeleteSelection,
     /// Show/hide the command palette. `None` toggles.
@@ -1783,6 +1795,16 @@ impl Instruction {
                     None => format!("bearcad.ui.mcmaster({verb:?})"),
                 }
             }
+            Instruction::NewTab => "bearcad.ui.new_tab()".to_string(),
+            Instruction::NewTabSameDocument => "bearcad.ui.new_tab{ same = true }".to_string(),
+            Instruction::CloseTab { index: None } => "bearcad.ui.close_tab()".to_string(),
+            Instruction::CloseTab { index: Some(i) } => format!("bearcad.ui.close_tab({i})"),
+            Instruction::SelectTab { index } => format!("bearcad.ui.tab({index})"),
+            Instruction::ReorderTab { from, to } => {
+                format!("bearcad.ui.reorder_tab({from}, {to})")
+            }
+            Instruction::DetachTab { index: None } => "bearcad.ui.detach_tab()".to_string(),
+            Instruction::DetachTab { index: Some(i) } => format!("bearcad.ui.detach_tab({i})"),
             Instruction::RunPaletteCommand { query, argument } => match argument {
                 Some(argument) => {
                     format!("bearcad.ui.palette(\"run\", {query:?}, {argument:?})")
@@ -4519,6 +4541,21 @@ pub struct ScriptRunner {
     pub done: bool,
     pub error: Option<String>,
     pub should_quit: bool,
+    /// Tab / document-id ops that need the `App` workspace (not just `AppState`).
+    pub(crate) pending_tab_ops: Vec<TabOp>,
+    /// File→New / Open replaced the document in the active tab — rebind its document id.
+    pub(crate) rebind_active_document: bool,
+}
+
+/// Workspace-level tab operations queued by script instructions and applied by `App`.
+#[derive(Clone, Debug)]
+pub(crate) enum TabOp {
+    NewBlank,
+    NewSameDocument,
+    Close { index: Option<usize> },
+    Select { index: usize },
+    Reorder { from: usize, to: usize },
+    Detach { index: Option<usize> },
 }
 
 impl ScriptRunner {
@@ -4538,6 +4575,8 @@ impl ScriptRunner {
             done: false,
             error: None,
             should_quit: false,
+            pending_tab_ops: Vec::new(),
+            rebind_active_document: false,
         }
     }
 
@@ -5133,11 +5172,37 @@ impl ScriptRunner {
         match instr {
             Instruction::New => {
                 state.apply(Action::NewDocument);
+                self.rebind_active_document = true;
                 StepResult::Continue
             }
             Instruction::Open(path) => {
                 let r = state.apply(Action::Open { path });
                 self.record_action_error(r);
+                self.rebind_active_document = true;
+                StepResult::Continue
+            }
+            Instruction::NewTab => {
+                self.pending_tab_ops.push(TabOp::NewBlank);
+                StepResult::Continue
+            }
+            Instruction::NewTabSameDocument => {
+                self.pending_tab_ops.push(TabOp::NewSameDocument);
+                StepResult::Continue
+            }
+            Instruction::CloseTab { index } => {
+                self.pending_tab_ops.push(TabOp::Close { index });
+                StepResult::Continue
+            }
+            Instruction::SelectTab { index } => {
+                self.pending_tab_ops.push(TabOp::Select { index });
+                StepResult::Continue
+            }
+            Instruction::ReorderTab { from, to } => {
+                self.pending_tab_ops.push(TabOp::Reorder { from, to });
+                StepResult::Continue
+            }
+            Instruction::DetachTab { index } => {
+                self.pending_tab_ops.push(TabOp::Detach { index });
                 StepResult::Continue
             }
             Instruction::Save(path) => {
