@@ -1412,6 +1412,16 @@ impl ViewportScene {
                 !sketch_circle_is_active(input.doc, s, ci, circle.sketch)
             });
             let element = SceneElement::Circle(ci);
+            // Body-coplanar rings (#1140): a circle sketched on a solid's face shares that
+            // face's depth with the body mesh. The overlay bias alone leaves a mottled
+            // gold/cyan ring when the circle is highlighted — same coplanar fight #1139
+            // fixed for face fills. Depth-disable those strokes (construction-plane
+            // sketches keep the ordinary overlay path).
+            let body_coplanar = sketch_is_body_coplanar(input.doc, circle.sketch);
+            let restore = mesh.index_layer;
+            if body_coplanar {
+                mesh.set_index_layer(MeshIndexLayer::Wireframe);
+            }
             mesh.push_circle_strokes(
                 input.doc,
                 circle,
@@ -1428,6 +1438,9 @@ impl ViewportScene {
                     input.document_health.element_status(element),
                 ),
             );
+            if body_coplanar {
+                mesh.set_index_layer(restore);
+            }
         }
 
         // Origin marker (#189): a distinct dot at the active sketch's own origin so it's
@@ -2732,6 +2745,12 @@ impl<'a> SceneMesh<'a> {
                         if let Some(perimeter) =
                             circle_world_perimeter(doc, circle, CIRCLE_SEGMENTS)
                         {
+                            // Depth-disabled (#1140): a selected circle on a body face is
+                            // coplanar with the solid — same mottled z-fight as body-face
+                            // selection before #555. Always use Wireframe (even on a
+                            // construction plane the ring is thin and Always is fine).
+                            let restore = self.index_layer;
+                            self.set_index_layer(MeshIndexLayer::Wireframe);
                             for window in perimeter.windows(2) {
                                 if dashed {
                                     self.push_dashed_line_segment(
@@ -2755,6 +2774,7 @@ impl<'a> SceneMesh<'a> {
                                     );
                                 }
                             }
+                            self.set_index_layer(restore);
                         }
                     }
                 }
@@ -5093,6 +5113,16 @@ fn construction_geometry_visible(
     session.is_some_and(|s| s.sketch == sketch)
 }
 
+/// Whether a sketch sits on a solid's face (extrude cap/side, etc.) rather than a datum
+/// plane. Geometry on those faces is coplanar with the body mesh and needs the
+/// depth-disabled stroke path (#1140), matching body-coplanar face fills (#1139).
+fn sketch_is_body_coplanar(doc: &Document, sketch: crate::model::SketchId) -> bool {
+    match doc.sketch_face(sketch) {
+        Some(FaceId::ConstructionPlane(_)) | None => false,
+        Some(_) => true,
+    }
+}
+
 fn sketch_circle_is_active(
     doc: &Document,
     session: SketchSession,
@@ -6505,6 +6535,183 @@ mod tests {
         assert_eq!(
             overlay_growth, 0,
             "body-face hover must not draw in the depth-tested overlay (that is what z-fought the body), got overlay +{overlay_growth}"
+        );
+    }
+
+    /// #1140: a circle on a body face (e.g. Extrude's profile hover/selection on a side cap)
+    /// sits coplanar with the solid. Its highlight ring used to share the depth-tested overlay
+    /// with the committed circle stroke — the two (and the body) alternate who wins, and the
+    /// ring reads as gold speckled with body blue / stroke cyan. Same fix as #1139: body-coplanar
+    /// circle highlights (and the committed stroke on a body face) land on the depth-disabled
+    /// wireframe layer. No world-space bias offsets.
+    fn state_with_circle_on_body_face() -> (AppState, crate::model::CircleKey) {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = state_with_one_body();
+        // Sketch on the extruded body's top cap, then a circle on that face.
+        state.apply(Action::BeginSketch {
+            face: FaceId::ExtrudeCap {
+                extrusion: xkey(0),
+                profile: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
+                top: true,
+            },
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let ci = state
+            .doc
+            .circles
+            .insert(crate::model::Circle::from_local_center_radius(
+                sketch, 5.0, 2.5, 2.0, 0.0,
+            ));
+        // Close the sketch so the circle is ordinary body-face decoration, not live edit.
+        state.sketch_session = None;
+        (state, ci)
+    }
+
+    fn build_circle_scene(
+        state: &AppState,
+        hover: Option<ViewportHoverHighlight>,
+        selection: &SceneSelection,
+    ) -> ViewportScene {
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection,
+            cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
+            sketch_repeat_ghost: Vec::new(),
+            sketch_ghost_lines: Vec::new(),
+            edit_preview_meshes: std::collections::HashMap::new(),
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            preview_cut_body: None,
+            preview_replacement: PreviewReplacement::default(),
+            highlighted_bezier_handles: Vec::new(),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            arrow_gizmos: Vec::new(),
+            move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: hover,
+            extra_pick_highlights: Vec::new(),
+            colored_pick_highlights: Vec::new(),
+            colored_element_highlights: Vec::new(),
+            tinted_bodies: Vec::new(),
+            colored_segments: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
+            hover_color: crate::construction::PICK_HOVER_RGBA,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        })
+    }
+
+    #[test]
+    fn body_coplanar_circle_face_hover_draws_depth_test_disabled() {
+        let (state, ci) = state_with_circle_on_body_face();
+        let base = build_circle_scene(&state, None, &state.scene_selection);
+        let hovered = build_circle_scene(
+            &state,
+            Some(ViewportHoverHighlight::SketchFace(FaceId::Circle(ci))),
+            &state.scene_selection,
+        );
+        let wire_growth = hovered.wireframe_indices.len() - base.wireframe_indices.len();
+        let overlay_growth = hovered
+            .overlay_indices
+            .len()
+            .saturating_sub(base.overlay_indices.len());
+        assert!(
+            wire_growth >= 6,
+            "circle-face hover fill+border must land in the depth-disabled layer, got wire +{wire_growth}"
+        );
+        assert_eq!(
+            overlay_growth, 0,
+            "circle-face hover must not grow the depth-tested overlay, got overlay +{overlay_growth}"
+        );
+    }
+
+    #[test]
+    fn body_coplanar_circle_selection_draws_depth_test_disabled() {
+        let (state, ci) = state_with_circle_on_body_face();
+        let base = build_circle_scene(&state, None, &state.scene_selection);
+        let mut selection = state.scene_selection.clone();
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Circle(ci), true);
+        let selected = build_circle_scene(&state, None, &selection);
+        let wire_growth = selected.wireframe_indices.len() - base.wireframe_indices.len();
+        let overlay_growth = selected
+            .overlay_indices
+            .len()
+            .saturating_sub(base.overlay_indices.len());
+        assert!(
+            wire_growth >= 6,
+            "selected body-face circle must land in the depth-disabled layer, got wire +{wire_growth}"
+        );
+        assert_eq!(
+            overlay_growth, 0,
+            "selected body-face circle must not grow the depth-tested overlay (z-fights the body), got overlay +{overlay_growth}"
+        );
+    }
+
+    #[test]
+    fn body_coplanar_committed_circle_stroke_draws_depth_test_disabled() {
+        // The committed ring on a body face is itself coplanar with the solid (#1140). Leaving
+        // it on the depth-tested overlay makes the gold highlight (also coplanar) z-fight the
+        // stroke into a mottled gold/cyan ring even when the highlight is depth-disabled.
+        let (state, _ci) = state_with_circle_on_body_face();
+        // Baseline: same scene with the circle's sketch moved onto a construction plane so the
+        // stroke is *not* body-coplanar.
+        let mut plane_state = state_with_one_body();
+        {
+            use crate::actions::Action;
+            plane_state.apply(Action::BeginSketch {
+                face: FaceId::ConstructionPlane(pkey(0)),
+                viewport: None,
+            });
+            let sketch = plane_state.sketch_session.unwrap().sketch;
+            plane_state
+                .doc
+                .circles
+                .insert(crate::model::Circle::from_local_center_radius(
+                    sketch, 5.0, 2.5, 2.0, 0.0,
+                ));
+            plane_state.sketch_session = None;
+        }
+        let on_body = build_circle_scene(&state, None, &state.scene_selection);
+        let on_plane = build_circle_scene(&plane_state, None, &plane_state.scene_selection);
+        assert!(
+            !on_body.wireframe_indices.is_empty(),
+            "a circle stroke on a body face must use the depth-disabled layer"
+        );
+        // Plane-sketched circles keep the ordinary overlay stroke path (depth-tested with the
+        // existing stroke bias) — only body-coplanar circles need the always-on path.
+        assert!(
+            on_plane.wireframe_indices.is_empty()
+                || on_plane.wireframe_indices.len() < on_body.wireframe_indices.len(),
+            "a circle on a construction plane should not need the body-coplanar wireframe stroke path"
+        );
+        assert!(
+            on_body.overlay_indices.len() < on_plane.overlay_indices.len()
+                || on_plane.overlay_indices.len() > 0,
+            "body-face circle stroke should leave the overlay thinner than a plane-sketched circle"
         );
     }
 
