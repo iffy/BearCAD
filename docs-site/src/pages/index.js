@@ -34,16 +34,18 @@ function HomepageHeader() {
           {siteConfig.title}
         </Heading>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
-        <div className={styles.buttons}>
+        <div className={styles.ctaRow}>
           <Link
             className={clsx('button button--lg', styles.ctaButton)}
             href={WEB_APP_PATH}>
             ▶&nbsp;&nbsp;Run in your browser
           </Link>
+        </div>
+        <div className={styles.buttons}>
           {DOWNLOADS.map(({label, href}) => (
             <Link
               key={label}
-              className="button button--outline button--secondary button--lg"
+              className={clsx('button button--lg', styles.downloadButton)}
               href={href}>
               {label}
             </Link>
