@@ -207,14 +207,17 @@ pub const ORIGIN_AXIS_SELECTED_WIDTH_PX: f32 = ORIGIN_AXIS_HOVER_WIDTH_PX * 2.0;
 /// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
 pub const STROKE_DEPTH_BIAS: f32 = 0.10;
 /// Lift construction-plane hover fills above the plane surface (avoids z-fighting).
-/// Kept at zero: the overlay pipeline's own depth bias (constant: -16, slope_scale: -4.0)
-/// is enough to prevent z-fighting with the plane fill, and any world-space lift would
-/// make the hover highlight show through bodies that sit on the plane (#1090).
+/// Kept at zero: the overlay pipeline's own depth bias is enough to prevent z-fighting with
+/// the plane fill, and any world-space lift would make the hover highlight show through
+/// bodies that sit on the plane (#1090). Body-coplanar face fills do **not** use this path —
+/// they go on the depth-disabled wireframe layer instead (#1139).
 const HOVER_PLANE_DEPTH_LIFT: f32 = 0.0;
 /// Lift sketch-face hover/active fills toward the camera so they sit above committed coplanar
 /// fills (which are themselves biased) and just under strokes — otherwise a hover over
 /// overlapping faces renders behind/at-equal-depth with those fills and shows patchy
-/// artifacts along the overlaps (#19).
+/// artifacts along the overlaps (#19). For faces coplanar with a solid body the fill is also
+/// depth-test-disabled (#1139); the lift still helps when a face is only coplanar with other
+/// sketch fills (e.g. on a construction plane).
 const HOVER_FILL_DEPTH_BIAS: f32 = 0.09;
 /// Lift an extrusion's top-cap triangles toward the camera when they lie on the target
 /// plane, so the solid wins over the (separately rendered) target plane's own fill instead
@@ -2978,6 +2981,17 @@ impl<'a> SceneMesh<'a> {
     ) {
         let fill = color.gamma_multiply(fill_multiplier);
         let eye = cam.eye();
+        // Datum planes stay on the caller's depth-tested layer (#1090): a large GPU/world
+        // lift would make the hover show through bodies sitting on the plane. Every other
+        // face is coplanar with a solid (or its own sketch fill on one), and the overlay
+        // bias alone is not enough — the body and the gold hover fill z-fight into a
+        // mottled checkerboard (#1139). Body-face selection already uses the depth-disabled
+        // wireframe layer; body-coplanar face hover fills do the same.
+        let body_coplanar = !matches!(face, FaceId::ConstructionPlane(_));
+        let restore = self.index_layer;
+        if body_coplanar {
+            self.set_index_layer(MeshIndexLayer::Wireframe);
+        }
         match face {
             FaceId::Circle(index) => {
                 if let Some(circle) = doc.circles.get(index) {
@@ -3124,6 +3138,9 @@ impl<'a> SceneMesh<'a> {
                 }
             }
         }
+        if body_coplanar {
+            self.set_index_layer(restore);
+        }
     }
 
     fn push_hover_highlight(
@@ -3139,6 +3156,14 @@ impl<'a> SceneMesh<'a> {
         let project = |w: Vec3| cam.project(w, viewport, view_proj);
         match hover {
             ViewportHoverHighlight::SketchFace(face) => {
+                // Fill + border both depth-disabled for body-coplanar faces (#1139); the
+                // fill helper switches the layer itself for non-plane faces, and the border
+                // must follow or the outline would z-fight the solid independently.
+                let body_coplanar = !matches!(face, FaceId::ConstructionPlane(_));
+                let restore = self.index_layer;
+                if body_coplanar {
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                }
                 self.push_sketch_face_hover(
                     doc,
                     face.clone(),
@@ -3155,6 +3180,9 @@ impl<'a> SceneMesh<'a> {
                     viewport,
                     view_proj,
                 );
+                if body_coplanar {
+                    self.set_index_layer(restore);
+                }
             }
             ViewportHoverHighlight::Element(element) => {
                 self.push_element_hover(doc, element.clone(), color, body_meshes, cam, viewport, view_proj);
@@ -3196,6 +3224,10 @@ impl<'a> SceneMesh<'a> {
                         .normalize_or_zero();
                     let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
                     let lift = |p: Vec3| offset_toward_camera(p, normal, eye, HOVER_FILL_DEPTH_BIAS);
+                    // Depth-disabled like body-coplanar face fills (#1139): a region on a
+                    // solid's face is coplanar with the body and would z-fight otherwise.
+                    let restore = self.index_layer;
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
                     // Hole-aware fill (#942): the wall of a ring highlights as the wall, not as
                     // the whole outline with its interior filled in.
                     for tri in crate::polygon::triangulate_planar_with_holes(
@@ -3218,6 +3250,7 @@ impl<'a> SceneMesh<'a> {
                             );
                         }
                     }
+                    self.set_index_layer(restore);
                 }
             }
         }
@@ -3468,7 +3501,13 @@ impl<'a> SceneMesh<'a> {
             // It used to light only its boundary loop, which read as "these edges" rather than
             // "this surface" — the difference mattered once the face-picking tools' hover
             // started coming from their pickers rather than a hand-written arm per tool.
+            // Body-coplanar fills + borders are depth-disabled (#1139).
             SceneElement::SketchFace(face) => {
+                let body_coplanar = !matches!(face, FaceId::ConstructionPlane(_));
+                let restore = self.index_layer;
+                if body_coplanar {
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                }
                 self.push_sketch_face_hover(
                     doc,
                     face.clone(),
@@ -3485,6 +3524,9 @@ impl<'a> SceneMesh<'a> {
                     viewport,
                     view_proj,
                 );
+                if body_coplanar {
+                    self.set_index_layer(restore);
+                }
             }
             SceneElement::Circle(index) => {
                 self.push_pick_target_highlight(
@@ -3794,22 +3836,32 @@ impl<'a> SceneMesh<'a> {
                 let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
                 let lift =
                     |p: Vec3| offset_toward_camera(p, *normal, eye, HOVER_FILL_DEPTH_BIAS);
+                // Depth-disabled (#555/#1139): coplanar with the solid, so a depth-tested
+                // fill z-fights the body into a mottled checkerboard. Callers that already
+                // switched to Wireframe (PickTarget hover) keep that; Element hover did not.
+                let restore = self.index_layer;
+                self.set_index_layer(MeshIndexLayer::Wireframe);
                 for tri in triangles {
                     self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
                 }
                 for (a, b) in crate::construction::coplanar_face_boundary(triangles) {
                     self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
                 }
+                self.set_index_layer(restore);
             }
             // A round wall (#1013): its own facets, lifted toward the camera like a face's.
             PickTargetKind::BodyCylinder { cylinder, .. } => {
                 let eye = cam.eye();
                 let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
+                // Same coplanar-with-body problem as BodyFace (#1139).
+                let restore = self.index_layer;
+                self.set_index_layer(MeshIndexLayer::Wireframe);
                 for tri in &cylinder.triangles {
                     let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
                     let lift = |p: Vec3| offset_toward_camera(p, n, eye, HOVER_FILL_DEPTH_BIAS);
                     self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
                 }
+                self.set_index_layer(restore);
             }
             // Its centre line: the segment the surface spans.
             PickTargetKind::BodyAxis { a, b, .. } => {
@@ -3857,8 +3909,15 @@ impl<'a> SceneMesh<'a> {
             // A whole body (#902) recolors in the main pass, like a hovered body row.
             PickTargetKind::Body(_) => {}
             // An analytic sketchable face (#625): same fill + border a face-picking tool's own
-            // hover uses.
+            // hover uses. Body-coplanar fills + borders are depth-disabled (#1139); the
+            // PickTarget arm already sets Wireframe for all kinds, but ConstructionPlane
+            // stays depth-tested when drawn through the face helper alone.
             PickTargetKind::SketchFace(face) => {
+                let body_coplanar = !matches!(face, FaceId::ConstructionPlane(_));
+                let restore = self.index_layer;
+                if body_coplanar {
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                }
                 self.push_sketch_face_hover(doc, face.clone(), color, FACE_HOVER_FILL_MULTIPLIER, cam);
                 self.push_sketch_face_hover_border(
                     doc,
@@ -3869,6 +3928,9 @@ impl<'a> SceneMesh<'a> {
                     viewport,
                     view_proj,
                 );
+                if body_coplanar {
+                    self.set_index_layer(restore);
+                }
             }
         }
     }
@@ -6354,6 +6416,95 @@ mod tests {
         assert!(
             three.wireframe_indices.len() > one.wireframe_indices.len(),
             "every segment of the edge is highlighted"
+        );
+    }
+
+    /// #1139: hovering a body-coplanar face (extrude cap/side, or a sketch on one) used to
+    /// paint its translucent fill in the depth-tested overlay layer. On a solid that is
+    /// coplanar with the face, 0.09 mm of world lift + the overlay pipeline bias is not
+    /// enough at typical viewing angles — the body and the gold hover fill alternate who
+    /// wins the depth test, and the face reads as a mottled checkerboard. Body-face
+    /// selection already uses the depth-disabled wireframe layer (#555); body-coplanar
+    /// face *hover* must do the same.
+    #[test]
+    fn body_face_hover_fill_draws_depth_test_disabled() {
+        let state = state_with_one_body();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |hover: Option<ViewportHoverHighlight>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
+                faded_bodies: Vec::new(),
+                sketch_repeat_ghost: Vec::new(),
+                sketch_ghost_lines: Vec::new(),
+                edit_preview_meshes: std::collections::HashMap::new(),
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                repeat_ghosts: Vec::new(),
+                preview_cut_body: None,
+                preview_replacement: PreviewReplacement::default(),
+                highlighted_bezier_handles: Vec::new(),
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                arrow_gizmos: Vec::new(),
+                move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: hover,
+                extra_pick_highlights: Vec::new(),
+                colored_pick_highlights: Vec::new(),
+                colored_element_highlights: Vec::new(),
+                tinted_bodies: Vec::new(),
+                colored_segments: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let base = build(None);
+        // Top cap of the one extruded body — coplanar with the solid, same surface the
+        // Extrude tool hovers when preparing to push a face.
+        let top = FaceId::ExtrudeCap {
+            extrusion: xkey(0),
+            profile: crate::model::ExtrudeFace::Polygon(vec![
+                lkey(0),
+                lkey(1),
+                lkey(2),
+                lkey(3),
+            ]),
+            top: true,
+        };
+        let hovered = build(Some(ViewportHoverHighlight::SketchFace(top)));
+        let wire_growth = hovered.wireframe_indices.len() - base.wireframe_indices.len();
+        let overlay_growth = hovered
+            .overlay_indices
+            .len()
+            .saturating_sub(base.overlay_indices.len());
+        assert!(
+            wire_growth >= 6,
+            "body-face hover fill must land in the depth-disabled (wireframe) layer, got wire +{wire_growth}"
+        );
+        assert_eq!(
+            overlay_growth, 0,
+            "body-face hover must not draw in the depth-tested overlay (that is what z-fought the body), got overlay +{overlay_growth}"
         );
     }
 
