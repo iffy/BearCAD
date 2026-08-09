@@ -2382,18 +2382,51 @@ fn effective_slice_cutters(
     out
 }
 
+/// How many laser-line cutters touch a world point (within endpoint epsilon). Degree 1
+/// means a free end of the path graph — the only places Infinite cut may extend (#1145).
+fn laser_endpoint_degree(
+    doc: &Document,
+    all_laser_lines: &[crate::model::LineKey],
+    at: Vec3,
+) -> usize {
+    let eps2 = LASER_ENDPOINT_EPS * LASER_ENDPOINT_EPS;
+    all_laser_lines
+        .iter()
+        .filter(|&&key| {
+            let Some(line) = doc.lines.get(key) else {
+                return false;
+            };
+            let Some(poly) = crate::face::line_world_polyline(doc, line) else {
+                return false;
+            };
+            if poly.len() < 2 {
+                return false;
+            }
+            (poly[0] - at).length_squared() < eps2
+                || (poly.last().unwrap() - at).length_squared() < eps2
+        })
+        .count()
+}
+
 /// World polyline for a continuous laser path of one or more sketch lines, optionally
-/// extended past its ends along the end tangents (#1126/#1142).
+/// extended past its **free** ends along the end tangents (#1126/#1142/#1145).
+///
+/// `all_laser_lines` is the full set of line cutters in the op (not just this chain) so
+/// free-end degree can be judged against the whole path graph. When `extend_reach` is set,
+/// only endpoints with degree 1 are pushed outward — never both directions off an interior
+/// segment or a branch vertex.
 fn laser_path_world_polyline(
     doc: &Document,
     lines: &[crate::model::LineKey],
     extend_reach: Option<f32>,
+    all_laser_lines: &[crate::model::LineKey],
 ) -> Option<(Vec<Vec3>, Vec3)> {
     if lines.is_empty() {
         return None;
     }
-    // Stitch lines end-to-end, flipping each so it attaches to the running tip.
-    let mut path: Vec<Vec3> = Vec::new();
+    // Collect each line's world polyline, then stitch. Orient the first segment so its
+    // *end* attaches to the second — cutter picker order is not geometric order (#1146).
+    let mut segments: Vec<Vec<Vec3>> = Vec::with_capacity(lines.len());
     let mut normal = Vec3::ZERO;
     for (i, &key) in lines.iter().enumerate() {
         let line = doc.lines.get(key)?;
@@ -2401,14 +2434,31 @@ fn laser_path_world_polyline(
         if i == 0 {
             normal = frame.normal.normalize_or_zero();
         }
-        let mut poly = crate::face::line_world_polyline(doc, line)?;
+        let poly = crate::face::line_world_polyline(doc, line)?;
         if poly.len() < 2 {
             return None;
         }
-        if path.is_empty() {
-            path = poly;
-            continue;
+        segments.push(poly);
+    }
+    if normal == Vec3::ZERO {
+        return None;
+    }
+
+    let mut path = segments.remove(0);
+    if let Some(second) = segments.first() {
+        let s0 = second[0];
+        let s1 = *second.last().unwrap();
+        let dist_end = (*path.last().unwrap() - s0)
+            .length_squared()
+            .min((*path.last().unwrap() - s1).length_squared());
+        let dist_start = (path[0] - s0)
+            .length_squared()
+            .min((path[0] - s1).length_squared());
+        if dist_start < dist_end {
+            path.reverse();
         }
+    }
+    for mut poly in segments {
         let tip = *path.last().unwrap();
         let d_start = (poly[0] - tip).length_squared();
         let d_end = (poly.last().unwrap() - tip).length_squared();
@@ -2423,21 +2473,56 @@ fn laser_path_world_polyline(
         }
     }
     path.dedup_by(|a, b| (*a - *b).length_squared() < 1e-12);
-    if path.len() < 2 || normal == Vec3::ZERO {
+    if path.len() < 2 {
         return None;
     }
     if let Some(reach) = extend_reach {
+        // Snapshot free ends before moving them; degree is against the un-extended path.
+        let start = path[0];
+        let end = *path.last().unwrap();
+        let start_free = laser_endpoint_degree(doc, all_laser_lines, start) <= 1;
+        let end_free = laser_endpoint_degree(doc, all_laser_lines, end) <= 1;
         let d0 = (path[1] - path[0]).normalize_or_zero();
         let dn = (*path.last().unwrap() - path[path.len() - 2]).normalize_or_zero();
-        if d0 != Vec3::ZERO {
+        if start_free && d0 != Vec3::ZERO {
             path[0] -= d0 * reach;
         }
-        if dn != Vec3::ZERO {
+        if end_free && dn != Vec3::ZERO {
             let last = path.len() - 1;
             path[last] += dn * reach;
         }
     }
     Some((path, normal))
+}
+
+/// Slab intersection of the infinite line `origin + t * dir` with an AABB. Returns
+/// `(t_enter, t_exit)` when the line hits the box; `dir` need not be unit.
+fn line_aabb_interval(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<(f32, f32)> {
+    let mut tmin = f32::NEG_INFINITY;
+    let mut tmax = f32::INFINITY;
+    for i in 0..3 {
+        let o = origin[i];
+        let d = dir[i];
+        let lo = min[i];
+        let hi = max[i];
+        if d.abs() < 1e-12 {
+            if o < lo || o > hi {
+                return None;
+            }
+            continue;
+        }
+        let mut t1 = (lo - o) / d;
+        let mut t2 = (hi - o) / d;
+        if t1 > t2 {
+            std::mem::swap(&mut t1, &mut t2);
+        }
+        tmin = tmin.max(t1);
+        tmax = tmax.min(t2);
+        if tmin > tmax {
+            return None;
+        }
+    }
+    Some((tmin, tmax))
 }
 
 /// Laser-style half-space for a continuous path of sketch lines (#1126/#1142): the laser
@@ -2446,16 +2531,88 @@ fn laser_path_world_polyline(
 ///
 /// With `extend_infinite` the path expands past its endpoints along the end tangents
 /// (straight: same direction; curve: tangent) so a short path still severs a larger body.
+/// Half-space solid on the left of a planar laser path (#1126/#1146): each segment
+/// contributes a leftward quad of width `reach`, fused together, plus a wedge at every
+/// left-turning vertex so zigzags don't leave gaps or self-intersecting profiles.
+fn laser_left_strip_solid(path: &[Vec3], n: Vec3, reach: f32) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
+    let n = n.normalize_or_zero();
+    if n == Vec3::ZERO || path.len() < 2 || reach <= 0.0 {
+        return None;
+    }
+    let mut acc: Option<crate::kernel::Shape> = None;
+    let fuse = |acc: &mut Option<crate::kernel::Shape>, piece: crate::kernel::Shape| {
+        *acc = Some(match acc.take() {
+            None => piece,
+            Some(sum) => sum.boolean(&piece, BoolOp::Fuse).unwrap_or(sum),
+        });
+    };
+    // One left quad per segment, extruded through ±n.
+    for w in path.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        let t = (b - a).normalize_or_zero();
+        if t == Vec3::ZERO {
+            continue;
+        }
+        let left = n.cross(t).normalize_or_zero() * reach;
+        if left == Vec3::ZERO {
+            continue;
+        }
+        // Profile on the bottom of the ±n extrusion.
+        let profile = vec![
+            a - n * reach,
+            b - n * reach,
+            b + left - n * reach,
+            a + left - n * reach,
+        ];
+        if let Some(prism) = crate::kernel::Shape::prism(&profile, n * (2.0 * reach)) {
+            fuse(&mut acc, prism);
+        }
+    }
+    // Left-turning vertices need a wedge: the two adjacent quads leave a sector gap
+    // on the left of a CCW bend (when looking along n).
+    for i in 1..path.len() - 1 {
+        let t_in = (path[i] - path[i - 1]).normalize_or_zero();
+        let t_out = (path[i + 1] - path[i]).normalize_or_zero();
+        if t_in == Vec3::ZERO || t_out == Vec3::ZERO {
+            continue;
+        }
+        let cross = t_in.cross(t_out).dot(n);
+        if cross <= 1e-8 {
+            continue; // straight or right turn — no left-side gap
+        }
+        let l_in = n.cross(t_in).normalize_or_zero() * reach;
+        let l_out = n.cross(t_out).normalize_or_zero() * reach;
+        if l_in == Vec3::ZERO || l_out == Vec3::ZERO {
+            continue;
+        }
+        let p = path[i];
+        // Fan of triangles from the vertex to the far left arc (chord is enough —
+        // both radii equal `reach`, and reach is huge vs the body).
+        let profile = vec![
+            p - n * reach,
+            p + l_in - n * reach,
+            p + l_out - n * reach,
+        ];
+        if let Some(prism) = crate::kernel::Shape::prism(&profile, n * (2.0 * reach)) {
+            fuse(&mut acc, prism);
+        }
+    }
+    acc
+}
+
 fn occt_slice_line_path_halfspace(
     doc: &Document,
     lines: &[crate::model::LineKey],
     extend_infinite: bool,
     target: crate::model::BodyKey,
+    all_laser_lines: &[crate::model::LineKey],
 ) -> Option<crate::kernel::Shape> {
     let (min, max) = body_solid_mesh_uncached(doc, target)?.bounds()?;
     let reach = (max - min).length().max(1.0) * 4.0;
     let extend = extend_infinite.then_some(reach);
-    let (path, n) = laser_path_world_polyline(doc, lines, extend)?;
+    let (path, n) = laser_path_world_polyline(doc, lines, extend, all_laser_lines)?;
 
     // Straight line → a true plane half-space (same quality as a plane cutter).
     let dir = (*path.last().unwrap() - path[0]).normalize_or_zero();
@@ -2491,29 +2648,10 @@ fn occt_slice_line_path_halfspace(
         return crate::kernel::Shape::prism(&profile, plane_n * reach);
     }
 
-    // Curved / polyline path: closed strip on the left of the polyline, extruded through
-    // the body along ±n so the cut surface is the ruled extrusion of the path.
-    let mut left: Vec<Vec3> = Vec::with_capacity(path.len());
-    for i in 0..path.len() {
-        let tangent = if i + 1 < path.len() {
-            (path[i + 1] - path[i]).normalize_or_zero()
-        } else {
-            (path[i] - path[i - 1]).normalize_or_zero()
-        };
-        let left_dir = n.cross(tangent).normalize_or_zero();
-        if left_dir == Vec3::ZERO {
-            return None;
-        }
-        left.push(path[i] + left_dir * reach);
-    }
-    let mut profile: Vec<Vec3> = path.iter().map(|p| *p - n * reach).collect();
-    for p in left.iter().rev() {
-        profile.push(*p - n * reach);
-    }
-    if profile.len() < 3 {
-        return None;
-    }
-    crate::kernel::Shape::prism(&profile, n * (2.0 * reach))
+    // Curved / polyline path (#1146): fuse leftward quads per segment (plus left-turn
+    // wedges) instead of a single offset profile — zigzags made the old profile
+    // self-intersect and spawn extra wedge fragments.
+    laser_left_strip_solid(&path, n, reach)
 }
 
 /// Dispatch an effective slice cutter to its half-space solid (#181 planar / #1126 laser).
@@ -2522,13 +2660,14 @@ fn occt_slice_effective_halfspace(
     cutter: &EffectiveSliceCutter,
     extend_infinite: bool,
     target: crate::model::BodyKey,
+    all_laser_lines: &[crate::model::LineKey],
 ) -> Option<crate::kernel::Shape> {
     match cutter {
         EffectiveSliceCutter::Face(face) => {
             occt_slice_face_halfspace(doc, face, extend_infinite, target)
         }
         EffectiveSliceCutter::LinePath(lines) => {
-            occt_slice_line_path_halfspace(doc, lines, extend_infinite, target)
+            occt_slice_line_path_halfspace(doc, lines, extend_infinite, target, all_laser_lines)
         }
     }
 }
@@ -2552,9 +2691,19 @@ fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_
     if pieces.is_empty() {
         pieces = vec![base];
     }
+    let all_laser_lines: Vec<crate::model::LineKey> = op
+        .cutters
+        .iter()
+        .filter_map(|c| match c {
+            crate::model::SliceCutter::Line { line } => Some(*line),
+            _ => None,
+        })
+        .collect();
     let effective = effective_slice_cutters(doc, &op.cutters);
     for cutter in &effective {
-        let Some(hs) = occt_slice_effective_halfspace(doc, cutter, op.extend_infinite, input) else {
+        let Some(hs) =
+            occt_slice_effective_halfspace(doc, cutter, op.extend_infinite, input, &all_laser_lines)
+        else {
             continue;
         };
         let mut next = Vec::new();
@@ -2576,10 +2725,11 @@ fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_
     Some(pieces)
 }
 
-/// Preview meshes of the laser cutting surfaces for in-progress slice cutters (#1142):
+/// Preview meshes of the laser cutting surfaces for in-progress slice cutters (#1142/#1144):
 /// each continuous laser path becomes a ruled strip extruded along the face normal
-/// (into and through the body). With `extend_infinite` the strip expands past the path
-/// ends along end tangents. Empty when there are no line cutters or no usable bounds.
+/// (into and through the body), **clipped to the targets' AABB** so the cutter does not
+/// wing past the solid. With `extend_infinite` the path expands past free ends only
+/// (#1145); the strip is still truncated to body bounds on every side.
 pub fn slice_laser_preview_meshes(
     doc: &Document,
     cutters: &[crate::model::SliceCutter],
@@ -2605,28 +2755,58 @@ pub fn slice_laser_preview_meshes(
     if !any {
         return Vec::new();
     }
+    // Tiny pad so the surface is still visible right on the boundary faces.
+    let pad = 1e-3;
+    let bmin = min - Vec3::splat(pad);
+    let bmax = max + Vec3::splat(pad);
     let reach = (max - min).length().max(1.0) * 1.25;
     let extend = extend_infinite.then_some(reach);
+    let all_laser_lines: Vec<crate::model::LineKey> = cutters
+        .iter()
+        .filter_map(|c| match c {
+            crate::model::SliceCutter::Line { line } => Some(*line),
+            _ => None,
+        })
+        .collect();
     let mut meshes = Vec::new();
     for cutter in effective_slice_cutters(doc, cutters) {
         let EffectiveSliceCutter::LinePath(lines) = cutter else {
             continue;
         };
-        let Some((path, n)) = laser_path_world_polyline(doc, &lines, extend) else {
+        let Some((path, n)) =
+            laser_path_world_polyline(doc, &lines, extend, &all_laser_lines)
+        else {
             continue;
         };
         if path.len() < 2 || n == Vec3::ZERO {
             continue;
         }
-        // Ruled strip: each path segment extruded ±n (laser through the face).
-        let mut triangles = Vec::with_capacity((path.len() - 1) * 2);
-        for w in path.windows(2) {
-            let a = w[0];
-            let b = w[1];
-            let a0 = a - n * reach;
-            let a1 = a + n * reach;
-            let b0 = b - n * reach;
-            let b1 = b + n * reach;
+        // Ruled strip clipped to the body AABB: each path point is clamped into the
+        // bounds, then its laser line along ±n is intersected with the box so free-end
+        // extensions and through-body wings never leave the solid (#1144).
+        let mut clipped: Vec<(Vec3, Vec3)> = Vec::with_capacity(path.len());
+        for &p in &path {
+            let pc = Vec3::new(
+                p.x.clamp(bmin.x, bmax.x),
+                p.y.clamp(bmin.y, bmax.y),
+                p.z.clamp(bmin.z, bmax.z),
+            );
+            let Some((t0, t1)) = line_aabb_interval(pc, n, bmin, bmax) else {
+                continue;
+            };
+            clipped.push((pc + n * t0, pc + n * t1));
+        }
+        if clipped.len() < 2 {
+            continue;
+        }
+        let mut triangles = Vec::with_capacity((clipped.len() - 1) * 2);
+        for w in clipped.windows(2) {
+            let (a0, a1) = w[0];
+            let (b0, b1) = w[1];
+            // Degenerate after clamp (both ends collapsed to the same boundary point).
+            if (a0 - b0).length_squared() < 1e-12 && (a1 - b1).length_squared() < 1e-12 {
+                continue;
+            }
             triangles.push([a0, b0, b1]);
             triangles.push([a0, b1, a1]);
         }

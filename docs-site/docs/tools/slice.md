@@ -33,13 +33,14 @@ through a body along their path.
 Each target is cut independently. Each cutter divides whatever pieces the previous cuts
 produced — two crossing planes (or separate lines) through a block give four fragments.
 
-While you pick, target bodies go semi-transparent and laser paths preview as cutting
-surfaces through the solid (extended past the ends when Infinite cut is on).
+While you pick, target bodies go cyan semi-transparent and laser paths preview as red
+cutting surfaces clipped to the body (extended past free ends when Infinite cut is on).
 
-**Infinite cut** (on by default) extends every plane endlessly and expands every line past
-its endpoints (straight: same direction; curve: end tangent) so a short path still severs
-the solid. Off, a finite face carves only its own footprint and a line only cuts within its
-span. Construction planes are always infinite.
+**Infinite cut** (on by default) extends every plane endlessly and expands every laser path
+past its free ends only — vertices with a single connected line — along the end tangent
+(straight: same direction; curve: end tangent) so a short path still severs the solid. Off,
+a finite face carves only its own footprint and a line only cuts within its span.
+Construction planes are always infinite.
 
 ## What you get
 

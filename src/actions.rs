@@ -23761,6 +23761,138 @@ mod tests {
         assert!(!finite[0].triangles.is_empty());
     }
 
+
+    /// #1146: cutter order must not change the laser path — picking the last line first
+    /// still chains into one continuous cut (two pieces), not one half-space per segment.
+    #[test]
+    fn slice_zigzag_with_reverse_cutter_order_still_splits_into_two() {
+        for extend in [true, false] {
+            for rev in [false, true] {
+                let mut state = box_extrusion_state();
+                let top = {
+                    let ext = &state.doc.extrusions[xkey(0)];
+                    match &ext.faces[0] {
+                        ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                            extrusion: xkey(0),
+                            profile: ExtrudeFace::Polygon(lines.clone()),
+                            top: true,
+                        },
+                        _ => panic!("box profile"),
+                    }
+                };
+                let sketch = state.doc.add_sketch(top);
+                let a = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+                    sketch, 3.0, 0.0, 7.0, 3.5,
+                ));
+                let b = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+                    sketch, 7.0, 3.5, 3.0, 6.5,
+                ));
+                let c = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+                    sketch, 3.0, 6.5, 7.0, 10.0,
+                ));
+                let order = if rev {
+                    vec![c, b, a]
+                } else {
+                    vec![a, b, c]
+                };
+                let result = state.apply(Action::CreateSliceOperation {
+                    targets: vec![bkey(0)],
+                    cutters: order
+                        .iter()
+                        .map(|&line| crate::model::SliceCutter::Line { line })
+                        .collect(),
+                    extend_infinite: extend,
+                });
+                assert!(
+                    matches!(result, ActionResult::Ok),
+                    "extend={extend} rev={rev}: {result:?}"
+                );
+                let outputs = &state.doc.slice_ops.values().nth(0).unwrap().outputs;
+                let mut vols: Vec<f32> = outputs
+                    .iter()
+                    .map(|&out| {
+                        let mesh =
+                            crate::extrude::body_solid_mesh(&state.doc, out).expect("mesh");
+                        crate::extrude::mesh_signed_volume(&mesh).abs()
+                    })
+                    .collect();
+                vols.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                assert_eq!(
+                    outputs.len(),
+                    2,
+                    "extend={extend} rev={rev}: continuous zigzag → two fragments, vols={vols:?}"
+                );
+                assert!(
+                    vols[0] > 50.0 && vols[1] > 50.0,
+                    "extend={extend} rev={rev}: both pieces real, vols={vols:?}"
+                );
+                assert!(
+                    (vols[0] + vols[1] - 500.0).abs() < 20.0,
+                    "extend={extend} rev={rev}: volumes sum to box, vols={vols:?}"
+                );
+            }
+        }
+    }
+
+    /// #1144: laser surface previews stay inside the target body's AABB (no long wings
+    /// past the solid).
+    #[test]
+    fn slice_laser_preview_is_truncated_to_body_bounds() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        let a = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 3.0, 0.0, 7.0, 3.5,
+        ));
+        let b = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 7.0, 3.5, 3.0, 6.5,
+        ));
+        let c = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 3.0, 6.5, 7.0, 10.0,
+        ));
+        let cutters = vec![
+            crate::model::SliceCutter::Line { line: a },
+            crate::model::SliceCutter::Line { line: b },
+            crate::model::SliceCutter::Line { line: c },
+        ];
+        let body = crate::extrude::body_solid_mesh(&state.doc, bkey(0)).expect("body");
+        let (bmin, bmax) = body.bounds().expect("bounds");
+        // Small pad for tessellation / floating point only.
+        let pad = 0.5;
+        for extend in [false, true] {
+            let meshes = crate::extrude::slice_laser_preview_meshes(
+                &state.doc,
+                &cutters,
+                extend,
+                &[bkey(0)],
+            );
+            assert_eq!(meshes.len(), 1, "extend={extend}");
+            for tri in &meshes[0].triangles {
+                for p in tri {
+                    assert!(
+                        p.x >= bmin.x - pad
+                            && p.x <= bmax.x + pad
+                            && p.y >= bmin.y - pad
+                            && p.y <= bmax.y + pad
+                            && p.z >= bmin.z - pad
+                            && p.z <= bmax.z + pad,
+                        "preview vertex {p:?} outside body bounds {bmin:?}..{bmax:?} (extend={extend})"
+                    );
+                }
+            }
+        }
+    }
+
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
     /// output solids — and the outputs render as real meshes.
     #[test]

@@ -18683,6 +18683,7 @@ fn build_viewport_scene_input<'a>(
         preview_extrusion,
         preview_solid,
         repeat_ghosts,
+        cut_surface_ghosts: Vec::new(),
         editing_extrusion,
         preview_cut_body,
         preview_replacement,
@@ -26705,17 +26706,9 @@ impl App {
                 }
             }
         }
-        // Slice tool (#1142): target bodies go semi-transparent (like an extrude cut) so the
-        // laser cut surfaces preview through them.
-        if self.state.tool == Tool::Slice {
-            if let Some(cs) = self.state.creating_slice.as_ref() {
-                for &bi in &cs.targets {
-                    if !faded_bodies.contains(&bi) {
-                        faded_bodies.push(bi);
-                    }
-                }
-            }
-        }
+        // Slice tool (#1142/#1144): target bodies are drawn cyan semi-transparent via
+        // `preview_replacement` below (like an extrude cut) — not the dim faded style.
+
         // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
         let mut arrow_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()
@@ -27088,13 +27081,29 @@ impl App {
                 }
             }
         }
-        // Slice laser cut surfaces (#1142): each continuous laser path previews as a ruled
-        // strip through the body (extended past ends when Infinite cut is on). Drawn through
-        // the same translucent ghost path as Repeat instances.
+        // Slice tool (#1142/#1144): target bodies → cyan semi-transparent (like extrude cut);
+        // laser cut surfaces → cut-red, truncated to body bounds. Infinite cut only extends
+        // free ends of the path graph (#1145).
         if self.state.tool == Tool::Slice {
             if let Some(cs) = self.state.creating_slice.as_ref() {
+                if !cs.targets.is_empty() {
+                    let mut bodies = Vec::new();
+                    let mut solids = Vec::new();
+                    for &bi in &cs.targets {
+                        if let Some(mesh) = extrude::body_solid_mesh(doc, bi) {
+                            bodies.push(bi);
+                            solids.push(mesh);
+                        }
+                    }
+                    if !solids.is_empty() {
+                        scene_input.preview_replacement = gpu_viewport::PreviewReplacement {
+                            bodies,
+                            solids,
+                        };
+                    }
+                }
                 if !cs.targets.is_empty() && !cs.cutters.is_empty() {
-                    scene_input.repeat_ghosts.extend(extrude::slice_laser_preview_meshes(
+                    scene_input.cut_surface_ghosts.extend(extrude::slice_laser_preview_meshes(
                         doc,
                         &cs.cutters,
                         cs.extend_infinite,
