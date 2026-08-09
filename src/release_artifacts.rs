@@ -55,12 +55,18 @@ mod tests {
     }
 
     /// #1129: release build numbers are YYMMDD-### (per UTC day), not GITHUB_RUN_NUMBER.
+    /// Runs only on Unix: Windows CI has no reliable bash for this script, and release-id
+    /// only invokes it on ubuntu-latest.
     #[test]
+    #[cfg(unix)]
     fn next_build_number_is_yymmdd_sequence_per_day() {
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/next-build-number.sh");
         let run = |date: &str, tags: &str| {
             let out = std::process::Command::new("bash")
                 .args([script, "--date", date])
+                // Don't inherit GITHUB_REPOSITORY — a TTY-ish stdin would otherwise make
+                // the script call `gh` instead of reading the piped tags.
+                .env_remove("GITHUB_REPOSITORY")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -75,8 +81,10 @@ mod tests {
                 .expect("run next-build-number.sh");
             assert!(
                 out.status.success(),
-                "script failed: {}",
-                String::from_utf8_lossy(&out.stderr)
+                "script failed (status {:?}): stderr={} stdout={}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr),
+                String::from_utf8_lossy(&out.stdout),
             );
             String::from_utf8(out.stdout)
                 .expect("utf8")

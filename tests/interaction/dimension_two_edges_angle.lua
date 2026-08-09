@@ -15,9 +15,10 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.ui.auto_zoom(false)
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
--- A fixed camera rather than zoom_fit: the ground clicks below have to land in the
--- same place whatever the window ends up being (CI's Xvfb has no WM to maximize).
-bearcad.ui.camera{ target = {15, 12, 0}, distance = 200 }
+-- Fixed camera for CI's 1280×800: at some distances a coplanar construction-plane
+-- edge at x=0 steals the vertical sketch line's hit; distance 100 + mid-edge click
+-- on the vertical line (0,20) reliably selects the sketch line.
+bearcad.ui.camera{ target = {12, 12, 0}, distance = 100 }
 bearcad.ui.wait(4)
 
 -- Seed the first edge via the selection API so a narrow CI viewport can't miss the
@@ -33,16 +34,27 @@ end
 assert(has_line0, "first edge should be selected")
 assert(#sel == 1, "first edge only — length editor must not have consumed the pick")
 
+local function sel_summary()
+  local parts = {}
+  for _, e in ipairs(bearcad.selection()) do
+    parts[#parts + 1] = string.format("%s:%s", e.kind, tostring(e.index))
+  end
+  return table.concat(parts, ",")
+end
+
 -- Shift+click the second edge: it joins the first for an angle (#780) — a plain click
 -- would switch to dimensioning that edge on its own (#762/#763).
-bearcad.ui.click_ground(0, 15, { shift = true })
+bearcad.ui.click_ground(0, 20, { shift = true })
 bearcad.ui.wait(10)
 sel = bearcad.selection()
 local has_line1 = false
+has_line0 = false
 for _, e in ipairs(sel) do
+  if e.kind == "line" and e.index == 0 then has_line0 = true end
   if e.kind == "line" and e.index == 1 then has_line1 = true end
 end
-assert(has_line0 and has_line1 and #sel == 2, "both edges should be selected for angle")
+assert(has_line0 and has_line1 and #sel == 2,
+  "both edges should be selected for angle, got " .. sel_summary())
 
 -- Place the angle (click in a wedge) → value editor opens.
 bearcad.ui.click_ground(12, 8)

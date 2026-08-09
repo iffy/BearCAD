@@ -69,6 +69,12 @@ read_tags() {
   cat
 }
 
+# Temp file instead of process substitution: Git Bash on Windows often lacks
+# working /dev/fd, which made `done < <(read_tags)` exit 1 with empty stderr.
+tags_file="$(mktemp)"
+trap 'rm -f "$tags_file"' EXIT
+read_tags >"$tags_file"
+
 max=0
 while IFS= read -r tag || [[ -n "${tag:-}" ]]; do
   [[ -z "$tag" ]] && continue
@@ -80,7 +86,7 @@ while IFS= read -r tag || [[ -n "${tag:-}" ]]; do
       max=$n
     fi
   fi
-done < <(read_tags)
+done <"$tags_file"
 
 next=$((max + 1))
 printf '%s-%03d\n' "$DATE" "$next"
