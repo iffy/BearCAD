@@ -2412,13 +2412,14 @@ fn laser_endpoint_degree(
 /// extended past its **free** ends along the end tangents (#1126/#1142/#1145).
 ///
 /// `all_laser_lines` is the full set of line cutters in the op (not just this chain) so
-/// free-end degree can be judged against the whole path graph. When `extend_reach` is set,
-/// only endpoints with degree 1 are pushed outward — never both directions off an interior
-/// segment or a branch vertex.
+/// free-end degree can be judged against the whole path graph. When `extend_to` is set
+/// (axis-aligned box), only degree-1 free ends are pushed outward along the end tangents
+/// **to that box's boundary** — never overshot and then clamped, which would drag ends
+/// sideways along the AABB faces (#1147).
 fn laser_path_world_polyline(
     doc: &Document,
     lines: &[crate::model::LineKey],
-    extend_reach: Option<f32>,
+    extend_to: Option<(Vec3, Vec3)>,
     all_laser_lines: &[crate::model::LineKey],
 ) -> Option<(Vec<Vec3>, Vec3)> {
     if lines.is_empty() {
@@ -2476,7 +2477,7 @@ fn laser_path_world_polyline(
     if path.len() < 2 {
         return None;
     }
-    if let Some(reach) = extend_reach {
+    if let Some((bmin, bmax)) = extend_to {
         // Snapshot free ends before moving them; degree is against the un-extended path.
         let start = path[0];
         let end = *path.last().unwrap();
@@ -2484,12 +2485,25 @@ fn laser_path_world_polyline(
         let end_free = laser_endpoint_degree(doc, all_laser_lines, end) <= 1;
         let d0 = (path[1] - path[0]).normalize_or_zero();
         let dn = (*path.last().unwrap() - path[path.len() - 2]).normalize_or_zero();
+        // Ray-cast free ends to the box face along the end tangent (#1147). If the end is
+        // already on the boundary and the tangent points out, the exit parameter is ~0 and
+        // the vertex is left alone — a top-to-bottom path stays put.
         if start_free && d0 != Vec3::ZERO {
-            path[0] -= d0 * reach;
+            let dir = -d0;
+            if let Some((_t_enter, t_exit)) = line_aabb_interval(path[0], dir, bmin, bmax) {
+                if t_exit > 1e-4 {
+                    path[0] += dir * t_exit;
+                }
+            }
         }
         if end_free && dn != Vec3::ZERO {
-            let last = path.len() - 1;
-            path[last] += dn * reach;
+            if let Some((_t_enter, t_exit)) = line_aabb_interval(*path.last().unwrap(), dn, bmin, bmax)
+            {
+                if t_exit > 1e-4 {
+                    let last = path.len() - 1;
+                    path[last] += dn * t_exit;
+                }
+            }
         }
     }
     Some((path, normal))
@@ -2525,81 +2539,453 @@ fn line_aabb_interval(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<(
     Some((tmin, tmax))
 }
 
-/// Laser-style half-space for a continuous path of sketch lines (#1126/#1142): the laser
-/// points along the face normal (into the solid) and travels the path. One side of the path
-/// becomes the solid Common keeps; Cut takes the other side.
+/// Project `p` into the plane frame `(origin, u, v)` → 2D.
+fn laser_plane_to_2d(p: Vec3, origin: Vec3, u: Vec3, v: Vec3) -> [f32; 2] {
+    let d = p - origin;
+    [d.dot(u), d.dot(v)]
+}
+
+fn laser_plane_from_2d(p: [f32; 2], origin: Vec3, u: Vec3, v: Vec3) -> Vec3 {
+    origin + u * p[0] + v * p[1]
+}
+
+/// Side index of a point on the boundary of an axis-aligned square, plus perimeter
+/// parameter in `[0, 4)` (each side contributes 1). Used to walk the box boundary.
+fn square_boundary_param(p: [f32; 2], lo: f32, hi: f32) -> Option<f32> {
+    let eps = ((hi - lo).abs() * 1e-5).max(1e-5);
+    let (x, y) = (p[0], p[1]);
+    // Sides in CCW order starting at bottom (y=lo, x lo→hi): 0 bottom, 1 right, 2 top, 3 left.
+    if (y - lo).abs() <= eps && x >= lo - eps && x <= hi + eps {
+        return Some(0.0 + ((x - lo) / (hi - lo)).clamp(0.0, 1.0));
+    }
+    if (x - hi).abs() <= eps && y >= lo - eps && y <= hi + eps {
+        return Some(1.0 + ((y - lo) / (hi - lo)).clamp(0.0, 1.0));
+    }
+    if (y - hi).abs() <= eps && x >= lo - eps && x <= hi + eps {
+        return Some(2.0 + ((hi - x) / (hi - lo)).clamp(0.0, 1.0));
+    }
+    if (x - lo).abs() <= eps && y >= lo - eps && y <= hi + eps {
+        return Some(3.0 + ((hi - y) / (hi - lo)).clamp(0.0, 1.0));
+    }
+    None
+}
+
+fn square_boundary_point(t: f32, lo: f32, hi: f32) -> [f32; 2] {
+    let t = t.rem_euclid(4.0);
+    let s = hi - lo;
+    if t < 1.0 {
+        [lo + s * t, lo]
+    } else if t < 2.0 {
+        [hi, lo + s * (t - 1.0)]
+    } else if t < 3.0 {
+        [hi - s * (t - 2.0), hi]
+    } else {
+        [lo, hi - s * (t - 3.0)]
+    }
+}
+
+/// Walk the square boundary from `from_t` to `to_t` in the given direction (CCW if
+/// `ccw`, else CW), emitting corner vertices and the end point (not the start).
+fn square_boundary_walk(from_t: f32, to_t: f32, lo: f32, hi: f32, ccw: bool) -> Vec<[f32; 2]> {
+    let mut out = Vec::new();
+    let from_t = from_t.rem_euclid(4.0);
+    let to_t = to_t.rem_euclid(4.0);
+    if (from_t - to_t).abs() < 1e-6 {
+        return out;
+    }
+    // Progress in the chosen direction until we pass `to_t`.
+    let mut t = from_t;
+    // Next corner in the walk direction.
+    let next_corner = |t: f32, ccw: bool| -> f32 {
+        if ccw {
+            (t.floor() + 1.0).rem_euclid(4.0)
+        } else {
+            // Previous integer boundary, careful when t is already on a corner.
+            let f = if (t - t.floor()).abs() < 1e-8 {
+                (t - 1.0).rem_euclid(4.0)
+            } else {
+                t.floor().rem_euclid(4.0)
+            };
+            f
+        }
+    };
+    let crosses = |a: f32, b: f32, target: f32, ccw: bool| -> bool {
+        // Does the open segment a→b (direction ccw/cw on the circle R/4) contain target?
+        if ccw {
+            let span = (b - a).rem_euclid(4.0);
+            let d = (target - a).rem_euclid(4.0);
+            d > 1e-8 && d <= span + 1e-8
+        } else {
+            let span = (a - b).rem_euclid(4.0);
+            let d = (a - target).rem_euclid(4.0);
+            d > 1e-8 && d <= span + 1e-8
+        }
+    };
+    for _ in 0..8 {
+        let corner = next_corner(t, ccw);
+        // If target is before the next corner, emit target and stop.
+        if crosses(t, corner, to_t, ccw) || (corner - to_t).abs() < 1e-6 {
+            out.push(square_boundary_point(to_t, lo, hi));
+            break;
+        }
+        out.push(square_boundary_point(corner, lo, hi));
+        t = corner;
+        // Landed exactly on target corner.
+        if (t - to_t).abs() < 1e-6 {
+            break;
+        }
+    }
+    out
+}
+
+/// Closed 2D polygon: the part of the square lying to the **left** of `path` (when the
+/// path is traversed in order). `path` must start and end on the square boundary.
+/// This is the correct half-region for a zigzag — thick left-strips cover both sides of
+/// a sharp path and pull the cut away from the drawn line (#1146/#1148).
+fn square_left_of_path(path: &[[f32; 2]], lo: f32, hi: f32) -> Option<Vec<[f32; 2]>> {
+    if path.len() < 2 {
+        return None;
+    }
+    let start = path[0];
+    let end = *path.last().unwrap();
+    let t_start = square_boundary_param(start, lo, hi)?;
+    let t_end = square_boundary_param(end, lo, hi)?;
+    // End tangent → left direction in 2D (CCW of tangent).
+    let prev = path[path.len() - 2];
+    let tx = end[0] - prev[0];
+    let ty = end[1] - prev[1];
+    let len = (tx * tx + ty * ty).sqrt();
+    if len < 1e-12 {
+        return None;
+    }
+    let (tx, ty) = (tx / len, ty / len);
+    let left = [-ty, tx];
+    // Sample a point just along the boundary from `end` in each direction; pick the
+    // walk whose first step goes into the left half.
+    let dparam = (1e-3 / (hi - lo).max(1e-6)).clamp(1e-4, 0.25);
+    let p_ccw = square_boundary_point((t_end + dparam).rem_euclid(4.0), lo, hi);
+    let p_cw = square_boundary_point((t_end - dparam).rem_euclid(4.0), lo, hi);
+    let prefer_ccw = {
+        let d_ccw = [p_ccw[0] - end[0], p_ccw[1] - end[1]];
+        let d_cw = [p_cw[0] - end[0], p_cw[1] - end[1]];
+        d_ccw[0] * left[0] + d_ccw[1] * left[1] >= d_cw[0] * left[0] + d_cw[1] * left[1]
+    };
+    let mut poly: Vec<[f32; 2]> = path.to_vec();
+    poly.extend(square_boundary_walk(t_end, t_start, lo, hi, prefer_ccw));
+    // Drop a trailing duplicate of start if the walk closed exactly.
+    if poly.len() >= 2 {
+        let a = poly[0];
+        let b = *poly.last().unwrap();
+        if (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5 {
+            poly.pop();
+        }
+    }
+    (poly.len() >= 3).then_some(poly)
+}
+
+/// Half-space solid on the left of a planar laser path (#1126/#1146/#1148): the path
+/// splits a working square in the face plane that covers the target body; the left
+/// region is extruded through ±n. Zigzags keep the drawn path as the exact cut surface
+/// (thick left-strips used to envelope past the line — #1148).
 ///
-/// With `extend_infinite` the path expands past its endpoints along the end tangents
-/// (straight: same direction; curve: tangent) so a short path still severs a larger body.
-/// Half-space solid on the left of a planar laser path (#1126/#1146): each segment
-/// contributes a leftward quad of width `reach`, fused together, plus a wedge at every
-/// left-turning vertex so zigzags don't leave gaps or self-intersecting profiles.
-fn laser_left_strip_solid(path: &[Vec3], n: Vec3, reach: f32) -> Option<crate::kernel::Shape> {
-    use crate::kernel::BoolOp;
+/// When `extend_infinite` is false, free ends that already lie on (or nearly on) the
+/// working square stay put; interior free ends are not forced to the boundary, so a
+/// finite cut only spans the drawn path.
+fn laser_left_region_solid(
+    path: &[Vec3],
+    n: Vec3,
+    body_min: Vec3,
+    body_max: Vec3,
+    reach: f32,
+    extend_infinite: bool,
+) -> Option<crate::kernel::Shape> {
     let n = n.normalize_or_zero();
     if n == Vec3::ZERO || path.len() < 2 || reach <= 0.0 {
         return None;
     }
-    let mut acc: Option<crate::kernel::Shape> = None;
-    let fuse = |acc: &mut Option<crate::kernel::Shape>, piece: crate::kernel::Shape| {
-        *acc = Some(match acc.take() {
-            None => piece,
-            Some(sum) => sum.boolean(&piece, BoolOp::Fuse).unwrap_or(sum),
-        });
-    };
-    // One left quad per segment, extruded through ±n.
-    for w in path.windows(2) {
-        let a = w[0];
-        let b = w[1];
-        let t = (b - a).normalize_or_zero();
-        if t == Vec3::ZERO {
-            continue;
+    // Orthonormal in-plane axes. Prefer a stable u from the first segment.
+    let mut u = (path[1] - path[0]).normalize_or_zero();
+    u = (u - n * u.dot(n)).normalize_or_zero();
+    if u == Vec3::ZERO {
+        u = n.any_orthonormal_vector();
+    }
+    let v = n.cross(u).normalize_or_zero();
+    if v == Vec3::ZERO {
+        return None;
+    }
+    // Origin at the body centroid projected onto the path's plane so the working
+    // square is centered on the solid, not on a free path end.
+    let centroid = (body_min + body_max) * 0.5;
+    let origin = centroid - n * (centroid - path[0]).dot(n);
+
+    // 2D bounds: body AABB corners + path points, padded, then expanded to a square
+    // so boundary walking stays simple.
+    let corners = [
+        Vec3::new(body_min.x, body_min.y, body_min.z),
+        Vec3::new(body_max.x, body_min.y, body_min.z),
+        Vec3::new(body_min.x, body_max.y, body_min.z),
+        Vec3::new(body_max.x, body_max.y, body_min.z),
+        Vec3::new(body_min.x, body_min.y, body_max.z),
+        Vec3::new(body_max.x, body_min.y, body_max.z),
+        Vec3::new(body_min.x, body_max.y, body_max.z),
+        Vec3::new(body_max.x, body_max.y, body_max.z),
+    ];
+    let mut min_u = f32::INFINITY;
+    let mut max_u = f32::NEG_INFINITY;
+    let mut min_v = f32::INFINITY;
+    let mut max_v = f32::NEG_INFINITY;
+    for p in corners.iter().chain(path.iter()) {
+        let q = laser_plane_to_2d(*p, origin, u, v);
+        min_u = min_u.min(q[0]);
+        max_u = max_u.max(q[0]);
+        min_v = min_v.min(q[1]);
+        max_v = max_v.max(q[1]);
+    }
+    let pad = ((max_u - min_u).max(max_v - min_v) * 0.05).max(1.0);
+    min_u -= pad;
+    max_u += pad;
+    min_v -= pad;
+    max_v += pad;
+    // Expand to a square centered on the 2D bounds.
+    let cu = 0.5 * (min_u + max_u);
+    let cv = 0.5 * (min_v + max_v);
+    let half = 0.5 * (max_u - min_u).max(max_v - min_v);
+    // square_left_of_path expects a square [lo,hi]²; re-origin so the working square is
+    // centered at the UV centroid of the body+path bounds.
+    let origin2 = origin + u * cu + v * cv;
+    let lo = -half;
+    let hi = half;
+
+    let mut path2: Vec<[f32; 2]> = path
+        .iter()
+        .map(|p| laser_plane_to_2d(*p, origin2, u, v))
+        .collect();
+
+    // Ray-extend a free end in 2D to the square boundary along its outward tangent.
+    let extend_end_2d = |path2: &mut Vec<[f32; 2]>, at_start: bool| {
+        let npts = path2.len();
+        let (i, j) = if at_start { (0, 1) } else { (npts - 1, npts - 2) };
+        if square_boundary_param(path2[i], lo, hi).is_some() {
+            return;
         }
-        let left = n.cross(t).normalize_or_zero() * reach;
-        if left == Vec3::ZERO {
-            continue;
-        }
-        // Profile on the bottom of the ±n extrusion.
-        let profile = vec![
-            a - n * reach,
-            b - n * reach,
-            b + left - n * reach,
-            a + left - n * reach,
+        let dir = [
+            path2[i][0] - path2[j][0],
+            path2[i][1] - path2[j][1],
         ];
-        if let Some(prism) = crate::kernel::Shape::prism(&profile, n * (2.0 * reach)) {
-            fuse(&mut acc, prism);
+        let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+        if len < 1e-12 {
+            return;
+        }
+        let dir = [dir[0] / len, dir[1] / len];
+        let mut t_hit = f32::INFINITY;
+        for (d, p0) in [(dir[0], path2[i][0]), (dir[1], path2[i][1])] {
+            if d.abs() < 1e-12 {
+                continue;
+            }
+            for bound in [lo, hi] {
+                let t = (bound - p0) / d;
+                if t > 1e-5 {
+                    let q = [path2[i][0] + dir[0] * t, path2[i][1] + dir[1] * t];
+                    if q[0] >= lo - 1e-4
+                        && q[0] <= hi + 1e-4
+                        && q[1] >= lo - 1e-4
+                        && q[1] <= hi + 1e-4
+                    {
+                        t_hit = t_hit.min(t);
+                    }
+                }
+            }
+        }
+        if t_hit.is_finite() {
+            path2[i][0] += dir[0] * t_hit;
+            path2[i][1] += dir[1] * t_hit;
+        }
+    };
+
+    // Snapshot the un-extended ends for finite end-cap slabs, then always extend to
+    // the square so box-split has a boundary-to-boundary path. A path that already
+    // spans the body is unchanged inside the solid either way (#1147). For finite, the
+    // end-cap slab below restricts the cut to the drawn span (#docs: "within its span").
+    let start_world = path[0];
+    let end_world = *path.last().unwrap();
+    let d0_world = (path[1] - path[0]).normalize_or_zero();
+    let dn_world = (*path.last().unwrap() - path[path.len() - 2]).normalize_or_zero();
+
+    extend_end_2d(&mut path2, true);
+    extend_end_2d(&mut path2, false);
+    // Snap any residual floating error onto the boundary.
+    let snap = |p: &mut [f32; 2]| {
+        if square_boundary_param(*p, lo, hi).is_some() {
+            return;
+        }
+        p[0] = p[0].clamp(lo, hi);
+        p[1] = p[1].clamp(lo, hi);
+        if square_boundary_param(*p, lo, hi).is_none() {
+            let dx = (p[0] - lo).min(hi - p[0]);
+            let dy = (p[1] - lo).min(hi - p[1]);
+            if dx <= dy {
+                p[0] = if p[0] - lo <= hi - p[0] { lo } else { hi };
+            } else {
+                p[1] = if p[1] - lo <= hi - p[1] { lo } else { hi };
+            }
+        }
+    };
+    let last = path2.len() - 1;
+    snap(&mut path2[0]);
+    snap(&mut path2[last]);
+
+    let poly2 = square_left_of_path(&path2, lo, hi)?;
+    // OCCT MakeFace from a wire is unreliable on concave polygons (a zigzag left-region
+    // is concave). Ear-clip into triangles and fuse convex prisms (#1148).
+    let mut solid = laser_fuse_triangulated_prism(&poly2, origin2, u, v, n, reach)?;
+
+    if !extend_infinite && d0_world != Vec3::ZERO && dn_world != Vec3::ZERO {
+        // Finite + short path: keep only the slab between the free-end planes of the
+        // *drawn* path so a mid-face line does not sever past its span. When free ends
+        // already lie on the body boundary (top-to-bottom cut), the extension outside
+        // the solid is a no-op and end-caps must not clip — zigzag tangents would
+        // otherwise shave material off the left region (#1147).
+        let on_body_boundary = |p: Vec3| -> bool {
+            let eps = pad.max(0.5);
+            (p.x - body_min.x).abs() <= eps
+                || (p.x - body_max.x).abs() <= eps
+                || (p.y - body_min.y).abs() <= eps
+                || (p.y - body_max.y).abs() <= eps
+                || (p.z - body_min.z).abs() <= eps
+                || (p.z - body_max.z).abs() <= eps
+        };
+        let short_path = !on_body_boundary(start_world) || !on_body_boundary(end_world);
+        if short_path {
+            use crate::kernel::BoolOp;
+            // Half-space solid covering points with (x - origin) · dir >= 0.
+            let halfspace = |origin: Vec3, dir: Vec3| -> Option<crate::kernel::Shape> {
+                let dir = dir.normalize_or_zero();
+                if dir == Vec3::ZERO {
+                    return None;
+                }
+                let au = dir.any_orthonormal_vector();
+                let av = dir.cross(au).normalize_or_zero();
+                let h = reach;
+                let profile = vec![
+                    origin - au * h - av * h,
+                    origin + au * h - av * h,
+                    origin + au * h + av * h,
+                    origin - au * h + av * h,
+                ];
+                crate::kernel::Shape::prism(&profile, dir * h)
+            };
+            if let Some(s0) = halfspace(start_world, d0_world) {
+                solid = solid.boolean(&s0, BoolOp::Common).unwrap_or(solid);
+            }
+            if let Some(s1) = halfspace(end_world, -dn_world) {
+                solid = solid.boolean(&s1, BoolOp::Common).unwrap_or(solid);
+            }
         }
     }
-    // Left-turning vertices need a wedge: the two adjacent quads leave a sector gap
-    // on the left of a CCW bend (when looking along n).
-    for i in 1..path.len() - 1 {
-        let t_in = (path[i] - path[i - 1]).normalize_or_zero();
-        let t_out = (path[i + 1] - path[i]).normalize_or_zero();
-        if t_in == Vec3::ZERO || t_out == Vec3::ZERO {
-            continue;
-        }
-        let cross = t_in.cross(t_out).dot(n);
-        if cross <= 1e-8 {
-            continue; // straight or right turn — no left-side gap
-        }
-        let l_in = n.cross(t_in).normalize_or_zero() * reach;
-        let l_out = n.cross(t_out).normalize_or_zero() * reach;
-        if l_in == Vec3::ZERO || l_out == Vec3::ZERO {
-            continue;
-        }
-        let p = path[i];
-        // Fan of triangles from the vertex to the far left arc (chord is enough —
-        // both radii equal `reach`, and reach is huge vs the body).
-        let profile = vec![
-            p - n * reach,
-            p + l_in - n * reach,
-            p + l_out - n * reach,
+    Some(solid)
+}
+
+/// Ear-clip a simple 2D polygon and fuse the triangular prisms into one solid.
+fn laser_fuse_triangulated_prism(
+    poly2: &[[f32; 2]],
+    origin: Vec3,
+    u: Vec3,
+    v: Vec3,
+    n: Vec3,
+    reach: f32,
+) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
+    if poly2.len() < 3 {
+        return None;
+    }
+    let tris = ear_clip_2d(poly2)?;
+    let mut acc: Option<crate::kernel::Shape> = None;
+    for [a, b, c] in tris {
+        let profile = [
+            laser_plane_from_2d(a, origin, u, v) - n * reach,
+            laser_plane_from_2d(b, origin, u, v) - n * reach,
+            laser_plane_from_2d(c, origin, u, v) - n * reach,
         ];
-        if let Some(prism) = crate::kernel::Shape::prism(&profile, n * (2.0 * reach)) {
-            fuse(&mut acc, prism);
-        }
+        let Some(prism) = crate::kernel::Shape::prism(&profile, n * (2.0 * reach)) else {
+            continue;
+        };
+        acc = Some(match acc.take() {
+            None => prism,
+            Some(sum) => sum.boolean(&prism, BoolOp::Fuse).unwrap_or(sum),
+        });
     }
     acc
+}
+
+/// Ear-clip a simple polygon (no holes) into triangles. Vertices CCW or CW; both work.
+fn ear_clip_2d(poly: &[[f32; 2]]) -> Option<Vec<[[f32; 2]; 3]>> {
+    let n = poly.len();
+    if n < 3 {
+        return None;
+    }
+    // Signed area to learn winding.
+    let mut area = 0.0_f32;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+    }
+    if area.abs() < 1e-12 {
+        return None;
+    }
+    let ccw = area > 0.0;
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut tris = Vec::with_capacity(n - 2);
+    let mut guard = 0;
+    while idx.len() > 3 && guard < n * n {
+        guard += 1;
+        let m = idx.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let i0 = idx[(i + m - 1) % m];
+            let i1 = idx[i];
+            let i2 = idx[(i + 1) % m];
+            let a = poly[i0];
+            let b = poly[i1];
+            let c = poly[i2];
+            // Reflex check: cross at b should match polygon winding for a convex ear.
+            let cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            if (ccw && cross <= 1e-12) || (!ccw && cross >= -1e-12) {
+                continue; // not a convex ear
+            }
+            // No other vertex inside triangle abc.
+            let inside = |p: [f32; 2]| -> bool {
+                let sign = if ccw { 1.0 } else { -1.0 };
+                let c1 = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+                let c2 = (c[0] - b[0]) * (p[1] - b[1]) - (c[1] - b[1]) * (p[0] - b[0]);
+                let c3 = (a[0] - c[0]) * (p[1] - c[1]) - (a[1] - c[1]) * (p[0] - c[0]);
+                c1 * sign >= -1e-8 && c2 * sign >= -1e-8 && c3 * sign >= -1e-8
+            };
+            let mut blocked = false;
+            for &j in &idx {
+                if j == i0 || j == i1 || j == i2 {
+                    continue;
+                }
+                if inside(poly[j]) {
+                    blocked = true;
+                    break;
+                }
+            }
+            if blocked {
+                continue;
+            }
+            tris.push([a, b, c]);
+            idx.remove(i);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if idx.len() == 3 {
+        tris.push([poly[idx[0]], poly[idx[1]], poly[idx[2]]]);
+    }
+    (!tris.is_empty()).then_some(tris)
 }
 
 fn occt_slice_line_path_halfspace(
@@ -2611,8 +2997,12 @@ fn occt_slice_line_path_halfspace(
 ) -> Option<crate::kernel::Shape> {
     let (min, max) = body_solid_mesh_uncached(doc, target)?.bounds()?;
     let reach = (max - min).length().max(1.0) * 4.0;
-    let extend = extend_infinite.then_some(reach);
-    let (path, n) = laser_path_world_polyline(doc, lines, extend, all_laser_lines)?;
+    // Free ends extend to a box that overhangs the body; ray-cast keeps the path
+    // geometrically faithful (#1147). For finite cuts the path is used as drawn —
+    // when it already spans the solid, infinite and finite match inside the body.
+    let pad = (max - min).length().max(1.0) * 0.5;
+    let extend_box = extend_infinite.then_some((min - Vec3::splat(pad), max + Vec3::splat(pad)));
+    let (path, n) = laser_path_world_polyline(doc, lines, extend_box, all_laser_lines)?;
 
     // Straight line → a true plane half-space (same quality as a plane cutter).
     let dir = (*path.last().unwrap() - path[0]).normalize_or_zero();
@@ -2648,10 +3038,9 @@ fn occt_slice_line_path_halfspace(
         return crate::kernel::Shape::prism(&profile, plane_n * reach);
     }
 
-    // Curved / polyline path (#1146): fuse leftward quads per segment (plus left-turn
-    // wedges) instead of a single offset profile — zigzags made the old profile
-    // self-intersect and spawn extra wedge fragments.
-    laser_left_strip_solid(&path, n, reach)
+    // Polyline / zigzag (#1146/#1148): left region of the body-covering square split by
+    // the path — cut surface is exactly the ruled extrusion of the drawn line.
+    laser_left_region_solid(&path, n, min, max, reach, extend_infinite)
 }
 
 /// Dispatch an effective slice cutter to its half-space solid (#181 planar / #1126 laser).
@@ -2728,8 +3117,9 @@ fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_
 /// Preview meshes of the laser cutting surfaces for in-progress slice cutters (#1142/#1144):
 /// each continuous laser path becomes a ruled strip extruded along the face normal
 /// (into and through the body), **clipped to the targets' AABB** so the cutter does not
-/// wing past the solid. With `extend_infinite` the path expands past free ends only
-/// (#1145); the strip is still truncated to body bounds on every side.
+/// wing past the solid. With `extend_infinite` free ends ray-cast to the body bounds
+/// along the end tangent only (#1145/#1147) — never overshot and axis-clamped, which
+/// dragged ends sideways along the AABB faces.
 pub fn slice_laser_preview_meshes(
     doc: &Document,
     cutters: &[crate::model::SliceCutter],
@@ -2759,8 +3149,9 @@ pub fn slice_laser_preview_meshes(
     let pad = 1e-3;
     let bmin = min - Vec3::splat(pad);
     let bmax = max + Vec3::splat(pad);
-    let reach = (max - min).length().max(1.0) * 1.25;
-    let extend = extend_infinite.then_some(reach);
+    // Free ends extend only to the body AABB (ray-cast along the tangent) — a path that
+    // already spans the solid is unchanged, so infinite and finite previews match (#1147).
+    let extend = extend_infinite.then_some((bmin, bmax));
     let all_laser_lines: Vec<crate::model::LineKey> = cutters
         .iter()
         .filter_map(|c| match c {
@@ -2781,20 +3172,36 @@ pub fn slice_laser_preview_meshes(
         if path.len() < 2 || n == Vec3::ZERO {
             continue;
         }
-        // Ruled strip clipped to the body AABB: each path point is clamped into the
-        // bounds, then its laser line along ±n is intersected with the box so free-end
-        // extensions and through-body wings never leave the solid (#1144).
+        // Ruled strip: each path point's laser line along ±n is intersected with the
+        // body AABB. Path points themselves are not axis-clamped (#1147) — free-end
+        // extension already landed on the box via ray-cast, and interior points lie
+        // on the face inside the solid.
         let mut clipped: Vec<(Vec3, Vec3)> = Vec::with_capacity(path.len());
         for &p in &path {
-            let pc = Vec3::new(
-                p.x.clamp(bmin.x, bmax.x),
-                p.y.clamp(bmin.y, bmax.y),
-                p.z.clamp(bmin.z, bmax.z),
-            );
-            let Some((t0, t1)) = line_aabb_interval(pc, n, bmin, bmax) else {
+            // If a free-end extension landed slightly outside (numerical), pull it onto
+            // the box along n only by using the closest point for the laser ray origin
+            // when the ray still hits; skip points whose laser misses the box entirely.
+            let origin = if p.x >= bmin.x
+                && p.x <= bmax.x
+                && p.y >= bmin.y
+                && p.y <= bmax.y
+                && p.z >= bmin.z
+                && p.z <= bmax.z
+            {
+                p
+            } else {
+                // Outside: project onto AABB (axis clamp is OK only as a last resort for
+                // points already outside after ray-cast — should be rare / on a face).
+                Vec3::new(
+                    p.x.clamp(bmin.x, bmax.x),
+                    p.y.clamp(bmin.y, bmax.y),
+                    p.z.clamp(bmin.z, bmax.z),
+                )
+            };
+            let Some((t0, t1)) = line_aabb_interval(origin, n, bmin, bmax) else {
                 continue;
             };
-            clipped.push((pc + n * t0, pc + n * t1));
+            clipped.push((origin + n * t0, origin + n * t1));
         }
         if clipped.len() < 2 {
             continue;
@@ -2815,6 +3222,131 @@ pub fn slice_laser_preview_meshes(
         }
     }
     meshes
+}
+
+/// Max distance from the laser path (ruled through the body) to the nearest point on
+/// any fragment mesh of one slice target — a proxy for "does the cut follow the path?"
+/// (#1148). Samples the path and a few offsets along the face normal into the solid.
+pub fn slice_laser_cut_path_max_deviation(
+    doc: &Document,
+    op_index: crate::model::SliceOpKey,
+    target_pos: usize,
+) -> Option<f32> {
+    let op = doc.slice_ops.get(op_index)?;
+    let &input = op.targets.get(target_pos)?;
+    let all_laser_lines: Vec<crate::model::LineKey> = op
+        .cutters
+        .iter()
+        .filter_map(|c| match c {
+            crate::model::SliceCutter::Line { line } => Some(*line),
+            _ => None,
+        })
+        .collect();
+    if all_laser_lines.is_empty() {
+        return None;
+    }
+    let (bmin, bmax) = body_solid_mesh(doc, input)?.bounds()?;
+    // Unextended path — the drawn line is the ground truth for "follows the path".
+    let mut paths: Vec<(Vec<Vec3>, Vec3)> = Vec::new();
+    for cutter in effective_slice_cutters(doc, &op.cutters) {
+        let EffectiveSliceCutter::LinePath(lines) = cutter else {
+            continue;
+        };
+        if let Some(pn) = laser_path_world_polyline(doc, &lines, None, &all_laser_lines) {
+            paths.push(pn);
+        }
+    }
+    if paths.is_empty() {
+        return None;
+    }
+    // Fragment meshes for this target.
+    let mut frag_meshes: Vec<SolidMesh> = Vec::new();
+    for &out in &op.outputs {
+        if let crate::model::BodySource::Sliced {
+            op: o,
+            target: t,
+            ..
+        } = doc.bodies.get(out)?.source
+        {
+            if o == op_index && t == target_pos {
+                frag_meshes.push(body_solid_mesh(doc, out)?);
+            }
+        }
+    }
+    if frag_meshes.is_empty() {
+        return None;
+    }
+    let _ = input;
+
+    let point_to_mesh = |p: Vec3, mesh: &SolidMesh| -> f32 {
+        let mut best = f32::INFINITY;
+        for tri in &mesh.triangles {
+            // Distance to triangle via point-to-segment on edges + plane if inside.
+            for i in 0..3 {
+                let a = tri[i];
+                let b = tri[(i + 1) % 3];
+                let ab = b - a;
+                let t = if ab.length_squared() < 1e-12 {
+                    0.0
+                } else {
+                    ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+                };
+                best = best.min((a + ab * t - p).length());
+            }
+            let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+            let nn = n.length_squared();
+            if nn > 1e-12 {
+                let n = n / nn.sqrt();
+                let dist_plane = (p - tri[0]).dot(n).abs();
+                // Barycentric inside check (planar).
+                let a = tri[0];
+                let b = tri[1];
+                let c = tri[2];
+                let v0 = c - a;
+                let v1 = b - a;
+                let v2 = p - n * (p - a).dot(n) - a;
+                let dot00 = v0.dot(v0);
+                let dot01 = v0.dot(v1);
+                let dot02 = v0.dot(v2);
+                let dot11 = v1.dot(v1);
+                let dot12 = v1.dot(v2);
+                let inv = 1.0 / (dot00 * dot11 - dot01 * dot01);
+                let u = (dot11 * dot02 - dot01 * dot12) * inv;
+                let v = (dot00 * dot12 - dot01 * dot02) * inv;
+                if u >= -1e-3 && v >= -1e-3 && u + v <= 1.0 + 1e-3 {
+                    best = best.min(dist_plane);
+                }
+            }
+        }
+        best
+    };
+
+    let mut max_dev = 0.0_f32;
+    for (path, n) in &paths {
+        let n = n.normalize_or_zero();
+        if n == Vec3::ZERO || path.len() < 2 {
+            continue;
+        }
+        // Sample each segment (including vertices) and a mid-depth point along ±n
+        // inside the body — the cut surface is the ruled extrusion of the path.
+        for w in path.windows(2) {
+            for s in [0.0, 0.5, 1.0] {
+                let p = w[0] + (w[1] - w[0]) * s;
+                // Probe along the laser into the body AABB.
+                let Some((t0, t1)) = line_aabb_interval(p, n, bmin, bmax) else {
+                    continue;
+                };
+                let mid_t = 0.5 * (t0 + t1);
+                let sample = p + n * mid_t;
+                let mut best = f32::INFINITY;
+                for mesh in &frag_meshes {
+                    best = best.min(point_to_mesh(sample, mesh));
+                }
+                max_dev = max_dev.max(best);
+            }
+        }
+    }
+    Some(max_dev)
 }
 
 /// The BREP solid of one slice fragment: piece `piece` of target `target`. The target's

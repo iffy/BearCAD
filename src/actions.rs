@@ -23893,6 +23893,220 @@ mod tests {
         }
     }
 
+    /// #1147 / #1148: report cuboid with a top-to-bottom zigzag on a side face.
+    fn issue_1147_cuboid_zigzag_state() -> (AppState, Vec<crate::model::SliceCutter>) {
+        let bytes = include_bytes!("../tests/fixtures/issue_1147.json");
+        let mut state = AppState::default();
+        state.doc = crate::storage::from_json_bytes(bytes).expect("load issue_1147");
+        state.doc.bump_mesh_rev();
+        let cutters: Vec<_> = state
+            .doc
+            .lines
+            .keys()
+            .map(|line| crate::model::SliceCutter::Line { line })
+            .collect();
+        assert_eq!(cutters.len(), 3, "fixture has three laser lines");
+        (state, cutters)
+    }
+
+    /// World polyline of the fixture's zigzag (sketch line order, stitched).
+    fn issue_1147_path_world(doc: &crate::model::Document) -> Vec<glam::Vec3> {
+        let keys: Vec<_> = doc.lines.keys().collect();
+        let mut path = Vec::new();
+        for &key in &keys {
+            let line = &doc.lines[key];
+            let poly = crate::face::line_world_polyline(doc, line).expect("poly");
+            if path.is_empty() {
+                path = poly;
+            } else {
+                let tip = *path.last().unwrap();
+                let mut poly = poly;
+                if (*poly.last().unwrap() - tip).length_squared()
+                    < (poly[0] - tip).length_squared()
+                {
+                    poly.reverse();
+                }
+                path.extend(poly.into_iter().skip(1));
+            }
+        }
+        path
+    }
+
+    /// #1147: with Infinite cut, free-end extension must not warp a path that already
+    /// spans the body — preview follows the drawn lines, and infinite ≈ finite.
+    #[test]
+    fn slice_laser_preview_follows_top_to_bottom_path_with_infinite() {
+        let (state, cutters) = issue_1147_cuboid_zigzag_state();
+        let body_key = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("body");
+        let path = issue_1147_path_world(&state.doc);
+        assert!(path.len() >= 2);
+        let finite = crate::extrude::slice_laser_preview_meshes(
+            &state.doc,
+            &cutters,
+            false,
+            &[body_key],
+        );
+        let infinite = crate::extrude::slice_laser_preview_meshes(
+            &state.doc,
+            &cutters,
+            true,
+            &[body_key],
+        );
+        assert_eq!(finite.len(), 1);
+        assert_eq!(infinite.len(), 1);
+        // Every drawn path vertex must lie on the preview surface (near some triangle).
+        let near_mesh = |mesh: &crate::extrude::SolidMesh, p: glam::Vec3, tol: f32| -> bool {
+            mesh.triangles.iter().any(|tri| {
+                for i in 0..3 {
+                    let a = tri[i];
+                    let b = tri[(i + 1) % 3];
+                    let ab = b - a;
+                    let t = if ab.length_squared() < 1e-12 {
+                        0.0
+                    } else {
+                        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+                    };
+                    if (a + ab * t - p).length() < tol {
+                        return true;
+                    }
+                }
+                // Also accept points on the triangle face (ruled strip interior).
+                let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+                let nn = n.length_squared();
+                if nn < 1e-12 {
+                    return false;
+                }
+                let n = n / nn.sqrt();
+                if (p - tri[0]).dot(n).abs() > tol {
+                    return false;
+                }
+                true
+            })
+        };
+        for (i, &p) in path.iter().enumerate() {
+            assert!(
+                near_mesh(&finite[0], p, 1.5),
+                "finite preview misses path vertex {i}: {p:?}"
+            );
+            assert!(
+                near_mesh(&infinite[0], p, 1.5),
+                "infinite preview misses path vertex {i}: {p:?}"
+            );
+        }
+        // Infinite must not invent a path that runs to the AABB corner (the old clamp
+        // bug): first/last preview edge along the face should stay near the drawn ends.
+        let start = path[0];
+        let end = *path.last().unwrap();
+        let inf_verts: Vec<_> = infinite[0]
+            .triangles
+            .iter()
+            .flat_map(|t| t.iter().copied())
+            .collect();
+        // Among preview verts near the start's face plane position (same "along face"
+        // plane as start), none should be many body-widths away from start.
+        let body = crate::extrude::body_solid_mesh(&state.doc, body_key).expect("body");
+        let (bmin, bmax) = body.bounds().expect("bounds");
+        let diag = (bmax - bmin).length();
+        for &v in &inf_verts {
+            // On the sketch face (front of cuboid, y ≈ start.y): far lateral drift is the bug.
+            if (v.y - start.y).abs() < 0.5 && (v.z - start.z).abs() < 0.5 {
+                assert!(
+                    (v.x - start.x).abs() < diag * 0.15,
+                    "infinite preview end drifted along top face: start={start:?} vert={v:?}"
+                );
+            }
+            if (v.y - end.y).abs() < 0.5 && (v.z - end.z).abs() < 0.5 {
+                assert!(
+                    (v.x - end.x).abs() < diag * 0.15,
+                    "infinite preview end drifted along bottom face: end={end:?} vert={v:?}"
+                );
+            }
+        }
+    }
+
+    /// #1147: when the path already spans the body, infinite and finite cuts produce the
+    /// same fragment volumes (extension along the face is a no-op inside the solid).
+    #[test]
+    fn slice_top_to_bottom_zigzag_infinite_matches_finite() {
+        let (state_base, cutters) = issue_1147_cuboid_zigzag_state();
+        let body_key = state_base
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("body");
+        let vols_for = |extend: bool| -> Vec<f32> {
+            let mut state = AppState {
+                doc: state_base.doc.clone(),
+                ..AppState::default()
+            };
+            state.doc.bump_mesh_rev();
+            let result = state.apply(Action::CreateSliceOperation {
+                targets: vec![body_key],
+                cutters: cutters.clone(),
+                extend_infinite: extend,
+            });
+            assert!(matches!(result, ActionResult::Ok), "extend={extend}: {result:?}");
+            let op = state.doc.slice_ops.values().next().unwrap();
+            assert_eq!(op.outputs.len(), 2, "extend={extend}: two fragments");
+            let mut vols: Vec<f32> = op
+                .outputs
+                .iter()
+                .map(|&out| {
+                    let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("mesh");
+                    crate::extrude::mesh_signed_volume(&mesh).abs()
+                })
+                .collect();
+            vols.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            vols
+        };
+        let finite = vols_for(false);
+        let infinite = vols_for(true);
+        assert_eq!(finite.len(), 2);
+        assert_eq!(infinite.len(), 2);
+        for i in 0..2 {
+            assert!(
+                (finite[i] - infinite[i]).abs() < 5.0,
+                "infinite vs finite volumes differ: finite={finite:?} infinite={infinite:?}"
+            );
+        }
+    }
+
+    /// #1148: the committed cut surface follows the defining laser path.
+    #[test]
+    fn slice_zigzag_cut_surface_follows_the_path() {
+        let (mut state, cutters) = issue_1147_cuboid_zigzag_state();
+        let body_key = state
+            .doc
+            .bodies
+            .iter()
+            .find(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .expect("body");
+        // Finite cut (matches the report attachment for #1148).
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![body_key],
+            cutters,
+            extend_infinite: false,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let op_key = state.doc.slice_ops.keys().next().unwrap();
+        assert_eq!(state.doc.slice_ops[op_key].outputs.len(), 2);
+        let max_dist = crate::extrude::slice_laser_cut_path_max_deviation(&state.doc, op_key, 0)
+            .expect("deviation");
+        assert!(
+            max_dist < 1.5,
+            "cut surface deviates from laser path by {max_dist} mm (want < 1.5)"
+        );
+    }
+
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
     /// output solids — and the outputs render as real meshes.
     #[test]
