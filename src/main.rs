@@ -26705,6 +26705,17 @@ impl App {
                 }
             }
         }
+        // Slice tool (#1142): target bodies go semi-transparent (like an extrude cut) so the
+        // laser cut surfaces preview through them.
+        if self.state.tool == Tool::Slice {
+            if let Some(cs) = self.state.creating_slice.as_ref() {
+                for &bi in &cs.targets {
+                    if !faded_bodies.contains(&bi) {
+                        faded_bodies.push(bi);
+                    }
+                }
+            }
+        }
         // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
         let mut arrow_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()
@@ -27074,6 +27085,21 @@ impl App {
                         bodies: cb.a.clone(),
                         solids,
                     };
+                }
+            }
+        }
+        // Slice laser cut surfaces (#1142): each continuous laser path previews as a ruled
+        // strip through the body (extended past ends when Infinite cut is on). Drawn through
+        // the same translucent ghost path as Repeat instances.
+        if self.state.tool == Tool::Slice {
+            if let Some(cs) = self.state.creating_slice.as_ref() {
+                if !cs.targets.is_empty() && !cs.cutters.is_empty() {
+                    scene_input.repeat_ghosts.extend(extrude::slice_laser_preview_meshes(
+                        doc,
+                        &cs.cutters,
+                        cs.extend_infinite,
+                        &cs.targets,
+                    ));
                 }
             }
         }

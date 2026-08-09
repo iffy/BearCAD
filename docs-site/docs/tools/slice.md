@@ -24,16 +24,22 @@ through a body along their path.
 1. Pick the **Slice** tool and click one or more bodies (the **Bodies** picker).
 2. Click the **Cutters** picker, then pick:
    - a construction plane or flat body face, or
-   - a sketch line (straight or curved) on a face — cuts through the body like a laser
-     following that path. Multiple lines each cut.
-3. Press **Enter**.
+   - a sketch line (straight or curved) on a face — the laser points into the face and
+     travels the path. Endpoint-connected lines form one continuous path (a zigzag is
+     one cut → two pieces). Disjoint lines each cut.
+3. Press **Enter**. A laser cut is only allowed when it splits a body into at least two
+   pieces.
 
 Each target is cut independently. Each cutter divides whatever pieces the previous cuts
-produced — two crossing planes (or lines) through a block give four fragments.
+produced — two crossing planes (or separate lines) through a block give four fragments.
+
+While you pick, target bodies go semi-transparent and laser paths preview as cutting
+surfaces through the solid (extended past the ends when Infinite cut is on).
 
 **Infinite cut** (on by default) extends every plane endlessly and expands every line past
-its endpoints so a short path still severs the solid. Off, a finite face carves only its
-own footprint and a line only cuts within its span. Construction planes are always infinite.
+its endpoints (straight: same direction; curve: end tangent) so a short path still severs
+the solid. Off, a finite face carves only its own footprint and a line only cuts within its
+span. Construction planes are always infinite.
 
 ## What you get
 

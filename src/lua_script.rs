@@ -10314,6 +10314,35 @@ mod tests {
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
     }
 
+    /// #1142: a zigzag of connected sketch lines is one laser path → two fragments.
+    #[test]
+    fn lua_slice_with_a_zigzag_path_halves_a_box() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 5 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                                  profile = "polygon", profile_lines = {0,1,2,3}, top = true }
+            bearcad.line{ x = 3, y = 0, x1 = 7, y1 = 3.5 }
+            bearcad.line{ x = 7, y = 3.5, x1 = 3, y1 = 6.5 }
+            bearcad.line{ x = 3, y = 6.5, x1 = 7, y1 = 10 }
+            bearcad.exit_sketch()
+            bearcad.slice{ bodies = {0},
+                           cutters = {
+                             { kind = "line", index = 4 },
+                             { kind = "line", index = 5 },
+                             { kind = "line", index = 6 },
+                           },
+                           name = "Zigzag" }
+        "#,
+        );
+        assert_eq!(state.doc.slice_ops.len(), 1, "{}", state.status);
+        let op = &state.doc.slice_ops.values().nth(0).unwrap();
+        assert_eq!(op.outputs.len(), 2, "zigzag laser path yields two fragments");
+        assert_eq!(op.cutters.len(), 3);
+    }
+
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two
     /// planes into a new loft-sourced body with a solid mesh.
     #[test]

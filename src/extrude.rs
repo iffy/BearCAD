@@ -2254,41 +2254,179 @@ fn occt_slice_face_halfspace(
     crate::kernel::Shape::prism(&profile, n * reach)
 }
 
-/// Laser-style half-space for a sketch line cutter (#1126): extrude the path through the
-/// body along the sketch normal. One side of the path (the "left" of the directed polyline
-/// in the face plane) becomes the solid Common keeps; Cut takes the other side.
-///
-/// With `extend_infinite` the path expands past its endpoints along the end tangents so a
-/// short line still severs a larger body (and a tapered solid whose back face is bigger
-/// than the front still splits cleanly).
-fn occt_slice_line_halfspace(
+/// One effective slice cutter after chaining endpoint-connected laser lines into continuous
+/// paths (#1142). A zigzag of three lines is one laser path (two fragments), not three
+/// successive half-space cuts.
+#[derive(Clone, Debug)]
+enum EffectiveSliceCutter {
+    Face(FaceId),
+    /// Ordered sketch lines forming one continuous laser path (single line or chained).
+    LinePath(Vec<crate::model::LineKey>),
+}
+
+const LASER_ENDPOINT_EPS: f32 = 1e-3;
+
+/// Group endpoint-connected line cutters into continuous laser paths; face cutters stay
+/// as-is. Order follows first appearance in `cutters`. At a branch (endpoint shared by
+/// three or more lines) each edge is its own cutter so a Y of lines still cuts along
+/// every leg.
+fn effective_slice_cutters(
     doc: &Document,
-    line_key: crate::model::LineKey,
-    extend_infinite: bool,
-    target: crate::model::BodyKey,
-) -> Option<crate::kernel::Shape> {
-    let line = doc.lines.get(line_key)?;
-    let frame = sketch_geometry_frame(doc, line.sketch)?;
-    let n = frame.normal.normalize_or_zero();
-    if n == Vec3::ZERO {
-        return None;
-    }
-    let (min, max) = body_solid_mesh_uncached(doc, target)?.bounds()?;
-    let reach = (max - min).length().max(1.0) * 4.0;
+    cutters: &[crate::model::SliceCutter],
+) -> Vec<EffectiveSliceCutter> {
+    let near = |a: Vec3, b: Vec3| (a - b).length_squared() < LASER_ENDPOINT_EPS * LASER_ENDPOINT_EPS;
 
-    // World polyline of the cutter path (straight lines are just two points).
-    let mut path = crate::face::line_world_polyline(doc, line)?;
-    if path.len() < 2 {
+    // Line cutters with world endpoints.
+    let mut ends: Vec<(crate::model::LineKey, Vec3, Vec3)> = Vec::new();
+    for c in cutters {
+        if let crate::model::SliceCutter::Line { line } = c {
+            if let Some(l) = doc.lines.get(*line) {
+                if let Some(poly) = crate::face::line_world_polyline(doc, l) {
+                    if poly.len() >= 2 {
+                        ends.push((*line, poly[0], *poly.last().unwrap()));
+                    }
+                }
+            }
+        }
+    }
+    // Adjacency: for each line, the other lines that touch each endpoint.
+    let touchers = |key: crate::model::LineKey, at: Vec3| -> Vec<crate::model::LineKey> {
+        ends.iter()
+            .filter(|(o, o0, o1)| *o != key && (near(at, *o0) || near(at, *o1)))
+            .map(|(o, _, _)| *o)
+            .collect()
+    };
+    // An endpoint is a branch when three or more lines meet there (this line + ≥2 others).
+    let is_branch_end = |key: crate::model::LineKey, at: Vec3| touchers(key, at).len() >= 2;
+
+    let mut used = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for c in cutters {
+        match c {
+            crate::model::SliceCutter::Face(face) => {
+                out.push(EffectiveSliceCutter::Face(face.clone()));
+            }
+            crate::model::SliceCutter::Line { line } => {
+                if !used.insert(*line) {
+                    continue;
+                }
+                let Some(&(_, a, b)) = ends.iter().find(|(k, _, _)| *k == *line) else {
+                    out.push(EffectiveSliceCutter::LinePath(vec![*line]));
+                    continue;
+                };
+                // Branched at either end → this edge cuts alone.
+                if is_branch_end(*line, a) || is_branch_end(*line, b) {
+                    out.push(EffectiveSliceCutter::LinePath(vec![*line]));
+                    continue;
+                }
+                // Walk a simple chain. Prefer a free end as the start so we cover the whole path.
+                let start_at_a = touchers(*line, a).is_empty();
+                // Build the ordered line list by walking from the seed.
+                let mut path = vec![*line];
+                // Direction 1: from the "forward" tip.
+                let mut tip = if start_at_a { b } else { a };
+                loop {
+                    let nexts: Vec<_> = touchers(path[path.len() - 1], tip)
+                        .into_iter()
+                        .filter(|o| !used.contains(o))
+                        .collect();
+                    // Stop at branches or dead ends; simple path has exactly one unused neighbour.
+                    if nexts.len() != 1 {
+                        break;
+                    }
+                    let next = nexts[0];
+                    let Some(&(_, n0, n1)) = ends.iter().find(|(k, _, _)| *k == next) else {
+                        break;
+                    };
+                    // Don't continue through a branch vertex.
+                    if is_branch_end(next, n0) || is_branch_end(next, n1) {
+                        break;
+                    }
+                    used.insert(next);
+                    path.push(next);
+                    tip = if near(tip, n0) { n1 } else { n0 };
+                }
+                // Direction 2: from the other end of the seed (covers mid-chain seeds).
+                let mut tip2 = if start_at_a { a } else { b };
+                let mut front = Vec::new();
+                loop {
+                    let seed = if front.is_empty() {
+                        path[0]
+                    } else {
+                        front[front.len() - 1]
+                    };
+                    let nexts: Vec<_> = touchers(seed, tip2)
+                        .into_iter()
+                        .filter(|o| !used.contains(o))
+                        .collect();
+                    if nexts.len() != 1 {
+                        break;
+                    }
+                    let next = nexts[0];
+                    let Some(&(_, n0, n1)) = ends.iter().find(|(k, _, _)| *k == next) else {
+                        break;
+                    };
+                    if is_branch_end(next, n0) || is_branch_end(next, n1) {
+                        break;
+                    }
+                    used.insert(next);
+                    front.push(next);
+                    tip2 = if near(tip2, n0) { n1 } else { n0 };
+                }
+                front.reverse();
+                front.append(&mut path);
+                out.push(EffectiveSliceCutter::LinePath(front));
+            }
+        }
+    }
+    out
+}
+
+/// World polyline for a continuous laser path of one or more sketch lines, optionally
+/// extended past its ends along the end tangents (#1126/#1142).
+fn laser_path_world_polyline(
+    doc: &Document,
+    lines: &[crate::model::LineKey],
+    extend_reach: Option<f32>,
+) -> Option<(Vec<Vec3>, Vec3)> {
+    if lines.is_empty() {
         return None;
     }
-    // Drop consecutive duplicates so tangents stay well-defined.
+    // Stitch lines end-to-end, flipping each so it attaches to the running tip.
+    let mut path: Vec<Vec3> = Vec::new();
+    let mut normal = Vec3::ZERO;
+    for (i, &key) in lines.iter().enumerate() {
+        let line = doc.lines.get(key)?;
+        let frame = sketch_geometry_frame(doc, line.sketch)?;
+        if i == 0 {
+            normal = frame.normal.normalize_or_zero();
+        }
+        let mut poly = crate::face::line_world_polyline(doc, line)?;
+        if poly.len() < 2 {
+            return None;
+        }
+        if path.is_empty() {
+            path = poly;
+            continue;
+        }
+        let tip = *path.last().unwrap();
+        let d_start = (poly[0] - tip).length_squared();
+        let d_end = (poly.last().unwrap() - tip).length_squared();
+        if d_end < d_start {
+            poly.reverse();
+        }
+        // Drop the shared endpoint.
+        if (poly[0] - tip).length_squared() < LASER_ENDPOINT_EPS * LASER_ENDPOINT_EPS {
+            path.extend(poly.into_iter().skip(1));
+        } else {
+            path.extend(poly);
+        }
+    }
     path.dedup_by(|a, b| (*a - *b).length_squared() < 1e-12);
-    if path.len() < 2 {
+    if path.len() < 2 || normal == Vec3::ZERO {
         return None;
     }
-
-    if extend_infinite {
-        // Push both ends out along their end tangents so the cut clears the body.
+    if let Some(reach) = extend_reach {
         let d0 = (path[1] - path[0]).normalize_or_zero();
         let dn = (*path.last().unwrap() - path[path.len() - 2]).normalize_or_zero();
         if d0 != Vec3::ZERO {
@@ -2299,6 +2437,25 @@ fn occt_slice_line_halfspace(
             path[last] += dn * reach;
         }
     }
+    Some((path, normal))
+}
+
+/// Laser-style half-space for a continuous path of sketch lines (#1126/#1142): the laser
+/// points along the face normal (into the solid) and travels the path. One side of the path
+/// becomes the solid Common keeps; Cut takes the other side.
+///
+/// With `extend_infinite` the path expands past its endpoints along the end tangents
+/// (straight: same direction; curve: tangent) so a short path still severs a larger body.
+fn occt_slice_line_path_halfspace(
+    doc: &Document,
+    lines: &[crate::model::LineKey],
+    extend_infinite: bool,
+    target: crate::model::BodyKey,
+) -> Option<crate::kernel::Shape> {
+    let (min, max) = body_solid_mesh_uncached(doc, target)?.bounds()?;
+    let reach = (max - min).length().max(1.0) * 4.0;
+    let extend = extend_infinite.then_some(reach);
+    let (path, n) = laser_path_world_polyline(doc, lines, extend)?;
 
     // Straight line → a true plane half-space (same quality as a plane cutter).
     let dir = (*path.last().unwrap() - path[0]).normalize_or_zero();
@@ -2312,15 +2469,13 @@ fn occt_slice_line_halfspace(
         if plane_n == Vec3::ZERO {
             return None;
         }
-        // Orthonormal in-plane axes: dir along the line, plane_n × dir? Use dir and n.
-        // Profile lives in the cutting plane (normal = plane_n).
+        // Profile lives in the cutting plane (normal = plane_n); axes along the path and
+        // the sketch normal (laser direction through the body).
         let u = dir;
         let v = n;
         let centroid = (min + max) * 0.5;
         let mid = (path[0] + *path.last().unwrap()) * 0.5;
         let center = mid - plane_n * (mid - centroid).dot(plane_n);
-        // When not extending, keep the slab only as long as the (unextended) path span —
-        // but we already optionally extended `path`. Finite: half-length = half path length.
         let half_u = if extend_infinite {
             reach
         } else {
@@ -2336,8 +2491,8 @@ fn occt_slice_line_halfspace(
         return crate::kernel::Shape::prism(&profile, plane_n * reach);
     }
 
-    // Curved path: closed strip on the left of the polyline, extruded through the body
-    // along ±n so the cut surface is the ruled extrusion of the path.
+    // Curved / polyline path: closed strip on the left of the polyline, extruded through
+    // the body along ±n so the cut surface is the ruled extrusion of the path.
     let mut left: Vec<Vec3> = Vec::with_capacity(path.len());
     for i in 0..path.len() {
         let tangent = if i + 1 < path.len() {
@@ -2361,27 +2516,28 @@ fn occt_slice_line_halfspace(
     crate::kernel::Shape::prism(&profile, n * (2.0 * reach))
 }
 
-/// Dispatch a slice cutter to its half-space solid (#181 planar / #1126 laser line).
-fn occt_slice_halfspace(
+/// Dispatch an effective slice cutter to its half-space solid (#181 planar / #1126 laser).
+fn occt_slice_effective_halfspace(
     doc: &Document,
-    cutter: &crate::model::SliceCutter,
+    cutter: &EffectiveSliceCutter,
     extend_infinite: bool,
     target: crate::model::BodyKey,
 ) -> Option<crate::kernel::Shape> {
     match cutter {
-        crate::model::SliceCutter::Face(face) => {
+        EffectiveSliceCutter::Face(face) => {
             occt_slice_face_halfspace(doc, face, extend_infinite, target)
         }
-        crate::model::SliceCutter::Line { line } => {
-            occt_slice_line_halfspace(doc, *line, extend_infinite, target)
+        EffectiveSliceCutter::LinePath(lines) => {
+            occt_slice_line_path_halfspace(doc, lines, extend_infinite, target)
         }
     }
 }
 
 /// The ordered fragments one slice target splits into: start from the input body's solid(s)
-/// and, for each cutter, replace every current piece with its two sides of the cutter's
-/// half-space, dropping empty results. Deterministic order (common side before cut side, in
-/// cutter order) keeps output-body mapping stable across edits.
+/// and, for each effective cutter (endpoint-connected laser lines chained into one path,
+/// #1142), replace every current piece with its two sides of the cutter's half-space,
+/// dropping empty results. Deterministic order (common side before cut side, in cutter
+/// order) keeps output-body mapping stable across edits.
 fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_pos: usize) -> Option<Vec<crate::kernel::Shape>> {
     use crate::kernel::BoolOp;
     const MIN_PIECE_VOLUME: f64 = 1e-6;
@@ -2396,8 +2552,9 @@ fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_
     if pieces.is_empty() {
         pieces = vec![base];
     }
-    for cutter in &op.cutters {
-        let Some(hs) = occt_slice_halfspace(doc, cutter, op.extend_infinite, input) else {
+    let effective = effective_slice_cutters(doc, &op.cutters);
+    for cutter in &effective {
+        let Some(hs) = occt_slice_effective_halfspace(doc, cutter, op.extend_infinite, input) else {
             continue;
         };
         let mut next = Vec::new();
@@ -2417,6 +2574,67 @@ fn occt_slice_pieces(doc: &Document, op_index: crate::model::SliceOpKey, target_
         }
     }
     Some(pieces)
+}
+
+/// Preview meshes of the laser cutting surfaces for in-progress slice cutters (#1142):
+/// each continuous laser path becomes a ruled strip extruded along the face normal
+/// (into and through the body). With `extend_infinite` the strip expands past the path
+/// ends along end tangents. Empty when there are no line cutters or no usable bounds.
+pub fn slice_laser_preview_meshes(
+    doc: &Document,
+    cutters: &[crate::model::SliceCutter],
+    extend_infinite: bool,
+    targets: &[crate::model::BodyKey],
+) -> Vec<SolidMesh> {
+    if cutters.is_empty() || targets.is_empty() {
+        return Vec::new();
+    }
+    // Bounds over every target so the strip clears the largest body.
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut any = false;
+    for &bi in targets {
+        if let Some(mesh) = body_solid_mesh(doc, bi) {
+            if let Some((bmin, bmax)) = mesh.bounds() {
+                min = min.min(bmin);
+                max = max.max(bmax);
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return Vec::new();
+    }
+    let reach = (max - min).length().max(1.0) * 1.25;
+    let extend = extend_infinite.then_some(reach);
+    let mut meshes = Vec::new();
+    for cutter in effective_slice_cutters(doc, cutters) {
+        let EffectiveSliceCutter::LinePath(lines) = cutter else {
+            continue;
+        };
+        let Some((path, n)) = laser_path_world_polyline(doc, &lines, extend) else {
+            continue;
+        };
+        if path.len() < 2 || n == Vec3::ZERO {
+            continue;
+        }
+        // Ruled strip: each path segment extruded ±n (laser through the face).
+        let mut triangles = Vec::with_capacity((path.len() - 1) * 2);
+        for w in path.windows(2) {
+            let a = w[0];
+            let b = w[1];
+            let a0 = a - n * reach;
+            let a1 = a + n * reach;
+            let b0 = b - n * reach;
+            let b1 = b + n * reach;
+            triangles.push([a0, b0, b1]);
+            triangles.push([a0, b1, a1]);
+        }
+        if !triangles.is_empty() {
+            meshes.push(SolidMesh { triangles });
+        }
+    }
+    meshes
 }
 
 /// The BREP solid of one slice fragment: piece `piece` of target `target`. The target's

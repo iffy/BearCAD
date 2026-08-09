@@ -12847,12 +12847,30 @@ label_hidden: false,
                 });
                 self.doc.shape_order.push(ShapeKind::SliceOperation);
                 // Fragment count per target = solids the kernel finds after cutting (at
-                // least one). A target the cutters miss stays whole (one fragment).
-                let mut outputs = Vec::new();
+                // least one). A plane cutter that misses keeps the body whole (one
+                // fragment). A laser cut that doesn't sever is rejected (#1142).
+                let has_laser = cutters
+                    .iter()
+                    .any(|c| matches!(c, crate::model::SliceCutter::Line { .. }));
+                let mut piece_counts = Vec::with_capacity(targets.len());
                 for target in 0..targets.len() {
                     let pieces = crate::extrude::slice_piece_count(&self.doc, op_index, target)
                         .unwrap_or(1)
                         .max(1);
+                    piece_counts.push(pieces);
+                }
+                if has_laser && piece_counts.iter().all(|&n| n < 2) {
+                    // Roll back the provisional op — the laser never split anything.
+                    self.doc.slice_ops.remove(op_index);
+                    if matches!(self.doc.shape_order.last(), Some(ShapeKind::SliceOperation)) {
+                        self.doc.shape_order.pop();
+                    }
+                    let e = "Laser cut must split the body into at least 2 pieces".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let mut outputs = Vec::new();
+                for (target, &pieces) in piece_counts.iter().enumerate() {
                     for piece in 0..pieces {
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Sliced { op: op_index, target, piece },
@@ -12888,8 +12906,9 @@ label_hidden: false,
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                // Release old inputs from shadow, re-point the op, shadow the new ones.
-                let old_targets = self.doc.slice_ops[op].targets.clone();
+                // Snapshot so a laser that doesn't sever can restore the prior op (#1142).
+                let old = self.doc.slice_ops[op].clone();
+                let old_targets = old.targets.clone();
                 for &input in old_targets.iter() {
                     if let Some(body) = self.doc.bodies.get_mut(input) {
                         body.shadow = false;
@@ -12900,6 +12919,29 @@ label_hidden: false,
                     entry.targets = targets.clone();
                     entry.cutters = cutters.clone();
                     entry.extend_infinite = extend_infinite;
+                }
+                // Recompute fragments under the new cutters before shadowing / resizing.
+                let has_laser = cutters
+                    .iter()
+                    .any(|c| matches!(c, crate::model::SliceCutter::Line { .. }));
+                let piece_counts: Vec<usize> = (0..targets.len())
+                    .map(|target| {
+                        crate::extrude::slice_piece_count(&self.doc, op, target)
+                            .unwrap_or(1)
+                            .max(1)
+                    })
+                    .collect();
+                if has_laser && piece_counts.iter().all(|&n| n < 2) {
+                    // Restore the previous op and its shadows.
+                    self.doc.slice_ops[op] = old;
+                    for &input in old_targets.iter() {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                    let e = "Laser cut must split the body into at least 2 pieces".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
                 }
                 for &input in targets.iter() {
                     if let Some(body) = self.doc.bodies.get_mut(input) {
@@ -12917,13 +12959,10 @@ label_hidden: false,
                 }
                 // Recompute the target-major fragment list and reconcile the output bodies:
                 // reuse existing outputs, mint new ones for a surplus, drop the shortfall.
-                let desired: Vec<(usize, usize)> = (0..targets.len())
-                    .flat_map(|target| {
-                        let pieces = crate::extrude::slice_piece_count(&self.doc, op, target)
-                            .unwrap_or(1)
-                            .max(1);
-                        (0..pieces).map(move |piece| (target, piece))
-                    })
+                let desired: Vec<(usize, usize)> = piece_counts
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(target, &pieces)| (0..pieces).map(move |piece| (target, piece)))
                     .collect();
                 let existing = self.doc.slice_ops[op].outputs.clone();
                 let mut outputs = Vec::with_capacity(desired.len());
@@ -23585,6 +23624,141 @@ mod tests {
                 "fragment {out:?} should have a kernel mesh"
             );
         }
+    }
+
+    /// #1142: endpoint-connected laser lines form one continuous path — a zigzag across a
+    /// face severs the box into **two** fragments, not one per segment.
+    #[test]
+    fn slice_with_a_zigzag_path_of_connected_lines_splits_into_two() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        // Zigzag from y=0 to y=10 down the middle of the 10×10 top face.
+        let a = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 3.0, 0.0, 7.0, 3.5,
+        ));
+        let b = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 7.0, 3.5, 3.0, 6.5,
+        ));
+        let c = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 3.0, 6.5, 7.0, 10.0,
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![
+                crate::model::SliceCutter::Line { line: a },
+                crate::model::SliceCutter::Line { line: b },
+                crate::model::SliceCutter::Line { line: c },
+            ],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.slice_ops.values().nth(0).unwrap().outputs.len(),
+            2,
+            "a continuous zigzag laser path yields two fragments, not one per segment"
+        );
+        for &out in &state.doc.slice_ops.values().nth(0).unwrap().outputs {
+            assert!(
+                crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
+                "fragment {out:?} should have a kernel mesh"
+            );
+        }
+    }
+
+    /// #1142: a laser path that does not sever the body is rejected (must make ≥2 pieces).
+    #[test]
+    fn slice_laser_that_does_not_sever_is_rejected() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        // Entirely outside the 10×10 face — the laser misses the solid even with extend.
+        let line = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 50.0, 50.0, 60.0, 50.0,
+        ));
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![bkey(0)],
+            cutters: vec![crate::model::SliceCutter::Line { line }],
+            extend_infinite: false,
+        });
+        assert!(
+            matches!(result, ActionResult::Err(_)),
+            "a non-severing laser cut must be rejected, got {result:?}"
+        );
+        assert!(state.doc.slice_ops.is_empty(), "no op should remain after rejection");
+        assert!(!state.doc.bodies[bkey(0)].shadow, "target stays live");
+    }
+
+    /// #1142: laser cut preview surfaces are non-empty ruled strips through the body.
+    #[test]
+    fn slice_laser_preview_meshes_cover_the_path() {
+        let mut state = box_extrusion_state();
+        let top = {
+            let ext = &state.doc.extrusions[xkey(0)];
+            match &ext.faces[0] {
+                ExtrudeFace::Polygon(lines) => FaceId::ExtrudeCap {
+                    extrusion: xkey(0),
+                    profile: ExtrudeFace::Polygon(lines.clone()),
+                    top: true,
+                },
+                _ => panic!("box profile"),
+            }
+        };
+        let sketch = state.doc.add_sketch(top);
+        let a = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 5.0, 5.0, 5.0,
+        ));
+        let b = state.doc.lines.insert(crate::model::Line::from_local_endpoints(
+            sketch, 5.0, 5.0, 10.0, 5.0,
+        ));
+        let cutters = vec![
+            crate::model::SliceCutter::Line { line: a },
+            crate::model::SliceCutter::Line { line: b },
+        ];
+        let meshes = crate::extrude::slice_laser_preview_meshes(
+            &state.doc,
+            &cutters,
+            true,
+            &[bkey(0)],
+        );
+        assert_eq!(
+            meshes.len(),
+            1,
+            "connected lines form one continuous laser surface preview"
+        );
+        assert!(
+            !meshes[0].triangles.is_empty(),
+            "preview surface has triangles"
+        );
+        // Finite (no extend) still produces a strip along the path span.
+        let finite = crate::extrude::slice_laser_preview_meshes(
+            &state.doc,
+            &cutters,
+            false,
+            &[bkey(0)],
+        );
+        assert_eq!(finite.len(), 1);
+        assert!(!finite[0].triangles.is_empty());
     }
 
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
