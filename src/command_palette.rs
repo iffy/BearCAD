@@ -633,8 +633,8 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
     ),
     PaletteCommand::new(
         PaletteCommandId::ToggleFpsMode,
-        "Toggle FPS Mode",
-        "fps first person walk fly wasd shooter mode camera",
+        "Toggle FPS Mode (experimental)",
+        "fps first person walk fly wasd shooter mode camera experimental",
     ),
     PaletteCommand::new(
         PaletteCommandId::ZoomToFit,

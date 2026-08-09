@@ -313,7 +313,8 @@ impl NativeMenu {
             true,
             Some(Accelerator::new(Some(primary), Code::KeyP)),
         );
-        let fps_mode = CheckMenuItem::with_id("fps_mode", "FPS Mode", true, false, None);
+        let fps_mode =
+            CheckMenuItem::with_id("fps_mode", "FPS Mode (experimental)", true, false, None);
         let zoom_to_fit = MenuItem::with_id("zoom_to_fit", "Zoom to Fit", true, None);
         let about = MenuItem::with_id("about", "About BearCAD", true, None);
         let shortcuts_view =
@@ -480,7 +481,7 @@ impl NativeMenu {
         }
     }
 
-    /// Keep the View ▸ FPS Mode checkmark aligned with whether FPS mode is active (#118).
+    /// Keep the View ▸ FPS Mode (experimental) checkmark aligned with FPS mode (#118).
     pub fn sync_fps_mode(&self, active: bool) {
         self.fps_mode.set_checked(active);
     }

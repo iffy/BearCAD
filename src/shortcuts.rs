@@ -302,8 +302,8 @@ pub fn all_shortcuts() -> Vec<ShortcutSection> {
     });
 
     sections.push(ShortcutSection {
-        title: "First-person mode",
-        scope: Some("View → FPS Mode"),
+        title: "First-person mode (experimental)",
+        scope: Some("View → FPS Mode (experimental)"),
         entries: vec![
             ("W A S D".to_string(), "Walk".to_string()),
             ("Mouse".to_string(), "Look around".to_string()),

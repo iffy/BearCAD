@@ -132,5 +132,5 @@ wrapped text's box width).
   palette, synthetic input.
 - **[Point-level selection](/docs/scripting/point-selection)** — selecting a single
   vertex, for scripted constraint authoring.
-- **[First-person mode](/docs/scripting/first-person-mode)** — walking, flying, and
-  scale, from a script.
+- **[First-person mode (experimental)](/docs/scripting/first-person-mode)** — walking,
+  flying, and scale, from a script.

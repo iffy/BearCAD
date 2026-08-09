@@ -7517,7 +7517,7 @@ impl AppState {
                         crate::fps::FpsController::enter(&self.cam, self.fps_memory.as_ref());
                     player.apply_to_camera(&mut self.cam);
                     self.fps = Some(player);
-                    self.status = "FPS mode — WASD walk, mouse look, Space jump \
+                    self.status = "FPS mode (experimental) — WASD walk, mouse look, Space jump \
                                    (double-tap to fly), 1-9 tools, wheel cycles, Esc exits"
                         .to_string();
                 }

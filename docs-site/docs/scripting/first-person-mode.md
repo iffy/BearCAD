@@ -1,12 +1,13 @@
 ---
 sidebar_position: 6
-title: First-person mode
+title: First-person mode (experimental)
 ---
 
-# First-person mode
+# First-person mode (experimental)
 
-FPS mode walks around (and inside) a model like a first-person game. Also reachable from
-the command palette ("Toggle FPS Mode") and the **View** menu.
+FPS mode walks around (and inside) a model like a first-person game. Experimental.
+Also reachable from the command palette ("Toggle FPS Mode (experimental)") and the
+**View** menu.
 
 ```lua
 bearcad.ui.fps()          -- toggle; bearcad.ui.fps(true) / bearcad.ui.fps(false) forces it

@@ -96,7 +96,7 @@ pub fn bar(ui: &mut egui::Ui, pane_visible: impl Fn(Pane) -> bool) -> Option<Men
                     picked = Some(MenuCommand::ToggleCommandPalette);
                     ui.close();
                 }
-                if ui.button("First-person mode").clicked() {
+                if ui.button("First-person mode (experimental)").clicked() {
                     picked = Some(MenuCommand::ToggleFpsMode);
                     ui.close();
                 }

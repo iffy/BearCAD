@@ -4786,10 +4786,11 @@ The model in one place:
 ### 11.6 First-person (FPS) mode (#91)
 
 A completely different control scheme for walking around (and inside) models like a
-first-person game, toggled via the command palette ("Toggle FPS Mode"), the View menu
-("FPS Mode", checked while active), `Action::ToggleFpsMode`, or `bearcad.ui.fps()`. The
-document is millimeters, so the player is person-scale: eye height
-1700&nbsp;mm, walking ~4.3&nbsp;m/s.
+first-person game. **Experimental** — labeled as such in the command palette
+("Toggle FPS Mode (experimental)"), the View menu ("FPS Mode (experimental)", checked
+while active), status bar, shortcuts window, and docs. Toggled via those UI surfaces,
+`Action::ToggleFpsMode`, or `bearcad.ui.fps()`. The document is millimeters, so the
+player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 
 - **Seamless entry (#135):** toggling FPS mode on never moves the view — the player's eye
   starts at the orbit camera's exact position and look direction, so the frame before and
@@ -5194,7 +5195,7 @@ it.
 **View → Keyboard Shortcuts** / **Help → Keyboard Shortcuts** (and the palette entry
 "Keyboard Shortcuts") opens a closable window listing **every** binding in the app,
 grouped by scope: Everywhere, Tools (3D modeling workbench), Sketch mode, Constraints
-(Constraint tool), Expression fields, First-person mode, and Technical drawings —
+(Constraint tool), Expression fields, First-person mode (experimental), and Technical drawings —
 sections whose shortcuts only apply in a certain state carry a scope note.
 
 The single source is **`shortcuts::all_shortcuts()`**. Maintenance contract: any new or
