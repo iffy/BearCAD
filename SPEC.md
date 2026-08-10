@@ -2396,9 +2396,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   from the View menu like anywhere else (#378) — so parameters can be edited (rebuilding the
   model and the open drawing's views) without leaving the drawing — and its pre-drawing
   visibility restores on returning to the model.
-- **Aligned projection lines (#377):** an aligned child can draw **two dashed, lightweight
+- **Aligned projection lines (#377/#1206):** an aligned child can draw **two dashed, lightweight
   lines** connecting its silhouette extremes to its base view's across the gap — at the far
   left/right of the pair for an above/below child, the top/bottom for a left/right one —
+  each endpoint on the **facing body edge** at that extreme (not a floating AABB corner) —
   toggled by a **Projection lines** checkbox in the child's view editor (stored as
   `DrawingView::align_lines`, `Action::SetDrawingViewAlignLines`; rejected for non-aligned
   views). `drawing::aligned_projection_lines` computes the endpoints in each view's own

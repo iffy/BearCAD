@@ -11361,6 +11361,69 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// #1206: projection-line endpoints land on the facing silhouette of the body at each
+    /// shared-axis extreme — not on floating AABB corners. A short body on the left and a tall
+    /// one on the right make the Front-Top AABB's top-left corner empty; the left line must
+    /// touch the short body's top, not hover at the tall body's height.
+    #[test]
+    fn lua_align_lines_touch_body_edges_not_aabb_corners() {
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ at = {0, 0, 0}, width = 20, depth = 20, height = 10 }
+            bearcad.cuboid{ at = {60, 0, 0}, width = 20, depth = 20, height = 50 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "top" }
+            bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "below", pos = 0.75 }
+        "#,
+        );
+        // Roll the aligned child to Front-Top (same as the report: Top base → Front-Top below).
+        state.doc.drawings[dkey(0)].views[1].orientation =
+            crate::model::DrawingOrientation::Edge(crate::model::EdgeView::FrontTop);
+        let views = &state.doc.drawings[dkey(0)].views;
+        let lines = crate::drawing::aligned_projection_lines(&state.doc, views, 1)
+            .expect("aligned child yields projection lines");
+        let child = &views[1];
+        let (right, up) = crate::drawing::resolved_view_axes(views, child);
+        let edges =
+            crate::drawing::drawing_view_dimensionable_edges(&state.doc, views, child);
+        let pts: Vec<glam::Vec2> = edges
+            .iter()
+            .flat_map(|(a, b)| {
+                [
+                    glam::Vec2::new(a.dot(right), a.dot(up)),
+                    glam::Vec2::new(b.dot(right), b.dot(up)),
+                ]
+            })
+            .collect();
+        assert!(!pts.is_empty(), "child has projected geometry");
+        let cmax_y = pts.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+        let cmin_x = pts.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+        // Each child endpoint must land on a projected vertex (the silhouette), not float at
+        // an empty AABB corner.
+        for (i, (_ppt, cpt)) in lines.iter().enumerate() {
+            let near = pts.iter().any(|p| (*p - *cpt).length() < 0.75);
+            assert!(
+                near,
+                "line {i} child endpoint {cpt:?} must sit on a silhouette vertex, got pts near x≈{}",
+                cpt.x
+            );
+        }
+        // Left line (index 0): at the short body's extreme, its facing top is well below the
+        // overall AABB top (the tall body). Using (cmin.x, cmax.y) would fail this.
+        let left = lines[0].1;
+        assert!(
+            (left.x - cmin_x).abs() < 1.0,
+            "left line at the shared-axis min: left.x={}, cmin_x={cmin_x}",
+            left.x
+        );
+        assert!(
+            left.y < cmax_y - 5.0,
+            "left line must touch the short body, not the tall AABB top: left.y={}, cmax_y={cmax_y}",
+            left.y
+        );
+    }
+
     /// #377: toggled projection lines export as dashed strokes connecting the aligned pair.
     #[test]
     fn lua_align_lines_export_as_dashed_strokes() {

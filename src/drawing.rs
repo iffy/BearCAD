@@ -288,12 +288,84 @@ pub fn view_render_center(doc: &Document, views: &[DrawingView], view: usize) ->
     center
 }
 
+/// Projected 2D endpoints of a view's dimensionable edges (creases + silhouettes).
+fn view_projected_points(
+    doc: &Document,
+    views: &[DrawingView],
+    view: usize,
+) -> Option<Vec<glam::Vec2>> {
+    let v = views.get(view)?;
+    let world_edges = drawing_view_dimensionable_edges(doc, views, v);
+    if world_edges.is_empty() {
+        return None;
+    }
+    let (right, up) = resolved_view_axes(views, v);
+    let mut pts = Vec::with_capacity(world_edges.len() * 2);
+    for (a, b) in &world_edges {
+        pts.push(glam::Vec2::new(a.dot(right), a.dot(up)));
+        pts.push(glam::Vec2::new(b.dot(right), b.dot(up)));
+    }
+    Some(pts)
+}
+
+/// Silhouette extreme on the shared axis, with the facing extreme of the perpendicular among
+/// projected points that sit at that shared extreme (#1206). AABB corners float above
+/// irregular silhouettes (edge views, multi-body); this lands on the body edge itself.
+///
+/// - `shared_is_x`: shared axis is X (above/below children) vs Y (left/right).
+/// - `at_min_shared`: left/bottom extreme vs right/top.
+/// - `want_min_perp`: facing direction along the perpendicular (min = bottom/left face).
+fn silhouette_facing_point(
+    pts: &[glam::Vec2],
+    shared_is_x: bool,
+    at_min_shared: bool,
+    want_min_perp: bool,
+) -> Option<glam::Vec2> {
+    if pts.is_empty() {
+        return None;
+    }
+    let shared = |p: glam::Vec2| if shared_is_x { p.x } else { p.y };
+    let perp = |p: glam::Vec2| if shared_is_x { p.y } else { p.x };
+    let mut s_min = f32::MAX;
+    let mut s_max = f32::MIN;
+    for p in pts {
+        let s = shared(*p);
+        s_min = s_min.min(s);
+        s_max = s_max.max(s);
+    }
+    let extreme_s = if at_min_shared { s_min } else { s_max };
+    // A hair of the shared-axis span so float noise and near-extreme tessellation still count.
+    let eps = ((s_max - s_min).abs() * 1e-4).max(1e-3);
+    let mut best_perp = if want_min_perp { f32::MAX } else { f32::MIN };
+    let mut found = false;
+    for p in pts {
+        if (shared(*p) - extreme_s).abs() <= eps {
+            let v = perp(*p);
+            if want_min_perp {
+                best_perp = best_perp.min(v);
+            } else {
+                best_perp = best_perp.max(v);
+            }
+            found = true;
+        }
+    }
+    if !found {
+        return None;
+    }
+    Some(if shared_is_x {
+        glam::Vec2::new(extreme_s, best_perp)
+    } else {
+        glam::Vec2::new(best_perp, extreme_s)
+    })
+}
+
 /// The two dashed projection lines connecting an aligned child to its base view (#377):
 /// endpoints in each view's **own projected 2D space** — `(parent_point, child_point)` per
 /// line — which the renderers map through the owning view's own to-device transform. The
 /// lines sit at the silhouette extremes of the shared axis (far left/right for an
-/// above/below child, top/bottom for a left/right one) and connect the facing edges of the
-/// two views. `None` if the view isn't a valid aligned child or either view has no geometry.
+/// above/below child, top/bottom for a left/right one) and connect the **facing body edges**
+/// of the two views (#1206) — not floating AABB corners. `None` if the view isn't a valid
+/// aligned child or either view has no geometry.
 pub fn aligned_projection_lines(
     doc: &Document,
     views: &[DrawingView],
@@ -306,26 +378,52 @@ pub fn aligned_projection_lines(
         return None;
     }
     views.get(p)?;
-    let (pmin, pmax) = view_projected_bbox(doc, views, p)?;
-    let (cmin, cmax) = view_projected_bbox(doc, views, child)?;
-    // The shared-axis coordinates coincide between the two views (#364), so each line's two
-    // endpoints land on one page-space vertical/horizontal.
+    let ppts = view_projected_points(doc, views, p)?;
+    let cpts = view_projected_points(doc, views, child)?;
+    // Shared-axis coordinates coincide between the two views (#364); endpoints land on the
+    // facing silhouette at each extreme so the dashed lines touch the body edge (#1206).
     Some(match dir {
+        // Shared = X. Parent faces down (min y) / child faces up (max y), or the reverse.
         AlignDir::Below => [
-            (glam::Vec2::new(pmin.x, pmin.y), glam::Vec2::new(cmin.x, cmax.y)),
-            (glam::Vec2::new(pmax.x, pmin.y), glam::Vec2::new(cmax.x, cmax.y)),
+            (
+                silhouette_facing_point(&ppts, true, true, true)?,
+                silhouette_facing_point(&cpts, true, true, false)?,
+            ),
+            (
+                silhouette_facing_point(&ppts, true, false, true)?,
+                silhouette_facing_point(&cpts, true, false, false)?,
+            ),
         ],
         AlignDir::Above => [
-            (glam::Vec2::new(pmin.x, pmax.y), glam::Vec2::new(cmin.x, cmin.y)),
-            (glam::Vec2::new(pmax.x, pmax.y), glam::Vec2::new(cmax.x, cmin.y)),
+            (
+                silhouette_facing_point(&ppts, true, true, false)?,
+                silhouette_facing_point(&cpts, true, true, true)?,
+            ),
+            (
+                silhouette_facing_point(&ppts, true, false, false)?,
+                silhouette_facing_point(&cpts, true, false, true)?,
+            ),
         ],
+        // Shared = Y. Parent faces right (max x) / child faces left (min x), or the reverse.
         AlignDir::Right => [
-            (glam::Vec2::new(pmax.x, pmin.y), glam::Vec2::new(cmin.x, cmin.y)),
-            (glam::Vec2::new(pmax.x, pmax.y), glam::Vec2::new(cmin.x, cmax.y)),
+            (
+                silhouette_facing_point(&ppts, false, true, false)?,
+                silhouette_facing_point(&cpts, false, true, true)?,
+            ),
+            (
+                silhouette_facing_point(&ppts, false, false, false)?,
+                silhouette_facing_point(&cpts, false, false, true)?,
+            ),
         ],
         AlignDir::Left => [
-            (glam::Vec2::new(pmin.x, pmin.y), glam::Vec2::new(cmax.x, cmin.y)),
-            (glam::Vec2::new(pmin.x, pmax.y), glam::Vec2::new(cmax.x, cmax.y)),
+            (
+                silhouette_facing_point(&ppts, false, true, true)?,
+                silhouette_facing_point(&cpts, false, true, false)?,
+            ),
+            (
+                silhouette_facing_point(&ppts, false, false, true)?,
+                silhouette_facing_point(&cpts, false, false, false)?,
+            ),
         ],
     })
 }
@@ -1789,6 +1887,31 @@ mod tests {
     use crate::model::body_key_for_slot as bkey;
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #1206: facing endpoints use the silhouette at each shared-axis extreme, not AABB corners.
+    /// An L-shape's top-left AABB corner floats; the left extreme's top is the bar height.
+    #[test]
+    fn silhouette_facing_point_avoids_floating_aabb_corners() {
+        // Horizontal bar (0..10)×(0..2) plus a stem on the right (8..10)×(2..10).
+        let pts = [
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(0.0, 2.0),
+            glam::Vec2::new(10.0, 2.0),
+            glam::Vec2::new(10.0, 0.0),
+            glam::Vec2::new(8.0, 2.0),
+            glam::Vec2::new(8.0, 10.0),
+            glam::Vec2::new(10.0, 10.0),
+        ];
+        // Left extreme, facing up (max y): bar top at y=2, not AABB top at y=10.
+        let left_top = silhouette_facing_point(&pts, true, true, false).unwrap();
+        assert!((left_top.x - 0.0).abs() < 1e-5 && (left_top.y - 2.0).abs() < 1e-5, "{left_top:?}");
+        // Right extreme, facing up: stem top at y=10.
+        let right_top = silhouette_facing_point(&pts, true, false, false).unwrap();
+        assert!((right_top.x - 10.0).abs() < 1e-5 && (right_top.y - 10.0).abs() < 1e-5, "{right_top:?}");
+        // Bottom extreme on shared Y, facing right (max x): right side of the bar.
+        let bot_right = silhouette_facing_point(&pts, false, true, false).unwrap();
+        assert!((bot_right.y - 0.0).abs() < 1e-5 && (bot_right.x - 10.0).abs() < 1e-5, "{bot_right:?}");
+    }
 
     /// #345: a free-angle orientation projects with its stored basis, so a free basis equal to a
     /// preset's reproduces that preset exactly (the convention `view_cube::free_basis` is chosen so
