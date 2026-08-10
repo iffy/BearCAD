@@ -322,6 +322,13 @@ pub struct ViewportScene {
     /// however steeply it recedes. Drawn with `vs_axis`/`fs_axis`.
     pub axis_vertices: Vec<GpuVertex>,
     pub axis_indices: Vec<u32>,
+    /// Depth-tested sketch / overlay strokes widened in **screen space** (#1157), same packing
+    /// as [`Self::axis_vertices`]. A camera-facing world ribbon of constant thickness reads as
+    /// a freestanding 3D rectangle when a body face is viewed at a grazing angle; these keep
+    /// their corners on the endpoints (on the face) and let `vs_axis` step sideways in pixels.
+    /// Drawn after the opaque base so bodies occlude them correctly.
+    pub stroke_vertices: Vec<GpuVertex>,
+    pub stroke_indices: Vec<u32>,
     /// The ground grid (#1073), when one is showing: a single footprint quad whose fragment
     /// shader draws the lattice. Thick world-space line quads could not stay thin — one
     /// viewed edge-on foreshortens into a wedge and one viewed close up swells — so the
@@ -2342,20 +2349,65 @@ impl<'a> SceneMesh<'a> {
         view_proj: &Mat4,
         depth_bias: f32,
     ) {
-        let (a, b) = offset_segment_toward_camera(a, b, cam.eye(), depth_bias);
-        let Some(quad) = line_screen_quad(a, b, width_px, cam, viewport, view_proj) else {
+        // Depth-tested layers: widen in screen space (#1157 / #1072). Wireframe/gizmo use
+        // depth-disabled world ribbons so they still show through bodies (#33/#36).
+        match self.index_layer {
+            MeshIndexLayer::Gizmo | MeshIndexLayer::Wireframe => {
+                let (a, b) = offset_segment_toward_camera(a, b, cam.eye(), depth_bias);
+                let Some(quad) = line_screen_quad(a, b, width_px, cam, viewport, view_proj) else {
+                    return;
+                };
+                let base = self.scene.vertices.len() as u32;
+                let gpu = color32_to_gpu(color);
+                for p in quad {
+                    self.scene.vertices.push(GpuVertex {
+                        position: p.to_array(),
+                        color: gpu,
+                        normal: [0.0, 0.0, 0.0, ShadingModel::Unlit.as_w()],
+                    });
+                }
+                self.indices_mut()
+                    .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            }
+            MeshIndexLayer::Base
+            | MeshIndexLayer::Overlay
+            | MeshIndexLayer::SketchFill
+            | MeshIndexLayer::PlaneFill
+            | MeshIndexLayer::GroundShadow
+            | MeshIndexLayer::Mask => {
+                let _ = (viewport, view_proj);
+                self.push_screen_width_stroke(a, b, color, width_px, cam.eye(), depth_bias);
+            }
+        }
+    }
+
+    /// Screen-space-widened stroke into [`ViewportScene::stroke_vertices`] (#1157).
+    fn push_screen_width_stroke(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        color: Color32,
+        width_px: f32,
+        eye: Vec3,
+        depth_bias: f32,
+    ) {
+        let (a, b) = offset_segment_toward_camera(a, b, eye, depth_bias);
+        if (b - a).length_squared() < 1e-12 {
             return;
-        };
-        let base = self.scene.vertices.len() as u32;
+        }
         let gpu = color32_to_gpu(color);
-        for p in quad {
-            self.scene.vertices.push(GpuVertex {
-                position: p.to_array(),
+        let half = width_px * 0.5;
+        let base = self.scene.stroke_vertices.len() as u32;
+        // Same corner packing as `push_screen_width_segment` / origin axes (#1072).
+        for (own, other, side) in [(a, b, half), (a, b, -half), (b, a, half), (b, a, -half)] {
+            self.scene.stroke_vertices.push(GpuVertex {
+                position: own.to_array(),
                 color: gpu,
-                normal: [0.0, 0.0, 0.0, ShadingModel::Unlit.as_w()],
+                normal: [other.x, other.y, other.z, side],
             });
         }
-        self.indices_mut()
+        self.scene
+            .stroke_indices
             .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
@@ -6141,8 +6193,9 @@ mod tests {
             constraint_connector_color: None,
         });
         assert!(
-            with_preview.overlay_indices.len() > base.overlay_indices.len(),
-            "plane creation preview should add outline triangles"
+            with_preview.overlay_indices.len() + with_preview.stroke_indices.len()
+                > base.overlay_indices.len() + base.stroke_indices.len(),
+            "plane creation preview should add outline geometry"
         );
     }
 
@@ -6233,13 +6286,15 @@ mod tests {
             constraint_connector_color: None,
         });
             // Every buffer a hover can land in: screen-space discs go to the base mesh, face
-            // fills to the overlay, translucent solids to the plane-fill layer, and pick
-            // targets to the depth-test-disabled wireframe layer (#153). A check for "did this
-            // light up?" has to count them all.
+            // fills to the overlay, strokes to the screen-space stroke buffer (#1157),
+            // translucent solids to the plane-fill layer, and pick targets to the
+            // depth-test-disabled wireframe layer (#153). A check for "did this light up?" has
+            // to count them all.
             scene.indices.len()
                 + scene.sketch_fill_indices.len()
                 + scene.plane_fill_indices.len()
                 + scene.overlay_indices.len()
+                + scene.stroke_indices.len()
                 + scene.wireframe_indices.len()
                 + scene.gizmo_indices.len()
         };
@@ -6251,7 +6306,8 @@ mod tests {
         let state = AppState::default();
         // The biased fill quad (6 indices) plus its four border segments (#974): a datum plane
         // hovers like every other face, fill and outline both, rather than through a special
-        // case that gave it only the fill.
+        // case that gave it only the fill. Border strokes are screen-space (#1157): 4×6
+        // indices in `stroke_indices`.
         assert_eq!(
             hover_overlay_indices(
                 &state,
@@ -6886,17 +6942,21 @@ mod tests {
             !on_body.wireframe_indices.is_empty(),
             "a circle stroke on a body face must use the depth-disabled layer"
         );
-        // Plane-sketched circles keep the ordinary overlay stroke path (depth-tested with the
-        // existing stroke bias) — only body-coplanar circles need the always-on path.
+        // Plane-sketched circles use depth-tested screen-space strokes (#1157) — only
+        // body-coplanar circles need the always-on (wireframe) path (#1140).
         assert!(
             on_plane.wireframe_indices.is_empty()
                 || on_plane.wireframe_indices.len() < on_body.wireframe_indices.len(),
             "a circle on a construction plane should not need the body-coplanar wireframe stroke path"
         );
         assert!(
-            on_body.overlay_indices.len() < on_plane.overlay_indices.len()
-                || on_plane.overlay_indices.len() > 0,
-            "body-face circle stroke should leave the overlay thinner than a plane-sketched circle"
+            !on_plane.stroke_indices.is_empty(),
+            "a plane-sketched circle should use screen-space strokes"
+        );
+        assert!(
+            on_body.stroke_indices.len() < on_plane.stroke_indices.len()
+                || on_body.stroke_indices.is_empty(),
+            "body-face circle stroke should not use the depth-tested screen-space stroke path"
         );
     }
 
@@ -7196,16 +7256,16 @@ mod tests {
 
     fn count_opaque_stroke_vertices(scene: &ViewportScene, stroke: Color32) -> usize {
         let gpu = color32_to_gpu(stroke);
-        scene
-            .vertices
-            .iter()
-            .filter(|v| {
-                v.color[3] > 0.99
-                    && (v.color[0] - gpu[0]).abs() < 0.02
-                    && (v.color[1] - gpu[1]).abs() < 0.02
-                    && (v.color[2] - gpu[2]).abs() < 0.02
-            })
-            .count()
+        let matches = |v: &GpuVertex| {
+            v.color[3] > 0.99
+                && (v.color[0] - gpu[0]).abs() < 0.02
+                && (v.color[1] - gpu[1]).abs() < 0.02
+                && (v.color[2] - gpu[2]).abs() < 0.02
+        };
+        // Screen-space strokes (#1157) live in `stroke_vertices`; legacy world-ribbon
+        // strokes (wireframe/gizmo) still sit in `vertices`.
+        scene.vertices.iter().filter(|v| matches(v)).count()
+            + scene.stroke_vertices.iter().filter(|v| matches(v)).count()
     }
 
     /// #1072: an axis quad's corners carry both endpoints and a signed pixel half-width, so
@@ -7956,6 +8016,92 @@ mod tests {
         );
     }
 
+    /// #1157: body-face sketch strokes must not be camera-facing world ribbons (those read as
+    /// freestanding 3D rectangles when the face is viewed at a grazing angle). Pack like the
+    /// origin axes (#1072): corners sit on the endpoints and carry a pixel half-width so
+    /// `vs_axis` widens in screen space — the line paints on the face, not out of it.
+    #[test]
+    fn body_face_sketch_stroke_is_screen_space_not_world_ribbon() {
+        use crate::actions::Action;
+        use crate::model::ExtrudeFace;
+
+        let mut state = state_with_one_body();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ExtrudeCap {
+                extrusion: xkey(0),
+                profile: ExtrudeFace::Polygon(vec![lkey(0), lkey(1), lkey(2), lkey(3)]),
+                top: true,
+            },
+            viewport: None,
+        });
+        state.apply(Action::CreateLineSegment {
+            x0: 1.0,
+            y0: 1.0,
+            x1: 8.0,
+            y1: 3.0,
+            bezier: None,
+            dimension: None,
+        });
+        state.sketch_session = None;
+
+        let palette = ViewportPalette::default();
+        let scene = build_scene_for_doc(&state);
+        let gpu = color32_to_gpu(palette.rect_line_on_body);
+        let stroke_quads: Vec<_> = scene
+            .stroke_vertices
+            .chunks_exact(4)
+            .filter(|quad| {
+                quad.iter().all(|v| {
+                    v.color[3] > 0.99
+                        && (v.color[0] - gpu[0]).abs() < 0.02
+                        && (v.color[1] - gpu[1]).abs() < 0.02
+                        && (v.color[2] - gpu[2]).abs() < 0.02
+                })
+            })
+            .collect();
+        assert!(
+            !stroke_quads.is_empty(),
+            "body-face sketch stroke must land in screen-space stroke buffer (got {} stroke verts, {} scene verts)",
+            scene.stroke_vertices.len(),
+            scene.vertices.len()
+        );
+        // Each quad is a+, a-, b-, b+: two corners share an endpoint position; half-width is
+        // in **pixels** (≤ a few px), not a world-space offset that leaves the face plane.
+        for quad in &stroke_quads {
+            assert_eq!(quad[0].position, quad[1].position, "a-end corners share endpoint");
+            assert_eq!(quad[2].position, quad[3].position, "b-end corners share endpoint");
+            assert_ne!(quad[0].position, quad[2].position, "segment has length");
+            for v in *quad {
+                let half = v.normal[3].abs();
+                assert!(
+                    (0.5..8.0).contains(&half),
+                    "half-width must be a few pixels, not world mm; got {half}"
+                );
+                // other endpoint packed in normal.xyz (same packing as origin axes #1072)
+                let other = [v.normal[0], v.normal[1], v.normal[2]];
+                assert_ne!(other, v.position, "corner must name the far end");
+            }
+            assert!(quad[0].normal[3] > 0.0 && quad[1].normal[3] < 0.0);
+            assert!(quad[2].normal[3] > 0.0 && quad[3].normal[3] < 0.0);
+        }
+        // Must not also emit a world-ribbon of the same colour into the ordinary mesh —
+        // that is the freestanding 3D rectangle the report showed.
+        let world_ribbon = scene
+            .vertices
+            .iter()
+            .filter(|v| {
+                v.color[3] > 0.99
+                    && (v.color[0] - gpu[0]).abs() < 0.02
+                    && (v.color[1] - gpu[1]).abs() < 0.02
+                    && (v.color[2] - gpu[2]).abs() < 0.02
+            })
+            .count();
+        assert_eq!(
+            world_ribbon, 0,
+            "body-face stroke must not also be a camera-facing world ribbon"
+        );
+    }
+
     #[test]
     fn closed_line_loop_gets_a_sketch_fill_like_a_rect_or_circle() {
         let mut state = AppState::default();
@@ -8033,10 +8179,11 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-        assert!(scene.vertices.len() >= 8);
+        // Screen-space sketch edges (#1157): four rectangle sides × 4 verts each.
+        assert!(scene.stroke_vertices.len() >= 16);
         // The three origin axes are 18 indices, but they moved to their own buffer when they
-        // became shader-widened (#1072) — the sketch's own geometry is what is left here.
-        assert!(scene.indices.len() + scene.overlay_indices.len() >= 18);
+        // became shader-widened (#1072) — the sketch's own edges are in `stroke_indices` now.
+        assert!(scene.stroke_indices.len() >= 24);
     }
 
     #[test]
@@ -8212,11 +8359,13 @@ mod tests {
         assert!(STROKE_DEPTH_BIAS > GRID_DEPTH_BIAS);
     }
 
-    fn count_indices_with_color(scene: &ViewportScene, indices: &[u32], color: Color32) -> usize {
+    /// Count screen-space stroke indices (#1157) whose vertices match `color`.
+    fn count_stroke_indices_with_color(scene: &ViewportScene, color: Color32) -> usize {
         let target = color32_to_gpu(color);
-        indices
+        scene
+            .stroke_indices
             .iter()
-            .filter(|&&index| scene.vertices[index as usize].color == target)
+            .filter(|&&index| scene.stroke_vertices[index as usize].color == target)
             .count()
     }
 
@@ -8336,25 +8485,18 @@ mod tests {
             constraint_connector_color: None,
         });
 
-        let unselected_base = count_indices_with_color(
-            &unselected,
-            &unselected.indices,
-            palette.rect_line,
-        );
-        let selected_base = count_indices_with_color(
-            &selected_scene,
-            &selected_scene.indices,
-            palette.rect_line,
-        );
-        let selected_highlight = count_indices_with_color(
-            &selected_scene,
-            &selected_scene.overlay_indices,
-            palette.dim_edge_highlight,
-        );
+        // Unselected sketch strokes land in the screen-space stroke buffer (#1157).
+        let unselected_base =
+            count_stroke_indices_with_color(&unselected, palette.rect_line);
+        let selected_base =
+            count_stroke_indices_with_color(&selected_scene, palette.rect_line);
+        // Selection highlight is also a screen-space stroke (overlay layer → stroke buffer).
+        let selected_highlight =
+            count_stroke_indices_with_color(&selected_scene, palette.dim_edge_highlight);
 
         assert!(
             unselected_base > 0,
-            "unselected line should render in the base layer"
+            "unselected line should render as a screen-space stroke"
         );
         assert_eq!(
             selected_base, 0,
@@ -9284,7 +9426,10 @@ mod tests {
             constraint_graphics: Some(&graphics),
             constraint_connector_color: Some(Color32::from_rgb(255, 205, 88)),
         });
-        assert!(with.overlay_indices.len() > without.overlay_indices.len());
+        assert!(
+            with.overlay_indices.len() + with.stroke_indices.len()
+                > without.overlay_indices.len() + without.stroke_indices.len()
+        );
         assert_eq!(graphics.len(), 1);
     }
 
@@ -9532,7 +9677,12 @@ mod tests {
         });
         assert!(!scene.text_vertices.is_empty());
         assert!(!scene.text_indices.is_empty());
-        assert!(scene.vertices.len() > vertex_count_before);
+        // Dimension extension/witness lines are screen-space strokes (#1157).
+        assert!(
+            scene.stroke_vertices.len() > 0
+                || scene.vertices.len() > vertex_count_before,
+            "dimension should add line geometry (stroke or mesh)"
+        );
     }
 
     #[test]
@@ -9599,55 +9749,6 @@ mod tests {
             &state.scene_selection,
             &state.element_visibility,
         );
-        let grid_indices = ViewportScene::build(&ViewportSceneInput {
-            doc: &state.doc,
-            cam: scene_fields.0,
-            viewport: scene_fields.1,
-            palette: scene_fields.2,
-            sketch_session: scene_fields.3,
-            selection: scene_fields.4,
-            cut_highlight_bodies: Vec::new(),
-            faded_bodies: Vec::new(),
-            sketch_repeat_ghost: Vec::new(),
-            sketch_ghost_lines: Vec::new(),
-            edit_preview_meshes: std::collections::HashMap::new(),
-            element_visibility: scene_fields.5,
-            preview_rect: None,
-            preview_line: None,
-            preview_circle: None,
-            preview_extrusion: None,
-            preview_solid: None,
-            repeat_ghosts: Vec::new(),
-            cut_surface_ghosts: Vec::new(),
-            preview_cut_body: None,
-            preview_replacement: PreviewReplacement::default(),
-            highlighted_bezier_handles: Vec::new(),
-            editing_extrusion: None,
-            plane_preview: None,
-            active_sketch_face: None,
-            dimension_labels: &[],
-            dim_label_view: None,
-            plane_gizmo: None,
-            extrude_gizmo: None,
-            vertex_treatment_gizmo: None,
-            arrow_gizmos: Vec::new(),
-            move_rotation_gizmo: None,
-            revolve_arc_gizmo: None,
-            vertex_treatment_preview: None,
-            hover_highlight: None,
-            extra_pick_highlights: Vec::new(),
-            colored_pick_highlights: Vec::new(),
-            colored_element_highlights: Vec::new(),
-            tinted_bodies: Vec::new(),
-            colored_segments: Vec::new(),
-            parameter_highlight_elements: Vec::new(),
-            hover_color: Color32::WHITE,
-            document_health: &DocumentHealth::default(),
-            constraint_graphics: None,
-            constraint_connector_color: None,
-        })
-        .indices
-        .len();
         let dashed_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &dashed_doc,
             cam: scene_fields.0,
@@ -9742,9 +9843,13 @@ mod tests {
             constraint_graphics: None,
             constraint_connector_color: None,
         });
-        let dashed_line_indices = dashed_scene.indices.len().saturating_sub(grid_indices);
-        let solid_line_indices = solid_scene.indices.len().saturating_sub(grid_indices);
-        assert!(dashed_line_indices > solid_line_indices);
+        // Construction dashes are screen-space stroke segments (#1157), not base-mesh indices.
+        let dashed_line_indices = dashed_scene.stroke_indices.len();
+        let solid_line_indices = solid_scene.stroke_indices.len();
+        assert!(
+            dashed_line_indices > solid_line_indices,
+            "dashed construction line should emit more stroke segments than a solid line (dashed={dashed_line_indices} solid={solid_line_indices})"
+        );
     }
 
     #[test]

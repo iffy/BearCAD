@@ -85,12 +85,18 @@ pub struct ViewportGpuResources {
     /// two triangles, which never change.
     grid_vertex_buffer: wgpu::Buffer,
     grid_index_buffer: wgpu::Buffer,
-    /// The origin axes (#1072), whose vertices carry both endpoints and a pixel half-width.
+    /// The origin axes (#1072) and screen-space sketch strokes (#1157), whose vertices carry
+    /// both endpoints and a pixel half-width (`vs_axis`).
     axis_pipeline: wgpu::RenderPipeline,
     axis_vertex_buffer: wgpu::Buffer,
     axis_index_buffer: wgpu::Buffer,
     axis_vertex_capacity: u64,
     axis_index_capacity: u64,
+    /// Sketch / overlay strokes (#1157): same packing as axes, drawn after the opaque base.
+    stroke_vertex_buffer: wgpu::Buffer,
+    stroke_index_buffer: wgpu::Buffer,
+    stroke_vertex_capacity: u64,
+    stroke_index_capacity: u64,
     text_pipeline: wgpu::RenderPipeline,
     /// Tracing-image quads (#170): the text pipeline's layout with a full-color fragment.
     image_pipeline: wgpu::RenderPipeline,
@@ -943,6 +949,18 @@ impl ViewportGpuResources {
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let stroke_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bearcad_viewport_stroke_vertices"),
+            size: 4096,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let stroke_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bearcad_viewport_stroke_indices"),
+            size: 4096,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let grid_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("bearcad_viewport_grid_indices"),
             contents: bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3]),
@@ -978,6 +996,10 @@ impl ViewportGpuResources {
             axis_index_buffer,
             axis_vertex_capacity: 4096,
             axis_index_capacity: 4096,
+            stroke_vertex_buffer,
+            stroke_index_buffer,
+            stroke_vertex_capacity: 4096,
+            stroke_index_capacity: 4096,
             text_pipeline,
             image_pipeline,
             image_textures: Mutex::new(std::collections::HashMap::new()),
@@ -1342,6 +1364,39 @@ impl ViewportGpuResources {
                 bytemuck::cast_slice(&scene.axis_indices),
             );
         }
+        // Screen-space sketch / overlay strokes (#1157): same packing as origin axes.
+        if !scene.stroke_vertices.is_empty() {
+            let bytes = (scene.stroke_vertices.len() * std::mem::size_of::<GpuVertex>()) as u64;
+            if bytes > self.stroke_vertex_capacity {
+                self.stroke_vertex_capacity = bytes.next_power_of_two().max(4096);
+                self.stroke_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bearcad_viewport_stroke_vertices"),
+                    size: self.stroke_vertex_capacity,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            let index_bytes = (scene.stroke_indices.len() * std::mem::size_of::<u32>()) as u64;
+            if index_bytes > self.stroke_index_capacity {
+                self.stroke_index_capacity = index_bytes.next_power_of_two().max(4096);
+                self.stroke_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bearcad_viewport_stroke_indices"),
+                    size: self.stroke_index_capacity,
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            queue.write_buffer(
+                &self.stroke_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&scene.stroke_vertices),
+            );
+            queue.write_buffer(
+                &self.stroke_index_buffer,
+                0,
+                bytemuck::cast_slice(&scene.stroke_indices),
+            );
+        }
         // The grid's four footprint corners (#1073). Colour and normal are unused by
         // `vs_grid`/`fs_grid` — only the world position matters — but the vertex layout is
         // shared with the scene pipelines, so they are still filled in.
@@ -1517,6 +1572,30 @@ impl ViewportGpuResources {
                 pass.set_index_buffer(self.axis_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..scene.axis_indices.len() as u32, 0, 0..1);
             }
+            // Opaque base first (when any), so subsequent screen-space strokes can depth-test
+            // against bodies. Stroke draw is outside this block so a scene of only lines still
+            // paints (#1157).
+            if scene_index_count > 0 && base_index_count > 0 {
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_pipeline(&self.scene_pipeline);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..base_index_count as u32, 0, 0..1);
+            }
+            // Screen-space sketch strokes (#1157): after the opaque base so bodies occlude
+            // them, before translucent fills so a stroke still reads under a plane wash.
+            // Corners sit on the endpoints; `vs_axis` widens in pixels so a face-sketched
+            // line stays painted on the face instead of a freestanding 3D ribbon.
+            if !scene.stroke_indices.is_empty() {
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_pipeline(&self.axis_pipeline);
+                pass.set_vertex_buffer(0, self.stroke_vertex_buffer.slice(..));
+                pass.set_index_buffer(
+                    self.stroke_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.draw_indexed(0..scene.stroke_indices.len() as u32, 0, 0..1);
+            }
             if scene_index_count > 0 {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -1530,10 +1609,6 @@ impl ViewportGpuResources {
                 let plane_end = sketch_fill_end + plane_fill_index_count as u32;
                 let overlay_end = plane_end + overlay_index_count as u32;
                 let scene_end = scene_index_count as u32;
-                if base_end > 0 {
-                    pass.set_pipeline(&self.scene_pipeline);
-                    pass.draw_indexed(0..base_end, 0, 0..1);
-                }
                 if shadow_end > base_end {
                     // Reference 0b10 against bit 1: a fragment passes while that bit is
                     // clear and then sets it, so a silhouette's self-overlap paints once

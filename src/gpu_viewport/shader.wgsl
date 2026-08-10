@@ -147,13 +147,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     return vec4f(lit * alpha, alpha);
 }
 
-// ---- Origin axes (#1072) ----
+// ---- Screen-space lines: origin axes (#1072) and sketch strokes (#1157) ----
 //
 // A quad of fixed *world* width is only the right thickness at one depth: under perspective
-// the near end of an axis swells and the far end thins away. So each corner arrives with its
-// own world endpoint in `position`, the segment's other endpoint in `normal.xyz`, and a
-// signed half-width in **pixels** in `normal.w`. Both ends are projected here and the corner
-// steps sideways in screen space, which is the only place a pixel means anything.
+// the near end of an axis swells and the far end thins away — and on a body face viewed at a
+// grazing angle a camera-facing world ribbon reads as a freestanding 3D rectangle (#1157).
+// So each corner arrives with its own world endpoint in `position`, the segment's other
+// endpoint in `normal.xyz`, and a signed half-width in **pixels** in `normal.w`. Both ends
+// are projected here and the corner steps sideways in screen space, which is the only place
+// a pixel means anything. Depth stays on the endpoints, so a face-sketched stroke paints on
+// the face rather than out of it.
 
 @vertex
 fn vs_axis(input: VertexInput) -> VertexOutput {
